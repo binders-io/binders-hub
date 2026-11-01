@@ -1,0 +1,9 @@
+Binders Hub is starting at {{ .Values.publicUrl }}.
+
+1. Nobody can sign in to a new hub yet, so it prints a one-time setup link:
+     kubectl logs -n {{ .Release.Namespace }} deploy/{{ include "hub.fullname" . }} | grep -i "set up"
+   Open it to become the hub's first admin.
+2. Connect GitHub in Settings → GitHub, and give your binder its repo in Settings → Binder.
+3. Add an agent in Agents, and run the command it shows where your code is.
+
+Back up the hub's secret ({{ include "hub.secretName" . }}), its data volume and Redis's.

@@ -17,6 +17,9 @@ are issues in each binder's repo, and notes are Markdown in a Git repo.
 
 ## Self-host
 
+This is the quickest way, with Docker Compose on one server. For plain Docker, Kubernetes with Helm, AWS ECS on
+Fargate, or Node with systemd, see [docs/DEPLOY.md](docs/DEPLOY.md).
+
 What you need: a Linux server with Docker and Docker Compose v2, an address for it with HTTPS (Caddy or nginx in front
 of the hub, or a Cloudflare tunnel), and a GitHub account or organization for the hub's GitHub App. Your agents run on
 your own machines, where your code is: the hub only hands them work.

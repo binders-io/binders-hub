@@ -1,0 +1,26 @@
+# Binders Hub on a server without Docker: Node 23.6 or newer, Git, and a Redis with appendonly yes. The code is a clone
+# in /opt/binders-hub, built (see docs/DEPLOY.md), and the hub's data goes in /opt/binders-hub/hub/.data.
+#   sudo cp deploy/systemd/binders-hub.service /etc/systemd/system/ && sudo systemctl enable --now binders-hub
+
+[Unit]
+Description=Binders Hub
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+User=binders
+Group=binders
+WorkingDirectory=/opt/binders-hub/hub
+Environment=NODE_ENV=production HOST=127.0.0.1 PORT=4400 WEB_DIR=/opt/binders-hub/web/dist REDIS_URL=redis://127.0.0.1:6379
+# PUBLIC_URL, HUB_SECRET and the rest: see deploy/hub.env.example.
+EnvironmentFile=/etc/binders/hub.env
+ExecStart=/usr/bin/node src/main.ts
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

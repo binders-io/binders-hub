@@ -40,9 +40,10 @@ if ! docker build --target test -t binders-hub:test . >"$data/test.log" 2>&1; th
   exit 1
 fi
 
-profiles=()
-[ -f "$etc/tunnel.env" ] && profiles=(--profile tunnel)
-docker compose -f deploy/compose.yml "${profiles[@]}" up -d --build --remove-orphans --wait --wait-timeout 180
+# With a tunnel's settings, the tunnel; without, the hub on a port of this machine for Caddy or nginx.
+compose=(-f deploy/compose.yml)
+if [ -f "$etc/tunnel.env" ]; then compose+=(--profile tunnel); else compose+=(-f deploy/compose.port.yml); fi
+docker compose "${compose[@]}" up -d --build --remove-orphans --wait --wait-timeout 180
 echo "$next" >"$data/deployed"
 rm -f "$data/failed" "$data/hub/update-failed.txt"
 docker image prune -f >/dev/null

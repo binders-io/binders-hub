@@ -1,0 +1,13 @@
+# Runs deploy/update.sh every five minutes, for a hub run with Docker Compose from a clone in /opt/binders-hub:
+# it fetches, runs the tests, and rebuilds only when they pass. With binders-hub-update.service beside it.
+#   sudo cp deploy/systemd/binders-hub-update.* /etc/systemd/system/ && sudo systemctl enable --now binders-hub-update.timer
+
+[Unit]
+Description=Keep Binders Hub up to date
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+apiVersion: v2
+name: binders-hub
+description: Binders Hub, from a note to production with your coding agents. One hub, its Redis, and their storage.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://binders.io
+sources:
+  - https://github.com/binders-io/binders-hub
+license: AGPL-3.0-only

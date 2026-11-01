@@ -1,0 +1,319 @@
+# Binders Hub on AWS: ECS on Fargate behind an Application Load Balancer with your certificate, the hub's data and its
+# Redis's append-only file on EFS, and the hub's secret in Secrets Manager. One task, always: the hub keeps live state
+# in memory, so a deploy stops the old task before starting the new one. See docs/DEPLOY.md.
+#
+#   aws cloudformation deploy --stack-name binders-hub --template-file deploy/ecs/binders-hub.yml \
+#     --capabilities CAPABILITY_IAM --parameter-overrides VpcId=vpc-… PublicSubnetIds=subnet-a,subnet-b \
+#     TaskSubnetIds=subnet-c,subnet-d CertificateArn=arn:aws:acm:… PublicUrl=https://hub.example.com
+#
+# Then point your domain at the LoadBalancerDns output.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Binders Hub on ECS Fargate, with EFS for its data and Redis, behind an Application Load Balancer.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Two or more public subnets, in different zones, for the load balancer.
+  TaskSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Exactly two subnets, in different zones, for the hub's task and EFS. Private with a NAT gateway, or public with AssignPublicIp.
+  AssignPublicIp:
+    Type: String
+    AllowedValues: [ENABLED, DISABLED]
+    Default: DISABLED
+    Description: ENABLED when TaskSubnetIds are public subnets without a NAT gateway, so the task can pull its image and reach GitHub.
+  CertificateArn:
+    Type: String
+    Description: An ACM certificate for the hub's address.
+  PublicUrl:
+    Type: String
+    AllowedPattern: '^https://.+'
+    Description: The address people open the hub at, e.g. https://hub.example.com.
+  Image:
+    Type: String
+    Default: ghcr.io/binders-io/binders-hub:0.1
+  HubAdmins:
+    Type: String
+    Default: ''
+    Description: GitHub logins (comma-separated) who may change the hub's GitHub setup and options.
+  RedisUrl:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: Your own Redis that persists to disk (e.g. Amazon MemoryDB, rediss://…). Empty runs Redis beside the hub, its append-only file on EFS.
+  Cpu:
+    Type: String
+    Default: '1024'
+  Memory:
+    Type: String
+    Default: '2048'
+
+Conditions:
+  BundledRedis: !Equals [!Ref RedisUrl, '']
+  HasAdmins: !Not [!Equals [!Ref HubAdmins, '']]
+
+Resources:
+  HubSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Binders Hub's secret, which seals its GitHub keys. Back it up.
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+
+  RedisUrlSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Binders Hub's Redis URL.
+      SecretString: !If [BundledRedis, 'redis://127.0.0.1:6379', !Ref RedisUrl]
+
+  LoadBalancerGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Binders Hub load balancer
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
+
+  TaskGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Binders Hub task
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 4400, ToPort: 4400, SourceSecurityGroupId: !Ref LoadBalancerGroup }
+
+  StorageGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Binders Hub EFS
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 2049, ToPort: 2049, SourceSecurityGroupId: !Ref TaskGroup }
+
+  Storage:
+    Type: AWS::EFS::FileSystem
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Encrypted: true
+      BackupPolicy: { Status: ENABLED }
+      FileSystemTags: [{ Key: Name, Value: binders-hub }]
+
+  StorageTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref Storage
+      SubnetId: !Select [0, !Ref TaskSubnetIds]
+      SecurityGroups: [!Ref StorageGroup]
+
+  StorageTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref Storage
+      SubnetId: !Select [1, !Ref TaskSubnetIds]
+      SecurityGroups: [!Ref StorageGroup]
+
+  HubData:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref Storage
+      PosixUser: { Uid: '1000', Gid: '1000' }
+      RootDirectory: { Path: /hub, CreationInfo: { OwnerUid: '1000', OwnerGid: '1000', Permissions: '700' } }
+
+  RedisData:
+    Type: AWS::EFS::AccessPoint
+    Condition: BundledRedis
+    Properties:
+      FileSystemId: !Ref Storage
+      PosixUser: { Uid: '999', Gid: '999' }
+      RootDirectory: { Path: /redis, CreationInfo: { OwnerUid: '999', OwnerGid: '999', Permissions: '700' } }
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Subnets: !Ref PublicSubnetIds
+      SecurityGroups: [!Ref LoadBalancerGroup]
+      LoadBalancerAttributes:
+        # Live updates and terminals are WebSockets that sit quiet between changes.
+        - { Key: idle_timeout.timeout_seconds, Value: '3600' }
+
+  Targets:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: HTTP
+      Port: 4400
+      HealthCheckPath: /ready
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      TargetGroupAttributes:
+        - { Key: deregistration_delay.timeout_seconds, Value: '10' }
+
+  Https:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      Certificates: [{ CertificateArn: !Ref CertificateArn }]
+      DefaultActions: [{ Type: forward, TargetGroupArn: !Ref Targets }]
+
+  Http:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig: { Protocol: HTTPS, Port: '443', StatusCode: HTTP_301 }
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterSettings: [{ Name: containerInsights, Value: enabled }]
+
+  Logs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 30
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: [{ Effect: Allow, Principal: { Service: ecs-tasks.amazonaws.com }, Action: sts:AssumeRole }]
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy]
+      Policies:
+        - PolicyName: secrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement: [{ Effect: Allow, Action: secretsmanager:GetSecretValue, Resource: [!Ref HubSecret, !Ref RedisUrlSecret] }]
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: [{ Effect: Allow, Principal: { Service: ecs-tasks.amazonaws.com }, Action: sts:AssumeRole }]
+      Policies:
+        - PolicyName: storage
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [elasticfilesystem:ClientMount, elasticfilesystem:ClientWrite]
+                Resource: !GetAtt Storage.Arn
+        # ECS Exec, for a shell in the hub's container when you need one.
+        - PolicyName: exec
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [ssmmessages:CreateControlChannel, ssmmessages:CreateDataChannel, ssmmessages:OpenControlChannel, ssmmessages:OpenDataChannel]
+                Resource: '*'
+
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: binders-hub
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      RuntimePlatform: { CpuArchitecture: ARM64, OperatingSystemFamily: LINUX }
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes:
+        - Name: hub-data
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref Storage
+            TransitEncryption: ENABLED
+            AuthorizationConfig: { AccessPointId: !Ref HubData, IAM: ENABLED }
+        - !If
+          - BundledRedis
+          - Name: redis-data
+            EFSVolumeConfiguration:
+              FilesystemId: !Ref Storage
+              TransitEncryption: ENABLED
+              AuthorizationConfig: { AccessPointId: !Ref RedisData, IAM: ENABLED }
+          - !Ref AWS::NoValue
+      ContainerDefinitions:
+        - !If
+          - BundledRedis
+          - Name: redis
+            Image: public.ecr.aws/docker/library/redis:8.8-alpine
+            Essential: true
+            # As the image's redis user, which owns its folder on EFS.
+            User: '999:999'
+            # Every change appended to disk, flushed each second.
+            Command: [redis-server, --appendonly, 'yes', --appendfsync, everysec, --save, '', --dir, /data, --bind, 127.0.0.1]
+            MountPoints: [{ SourceVolume: redis-data, ContainerPath: /data }]
+            HealthCheck: { Command: [CMD, redis-cli, ping], Interval: 10, Timeout: 5, Retries: 5, StartPeriod: 10 }
+            LogConfiguration:
+              LogDriver: awslogs
+              Options: { awslogs-group: !Ref Logs, awslogs-region: !Ref AWS::Region, awslogs-stream-prefix: redis }
+          - !Ref AWS::NoValue
+        - Name: hub
+          Image: !Ref Image
+          Essential: true
+          PortMappings: [{ ContainerPort: 4400 }]
+          DependsOn: !If [BundledRedis, [{ ContainerName: redis, Condition: HEALTHY }], !Ref AWS::NoValue]
+          Environment:
+            - { Name: PUBLIC_URL, Value: !Ref PublicUrl }
+            - { Name: CSP_ENFORCE, Value: '1' }
+            - !If [HasAdmins, { Name: HUB_ADMINS, Value: !Ref HubAdmins }, !Ref AWS::NoValue]
+          Secrets:
+            - { Name: HUB_SECRET, ValueFrom: !Ref HubSecret }
+            - { Name: REDIS_URL, ValueFrom: !Ref RedisUrlSecret }
+          MountPoints: [{ SourceVolume: hub-data, ContainerPath: /app/hub/.data }]
+          HealthCheck:
+            Command: [CMD, node, -e, "fetch('http://127.0.0.1:4400/ready').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+            Interval: 15
+            Timeout: 5
+            Retries: 4
+            StartPeriod: 60
+          LogConfiguration:
+            LogDriver: awslogs
+            Options: { awslogs-group: !Ref Logs, awslogs-region: !Ref AWS::Region, awslogs-stream-prefix: hub }
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: [Https, StorageTarget1, StorageTarget2]
+    Properties:
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref Task
+      LaunchType: FARGATE
+      DesiredCount: 1
+      # Never two hubs at once: the old task stops before the new one starts.
+      DeploymentConfiguration: { MaximumPercent: 100, MinimumHealthyPercent: 0 }
+      HealthCheckGracePeriodSeconds: 120
+      EnableExecuteCommand: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref TaskSubnetIds
+          SecurityGroups: [!Ref TaskGroup]
+          AssignPublicIp: !Ref AssignPublicIp
+      LoadBalancers: [{ ContainerName: hub, ContainerPort: 4400, TargetGroupArn: !Ref Targets }]
+
+Outputs:
+  LoadBalancerDns:
+    Description: Point your hub's address at this (a CNAME, or an alias record in Route 53).
+    Value: !GetAtt LoadBalancer.DNSName
+  SetupLink:
+    Description: Where the one-time setup link is printed when the hub first starts.
+    Value: !Sub 'aws logs filter-log-events --log-group-name ${Logs} --filter-pattern "set up"'
+  Secret:
+    Description: The hub's secret, in Secrets Manager. Kept when the stack is deleted, as are the EFS file system's data.
+    Value: !Ref HubSecret

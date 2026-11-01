@@ -1,0 +1,7 @@
+[Unit]
+Description=Update Binders Hub if its branch moved
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/binders-hub
+ExecStart=/opt/binders-hub/deploy/update.sh

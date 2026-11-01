@@ -1,0 +1,17 @@
+# Every pull request runs the tests a deploy runs: docker build --target test. Only in the public repo.
+name: Test
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.repository == 'binders-io/binders-hub'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        run: docker build --target test .

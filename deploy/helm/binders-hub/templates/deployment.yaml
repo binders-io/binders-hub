@@ -1,0 +1,88 @@
+{{- if not .Values.publicUrl }}{{ fail "Set publicUrl: the address people open the hub at, with https." }}{{ end }}
+{{- if and (not .Values.redis.enabled) (not .Values.externalRedis.url) (not .Values.externalRedis.existingSecret) }}{{ fail "Turn on redis.enabled, or give externalRedis.url or externalRedis.existingSecret." }}{{ end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hub.fullname" . }}
+  labels: {{- include "hub.labels" . | nindent 4 }}
+spec:
+  # One hub, always: it keeps live state in memory. The old pod stops before the new one starts.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {{- include "hub.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "hub.selector" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: hub
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 4400
+          env:
+            - name: PUBLIC_URL
+              value: {{ .Values.publicUrl | trimSuffix "/" | quote }}
+            - name: HUB_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "hub.secretName" . }}
+                  key: {{ .Values.hubSecret.key }}
+            - name: REDIS_URL
+              {{- if .Values.redis.enabled }}
+              value: "redis://{{ include "hub.fullname" . }}-redis:6379"
+              {{- else if .Values.externalRedis.existingSecret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalRedis.existingSecret }}
+                  key: {{ .Values.externalRedis.key }}
+              {{- else }}
+              value: {{ .Values.externalRedis.url | quote }}
+              {{- end }}
+            {{- range $name, $value := .Values.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- with .Values.envFrom }}
+          envFrom: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /app/hub/.data
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 20
+            failureThreshold: 6
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+            periodSeconds: 10
+          {{- with .Values.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-data" (include "hub.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

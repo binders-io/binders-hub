@@ -1,0 +1,72 @@
+# Binders Hub on Kubernetes. The hub runs as one pod: it keeps live state and connections in memory, so it's never
+# scaled out, and an upgrade stops the old pod before starting the new one. See docs/DEPLOY.md.
+
+image:
+  repository: ghcr.io/binders-io/binders-hub
+  # The chart's appVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# The address people open the hub at, with https. Required: GitHub sends its webhooks and sign-ins here.
+publicUrl: ""
+
+# The hub's secret, which seals GitHub's keys and everything else it keeps. Empty: the chart makes one and keeps it
+# across upgrades. Or name a Secret of your own that has it under `key`. Back it up: without it the hub can't open
+# what it sealed.
+hubSecret:
+  value: ""
+  existingSecret: ""
+  key: HUB_SECRET
+
+# More settings, as environment variables (see the top of hub/src/main.ts), e.g. HUB_ADMINS: "octocat".
+env:
+  CSP_ENFORCE: "1"
+# Settings from your own ConfigMaps and Secrets.
+envFrom: []
+
+# The hub's data: its notes repo, pictures, working copies and, without hubSecret, its secret.
+persistence:
+  enabled: true
+  size: 5Gi
+  storageClass: ""
+  existingClaim: ""
+
+# A Redis for the change log, with every change appended to disk. The change log is the only copy of a change until
+# GitHub has it, so whatever Redis you use must keep its data across restarts.
+redis:
+  enabled: true
+  image: redis:8.8-alpine
+  persistence:
+    size: 2Gi
+    storageClass: ""
+  resources: {}
+
+# Your own Redis instead (redis.enabled: false): a URL, or a Secret holding one. Use one that persists to disk
+# (append-only file, or Amazon MemoryDB), not a cache that may drop data.
+externalRedis:
+  url: ""
+  existingSecret: ""
+  key: REDIS_URL
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  # Live updates and terminals are WebSockets, and pictures can be up to a few megabytes.
+  annotations: {}
+    # nginx.ingress.kubernetes.io/proxy-body-size: 8m
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    # cert-manager.io/cluster-issuer: letsencrypt
+  host: hub.example.com
+  tls:
+    enabled: true
+    secretName: ""
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
