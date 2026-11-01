@@ -1,0 +1,207 @@
+/* Binders Hub. White on black, or ink on a cool paper, following the system unless you choose. Colour for state:
+   green done, blue running, amber waiting on you, violet in review, red failed; light mode adds an indigo accent for
+   what you press and what's moving. Tokens first; components use tokens. */
+@font-face { font-family: "Nunito"; font-weight: 200 1000; font-display: swap; src: url("/fonts/nunito-latin.woff2") format("woff2"); }
+@font-face { font-family: "Nunito Sans"; font-weight: 200 1000; font-display: swap; src: url("/fonts/nunito-sans-latin.woff2") format("woff2"); }
+
+:root {
+  --bg: #050505;
+  --bg-raised: #0a0a0a;
+  --surface: #0f0f0f;
+  --surface-2: #141414;
+  --surface-3: #1f1f1f;
+  --hover: #1a1a1a;
+  --column: rgba(255, 255, 255, 0.018);
+  --panel: #0a0a0a;
+  --pop-bg: rgba(20, 20, 20, 0.97);
+  --pop-solid: #141414;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.15);
+  --text: #fafafa;
+  --text-2: #d4d4d4;
+  --muted: #a3a3a3;
+  --faint: #888888;
+  --fill-1: rgba(255, 255, 255, 0.03);
+  --fill-2: rgba(255, 255, 255, 0.055);
+  --fill-3: rgba(255, 255, 255, 0.1);
+  --primary: #fafafa;
+  --primary-ink: #0a0a0a;
+  --primary-hover: #e5e5e5;
+  --primary-line: rgba(255, 255, 255, 0.35);
+  --progress: var(--text);
+  --scrim: rgba(0, 0, 0, 0.5);
+  --scrim-strong: rgba(0, 0, 0, 0.65);
+  --shadow-color: rgba(0, 0, 0, 0.85);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --tile: var(--fill-1);
+  --tile-shadow: none;
+  --paper: transparent;
+  --paper-solid: var(--bg);
+  --green: #4ade80;
+  --green-wash: rgba(74, 222, 128, 0.1);
+  --green-line: rgba(74, 222, 128, 0.35);
+  --blue: #6cb6ff;
+  --blue-wash: rgba(108, 182, 255, 0.1);
+  --blue-line: rgba(108, 182, 255, 0.35);
+  --amber: #fbbf24;
+  --amber-wash: rgba(251, 191, 36, 0.08);
+  --amber-line: rgba(251, 191, 36, 0.28);
+  --red: #fb7185;
+  --red-wash: rgba(251, 113, 133, 0.1);
+  --violet: #c084fc;
+  --violet-wash: rgba(192, 132, 252, 0.09);
+  --violet-line: rgba(192, 132, 252, 0.35);
+  --add-bg: rgba(74, 222, 128, 0.08);
+  --add-ink: #a6f0bf;
+  --del-bg: rgba(251, 113, 133, 0.08);
+  --del-ink: #ffb3bf;
+  color-scheme: dark;
+  --terminal: #0a0a0a;
+  --display: "Nunito", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --body: "Nunito Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --r-sm: 7px;
+  --r: 11px;
+  --r-lg: 16px;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --shadow-pop: 0 24px 60px -20px var(--shadow-color), 0 0 0 1px var(--line-strong);
+}
+/* Light: when the system is light and nothing was chosen, or when light was chosen. Layered: a tinted canvas, a deeper
+   sidebar, white cards with a soft shadow; every text tone keeps 4.5:1 on each of them (WCAG AA). Both blocks match. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f2f4f8;
+    --bg-raised: #e9ecf3;
+    --surface: #ffffff;
+    --surface-2: #ffffff;
+    --surface-3: #e3e7f0;
+    --hover: #f8f9fc;
+    --column: rgba(219, 225, 238, 0.5);
+    --panel: #f7f8fb;
+    --pop-bg: rgba(255, 255, 255, 0.98);
+    --pop-solid: #ffffff;
+    --line: rgba(28, 39, 76, 0.12);
+    --line-strong: rgba(28, 39, 76, 0.22);
+    --text: #0d1424;
+    --text-2: #1f2a3d;
+    --muted: #475467;
+    --faint: #545e72;
+    --fill-1: rgba(40, 56, 110, 0.04);
+    --fill-2: rgba(40, 56, 110, 0.07);
+    --fill-3: rgba(40, 56, 110, 0.13);
+    --primary: #4338ca;
+    --primary-ink: #ffffff;
+    --primary-hover: #3730a3;
+    --primary-line: rgba(67, 56, 202, 0.45);
+    --progress: var(--primary);
+    --scrim: rgba(15, 23, 42, 0.18);
+    --scrim-strong: rgba(15, 23, 42, 0.32);
+    --shadow-color: rgba(23, 32, 66, 0.22);
+    --shadow-card: 0 1px 2px rgba(23, 32, 66, 0.06), 0 2px 6px -2px rgba(23, 32, 66, 0.08);
+    --tile: var(--surface);
+    --tile-shadow: var(--shadow-card);
+    --paper: var(--surface);
+    --paper-solid: var(--surface);
+    --green: #03684b;
+    --green-wash: rgba(5, 150, 105, 0.12);
+    --green-line: rgba(5, 150, 105, 0.45);
+    --blue: #1d4ed8;
+    --blue-wash: rgba(37, 99, 235, 0.11);
+    --blue-line: rgba(37, 99, 235, 0.42);
+    --amber: #9a4507;
+    --amber-wash: rgba(245, 158, 11, 0.16);
+    --amber-line: rgba(217, 119, 6, 0.5);
+    --red: #be123c;
+    --red-wash: rgba(225, 29, 72, 0.1);
+    --violet: #6d28d9;
+    --violet-wash: rgba(124, 58, 237, 0.11);
+    --violet-line: rgba(124, 58, 237, 0.42);
+    --add-bg: rgba(5, 150, 105, 0.11);
+    --add-ink: #065f46;
+    --del-bg: rgba(225, 29, 72, 0.09);
+    --del-ink: #9f1239;
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f2f4f8;
+  --bg-raised: #e9ecf3;
+  --surface: #ffffff;
+  --surface-2: #ffffff;
+  --surface-3: #e3e7f0;
+  --hover: #f8f9fc;
+  --column: rgba(219, 225, 238, 0.5);
+  --panel: #f7f8fb;
+  --pop-bg: rgba(255, 255, 255, 0.98);
+  --pop-solid: #ffffff;
+  --line: rgba(28, 39, 76, 0.12);
+  --line-strong: rgba(28, 39, 76, 0.22);
+  --text: #0d1424;
+  --text-2: #1f2a3d;
+  --muted: #475467;
+  --faint: #545e72;
+  --fill-1: rgba(40, 56, 110, 0.04);
+  --fill-2: rgba(40, 56, 110, 0.07);
+  --fill-3: rgba(40, 56, 110, 0.13);
+  --primary: #4338ca;
+  --primary-ink: #ffffff;
+  --primary-hover: #3730a3;
+  --primary-line: rgba(67, 56, 202, 0.45);
+  --progress: var(--primary);
+  --scrim: rgba(15, 23, 42, 0.18);
+  --scrim-strong: rgba(15, 23, 42, 0.32);
+  --shadow-color: rgba(23, 32, 66, 0.22);
+  --shadow-card: 0 1px 2px rgba(23, 32, 66, 0.06), 0 2px 6px -2px rgba(23, 32, 66, 0.08);
+  --tile: var(--surface);
+  --tile-shadow: var(--shadow-card);
+  --paper: var(--surface);
+  --paper-solid: var(--surface);
+  --green: #03684b;
+  --green-wash: rgba(5, 150, 105, 0.12);
+  --green-line: rgba(5, 150, 105, 0.45);
+  --blue: #1d4ed8;
+  --blue-wash: rgba(37, 99, 235, 0.11);
+  --blue-line: rgba(37, 99, 235, 0.42);
+  --amber: #9a4507;
+  --amber-wash: rgba(245, 158, 11, 0.16);
+  --amber-line: rgba(217, 119, 6, 0.5);
+  --red: #be123c;
+  --red-wash: rgba(225, 29, 72, 0.1);
+  --violet: #6d28d9;
+  --violet-wash: rgba(124, 58, 237, 0.11);
+  --violet-line: rgba(124, 58, 237, 0.42);
+  --add-bg: rgba(5, 150, 105, 0.11);
+  --add-ink: #065f46;
+  --del-bg: rgba(225, 29, 72, 0.09);
+  --del-ink: #9f1239;
+  color-scheme: light;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 14px/1.5 var(--body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+input, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; border-radius: 6px; }
+/* Headings and panes take focus to say where you are, not to be pressed. */
+[tabindex="-1"]:focus-visible { outline: none; }
+::selection { background: var(--fill-3); }
+/* For a screen reader alone. */
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+/* Past the sidebar: out of sight until Tab reaches it. */
+.skip-link { position: fixed; z-index: 90; top: 8px; left: 8px; padding: 10px 14px; border-radius: 8px; background: var(--primary); color: var(--primary-ink); font-weight: 700; translate: 0 -200%; }
+.skip-link:focus { translate: 0 0; }
+.num { font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--mono); }
+* { scrollbar-width: thin; scrollbar-color: var(--fill-3) transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}

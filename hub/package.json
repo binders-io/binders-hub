@@ -1,0 +1,42 @@
+{
+  "name": "binders-hub",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The Binders hub: a change log on Redis, savers to GitHub and Git, a live feed, and MCP for agents.",
+  "engines": {
+    "node": ">=23.6"
+  },
+  "scripts": {
+    "predev": "npm run build --prefix ../runner --silent || true",
+    "dev": "node --watch src/main.ts",
+    "prestart": "npm run build --prefix ../runner --silent || true",
+    "start": "node src/main.ts",
+    "redis": "mkdir -p .data/redis && redis-server --port 6390 --dir .data/redis --appendonly yes --save '' --bind 127.0.0.1",
+    "test": "LOG_LEVEL=silent node --test --test-timeout=60000 --test-force-exit test/*.test.ts",
+    "typecheck": "tsc --noEmit -p .",
+    "stand-in": "node scripts/stand-in-agent.ts",
+    "postinstall": "npm install --prefix ../shared --no-audit --no-fund --silent"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.1.5",
+    "@fastify/helmet": "^13.2.0",
+    "@fastify/rate-limit": "^11.2.1",
+    "@fastify/static": "^10.1.8",
+    "@fastify/websocket": "^11.3.4",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "fastify": "^5.12.7",
+    "ioredis": "^6.0.0",
+    "pino": "^10.4.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/ws": "^8.18.2",
+    "typescript": "^7.0.2"
+  },
+  "overrides": {
+    "glob": "^14.0.3"
+  }
+}

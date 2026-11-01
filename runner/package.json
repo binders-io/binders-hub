@@ -1,0 +1,29 @@
+{
+  "name": "binders-runner",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "version": "0.6.7",
+  "type": "module",
+  "description": "Runs an agent for each card Binders gives it: stays connected to the hub, and starts Claude Code, Codex or your own command headless in your workspace.",
+  "engines": {
+    "node": ">=23.6"
+  },
+  "bin": {
+    "binders-runner": "src/main.ts"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "node --test --test-timeout=60000 --test-force-exit test/*.test.ts",
+    "typecheck": "tsc --noEmit -p .",
+    "build": "esbuild src/main.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/binders-runner.mjs --banner:js=\"import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);\"",
+    "postinstall": "npm install --prefix ../shared --no-audit --no-fund --silent"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

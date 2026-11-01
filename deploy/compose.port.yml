@@ -1,0 +1,9 @@
+# The hub on a port of the server, for a reverse proxy (Caddy, nginx) on the same machine to put HTTPS in front of,
+# instead of the Cloudflare tunnel. Add it after compose.yml:
+#   docker compose -f deploy/compose.yml -f deploy/compose.port.yml up -d --build
+# HUB_PORT moves it (4400); HUB_BIND=0.0.0.0 opens it beyond this machine, which you only want behind a firewall.
+
+services:
+  hub:
+    ports:
+      - ${HUB_BIND:-127.0.0.1}:${HUB_PORT:-4400}:4400

@@ -1,0 +1,130 @@
+import { createHash } from 'node:crypto'
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { slug } from '../../../shared/notes.ts'
+import { isChange } from '../log.ts'
+import type { FastifyInstance } from 'fastify'
+import type { Change, Entry, Outgoing } from '../../../shared/state.ts'
+import type { Context } from './context.ts'
+
+// The state, its changes and its live feed, and the pictures in notes.
+
+const clientPattern = /^[A-Za-z0-9_-]{6,64}$/
+
+export async function stateRoutes(app: FastifyInstance, context: Context) {
+  const { spaces, terminals, sp, login, param, isAdmin, fail, mayLink } = context
+  // The state and its changes ----------------------------------------------------------------------------------------
+
+  app.get('/api/state', async (request) => {
+    const { hub } = sp(request)
+    return { version: hub.version, state: hub.state, presence: hub.presence() }
+  })
+
+  app.post('/api/changes', async (request, reply) => {
+    const body = request.body as { client?: unknown; changes?: unknown } | undefined
+    const client = typeof body?.client === 'string' ? body.client : ''
+    if (!clientPattern.test(client)) return reply.code(400).send({ error: 'client must be 6 to 64 letters, digits, - or _' })
+    if (!Array.isArray(body?.changes) || body.changes.length > 500) return reply.code(400).send({ error: 'changes must be a list of at most 500' })
+    const changes = body.changes as Outgoing[]
+    if (!changes.every((c) => typeof c?.id === 'string' && c.id.length <= 100 && isChange(c.change))) return reply.code(400).send({ error: 'each change needs an id and a change' })
+    try {
+      // A tab's changes are its own: the log knows them by the tab and the person.
+      const { hub } = sp(request)
+      // A project's repo changes only to one the person can push to.
+      const vet = async (change: Change) => {
+        if (change.type !== 'binder.put' || !change.binder.repo) return
+        const before = hub.state.binders.find((b) => b.id === change.binder.id)?.repo
+        if (before?.toLowerCase() !== change.binder.repo.toLowerCase()) await mayLink(request, change.binder.repo, true)
+      }
+      const versions = await hub.submit(request.user!.login, client, changes, vet)
+      // A Binder goes by its one binder's name: renamed there (on the web or a Mac), it's renamed too.
+      const info = spaces.info(sp(request).id)
+      const sole = hub.state.binders.length === 1 ? hub.state.binders[0] : undefined
+      if (info && !info.personal && sole && sole.name.trim() && sole.name !== info.name) await spaces.rename(info.id, sole.name).catch(() => undefined)
+      return { versions, version: hub.version }
+    } catch (error) {
+      return fail(reply, error)
+    }
+  })
+
+  app.get('/api/live', { websocket: true }, (socket, request) => {
+    const { hub, id: spaceId } = sp(request)
+    // The terminals open on the agents they own, now and as they change: the sidebar lists them.
+    const me = request.user!.login.toLowerCase()
+    const terminalsOf = (key: string) => {
+      const [inSpace, agentId] = key.split('/')
+      const agent = inSpace === spaceId && hub.state.agents.find((a) => a.id === agentId && !a.revoked && a.owner.toLowerCase() === me)
+      if (agent && socket.readyState === socket.OPEN) socket.send(JSON.stringify({ type: 'terminals', agentId, ...terminals.list(key) }))
+    }
+    for (const agent of hub.state.agents) if (!agent.revoked && agent.owner.toLowerCase() === me) terminalsOf(`${spaceId}/${agent.id}`)
+    terminals.on('change', terminalsOf)
+    const since = Number((request.query as { since?: string }).since ?? 0)
+    let sent = Number.isFinite(since) && since >= 0 ? since : 0
+    const send = (entries: Entry[]) => {
+      const fresh = entries.filter((e) => e.version > sent)
+      if (!fresh.length || socket.readyState !== socket.OPEN) return
+      sent = fresh[fresh.length - 1].version
+      socket.send(JSON.stringify({ type: 'entries', entries: fresh }))
+    }
+    void hub.read(sent, 5000).then(send)
+    hub.on('entries', send)
+    // Agents' presence: what it is now, then each change.
+    const presence = (now: Record<string, unknown>) => socket.readyState === socket.OPEN && socket.send(JSON.stringify({ type: 'presence', presence: now }))
+    presence(hub.presence())
+    hub.on('presence', presence)
+    const ping = setInterval(() => socket.readyState === socket.OPEN && socket.ping(), 25_000)
+    socket.on('close', () => {
+      terminals.off('change', terminalsOf)
+      hub.off('entries', send)
+      hub.off('presence', presence)
+      clearInterval(ping)
+    })
+  })
+
+  // Pictures in notes: kept by their contents' hash, so the same picture twice is one file.
+  const pictureTypes: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg', 'image/avif': 'avif' }
+  await app.register(async (scope) => {
+    scope.addContentTypeParser(Object.keys(pictureTypes), { parseAs: 'buffer', bodyLimit: 20 * 1024 * 1024 }, (_request, body, done) => done(null, body))
+    scope.post('/api/files', async (request, reply) => {
+      const ext = pictureTypes[String(request.headers['content-type'] ?? '').split(';')[0].trim()]
+      const { hub, filesDir } = sp(request)
+      if (!filesDir) return reply.code(503).send({ error: 'This hub keeps no files.' })
+      if (!ext || !Buffer.isBuffer(request.body) || !request.body.length) return reply.code(400).send({ error: 'Send a picture: PNG, JPEG, GIF, WebP, SVG or AVIF, up to 20 MB.' })
+      const name = `${createHash('sha256').update(request.body).digest('hex').slice(0, 24)}.${ext}`
+      // Kept in the note's binder, so they go to its repo with its notes.
+      const note = hub.state.notes.find((n) => n.id === (request.query as { note?: string }).note)
+      const binder = note && hub.state.binders.find((b) => b.id === note.binderId)
+      const dir = binder ? join(filesDir, '..', slug(binder.name), 'files') : filesDir
+      await mkdir(dir, { recursive: true })
+      await writeFile(join(dir, name), request.body)
+      return { url: `/api/files/${name}`, name }
+    })
+  })
+  app.get('/api/files/:name', async (request, reply) => {
+    const name = param(request, 'name')
+    const ext = /^[a-f0-9]{24}\.([a-z]+)$/.exec(name)?.[1]
+    const type = Object.entries(pictureTypes).find(([, e]) => e === ext)?.[0]
+    // Looked for in the Binders the person may open: a picture's name is its hash, so it's found wherever it was put.
+    const dirs = spaces.forPerson(login(request), isAdmin(login(request))).map(({ info }) => spaces.get(info.id)?.filesDir).filter((d): d is string => !!d)
+    if (!dirs.length || !type) return reply.code(404).send({ error: 'No such file.' })
+    try {
+      const file = await findFile(dirs, name)
+      // SVG can carry script: shown only as a picture, never as a page.
+      return reply.type(type).header('cache-control', 'private, max-age=31536000, immutable').header('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox").header('x-content-type-options', 'nosniff').send(file)
+    } catch {
+      return reply.code(404).send({ error: 'No such file.' })
+    }
+  })
+}
+
+/** A picture by its name: in one of these Binders' files folders, or one of their projects'. */
+async function findFile(filesDirs: string[], name: string) {
+  for (const filesDir of filesDirs) {
+    const top = join(filesDir, '..')
+    for (const dir of [filesDir, ...(await readdir(top, { withFileTypes: true }).catch(() => [])).filter((d) => d.isDirectory() && !d.name.startsWith('.')).map((d) => join(top, d.name, 'files'))]) {
+      const file = await readFile(join(dir, name)).catch(() => undefined)
+      if (file) return file
+    }
+  }
+  throw new Error('No such file.')
+}

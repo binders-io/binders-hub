@@ -1,0 +1,49 @@
+# The hub on a server: the hub, its Redis, and (with --profile tunnel) a Cloudflare tunnel that gives it its public
+# address without opening a port. deploy/update.sh keeps it on the newest main.
+#
+# On the server:
+#   /etc/binders/hub.env     the hub's settings: PUBLIC_URL at least (see hub/src/main.ts)
+#   /etc/binders/tunnel.env  TUNNEL_TOKEN, for the tunnel
+#   /var/lib/binders         the hub's data (hub/) and Redis's (redis/); BINDERS_DATA moves it
+
+name: binders
+
+services:
+  redis:
+    image: redis:8.8-alpine
+    # Every change is appended to disk; the change log is the only copy of a change until GitHub has it.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--save", "", "--dir", "/data"]
+    volumes:
+      - ${BINDERS_DATA:-/var/lib/binders}/redis:/data
+    # On the server itself only, for moving a hub's data in over SSH (deploy/move.sh).
+    ports:
+      - 127.0.0.1:6379:6379
+    restart: unless-stopped
+
+  hub:
+    image: binders-hub
+    build:
+      context: ..
+      target: hub
+      # The commit it's built from (deploy/update.sh sets them), for Settings → This hub.
+      args:
+        COMMIT: ${BINDERS_COMMIT:-}
+        COMMIT_SUBJECT: ${BINDERS_COMMIT_SUBJECT:-}
+        REPO_URL: ${BINDERS_REPO_URL:-}
+    env_file: ${BINDERS_ETC:-/etc/binders}/hub.env
+    environment:
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - ${BINDERS_DATA:-/var/lib/binders}/hub:/app/hub/.data
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  tunnel:
+    image: cloudflare/cloudflared:2026.5.2
+    command: ["tunnel", "--no-autoupdate", "run"]
+    env_file: ${BINDERS_ETC:-/etc/binders}/tunnel.env
+    depends_on:
+      - hub
+    restart: unless-stopped
+    profiles: [tunnel]

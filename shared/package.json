@@ -1,0 +1,9 @@
+{
+  "name": "binders-shared",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "dependencies": {
+    "@automerge/automerge": "^3.5.0"
+  }
+}

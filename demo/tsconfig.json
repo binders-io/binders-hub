@@ -1,0 +1,5 @@
+{
+  "extends": "../hub/tsconfig.json",
+  "compilerOptions": { "lib": ["ES2024", "DOM", "DOM.Iterable"], "typeRoots": ["../hub/node_modules/@types"] },
+  "include": ["*.ts", "../shared"]
+}
