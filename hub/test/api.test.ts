@@ -771,6 +771,7 @@ describe('agents within their owners’ reach', () => {
     assert.equal(refused.error, true)
     assert.match(refused.text, /you, who set this agent up, can’t push to acme\/docs \(read only\)/)
     assert.equal(hub.state.cards.find((c) => c.id === docsCard.id)?.agentId, undefined)
+    assert.match(hub.state.cards.find((c) => c.id === docsCard.id)!.activity.at(-1)!.text, /Builder couldn’t take it: you, who set this agent up, can’t push to acme\/docs/, 'said on the card, for its people')
     const offered = await builder.call('wait_for_work', { timeout_seconds: 0 })
     assert.equal(offered.value.id, webCard.id)
 

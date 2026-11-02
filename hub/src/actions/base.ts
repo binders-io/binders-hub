@@ -146,6 +146,8 @@ export abstract class ActionsBase {
     }
     if (!why) return
     this.turnedAway.set(`${agent.id}/${card.id}`, Date.now() + forMs)
+    // Said on the card too, so its people see why it sits in Ready (once each time it's turned away, not each ask).
+    await this.hub.record({ kind: 'hub' }, { type: 'card.activity', id: card.id, activity: { at: this.now(), by: 'hub', kind: 'said', text: `${agent.name} couldn’t take it: ${why}` } }).catch(() => undefined)
     throw new Refused(why)
   }
 
