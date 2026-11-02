@@ -46,6 +46,34 @@ export async function agentFile(dir: string, name: string) {
 }
 
 /**
+ * A checkout's copy of the permissions its person gave Claude Code in their own folder of the repo (each "don't ask
+ * again", kept in .claude/settings.local.json, which git ignores): a worktree is a new folder without it, so a run
+ * there would be refused what the person's own sessions in that repo may do. Left alone when the checkout has one.
+ */
+export async function carryClaudeSettings(fromDirs: string[], to: string) {
+  const target = join(to, '.claude', 'settings.local.json')
+  if (existsSync(target)) return false
+  for (const from of fromDirs) {
+    const text = await readFile(join(from, '.claude', 'settings.local.json'), 'utf8').catch(() => '')
+    if (!text) continue
+    await mkdir(join(to, '.claude'), { recursive: true })
+    await writeFile(target, text, { mode: 0o600 })
+    // Never part of the work: kept out of git here, unless git ignores it already.
+    const ignored = await run('git', ['-C', to, 'check-ignore', '-q', '.claude/settings.local.json']).then(() => true, () => false)
+    if (!ignored) {
+      const exclude = await run('git', ['-C', to, 'rev-parse', '--git-path', 'info/exclude']).then((r) => resolve(to, r.stdout.trim()), () => '')
+      if (exclude) {
+        await mkdir(join(exclude, '..'), { recursive: true })
+        const before = await readFile(exclude, 'utf8').catch(() => '')
+        await writeFile(exclude, `${before}${before && !before.endsWith('\n') ? '\n' : ''}.claude/settings.local.json\n`)
+      }
+    }
+    return true
+  }
+  return false
+}
+
+/**
  * The name of Binders' server in an enterprise MCP config, when the config lists one: by its address (this hub's
  * /mcp) or by the name the README gives it. Claude Code then has Binders' tools from the config itself.
  */
@@ -328,6 +356,7 @@ const proxied: Record<string, string> = {
   propose_work_items: '{"note": "<the note’s id>", "items": [{"title": "…", "quote": "the note’s exact words it came from", "brief": "…", "done_when": "…", "size": "S | M | L", "meant_for": "an agent’s name, optional"}]}',
   create_task: '{"binder": "<binder id or name>", "title": "…", "brief": "…", "done_when": "…", "size": "S | M | L"}',
   append_to_note: '{"id": "<the note’s id>", "text": "Markdown to add at its end"}',
+  ask: '{"question": "what a person has to decide or answer before the card can be finished"}: the card waits in Blocked for them, rather than being finished',
 }
 
 /** The Binders actions at the end of an agent's reply, between <binders-actions> and </binders-actions> (the last such block), and the reply without them. */
@@ -838,6 +867,9 @@ export class Runner {
         return this.workIn(card, settings, tool, dir, githubEnv)
       }
       await this.relay(card.id, ran.reader, true)
+      // What Claude Code refused it, on the card for its people (without Binders' tools, settle blocks it on them).
+      const refused = ran.reader.summary.denied ?? []
+      if (refused.length && this.usesMcp(settings)) await this.call('report_progress', { id: card.id, said: `Claude Code wasn’t allowed to ${refused.join('; ')}. Allow what it needs in the agent’s settings on the Agents page (Commands it may run).` }).catch(() => {})
       if (own) await this.sendDiff(card.id, dir)
       if (!steer || this.stopped) {
         await this.settle(card, ran, settings)
@@ -899,6 +931,7 @@ export class Runner {
       })
       // Its final answer when it says one apart (Claude Code, Codex); else the end of what it printed.
       reply = ran.reader.summary.reply ?? lastWords(ran.output) ?? ran.reader.summary.last ?? ''
+      const refused = ran.reader.summary.denied ?? []
       if (inline && !noteFile && chat.note) {
         // The note as it should be, from the end of its reply (or, cut from the reply, from all it printed).
         const fromReply = noteFromReply(reply)
@@ -913,6 +946,7 @@ export class Runner {
         const after = await readFile(noteFile, 'utf8').catch(() => before)
         if (after !== before && after.trim()) await this.call('edit_note', { id: chat.note.id, text: after }).catch((error) => this.log(`Couldn’t put the note back: ${(error as Error).message}`))
       }
+      if (refused.length) reply = `${reply.trim()}\n\n(Claude Code wasn’t allowed to ${refused.join('; ')}. Allow what it needs in the agent’s settings on the Agents page: Commands it may run.)`
     } catch (error) {
       reply = `I couldn’t start: ${(error as Error).message}`
     } finally {
@@ -1040,6 +1074,7 @@ export class Runner {
       const own = await this.cardWorktree(job.id)
       checkout = await reviewCheckout(this.options.workspace, own, set.pull, join(this.worktreesRoot(), `challenge-${job.id}-${randomBytes(4).toString('hex')}`))
       const dir = checkout?.dir ?? this.options.workspace
+      if (checkout) await carryClaudeSettings([own, this.options.workspace], checkout.dir).catch(() => false)
       if (!mcp) answer = await agentFile(dir, `challenge-${randomBytes(6).toString('hex')}.json`)
       // What the change touches beyond itself, worked out here before the review, for the reviewer and the people.
       let blast: BlastRadius | undefined
@@ -1347,6 +1382,14 @@ export class Runner {
     if (reader.summary.sessionId) this.sessions.set(key, reader.summary.sessionId)
     // Claude Code refusing Binders' MCP server for an enterprise MCP config the runner didn't find by its file: from now
     // on its runs go without it, and this one stops saying why.
+    // Full access asked for, and Claude Code started in another mode: a policy turned it off without the runner seeing
+    // the file. From now on it asks for edits accepted, which a run without a person can use.
+    const started = reader.summary.permissionMode
+    if (settings.tool === 'claude' && settings.access === 'full' && !this.bypassOff && started && started !== 'bypassPermissions') {
+      this.bypassOff = true
+      this.log(`Claude Code started in “${started}” though full access was asked for: this machine’s policy turns it off. From now on it runs with edits accepted, and the commands it runs follow the policy’s rules.`)
+      if (this.client) await this.call('update_profile', { runner: this.profile(this.parallel) }).catch(() => undefined)
+    }
     // Only what Claude Code itself says went wrong: never the agent's own words, which may quote that error.
     const managedMcp = settings.tool === 'claude' && !!config.path && !!exit.code && refusedByManagedMcp(`${errors}\n${reader.summary.error ?? ''}`)
     if (managedMcp) await this.enterpriseMcpFound('Claude Code refused Binders’ MCP server for an enterprise MCP config')
@@ -1401,11 +1444,26 @@ export class Runner {
       // The Binders actions it asked for, taken for it; what came of them goes on the card with its summary.
       const asked = actionsFromReply(ran.reader.summary.reply ?? ran.output)
       const done: string[] = []
+      let question: string | undefined
       for (const action of asked.actions) {
         if (!(action.tool in proxied)) { done.push(`${action.tool}: not one the runner takes for an agent.`); continue }
+        // Asking is the card's own question: it waits in Blocked for the answer, once the rest is taken.
+        if (action.tool === 'ask') { question = String(action.args.question ?? '').trim() || question; continue }
         const result = await this.call<unknown>(action.tool, action.args).then((r) => `${action.tool}: ${short(typeof r === 'string' ? r : JSON.stringify(r), 300)}`, (error) => `${action.tool} didn’t work: ${(error as Error).message}`)
         done.push(result)
         this.log(`“${card.title}”: ${result}`)
+      }
+      // What Claude Code refused it: the card waits for a person to allow it, rather than passing for done.
+      const denied = ran.reader.summary.denied ?? []
+      if (question || denied.length) {
+        const blocked = [
+          question,
+          denied.length ? `Claude Code wasn’t allowed to ${denied.join('; ')}. Allow what it needs in the agent’s settings on the Agents page (Commands it may run), then answer here and it carries on.` : '',
+          done.length ? `Taken for it meanwhile:\n${done.map((d) => `- ${d}`).join('\n')}` : '',
+        ].filter(Boolean).join('\n\n')
+        await this.call('ask', { id: card.id, question: short(blocked, 3000) }).catch((error) => this.log(`Couldn’t ask on “${card.title}”: ${(error as Error).message}`))
+        this.log(`“${card.title}” waits for a person: ${short(question ?? `refused ${denied.join('; ')}`, 160)}`)
+        return
       }
       const reply = asked.actions.length ? asked.rest : undefined
       const summary = [reply ?? ran.reader.summary.reply ?? lastWords(ran.output) ?? 'Done.', ...(done.length ? ['', 'Binders actions taken for it:', ...done.map((d) => `- ${d}`)] : [])].join('\n')
@@ -1513,6 +1571,7 @@ export class Runner {
     })
     this.worktreeQueue = made.catch(() => {})
     await made
+    await carryClaudeSettings([repo, this.options.workspace], dir).catch(() => false)
     return dir
   }
 
@@ -1529,7 +1588,7 @@ export class Runner {
 
   /** Where a card's worktree is: the one holding its branch, else where this runner would make it. */
   private async cardWorktree(cardId: string) {
-    return (await this.worktreeHolding(`binders/${cardId}`)) ?? join(this.options.worktreesDir ?? process.env.BINDERS_WORKTREES_DIR ?? join(homedir(), '.binders', 'worktrees'), `${basename(this.options.workspace)}-${cardId}`)
+    return (await this.worktreeHolding(`binders/${cardId}`)) ?? join(this.worktreesRoot(), `${basename(this.options.workspace)}-${cardId}`)
   }
 
   private worktreeQueue: Promise<void> = Promise.resolve()
@@ -1591,7 +1650,7 @@ export class Runner {
       note?.text ? `\nThe note it came from:\n\n${note.text.slice(0, 20_000)}` : '',
       answer ? `\nA person just wrote on it: “${answer.text}”` : '',
       `\nDo it in ${dir}. When you're done, end with a short summary of what you did: it goes on the card.`,
-      `\nBinders' own tools aren't available here. Where the card asks for a Binders action (proposing work items, making a card, adding to a note), don't call it: end your reply with the actions as JSON between <binders-actions> and </binders-actions>, a list of {"tool": …, "args": …}, and the runner takes them for you. The ones it takes:\n${Object.entries(proxied).map(([tool, args]) => `- ${tool}: ${args}`).join('\n')}${full.note ? `\nThe note's id is ${full.note.id}.` : ''}`,
+      `\nBinders' own tools aren't available here. Where the card asks for a Binders action (proposing work items, making a card, adding to a note), don't call it: end your reply with the actions as JSON between <binders-actions> and </binders-actions>, a list of {"tool": …, "args": …}, and the runner takes them for you. When the card needs a person to decide or answer something, ask them (the ask action) rather than deciding it yourself or finishing: the card waits for them. The ones it takes:\n${Object.entries(proxied).map(([tool, args]) => `- ${tool}: ${args}`).join('\n')}${full.note ? `\nThe note's id is ${full.note.id}.` : ''}`,
     ].filter(Boolean).join('\n')
   }
 
@@ -1647,6 +1706,7 @@ export class Runner {
       await doing('Checking out its default branch')
       checkout = await briefCheckout(clone, join(this.worktreesRoot(), `brief-${randomBytes(4).toString('hex')}`))
       answer = await agentFile(checkout.dir, `brief-${randomBytes(6).toString('hex')}.md`)
+      await carryClaudeSettings([clone, this.options.workspace], checkout.dir).catch(() => false)
       const before = await this.call<BriefRead>('get_repo_brief', { repo: job.repo }).catch(() => undefined)
       const since = before?.text && before.written_from ? await changesSince(checkout.dir, before.written_from, checkout.sha) : undefined
       const prompt = briefPrompt({ name: this.name, job, dir: checkout.dir, sha: checkout.sha, branch: checkout.branch, answer, before, since })
@@ -1722,6 +1782,14 @@ export class Runner {
   }
 
   /** The agent's tool as a person starts it in a terminal: its access, model and Binders' MCP tools, no prompt. */
+  /**
+   * What Claude Code may do beside its access: the agent's own rules (its owner's "commands it may run"), and the
+   * runner's workspace to read, so the other repos there (a card's worktree is one) can be read too.
+   */
+  private claudeRules(settings: RunnerSettings, dir: string) {
+    return [...(settings.allow?.length ? ['--allowedTools', ...settings.allow] : []), ...(resolve(dir) !== this.options.workspace ? ['--add-dir', this.options.workspace] : [])]
+  }
+
   interactiveFor(settings: RunnerSettings, dir: string, mcp: string | undefined, quiet: string[] = []): { command: string; args: string[] } {
     const full = settings.access === 'full'
     const model = settings.model
@@ -1730,7 +1798,7 @@ export class Runner {
       case 'claude': {
         const access = full && !this.bypassOff ? 'bypassPermissions' : settings.access === 'auto' ? 'auto' : 'acceptEdits'
         // Binders' tools allowed up front, whatever its access: they're how it works with the hub.
-        return plain('claude', [...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcp ? mcpServer : this.managedServer ?? mcpServer}`] : []), ...(!mcp && !this.managedAllowed ? [plainEdits] : []), ...(mcp && this.otherBinders.length ? [`--disallowedTools=${this.otherBinders.map((n) => `mcp__${n}`).join(',')}`] : []), '--permission-mode', access, ...(model ? ['--model', model] : [])])
+        return plain('claude', [...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcp ? mcpServer : this.managedServer ?? mcpServer}`] : []), ...(!mcp && !this.managedAllowed ? [plainEdits] : []), ...(mcp && this.otherBinders.length ? [`--disallowedTools=${this.otherBinders.map((n) => `mcp__${n}`).join(',')}`] : []), ...this.claudeRules(settings, dir), '--permission-mode', access, ...(model ? ['--model', model] : [])])
       }
       case 'codex': {
         const routed = model ? /^([A-Za-z][\w-]*)\/(.+)$/.exec(model) : null
@@ -1774,7 +1842,7 @@ export class Runner {
         const access = full && !this.bypassOff ? 'bypassPermissions' : settings.access === 'auto' ? 'auto' : 'acceptEdits'
         // Binders' tools allowed up front: run headless, a tool that needs asking is refused, and with Edits or Auto
         // access an MCP tool does.
-        return plain('claude', ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcp ? mcpServer : this.managedServer ?? mcpServer}`] : []), ...(!mcp && !this.managedAllowed ? [plainEdits] : []), ...(mcp && this.otherBinders.length ? [`--disallowedTools=${this.otherBinders.map((n) => `mcp__${n}`).join(',')}`] : []), '--permission-mode', access, ...(model ? ['--model', model] : []), ...(session ? ['--resume', session] : [])],
+        return plain('claude', ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcp ? mcpServer : this.managedServer ?? mcpServer}`] : []), ...(!mcp && !this.managedAllowed ? [plainEdits] : []), ...(mcp && this.otherBinders.length ? [`--disallowedTools=${this.otherBinders.map((n) => `mcp__${n}`).join(',')}`] : []), ...this.claudeRules(settings, dir), '--permission-mode', access, ...(model ? ['--model', model] : []), ...(session ? ['--resume', session] : [])],
           // The reasoning asked for, as how much it may think before each answer.
           effort ? { MAX_THINKING_TOKENS: String(thinkingTokens[effort]) } : {})
       }

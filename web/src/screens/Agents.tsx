@@ -3,7 +3,7 @@ import { AnimatePresence } from 'motion/react'
 import { Check, ChevronDown, Copy, KeyRound, Play, Plus, RotateCw, SquareTerminal, Trash2 } from 'lucide-react'
 import type { Agent, Provider } from '../data/model'
 import { isListening, isOnline, useStore, runnersOf } from '../data/store'
-import { defaultRunner, runnerShown, toolForProvider, type RunnerSettings } from '../../../shared/work.ts'
+import { usualRules, defaultRunner, runnerShown, toolForProvider, type RunnerSettings } from '../../../shared/work.ts'
 import { accessNames, atLeast, restartSince, toolInfo, tools, type Access, type AgentTool } from '../../../shared/agents.ts'
 import { call } from '../data/api'
 import { ToolIcon } from '../components/ToolIcon'
@@ -308,6 +308,12 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
               ))}
             </div>
           </Field>
+          {(runner.tool ?? 'claude') === 'claude' && (
+            <Field label="Commands it may run" group hint="Claude Code permission rules, one a line, for what it may do without asking where a machine’s policy turns full access off (a work laptop, say): Bash(git:*), WebFetch(domain:github.com). The policy’s own rules still win.">
+              <textarea id="runner-allow" className="mono" rows={Math.min(8, Math.max(3, (runner.allow ?? []).length + 1))} value={(runner.allow ?? []).join('\n')} placeholder={'Bash(git:*)\nBash(npm test:*)'} onChange={(e) => setRun({ allow: e.target.value.split('\n').map((l) => l.trim()).filter(Boolean) })} />
+              <button type="button" className="button" onClick={() => setRun({ allow: [...new Set([...(runner.allow ?? []), ...usualRules])] })}>Add the usual for coding</button>
+            </Field>
+          )}
         </fieldset>
         <footer className="form-actions">
           <button type="button" className="button" onClick={onClose}>Cancel</button>

@@ -19,7 +19,7 @@ import { Sealer } from '../../hub/src/secrets.ts'
 import { buildServer } from '../../hub/src/server.ts'
 import { Spaces } from '../../hub/src/spaces.ts'
 import { Webhooks } from '../../hub/src/webhooks.ts'
-import { Runner, actionsFromReply, agentFile, allBindersAmong, bindersAmong, bypassTurnedOff, noteFromReply, parseMcpList, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
+import { Runner, actionsFromReply, agentFile, allBindersAmong, bindersAmong, bypassTurnedOff, carryClaudeSettings, noteFromReply, parseMcpList, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
 
 // The runner's own files (~/.binders/run) in a home of the tests' own, not this machine's.
 process.env.BINDERS_HOME ??= mkdtempSync(join(tmpdir(), 'binders-home-'))
@@ -844,6 +844,46 @@ console.log('Added the health check, and its test passes.')
     assert.equal(mode(runner.commandFor(full, 'c1', dir, undefined, 'Do it.').args), 'bypassPermissions')
     runner.bypassOff = true
     assert.equal(mode(runner.commandFor(full, 'c1', dir, undefined, 'Do it.').args), 'acceptEdits')
+  })
+
+  it('gives a worktree the permissions its person gave Claude Code in their own folder, kept out of git', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'binders-repo-'))
+    execFileSync('git', ['init', '-q', repo])
+    execFileSync('git', ['-C', repo, 'commit', '-q', '--allow-empty', '-m', 'first'])
+    execFileSync('mkdir', ['-p', join(repo, '.claude')])
+    await writeFile(join(repo, '.claude', 'settings.local.json'), '{"permissions":{"allow":["Bash(rg:*)"]}}')
+    const tree = join(await mkdtemp(join(tmpdir(), 'binders-trees-')), 'card')
+    execFileSync('git', ['-C', repo, 'worktree', 'add', '-q', '-b', 'binders/c1', tree])
+    assert.equal(await carryClaudeSettings([repo], tree), true)
+    assert.match(await readFile(join(tree, '.claude', 'settings.local.json'), 'utf8'), /Bash\(rg:\*\)/)
+    assert.equal(execFileSync('git', ['-C', tree, 'status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' }), '', 'never part of the work')
+    assert.equal(await carryClaudeSettings([repo], tree), false, 'one there already is left alone')
+  })
+
+  it('runs with what Claude Code’s stream says it refused, and the mode it started in', () => {
+    const reader = new StreamReader()
+    reader.line(JSON.stringify({ type: 'system', subtype: 'init', session_id: 's1', permissionMode: 'default' }))
+    reader.line(JSON.stringify({ type: 'result', result: 'Stopped.', permission_denials: [{ tool_name: 'Bash', tool_input: { command: 'rg -n eks' } }, { tool_name: 'WebFetch', tool_input: { url: 'https://github.com/acme/provisioning-demo' } }] }))
+    assert.equal(reader.summary.permissionMode, 'default')
+    assert.deepEqual(reader.summary.denied, ['run `rg -n eks`', 'fetch https://github.com/acme/provisioning-demo'])
+  })
+
+  it('blocks a card on a person when an agent without Binders tools asks, rather than finishing it', async () => {
+    const { hub, actions, url, dir, issued, card, close } = await setUp()
+    const script = join(dir, 'decide.mjs')
+    await writeFile(script, `
+console.log('Wrote up the options in the note.')
+console.log('<binders-actions>')
+console.log(JSON.stringify([{ tool: 'ask', args: { question: 'Lambda beside EKS, or replace EKS outright?' } }]))
+console.log('</binders-actions>')
+`)
+    const made = await actions.putAgent('you', { name: 'Decider', runner: { tool: 'custom', access: 'full', timeoutMinutes: 1, worktrees: false, command: `node ${script} {prompt}` } })
+    const job = await card('Decide how we run the jobs', made.id)
+    await new Runner({ hubUrl: url, token: await issued(made.id), workspace: dir, log: () => {}, waitSeconds: 1 }).start(true)
+    const waiting = hub.state.cards.find((c) => c.id === job.id)!
+    assert.equal(waiting.stage, 'blocked')
+    assert.match(waiting.needsYou ?? '', /Lambda beside EKS/)
+    await close()
   })
 
   it('takes the Binders actions at the end of a reply, and leaves a reply without them as it is', () => {

@@ -245,6 +245,17 @@ The runner never uses the system's temp folder, which hardened machines lock dow
 edits, a brief, its answers when it has no MCP tools) go in a `.binders` folder in the folder it works in, which git
 ignores, and the runner's own in `~/.binders` (`BINDERS_HOME`).
 
+### What an agent may do without asking
+
+A run has nobody to approve a step, so Claude Code refuses whatever it would ask about. The runner gives it what the
+person's own sessions have: each card's worktree (and each review's or brief's checkout) gets a copy of the repo's
+`.claude/settings.local.json` (the "don't ask again" answers, kept out of git), and runs may read the runner's whole
+workspace (`--add-dir`), other repos included. Each agent's "Commands it may run" on the Agents page adds Claude Code
+permission rules of its own (`Bash(git:*)`, `WebFetch(domain:github.com)`; "Add the usual for coding" fills in the
+common ones). Where a machine's policy turns full access off, which the runner sees in Claude Code's managed settings or
+in the mode Claude Code starts in, runs accept edits instead, and the commands they run follow the policy's rules. What
+Claude Code refused a run is listed on the card; a card that needed it, or whose agent asked a person, waits in Blocked.
+
 ## Connect an agent
 
 In **Agents**, set one up: it gets a token, shown once, and the settings to paste into Claude Code, Codex, Claude

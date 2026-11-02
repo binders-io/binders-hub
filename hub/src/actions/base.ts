@@ -2,7 +2,7 @@ import { tools } from '../../../shared/agents.ts'
 import { barredBecause, type AgentReach } from '../reach.ts'
 import type { Change } from '../../../shared/state.ts'
 import { cardChangeSet, type AskedEffort, type BlastRadius, type BlastSymbol, cardsOfSet, setChangeSet, setOfCard, type Challenge, type Debrief } from '../../../shared/changeSet.ts'
-import { defaultRunner, type Activity, type Agent, type Card, type ChangeSet, type PullRequest, type RunnerSettings } from '../../../shared/work.ts'
+import { allowRule, defaultRunner, type Activity, type Agent, type Card, type ChangeSet, type PullRequest, type RunnerSettings } from '../../../shared/work.ts'
 import type { GitHub } from '../github.ts'
 import { Refused, type Actor, type Hub } from '../hub.ts'
 
@@ -78,7 +78,11 @@ export function checkedRunner(runner: Partial<RunnerSettings>): RunnerSettings {
   // How long it may say nothing before its run is stopped as stuck: left to the runner (15) unless set.
   const idle = runner.idleMinutes === undefined || runner.idleMinutes === null ? undefined : Number(runner.idleMinutes)
   if (idle !== undefined && !(idle > 0 && idle <= 24 * 60)) throw new Refused('How long an agent may say nothing is from a moment to a day, in minutes.')
-  return { tool, access, timeoutMinutes, ...(idle !== undefined ? { idleMinutes: idle } : {}), parallel, worktrees: true, model: runner.model?.trim() || undefined, command: tool === 'custom' ? runner.command!.trim() : undefined, workspace: runner.workspace?.trim() || undefined, ...(runner.commitAs === 'app' ? { commitAs: 'app' as const } : {}) }
+  const allow = [...new Set((runner.allow ?? []).map((r) => String(r).trim()).filter(Boolean))]
+  if (allow.length > 60) throw new Refused('Up to 60 commands it may run.')
+  const odd = allow.find((r) => !allowRule.test(r))
+  if (odd) throw new Refused(`“${odd.slice(0, 80)}” isn’t a Claude Code permission rule: a tool, and what it covers in brackets, like Bash(git:*).`)
+  return { tool, access, timeoutMinutes, ...(idle !== undefined ? { idleMinutes: idle } : {}), parallel, worktrees: true, model: runner.model?.trim() || undefined, command: tool === 'custom' ? runner.command!.trim() : undefined, workspace: runner.workspace?.trim() || undefined, ...(runner.commitAs === 'app' ? { commitAs: 'app' as const } : {}), ...(allow.length ? { allow } : {}) }
 }
 
 /** 0.1.0 → 0.2.0: what a recorded deploy calls the next version. */

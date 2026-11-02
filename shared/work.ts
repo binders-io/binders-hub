@@ -38,7 +38,17 @@ export interface RunnerSettings {
   workspace?: string
   /** How many cards it works on at once, each in a worktree of its own (one, without worktrees). */
   parallel?: number
+  /**
+   * Claude Code permission rules its runs get beside its access (`Bash(git:*)`, `WebFetch(domain:github.com)`): what it
+   * may do without asking where a machine's policy turns full access off. The policy's own deny rules still win.
+   */
+  allow?: string[]
 }
+
+/** A Claude Code permission rule, as a runner's settings take it: a tool's name, and what it covers in brackets. */
+export const allowRule = /^[A-Za-z][\w-]*(\([^()\n]{1,200}\))?$/
+/** What most coding needs, offered on the Agents page in one click: reading, searching, git, GitHub, tests, builds. */
+export const usualRules = ['Bash(git:*)', 'Bash(gh:*)', 'Bash(rg:*)', 'Bash(grep:*)', 'Bash(find:*)', 'Bash(ls:*)', 'Bash(cat:*)', 'Bash(npm:*)', 'Bash(npx:*)', 'Bash(pnpm:*)', 'Bash(yarn:*)', 'Bash(node:*)', 'Bash(make:*)', 'Bash(terraform fmt:*)', 'Bash(terraform validate:*)', 'Bash(terraform plan:*)', 'WebFetch(domain:github.com)', 'WebFetch(domain:raw.githubusercontent.com)']
 
 export const defaultRunner: RunnerSettings = { tool: 'claude', access: 'full', timeoutMinutes: 60, worktrees: true, parallel: 3 }
 

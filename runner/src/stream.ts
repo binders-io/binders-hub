@@ -27,6 +27,10 @@ export interface Reading {
   failed?: boolean
   /** What the agent itself said went wrong (Codex's error events), for saying why it stopped. */
   error?: string
+  /** What Claude Code refused it for want of a permission (its result's permission_denials), as a person would read it. */
+  denied?: string[]
+  /** The permission mode Claude Code started in, as its init says: a policy may lower the one asked for. */
+  permissionMode?: string
 }
 
 const short = (text: string, length = 160) => {
@@ -91,6 +95,7 @@ export class StreamReader {
 
     // Claude Code ------------------------------------------------------------------------------------------------
     if (type === 'system' && event.subtype === 'init' && typeof event.session_id === 'string') this.reading.sessionId = event.session_id
+    if (type === 'system' && event.subtype === 'init' && typeof event.permissionMode === 'string') this.reading.permissionMode = event.permissionMode
     if (type === 'assistant' || type === 'user') {
       const message = event.message as { content?: unknown[] } | undefined
       for (const block of message?.content ?? []) {
@@ -121,6 +126,8 @@ export class StreamReader {
       if (usage) this.reading.tokens = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'].reduce((sum, k) => sum + (typeof usage[k] === 'number' ? (usage[k] as number) : 0), 0)
       if (typeof event.duration_ms === 'number') this.reading.minutes = Math.max(1, Math.round(event.duration_ms / 60_000))
       if (event.is_error) this.reading.failed = true
+      const denials = event.permission_denials as { tool_name?: string; tool_input?: Record<string, unknown> }[] | undefined
+      if (Array.isArray(denials) && denials.length) this.reading.denied = [...new Set(denials.map(deniedAs))].slice(0, 20)
       if (typeof event.result === 'string' && event.result.trim()) {
         this.reading.last = short(event.result, 300)
         this.reading.reply = event.result.trim()
@@ -166,6 +173,17 @@ export class StreamReader {
   }
 
   get summary() {
-    return { sessionId: this.reading.sessionId, cost: this.reading.cost, minutes: this.reading.minutes, tokens: this.reading.tokens, last: this.reading.last, reply: this.reading.reply, failed: this.reading.failed, error: this.reading.error }
+    return { sessionId: this.reading.sessionId, cost: this.reading.cost, minutes: this.reading.minutes, tokens: this.reading.tokens, last: this.reading.last, reply: this.reading.reply, failed: this.reading.failed, error: this.reading.error, denied: this.reading.denied, permissionMode: this.reading.permissionMode }
   }
+}
+
+/** A refused tool use, as a person reads it: the command, the address, the file, or else the tool. */
+export function deniedAs(denial: { tool_name?: string; tool_input?: Record<string, unknown> }) {
+  const tool = denial.tool_name ?? 'a tool'
+  const input = denial.tool_input ?? {}
+  const say = (value: unknown) => short(String(value), 120)
+  if (tool === 'Bash' && input.command) return `run \`${say(input.command)}\``
+  if ((tool === 'WebFetch' || tool === 'WebSearch') && (input.url || input.query)) return `${tool === 'WebFetch' ? 'fetch' : 'search the web for'} ${say(input.url ?? input.query)}`
+  if (input.file_path || input.path) return `${tool === 'Read' ? 'read' : tool === 'Write' ? 'write' : tool === 'Edit' ? 'edit' : tool} ${say(input.file_path ?? input.path)}`
+  return tool.startsWith('mcp__') ? `use ${tool.split('__').slice(1).join(' ')}` : `use ${tool}`
 }
