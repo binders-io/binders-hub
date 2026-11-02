@@ -14,7 +14,7 @@ export type Actor = { kind: 'user'; login: string } | { kind: 'agent'; id: strin
 const fromPeople = new Set<Change['type']>([
   'binder.put', 'binder.delete', 'folder.put', 'folder.delete',
   'note.put', 'note.edit', 'note.link', 'note.move', 'note.delete',
-  'card.put', 'card.update', 'card.activity', 'card.delete', 'proposal.update', 'chat.clear',
+  'card.put', 'card.update', 'card.activity', 'card.delete', 'proposal.update', 'chat.clear', 'test.result',
 ])
 
 export class Refused extends Error {}
@@ -143,7 +143,7 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
     // Tried first on a copy, each on the ones before it: what can't be applied never reaches the log.
     let trial = this.state
     for (const { id, change } of outgoing) {
-      this.check(change)
+      this.check(change, login)
       await vet?.(change)
       const ready = await this.prepare(change)
       try {
@@ -157,10 +157,16 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
     return versions
   }
 
-  private check(change: Change) {
+  private check(change: Change, login: string) {
     if (!fromPeople.has(change.type)) throw new Refused(`That can’t be sent from the web app (${change.type}).`)
     const wrong = whatsWrong(change)
     if (wrong) throw new Refused(`That change can’t be used (${change.type}): ${wrong}.`)
+    if (change.type === 'test.result') {
+      // A result is the person's own, on a test the debrief has.
+      if (change.result && change.result.by.toLowerCase() !== login.toLowerCase()) throw new Refused('A test’s result is recorded by whoever ran it.')
+      const debrief = (this.state.changeSets.find((s) => s.id === change.id) ?? this.state.cards.find((c) => c.id === change.id))?.debrief
+      if (!debrief?.testPlan?.some((t) => t.id === change.test)) throw new Refused('That debrief has no such test.')
+    }
     if (change.type === 'binder.delete') {
       const used = this.state.notes.some((n) => n.binderId === change.id) || this.state.cards.some((c) => c.binderId === change.id) || this.state.folders.some((f) => f.binderId === change.id)
       if (used) throw new Refused('Only an empty binder can be deleted: move or delete its notes, folders and cards first.')

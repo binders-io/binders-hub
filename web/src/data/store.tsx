@@ -3,6 +3,7 @@ import { emptyState, type Change, type HubState } from '../../../shared/state.ts
 import { isBlank, titleOf } from '../../../shared/notes.ts'
 import type { Agent, Card, Me, Note, Provider } from './model'
 import type { Presence, RunnerSettings } from '../../../shared/work.ts'
+import type { TestOutcome } from '../../../shared/changeSet.ts'
 import { call } from './api'
 import { askedReasoning } from '../components/Reasoning'
 import { clientId, HubConnection, queue, receive, rememberCache, rememberOutbox, settled, shown, snapshot, startingSync, type AgentTerminals, type Connection, type Sync } from './sync'
@@ -89,6 +90,8 @@ export interface Actions {
   // Cards
   createCard: (card: NewCard) => Promise<Card>
   updateCard: (id: string, fields: Partial<Card>, note?: string) => void
+  /** A person ran one of a debrief's functional tests (on a card or a change set, by its id): passed or failed, or cleared with null. */
+  recordTest: (id: string, test: string, outcome: TestOutcome | null, note?: string) => void
   deleteCard: (id: string) => void
   /** Moves a card to a stage; anywhere but review or done takes it from its agent, with any question it asked. */
   moveCard: (id: string, stage: Card['stage']) => void
@@ -374,6 +377,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         await call('POST', '/api/changes', { client: 'binder-delete', changes: [{ id: newId('delete'), change: { type: 'binder.delete', id } }] })
       },
       createCard: (card) => call<Card>('POST', '/api/cards', card),
+      recordTest: (id, test, outcome, note) => change({ type: 'test.result', id, test, result: outcome ? { outcome, ...(note?.trim() ? { note: note.trim() } : {}), by: login(), at: new Date().toISOString() } : null }),
       updateCard: (id, fields, note) => change({ type: 'card.update', id, fields, activity: note ? { at: new Date().toISOString(), by: login(), kind: 'moved', text: note } : undefined }),
       deleteCard: (id) => change({ type: 'card.delete', id }),
       moveCard: (id, stage) => {

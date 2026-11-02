@@ -8,7 +8,7 @@ import type { Browser, BrowserContext, Page } from 'playwright'
 import { demoIds, demoPeople } from './data.ts'
 
 // The site's pictures of the Hub, in light and dark: `npm run shots -- <folder>` (see README.md), or the film's, larger and
-// of more screens, with `npm run shots -- <folder> film`. Each is taken from a throwaway hub (hub.ts) and refused if the
+// of more screens, with `npm run shots -- <folder> film`, or only some of them, named: `… film change-set,test-plan`. Each is taken from a throwaway hub (hub.ts) and refused if the
 // page holds anything real or asked for anything from elsewhere.
 
 interface Kind {
@@ -56,6 +56,7 @@ const kinds: Record<'site' | 'film', Kind> = {
       { name: 'blocked', hash: `#/work/${demoIds.blocked}`, ready: '.sdlc .now' },
       { name: 'change-set', hash: `#/changes/${demoIds.set}`, ready: '#set-panel-debrief', tab: 'set-tab-debrief' },
       { name: 'challenge', hash: `#/changes/${demoIds.set}`, ready: '.findings .finding', tab: 'set-tab-review' },
+      { name: 'test-plan', hash: `#/changes/${demoIds.set}`, ready: '#test-plan .test', tab: 'set-tab-debrief', scroll: '#test-plan' },
       { name: 'delivery', hash: '#/delivery', ready: '.envs .env' },
       { name: 'agents', hash: '#/agents', ready: '.agent-card' },
       { name: 'briefs', hash: '#/settings', ready: '.brief-card' },
@@ -109,10 +110,13 @@ async function signIn(context: BrowserContext, url: string) {
   if (!answer.ok()) throw new Error(`Couldn’t sign in to the demo hub: ${answer.status()}`)
 }
 
-async function main(folder: string | undefined, which = 'site') {
+async function main(folder: string | undefined, which = 'site', only?: string) {
   if (!folder) throw new Error('Say where the pictures go: npm run shots -- <folder>, usually site/assets in binders-io/app.')
   if (which !== 'site' && which !== 'film') throw new Error(`Pictures for the site, or for the film: not “${which}”.`)
-  const { size, scale, quality, shots, file } = kinds[which]
+  const { size, scale, quality, file } = kinds[which]
+  const named = only?.split(',').map((n) => n.trim()).filter(Boolean)
+  const shots = named?.length ? kinds[which].shots.filter((s) => named.includes(s.name)) : kinds[which].shots
+  if (named?.length && shots.length !== named.length) throw new Error(`No such picture: ${named.filter((n) => !shots.some((s) => s.name === n)).join(', ')}.`)
   const out = resolve(folder)
   await mkdir(out, { recursive: true })
   const { chromium } = await import('playwright')
@@ -162,4 +166,4 @@ async function main(folder: string | undefined, which = 'site') {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) await main(process.argv[2], process.argv[3])
+if (process.argv[1] === fileURLToPath(import.meta.url)) await main(process.argv[2], process.argv[3], process.argv[4])

@@ -247,7 +247,7 @@ if (mode === 'cut' || (mode === 'cut-once' && !prompt.includes("cut off at the m
 // As it goes: an area and the first point after the file, then the rest over the whole.
 if (mode !== 'quit') {
   appendFileSync(file, JSON.stringify({ changes: [{ area: 'Server', what: diff.includes('+app.get') ? 'A /health route.' : 'Nothing seen.' }], against: points.slice(0, 1).map((point) => ({ point, mark: 'met', where: 'src/server.ts' })) }) + '\\n')
-  appendFileSync(file, JSON.stringify({ does: 'Adds a health check.', against: points.slice(1).map((point) => ({ point, mark: 'met', where: 'src/server.ts' })), look_at: [], try_it: 'npm start, then open /health.' }) + '\\n')
+  appendFileSync(file, JSON.stringify({ does: 'Adds a health check.', against: points.slice(1).map((point) => ({ point, mark: 'met', where: 'src/server.ts' })), look_at: [], try_it: 'npm start, then open /health.', ...(prompt.includes('test_plan is a list of') ? { test_plan: [{ title: 'Health answers 200', point: points[0], steps: ['npm start', 'curl -i localhost:3000/health'], expect: 'HTTP 200.', risk: 'high' }] } : {}) }) + '\\n')
 }
 void writeFileSync
 console.log('Done.')
@@ -274,6 +274,7 @@ console.log('Done.')
     assert.deepEqual(written.changes, [{ area: 'Server', what: 'A /health route.' }], 'the diff was in its folder, a file at a time')
     assert.deepEqual(written.against!.map((p) => [p.point, p.mark]), [['GET /health answers 200', 'met'], ['A test covers it', 'met']])
     assert.equal(written.tryIt, 'npm start, then open /health.')
+    assert.deepEqual(written.testPlan?.map((t) => [t.id, t.title, t.point, t.steps.length, t.risk]), [['t1', 'Health answers 200', 'GET /health answers 200', 2, 'high']], 'its functional test plan, asked for and sent')
 
     // An agent that stops without writing one: the card says so, and keeps the last one.
     const quit = await writer('quit')
@@ -294,6 +295,9 @@ console.log('Done.')
   it('finds a debrief’s sections in what an agent printed', () => {
     const sections = { does: 'x', changes: [], against: [], look_at: [], try_it: 'y' }
     assert.deepEqual(debriefSections(JSON.stringify(sections)), sections)
+    const planned = { ...sections, test_plan: [{ title: 'It loads', steps: ['Open it'], expect: 'It loads.' }] }
+    assert.deepEqual(debriefSections(JSON.stringify(planned)), planned, 'with its test plan')
+    assert.deepEqual(debriefSections([JSON.stringify({ changes: [{ area: 'a', what: 'b' }] }), JSON.stringify(planned)].join('\n'))?.test_plan, planned.test_plan, 'a line at a time')
     assert.deepEqual(debriefSections(`Here it is:\n\`\`\`json\n${JSON.stringify(sections, null, 2)}\n\`\`\`\nThat's all.`), sections)
     assert.equal(debriefSections('No JSON here.'), undefined)
   })

@@ -4,7 +4,7 @@ import { briefNoteText, briefText, briefTitle, docsFolderName, repoFolders } fro
 import { briefId, briefMost, briefOf, lessonMost, lessonsKept, type Agent, type BriefAsk, type RepoBrief } from '../../../shared/work.ts'
 import { Refused, type Actor } from '../hub.ts'
 import { ChallengeService } from './challenges.ts'
-import { tidy } from './base.ts'
+import { looksSecret, tidy } from './base.ts'
 
 // A repo's brief: what an agent should know before it works or reviews there, written by an agent from the repo's
 // default branch and kept in the binder's log, with what agents and people learn meanwhile beside it.
@@ -14,12 +14,7 @@ const repoPattern = /^[\w.-]+\/[\w.-]+$/
 /** How long an agent may sit on a brief before another may be asked: writing one reads a whole repo. */
 const briefPending = 60 * 60_000
 
-// What a secret looks like, so one copied out of a config file never goes into a brief every agent reads.
-const secretPatterns = [
-  /\bgh[pousr]_[A-Za-z0-9]{30,}/, /\bgithub_pat_[A-Za-z0-9_]{40,}/, /\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{24,}/, /\bAKIA[0-9A-Z]{16}\b/,
-  /\bxox[abpr]-[A-Za-z0-9-]{20,}/, /-----BEGIN [A-Z ]*PRIVATE KEY-----/, /\bAIza[0-9A-Za-z_-]{35}\b/, /\bhf_[A-Za-z0-9]{30,}/,
-]
-export const looksSecret = (text: string) => secretPatterns.some((p) => p.test(text))
+export { looksSecret } from './base.ts'
 
 const actorId = (actor: Actor) => (actor.kind === 'user' ? actor.login : actor.kind === 'agent' ? actor.id : 'hub')
 

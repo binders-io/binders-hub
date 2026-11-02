@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { testTextMost } from '../../shared/changeSet.ts'
 
 // What a person's client may send, checked before it goes in the log: once a change is in, every hub and every browser
 // applies it, so one that can't be applied or shown is everybody's problem. These hold what the reducers and screens
@@ -59,6 +60,7 @@ const fromPeople = z.discriminatedUnion('type', [
   byId('card.delete'),
   z.looseObject({ type: z.literal('proposal.update'), id: text, fields: z.looseObject({ state: z.enum(['new', 'accepted', 'dismissed']).optional(), cardId: optional, meantFor: optional }) }),
   byId('chat.clear'),
+  z.looseObject({ type: z.literal('test.result'), id: text, test: text, result: z.looseObject({ outcome: z.enum(['passed', 'failed']), note: z.string().max(testTextMost).nullish(), by: text, at: text }).nullable() }),
 ])
 
 const inWords = (error: z.ZodError) => {

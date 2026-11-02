@@ -150,10 +150,77 @@ export interface Debrief {
   /** The build or command, and what to click. */
   tryIt?: string
   /**
+   * Its functional test plan: what a person (or an agent) runs against the running product to see that it does what the
+   * spec says, riskiest first, each tied to the done-when point it proves. Results are recorded on each test.
+   */
+  testPlan?: TestCase[]
+  /**
    * The comment on the card's GitHub issue it's kept in, and which writing of it that comment has: written again, the
    * same comment is edited.
    */
   comment?: { repo: string; id: number; url: string; writtenAt: string }
+}
+
+/** How much a functional test matters: what breaks, or who it costs, if it fails. */
+export type TestRisk = 'high' | 'medium' | 'low'
+export const testRisks: TestRisk[] = ['high', 'medium', 'low']
+export type TestOutcome = 'passed' | 'failed'
+export const testOutcomes: TestOutcome[] = ['passed', 'failed']
+
+/** A functional test from a debrief's plan: observable behaviour, with exact steps and what you should see. */
+export interface TestCase {
+  /** "t1", "t2"…, in the plan's order: what a result is recorded against. */
+  id: string
+  title: string
+  /** The done-when point it proves, in the card's words; none for an edge case the points only imply. */
+  point?: string
+  /** What has to be true first: an account, a plan, some data. */
+  setup?: string
+  steps: string[]
+  /** What you should see when it works. */
+  expect: string
+  risk?: TestRisk
+  /** How it went when someone ran it. */
+  result?: TestResult
+}
+
+/** Someone ran a test: it passed or failed, with a line on what they saw. */
+export interface TestResult {
+  outcome: TestOutcome
+  note?: string
+  by: string
+  at: string
+}
+
+/** The most tests a plan keeps, steps a test keeps, and characters in any one of its texts. */
+export const testsMost = 15
+export const testStepsMost = 12
+export const testTextMost = 600
+
+/** How a plan stands: how many tests, and how many passed and failed. */
+export function testTally(plan: TestCase[] | undefined) {
+  const tests = plan ?? []
+  return { total: tests.length, passed: tests.filter((t) => t.result?.outcome === 'passed').length, failed: tests.filter((t) => t.result?.outcome === 'failed').length }
+}
+
+/** A plan as Markdown, to paste into an issue, a doc or a QA tool. */
+export function testPlanMarkdown(plan: TestCase[], title?: string) {
+  const lines = [`## Functional test plan${title ? `: ${title}` : ''}`, '']
+  for (const t of plan) {
+    lines.push(`### ${t.id}. ${t.title}${t.risk ? ` (${t.risk} risk)` : ''}`)
+    if (t.point) lines.push(`Proves: ${t.point}`)
+    if (t.setup) lines.push(`Setup: ${t.setup}`)
+    lines.push('', ...t.steps.map((step, i) => `${i + 1}. ${step}`), '', `Expect: ${t.expect}`)
+    if (t.result) lines.push(`Result: ${t.result.outcome} (${t.result.by}, ${t.result.at.slice(0, 10)})${t.result.note ? `: ${t.result.note}` : ''}`)
+    lines.push('')
+  }
+  return lines.join('\n').trimEnd() + '\n'
+}
+
+/** A debrief with one test's result set (or cleared, with none). Unchanged when it has no such test. */
+export function withTestResult<D extends Pick<Debrief, 'testPlan'>>(debrief: D, test: string, result: TestResult | null | undefined): D {
+  if (!debrief.testPlan?.some((t) => t.id === test)) return debrief
+  return { ...debrief, testPlan: debrief.testPlan.map((t) => (t.id !== test ? t : result ? { ...t, result } : (({ result: _gone, ...rest }) => rest)(t))) }
 }
 
 /** What kind of thing a Challenge found wrong. */
@@ -457,6 +524,14 @@ export function debriefMarkdown(debrief: Debrief, by: { agent: string; link?: st
   lines.push('', '**Against the brief**', '', ...(debrief.against ?? []).map((p) => `- ${markGlyph[p.mark]} **${p.mark}:** ${p.point}${p.where ? ` (${p.where})` : ''}`))
   lines.push('', '**Things to look at**', '', ...(debrief.lookAt?.length ? debrief.lookAt.map((l) => `- ${l}`) : ['Nothing stood out.']))
   lines.push('', '**How to try it**', '', debrief.tryIt ?? '')
+  if (debrief.testPlan?.length) {
+    lines.push('', `**Functional test plan** (${debrief.testPlan.length} test${debrief.testPlan.length === 1 ? '' : 's'})`, '')
+    for (const t of debrief.testPlan) {
+      lines.push(`- [${t.result?.outcome === 'passed' ? 'x' : ' '}] **${t.title}**${t.risk ? ` (${t.risk} risk)` : ''}${t.point ? `: proves “${t.point}”` : ''}`)
+      if (t.setup) lines.push(`  Setup: ${t.setup}`)
+      lines.push(...t.steps.map((step, i) => `  ${i + 1}. ${step}`), `  Expect: ${t.expect}`)
+    }
+  }
   return lines.join('\n')
 }
 
@@ -497,6 +572,10 @@ export function debriefSpeech(debrief: Debrief, about: { title: string; agent: s
   parts.push(debrief.lookAt?.length ? sentence(`Things to look at: ${debrief.lookAt.map((l) => l.replace(/[.!?]+$/, '')).join('. ')}`) : 'Nothing stood out to look at.')
   if (debrief.changes?.length) parts.push(sentence(`What changed: ${debrief.changes.map((c) => `${c.area}: ${c.what.replace(/[.!?]+$/, '')}`).join('. ')}`))
   if (debrief.tryIt) parts.push(sentence(`How to try it: ${debrief.tryIt}`))
+  if (debrief.testPlan?.length) {
+    const tally = testTally(debrief.testPlan)
+    parts.push(sentence(`Its test plan has ${tally.total} functional test${tally.total === 1 ? '' : 's'}${tally.passed || tally.failed ? `: ${tally.passed} passed, ${tally.failed} failed` : ''}. ${debrief.testPlan.map((t) => t.title.replace(/[.!?]+$/, '')).join('. ')}`))
+  }
   return parts.filter(Boolean).join(' ')
 }
 

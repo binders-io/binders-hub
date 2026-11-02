@@ -8,6 +8,7 @@ import { attempt } from '../components/Toast'
 import { DebriefView, SetDebriefButton } from '../components/Debrief'
 import { FindingsLink, SetChallenge } from '../components/Challenge'
 import { titleOf } from '../../../shared/notes.ts'
+import { testTally } from '../../../shared/changeSet.ts'
 import { AgentAvatar, CheckGlyph, RepoTag, checksSummary, usePhone } from '../components/bits'
 import { href } from '../route'
 import { useUI } from '../ui'
@@ -111,6 +112,7 @@ export function ChangeSets({ id }: { id: string }) {
               {repos.map((r) => <RepoTag key={r} repo={r} />)}
               <span className="num"><span className="plus">+{added}</span> <span className="minus">−{removed}</span></span>
               {firstNote && <span>from <a href={href({ screen: 'notes', id: firstNote.id })}>{titleOf(firstNote.text)}</a></span>}
+              {set.debrief?.testPlan?.length ? <TestsLine set={set} /> : null}
             </div>
           </div>
           <div className="approve">
@@ -284,6 +286,21 @@ function FileDiff({ file }: { file: PullRequest['files'][number] }) {
   )
 }
 
+/** How its functional tests stand: "Tests 3 of 7 passed, 1 failed", opening its debrief where the plan is. */
+function TestsLine({ set }: { set: ChangeSet }) {
+  const { total, passed, failed } = testTally(set.debrief?.testPlan)
+  const open = () => {
+    try { window.localStorage.setItem('binders-set-tab', 'debrief') } catch { /* only a convenience */ }
+    document.getElementById('set-tab-debrief')?.click()
+    window.setTimeout(() => document.getElementById('test-plan')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+  }
+  return (
+    <button type="button" className={`tests-line${failed ? ' failed' : passed === total ? ' passed' : ''}`} onClick={open}>
+      Tests {passed} of {total} passed{failed ? `, ${failed} failed` : ''}
+    </button>
+  )
+}
+
 /** How its debrief stands, for its tab. */
 function debriefNote(set: ChangeSet) {
   const d = set.debrief
@@ -291,7 +308,8 @@ function debriefNote(set: ChangeSet) {
   if (d.state === 'asked' || d.state === 'writing') return 'writing…'
   if (d.state === 'failed' && !d.against) return 'couldn’t'
   const met = d.against?.filter((p) => p.mark === 'met').length ?? 0
-  return d.against ? `${met} of ${d.against.length} met` : ''
+  const tests = testTally(d.testPlan)
+  return d.against ? `${met} of ${d.against.length} met${tests.total ? ` · tests ${tests.passed} of ${tests.total}` : ''}` : ''
 }
 
 /** How its review stands, for its tab: findings and the worst, or what the blast radius found. */

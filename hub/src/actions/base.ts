@@ -227,3 +227,10 @@ export abstract class ActionsBase {
     return new Date().toISOString()
   }
 }
+
+// What a secret looks like, so one copied out of a config file never goes into a brief every agent reads, or a debrief everyone sees.
+const secretPatterns = [
+  /\bgh[pousr]_[A-Za-z0-9]{30,}/, /\bgithub_pat_[A-Za-z0-9_]{40,}/, /\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{24,}/, /\bAKIA[0-9A-Z]{16}\b/,
+  /\bxox[abpr]-[A-Za-z0-9-]{20,}/, /-----BEGIN [A-Z ]*PRIVATE KEY-----/, /\bAIza[0-9A-Za-z_-]{35}\b/, /\bhf_[A-Za-z0-9]{30,}/,
+]
+export const looksSecret = (text: string) => secretPatterns.some((p) => p.test(text))

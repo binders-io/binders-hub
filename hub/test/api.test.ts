@@ -1231,10 +1231,36 @@ describe('agents over MCP', () => {
     await you('POST', `/api/sets/${set.id}/debrief`, { agentId: builder.id })
     assert.equal((await builder.call('wait_for_work', { timeout_seconds: 0, debriefs: true })).value.id, set.id)
     const sections = { does: 'Two checks.', changes: [{ area: 'Server', what: 'Two routes.' }], look_at: [], try_it: 'curl them.' }
-    const wrote = await builder.call('send_debrief', { id: set.id, ...sections, against: [{ point: 'a', mark: 'met', where: 'src/a.ts' }, { point: 'b', mark: 'not met', where: 'Missing.' }] })
+    const plan = [
+      { title: 'Health answers 200', point: 'add a health check: get /health answers 200.', steps: ['curl -i https://preview/health'], expect: 'HTTP 200.', risk: 'high' },
+      { title: 'No steps, so left out', steps: [], expect: 'Nothing.' },
+      { title: 'Ready fails without Redis', setup: 'Stop Redis.', steps: ['curl -i https://preview/ready'], expect: 'HTTP 503.', risk: 'wild' },
+    ]
+    const secret = await builder.call('send_debrief', { id: set.id, ...sections, against: [{ point: 'a', mark: 'met', where: 'src/a.ts' }, { point: 'b', mark: 'not met', where: 'Missing.' }], test_plan: [{ ...plan[0], setup: `Use the token ghp_${'a'.repeat(36)}` }] })
+    assert.match(secret.text, /looks like a secret/, 'a secret in the plan sends it back')
+    const wrote = await builder.call('send_debrief', { id: set.id, ...sections, against: [{ point: 'a', mark: 'met', where: 'src/a.ts' }, { point: 'b', mark: 'not met', where: 'Missing.' }], test_plan: plan })
     assert.equal(wrote.error, false, wrote.text)
-    assert.deepEqual(hub.state.changeSets.find((s) => s.id === set.id)!.debrief!.against!.map((p) => p.point), ['Add a health check: GET /health answers 200.', 'Add a readiness check: GET /ready checks Redis.'])
+    assert.match(wrote.text, /2 functional tests/)
+    const kept = hub.state.changeSets.find((s) => s.id === set.id)!.debrief!
+    assert.deepEqual(kept.against!.map((p) => p.point), ['Add a health check: GET /health answers 200.', 'Add a readiness check: GET /ready checks Redis.'])
+    assert.deepEqual(kept.testPlan!.map((t) => [t.id, t.title, t.point, t.risk]), [['t1', 'Health answers 200', 'Add a health check: GET /health answers 200.', 'high'], ['t2', 'Ready fails without Redis', undefined, undefined]], 'numbered, a test without steps left out, a point in the card’s words, a risk it doesn’t know dropped')
     for (const id of ids) assert.equal(hub.state.cards.find((c) => c.id === id)!.debrief!.fromSet, set.id)
+    for (const id of ids) assert.equal(hub.state.cards.find((c) => c.id === id)!.debrief!.testPlan!.length, 2, 'each card has the plan')
+
+    // Whoever runs a test records how it went, as themselves, on the set and every card of it; marked again, it's cleared.
+    const result = (test: string, by: string, outcome: string | null) => ({ type: 'test.result', id: ids[0], test, result: outcome ? { outcome, note: outcome === 'failed' ? 'Answers 500.' : undefined, by, at: new Date().toISOString() } : null })
+    const send = (change: unknown, n: number) => you('POST', '/api/changes', { client: 'tab-1234', changes: [{ id: `t-${n}`, change }] })
+    assert.equal((await send(result('t1', 'someone-else', 'passed'), 1)).status, 422, 'only as yourself')
+    assert.equal((await send(result('t9', 'you', 'passed'), 2)).status, 422, 'only a test the plan has')
+    assert.equal((await send({ ...result('t1', 'you', 'passed'), result: { outcome: 'maybe', by: 'you', at: 'now' } }, 3)).status, 422, 'passed or failed')
+    assert.equal((await send(result('t1', 'you', 'passed'), 4)).status, 200)
+    assert.equal((await send(result('t2', 'you', 'failed'), 5)).status, 200)
+    const now = () => hub.state.changeSets.find((s) => s.id === set.id)!.debrief!.testPlan!
+    assert.deepEqual(now().map((t) => [t.result?.outcome, t.result?.by, t.result?.note]), [['passed', 'you', undefined], ['failed', 'you', 'Answers 500.']])
+    for (const id of ids) assert.deepEqual(hub.state.cards.find((c) => c.id === id)!.debrief!.testPlan!.map((t) => t.result?.outcome), ['passed', 'failed'])
+    assert.equal((await send(result('t2', 'you', null), 6)).status, 200)
+    assert.equal(now()[1].result, undefined, 'cleared')
+    assert.match((await builder.call('get_debrief', { id: ids[0] })).text, /Health answers 200/, 'agents read the plan back')
     for (const agent of [builder, reviewer]) await agent.client.close()
     await close()
     await github.close()

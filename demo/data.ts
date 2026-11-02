@@ -281,6 +281,44 @@ export function demoChanges(now = Date.now()): Change[] {
     ],
     lookAt: ['A removed function, legacyMonthlyPrice, is still used by the invoices page.', 'No test covers the renewal job.'],
     tryIt: 'Open the pricing page on the preview, choose Annual, and follow Start through to checkout.',
+    testPlan: [
+      {
+        id: 't1', title: 'Switching on the last day of a 31-day month credits the right amount', risk: 'high', point: 'Unused days are credited when switching',
+        setup: 'A customer on the monthly Team plan ($40) whose month started on March 1.',
+        steps: ['Set the preview’s clock to March 31.', 'Sign in as the customer and open Account → Plan.', 'Choose Switch to annual and read the confirmation.', 'Confirm, then open the new invoice.'],
+        expect: 'The confirmation and the invoice both credit one unused day ($1.29), never a negative amount, and the annual price is $400.',
+      },
+      {
+        id: 't2', title: 'Checkout charges the annual price when Annual is chosen', risk: 'high', point: 'Visitors can choose annual on the pricing page and check out on it',
+        setup: 'Signed out, on the preview’s pricing page.',
+        steps: ['Choose Annual on the toggle.', 'Press Start on the Team plan.', 'Go through checkout with the test card 4242 4242 4242 4242.'],
+        expect: 'Checkout shows $400 a year, and the receipt and Account → Plan say Annual.',
+      },
+      {
+        id: 't3', title: 'The renewal reminder is sent once, 30 days before renewal', risk: 'high', point: 'The reminder goes out once, 30 days before renewal',
+        setup: 'An annual customer whose plan renews in 30 days.',
+        steps: ['Run the morning job.', 'Run it again the next day, and the day after.', 'Open the outbox for the customer’s billing contact.'],
+        expect: 'Exactly one reminder, sent on the first run, with the renewal date and amount.',
+      },
+      {
+        id: 't4', title: 'Annual costs ten months of the monthly price on every plan', risk: 'medium', point: 'Annual costs ten months of the monthly price',
+        steps: ['Open the pricing page and switch between Monthly and Annual.', 'Compare each plan’s two prices.'],
+        expect: 'Each annual price is exactly ten times its monthly one: $100, $400 and $1,200.',
+        result: { outcome: 'passed', by: 'priya', at: ago(18) },
+      },
+      {
+        id: 't5', title: 'Monthly stays the default on the pricing page', risk: 'low', point: 'Visitors can choose annual on the pricing page and check out on it',
+        steps: ['Open the pricing page in a private window.'],
+        expect: 'Monthly is selected and monthly prices show until someone chooses Annual.',
+        result: { outcome: 'passed', by: 'maya', at: ago(16) },
+      },
+      {
+        id: 't6', title: 'Someone already on annual can’t switch again', risk: 'medium',
+        setup: 'A customer already on the annual Team plan.',
+        steps: ['Open Account → Plan.', 'Send the switch request twice in quick succession from the browser’s console.'],
+        expect: 'No Switch to annual button, and both requests are refused without a second invoice.',
+      },
+    ],
   }
   const fromSet = { ...debrief, fromSet: 'cs-12' }
 

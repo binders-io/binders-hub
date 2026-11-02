@@ -1,5 +1,5 @@
 import { tools, type AgentTool } from './agents.ts'
-import type { Challenge, Debrief, WorktreeDiff } from './changeSet.ts'
+import { withTestResult, type Challenge, type Debrief, type TestResult, type WorktreeDiff } from './changeSet.ts'
 import type { Schedule } from './schedule.ts'
 // The work: cards on a binder's board, the agents that take them, their pull requests, the change sets those are
 // approved in, and the environments they ship to. Like notes, all of it moves by changes in the hub's log, applied in
@@ -389,6 +389,8 @@ export type WorkChange =
   | { type: 'schedule.delete'; id: string }
   | { type: 'brief.put'; brief: RepoBrief }
   | { type: 'brief.delete'; id: string }
+  /** A person ran one of a debrief's functional tests (by its card or change set's id): its result, or none to clear it. */
+  | { type: 'test.result'; id: string; test: string; result: TestResult | null }
   | { type: 'agent.delete' | 'proposal.delete' | 'pr.delete' | 'set.delete' | 'env.delete' | 'run.delete'; id: string }
 
 /** How many activity lines a card keeps; older ones are dropped. */
@@ -507,6 +509,16 @@ export function applyWork<S extends WorkState>(state: S, change: WorkChange): S 
       return { ...state, briefs: upsert(state.briefs ?? [], change.brief) }
     case 'brief.delete':
       return { ...state, briefs: (state.briefs ?? []).filter((b) => b.id !== change.id) }
+    case 'test.result': {
+      // A change set's debrief is also on each of its cards: a result goes on all of them.
+      const set = state.changeSets.find((s) => s.id === change.id)?.id ?? state.cards.find((c) => c.id === change.id)?.debrief?.fromSet
+      const mark = <T extends { debrief?: Debrief }>(item: T): T => (item.debrief ? { ...item, debrief: withTestResult(item.debrief, change.test, change.result) } : item)
+      return {
+        ...state,
+        changeSets: set ? state.changeSets.map((s) => (s.id === set ? mark(s) : s)) : state.changeSets,
+        cards: state.cards.map((c) => (set ? c.debrief?.fromSet === set : c.id === change.id) ? mark(c) : c),
+      }
+    }
     case 'agent.delete':
       return { ...state, agents: state.agents.filter((a) => a.id !== change.id) }
     case 'proposal.delete':

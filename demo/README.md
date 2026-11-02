@@ -48,15 +48,16 @@ a `-dark` suffix in dark:
 | `hub-delivery` | Delivery: staging, production and the runs |
 
 The Hub film's pictures are larger (a 1440×900 window at 2×, so 2880×1800) and of more screens: Home, Work, the note on
-Distill, the card and its steps, the blocked card's question, change set #12's debrief and Challenge, Delivery, Agents
+Distill, the card and its steps, the blocked card's question, change set #12's debrief, Challenge and functional test plan, Delivery, Agents
 and Settings → Repo briefs, as `shot-<screen>-light.webp` and `shot-<screen>-dark.webp`:
 
 ```sh
 npm run shots -- ~/Documents/reelkit/films/hub-flow/assets film
+npm run shots -- ~/Documents/reelkit/films/hub-flow/assets film change-set,test-plan   # only these
 ```
 
 It stops without writing the picture if the page holds anything real (this machine's name and paths, your name and email
-from git, the real team's names, anything shaped like a token), or if the page asks for anything that isn't the demo hub.
+from git, the words in `DEMO_NEVER`, anything shaped like a token), or if the page asks for anything that isn't the demo hub.
 Look at them anyway: that check reads the page's words, not what a picture of it shows.
 
 ## Changing it

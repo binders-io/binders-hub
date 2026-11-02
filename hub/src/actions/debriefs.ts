@@ -1,11 +1,39 @@
 import type { Change } from '../../../shared/state.ts'
-import { effortFor, efforts, type AskedEffort, type Effort, debriefable, debriefSpeech, doneWhenPoints, outOfDate, pullOf, type Debrief, type DebriefPoint, type DebriefSince } from '../../../shared/changeSet.ts'
+import { effortFor, efforts, type AskedEffort, type Effort, debriefable, debriefSpeech, doneWhenPoints, outOfDate, pullOf, testRisks, testsMost, testStepsMost, testTextMost, type Debrief, type DebriefPoint, type DebriefSince, type TestCase, type TestRisk } from '../../../shared/changeSet.ts'
 import { worksIn, type Agent } from '../../../shared/work.ts'
 import { Refused, type Actor } from '../hub.ts'
 import { ChangeSetService } from './changeSets.ts'
-import { openSet, reasoningText, same, tidy, type Subject } from './base.ts'
+import { looksSecret, openSet, reasoningText, same, tidy, type Subject } from './base.ts'
 
 // A debrief: what a change set proposes, written by an agent when a person asks.
+
+/** A functional test as an agent sends it. */
+export interface SentTest { title: string; point?: string; setup?: string; steps: string[]; expect: string; risk?: string }
+
+/**
+ * A test plan as an agent sent it, kept to what a person can run: numbered in order, capped, a test without a title,
+ * steps or what to expect left out, each point it proves in the card's own words when it names one of them. A secret
+ * anywhere in it sends the debrief back.
+ */
+export function testPlanFrom(sent: SentTest[] | undefined, points: string[]): TestCase[] | undefined {
+  if (!sent) return undefined
+  const cut = (text: string | undefined) => (text ?? '').trim().slice(0, testTextMost)
+  const plan: TestCase[] = []
+  for (const t of sent) {
+    const title = cut(t.title), expect = cut(t.expect)
+    const steps = (t.steps ?? []).map(cut).filter(Boolean).slice(0, testStepsMost)
+    if (!title || !expect || !steps.length) continue
+    const point = cut(t.point)
+    const test: TestCase = { id: `t${plan.length + 1}`, title, steps, expect }
+    if (point) test.point = points.find((p) => same(p, point)) ?? point
+    if (cut(t.setup)) test.setup = cut(t.setup)
+    if (testRisks.includes(t.risk as TestRisk)) test.risk = t.risk as TestRisk
+    plan.push(test)
+    if (plan.length === testsMost) break
+  }
+  if (plan.some((t) => looksSecret([t.title, t.point, t.setup, t.expect, ...t.steps].join('\n')))) throw new Refused('The test plan has what looks like a secret in it (a token or a key): name the setting, never its value.')
+  return plan
+}
 
 export abstract class DebriefService extends ChangeSetService {
   /**
@@ -97,7 +125,7 @@ export abstract class DebriefService extends ChangeSetService {
     return draft
   }
 
-  async sendDebrief(agentId: string, cardId: string, sent: { doing?: string; failed?: string; does?: string; changes?: { area: string; what: string }[]; against?: DebriefPoint[]; lookAt?: string[]; tryIt?: string; since?: string }) {
+  async sendDebrief(agentId: string, cardId: string, sent: { doing?: string; failed?: string; does?: string; changes?: { area: string; what: string }[]; against?: DebriefPoint[]; lookAt?: string[]; tryIt?: string; since?: string; testPlan?: SentTest[] }) {
     const { subject, debrief } = this.debriefing(agentId, cardId)
     const actor: Actor = { kind: 'agent', id: agentId }
     const at = this.now()
@@ -154,6 +182,8 @@ export abstract class DebriefService extends ChangeSetService {
     if (sent.lookAt === undefined) missing.push('look_at (an empty list if nothing stands out)')
     if (missing.length) throw new Refused(`The debrief needs ${missing.join('; ')}.`)
     const lookAt = sent.lookAt!.map((l) => l.trim().slice(0, 1000)).filter(Boolean).slice(0, 40)
+    // Its functional test plan, from a runner that writes one (older ones don't).
+    const testPlan = testPlanFrom(sent.testPlan, points)
     // Written again with new commits on the pull request (any of a change set's): it starts with what they changed.
     const pull = subject.kind === 'card' ? pullOf(this.hub.state, subject.card) : subject.set.prIds.length === 1 ? this.hub.state.pulls.find((p) => p.id === subject.set.prIds[0]) : undefined
     const head = subject.kind === 'set' ? (await this.setReview(subject.id)).head : pull ? (pull.head ?? await this.readHead(pull)) : undefined
@@ -164,8 +194,8 @@ export abstract class DebriefService extends ChangeSetService {
     const since: DebriefSince | undefined = moved ? { from: moved.from, to: moved.to, what: said.slice(0, 2000), commits: (gap?.commits ?? []).slice(0, 50), ...(gap?.files ? { files: gap.files } : {}) } : undefined
     // The comment it's kept in on GitHub stays, to be edited with this writing.
     this.debriefDrafts.delete(draftKey)
-    const done: Debrief = { state: 'done', askedBy: debrief.askedBy, askedAt: debrief.askedAt, effort: debrief.effort, agentId, writtenAt: at, head, source: review?.source, does: does.slice(0, 2000), changes, against, lookAt, tryIt: tryIt.slice(0, 2000), since, comment: debrief.comment }
-    await this.keep(subject, actor, { debrief: tidy(done) }, { at, by: agentId, kind: 'debrief', text: `Wrote the debrief: ${against.filter((p) => p.mark === 'met').length} of ${against.length} met${since ? `, on ${since.commits.length} new commit${since.commits.length === 1 ? '' : 's'} since the last` : ''}` })
+    const done: Debrief = { state: 'done', askedBy: debrief.askedBy, askedAt: debrief.askedAt, effort: debrief.effort, agentId, writtenAt: at, head, source: review?.source, does: does.slice(0, 2000), changes, against, lookAt, tryIt: tryIt.slice(0, 2000), testPlan: testPlan?.length ? testPlan : undefined, since, comment: debrief.comment }
+    await this.keep(subject, actor, { debrief: tidy(done) }, { at, by: agentId, kind: 'debrief', text: `Wrote the debrief: ${against.filter((p) => p.mark === 'met').length} of ${against.length} met${testPlan?.length ? `, with ${testPlan.length} functional test${testPlan.length === 1 ? '' : 's'}` : ''}${since ? `, on ${since.commits.length} new commit${since.commits.length === 1 ? '' : 's'} since the last` : ''}` })
     // A change set's debrief also goes on each of its cards, and so on each one's issue, in the comment it had there.
     if (subject.kind === 'set') {
       await this.hub.recordAll(actor, subject.cards.map((card): Change => ({ type: 'card.update', id: card.id, fields: { debrief: tidy<Debrief>({ ...done, comment: card.debrief?.comment, fromSet: subject.id }) } })))

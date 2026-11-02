@@ -1,12 +1,12 @@
 import { useEffect, useState, type MouseEvent } from 'react'
 import { ReasoningPicker, reasoningWords } from './Reasoning'
-import { Check, CircleDashed, ClipboardList, Square, Volume2, X } from 'lucide-react'
+import { Check, CircleDashed, ClipboardList, Copy, FlaskConical, Square, Volume2, X } from 'lucide-react'
 import { Github } from './Github'
-import { debriefable, debriefSpeech, outOfDate, setChangeSet, setOfCard, type Debrief, type Mark } from '../../../shared/changeSet.ts'
+import { debriefable, debriefSpeech, outOfDate, setChangeSet, setOfCard, testPlanMarkdown, testTally, testTextMost, type Debrief, type Mark, type TestCase, type TestOutcome } from '../../../shared/changeSet.ts'
 import type { Card, ChangeSet } from '../data/model'
 import { nameFor, useActions, useHub, useStore } from '../data/store'
 import { ago } from './bits'
-import { attempt } from './Toast'
+import { attempt, toast } from './Toast'
 import { href } from '../route'
 
 // A debrief: what a change set proposes, all its pull requests together, written by an agent when a person asks (a card
@@ -158,8 +158,71 @@ export function DebriefView({ card, set }: { card?: Card; set?: ChangeSet }) {
           {debrief.lookAt?.length ? <ul className="debrief-look">{debrief.lookAt.map((l, i) => <li key={i}>{l}</li>)}</ul> : <p className="faint">Nothing stood out.</p>}
           <h3>How to try it</h3>
           <p className="debrief-try">{debrief.tryIt}</p>
+          {debrief.testPlan?.length ? <TestPlan id={of?.id ?? card!.id} plan={debrief.testPlan} title={of ? `change set #${of.number}: ${of.title}` : card!.title} /> : null}
         </>
       )}
     </section>
+  )
+}
+
+const riskTone = { high: 'risk-high', medium: 'risk-medium', low: 'risk-low' } as const
+
+/**
+ * A debrief's functional test plan: what to run against the product to see it does what the spec says, riskiest first.
+ * Whoever runs a test marks it passed or failed (with a line on what they saw when it fails); marking it again clears it.
+ */
+export function TestPlan({ id, plan, title }: { id: string; plan: TestCase[]; title: string }) {
+  const { recordTest } = useActions()
+  const { state } = useStore()
+  const [noting, setNoting] = useState<string>()
+  const [note, setNote] = useState('')
+  const { total, passed, failed } = testTally(plan)
+  const mark = (test: TestCase, outcome: TestOutcome, why?: string) => {
+    recordTest(id, test.id, test.result?.outcome === outcome && why === undefined ? null : outcome, why)
+    setNoting(undefined)
+    setNote('')
+  }
+  const copy = () => void navigator.clipboard.writeText(testPlanMarkdown(plan, title)).then(() => toast('Test plan copied as Markdown.'), () => toast('Couldn’t copy the test plan.'))
+  return (
+    <div className="test-plan" id="test-plan">
+      <h3>
+        <FlaskConical size={12} /> Functional test plan
+        <span className={`test-tally${failed ? ' failed' : passed === total ? ' passed' : ''}`}>Tests {passed} of {total} passed{failed ? `, ${failed} failed` : ''}</span>
+        <button type="button" className="text-button" onClick={copy}><Copy size={12} /> Copy as Markdown</button>
+      </h3>
+      <ol className="tests">
+        {plan.map((test) => (
+          <li key={test.id} className={test.result ? `test ${test.result.outcome}` : 'test'}>
+            <div className="test-head">
+              <span className="test-id num">{test.id}</span>
+              <b>{test.title}</b>
+              {test.risk && <span className={`test-risk ${riskTone[test.risk]}`}>{test.risk} risk</span>}
+            </div>
+            {test.point ? <p className="test-point">Proves: {test.point}</p> : <p className="test-point">An edge case the done-when implies</p>}
+            {test.setup && <p className="test-setup"><span>Setup</span> {test.setup}</p>}
+            <ol className="test-steps">{test.steps.map((step, i) => <li key={i}>{step}</li>)}</ol>
+            <p className="test-expect"><span>Expect</span> {test.expect}</p>
+            {test.result && (
+              <p className={`test-result ${test.result.outcome}`}>
+                {test.result.outcome === 'passed' ? <Check size={12} strokeWidth={3} /> : <X size={12} strokeWidth={3} />}
+                {test.result.outcome === 'passed' ? 'Passed' : 'Failed'} for {nameFor(state, test.result.by)}, {ago(test.result.at)}{test.result.note ? `: ${test.result.note}` : ''}
+              </p>
+            )}
+            {noting === test.id ? (
+              <form className="test-note" onSubmit={(event) => { event.preventDefault(); mark(test, 'failed', note) }}>
+                <input autoFocus aria-label={`What went wrong in ${test.title}`} placeholder="What you saw instead, in one line" value={note} maxLength={testTextMost} onChange={(event) => setNote(event.target.value)} />
+                <button type="submit" className="button">Fail it</button>
+                <button type="button" className="text-button" onClick={() => setNoting(undefined)}>Cancel</button>
+              </form>
+            ) : (
+              <div className="test-actions">
+                <button type="button" className={`test-pass${test.result?.outcome === 'passed' ? ' on' : ''}`} aria-pressed={test.result?.outcome === 'passed'} onClick={() => mark(test, 'passed')}><Check size={12} strokeWidth={3} /> Pass</button>
+                <button type="button" className={`test-fail${test.result?.outcome === 'failed' ? ' on' : ''}`} aria-pressed={test.result?.outcome === 'failed'} onClick={() => (test.result?.outcome === 'failed' ? mark(test, 'failed') : setNoting(test.id))}><X size={12} strokeWidth={3} /> Fail</button>
+              </div>
+            )}
+          </li>
+        ))}
+      </ol>
+    </div>
   )
 }

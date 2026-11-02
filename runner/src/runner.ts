@@ -154,6 +154,7 @@ interface DebriefSections {
   against: { point: string; mark: string; where: string }[]
   look_at: string[]
   try_it: string
+  test_plan?: { title: string; point?: string; setup?: string; steps: string[]; expect: string; risk?: string }[]
 }
 
 export interface RunnerOptions {
@@ -730,8 +731,9 @@ export class Runner {
       '',
       `1. The whole first: get_change_set (id ${job.id}, outline: true) gives the brief, its done-when points, the note's words, the agent's plan and log, the pull request and its checks, and each file with its size. Plan how the files fit together before reading any. You may read the code in ${dir}; change nothing.`,
       `2. Then a file at a time: get_change_set with file (and part, for a file in parts) gives its diff. After each file or a few related ones, add_to_debrief (id ${job.id}) with what you've learned: changes (by area, not by file), done-when points you can mark now, and things to look at. Keep in mind what earlier files did: an area can span files.`,
-      `3. Last, over the whole: send_debrief (id ${job.id}) with what's left: does (what it does, now that you've read it all), try_it, the done-when points still unmarked or whose mark changed, and look_at for what goes wrong between files. What add_to_debrief kept is taken in. Its five sections:`,
+      `3. Last, over the whole: send_debrief (id ${job.id}) with what's left: does (what it does, now that you've read it all), try_it, test_plan, the done-when points still unmarked or whose mark changed, and look_at for what goes wrong between files. What add_to_debrief kept is taken in. Its sections:`,
       ...debriefSectionsHelp,
+      ...testPlanHelp,
       '   Judge from the diff, not from what the log says was done.',
       '4. If you can\'t write it, send_debrief with failed and why.',
     ].join('\n')
@@ -754,9 +756,11 @@ export class Runner {
       '\nWrite the debrief as you go, never all at the end: each answer you give has an output limit, and your thinking counts toward it. Judge from the diff, not from what the log says was done.',
       `1. Plan how the files fit together from the list above, then read the diff files one at a time.`,
       `2. After each file or a few related ones, add a line to ${answer}: one JSON object with what you learned, any of changes ([{ "area", "what" }], by area, not by file), against ([{ "point", "mark", "where" }], the done-when points you can mark now; a point marked again takes the new mark) and look_at ([...]). Keep earlier files in mind: an area can span files.`,
-      `3. Last, over the whole, a final line with does (what it does) and try_it, and any points still unmarked or things to look at between files.`,
-      'The five sections:',
+      `3. Last, over the whole, a final line with does (what it does), try_it and test_plan, and any points still unmarked or things to look at between files.`,
+      'The sections:',
       ...debriefSectionsHelp,
+      ...testPlanHelp,
+      '   test_plan is a list of { "title", "point", "setup", "steps": [...], "expect", "risk" }.',
       'Change nothing else.',
     ].filter(Boolean).join('\n')
   }
@@ -1546,6 +1550,10 @@ const debriefSectionsHelp = [
   '   - try_it: how to try it: the build or command to run, and what to click.',
 ]
 
+const testPlanHelp = [
+  '   - test_plan: its functional test plan, 3 to 10 tests a person (or an agent) runs against the running product to see that it does what the done-when says, riskiest first. Each has a title; point, the done-when point it proves in its own words (leave it out for an edge case the points only imply); setup, what has to be true first (an account, a plan, some data); steps, the exact inputs and clicks, one a step; expect, what they should see when it works; and risk, "high", "medium" or "low". Test behaviour someone can see, not functions: cover every done-when point, then the edge cases the diff and the points imply (boundaries, empty and wrong input, someone without access, doing it twice). No unit tests, and nothing that needs reading the code to judge.',
+]
+
 /** The JSON objects an agent may have written its answer as: all it printed, its ```json blocks from the last, its {…}. */
 function* jsonIn(output: string): Generator<Record<string, unknown>> {
   const blocks = [...output.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g)].map((m) => m[1])
@@ -1583,12 +1591,13 @@ const listOf = <T>(value: unknown): T[] => (Array.isArray(value) ? value : value
  * gathered, a point marked again as it says last), or else one JSON object, its last ```json block, or its last {…}.
  */
 export function debriefSections(output: string): DebriefSections | undefined {
-  const lines = jsonLines(output).filter((l) => ['does', 'changes', 'against', 'look_at', 'try_it'].some((k) => k in l))
+  const lines = jsonLines(output).filter((l) => ['does', 'changes', 'against', 'look_at', 'try_it', 'test_plan'].some((k) => k in l))
   if (lines.length > 1) {
     const sections: DebriefSections = { does: '', changes: [], against: [], look_at: [], try_it: '' }
     for (const line of lines) {
       if (typeof line.does === 'string') sections.does = line.does
       if (typeof line.try_it === 'string') sections.try_it = line.try_it
+      if (Array.isArray(line.test_plan)) sections.test_plan = line.test_plan as DebriefSections['test_plan']
       sections.changes.push(...listOf<DebriefSections['changes'][number]>(line.changes))
       sections.look_at.push(...listOf<string>(line.look_at).filter((l) => typeof l === 'string'))
       for (const point of listOf<DebriefSections['against'][number]>(line.against)) {
@@ -1600,7 +1609,7 @@ export function debriefSections(output: string): DebriefSections | undefined {
     return sections
   }
   for (const value of jsonIn(output) as Generator<Partial<DebriefSections>>) {
-    if (typeof value.does === 'string') return { does: value.does, changes: value.changes ?? [], against: value.against ?? [], look_at: value.look_at ?? [], try_it: value.try_it ?? '' }
+    if (typeof value.does === 'string') return { does: value.does, changes: value.changes ?? [], against: value.against ?? [], look_at: value.look_at ?? [], try_it: value.try_it ?? '', ...(Array.isArray(value.test_plan) ? { test_plan: value.test_plan } : {}) }
   }
   return undefined
 }

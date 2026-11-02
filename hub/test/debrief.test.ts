@@ -1,6 +1,6 @@
 import { after, before, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { debriefMarkdown, debriefSpeech, debriefToComment, type Debrief } from '../../shared/changeSet.ts'
+import { debriefMarkdown, debriefSpeech, debriefToComment, testPlanMarkdown, testTally, withTestResult, type Debrief, type TestCase } from '../../shared/changeSet.ts'
 import { Hub } from '../src/hub.ts'
 import { MemoryLog, RedisLog, type ChangeLog } from '../src/log.ts'
 import { startRedis } from './helpers.ts'
@@ -76,5 +76,23 @@ describe('a debrief as words', () => {
     assert.equal(debriefToComment({ ...written, writtenAt: '2026-10-30T11:00:00.000Z' }), true, 'written again')
     assert.equal(debriefToComment({ ...written, comment: undefined }), true, 'never kept')
     assert.equal(debriefToComment({ state: 'asked', askedBy: 'you', askedAt: '', agentId: 'a1' }), false, 'nothing written yet')
+  })
+
+  it('keeps a functional test plan: in the comment, aloud, as Markdown, with each result', () => {
+    const plan: TestCase[] = [
+      { id: 't1', title: 'Health answers 200', point: 'GET /health answers 200.', setup: 'The preview running.', steps: ['curl -i /health'], expect: 'HTTP 200.', risk: 'high' },
+      { id: 't2', title: 'Ready fails without Redis', steps: ['Stop Redis.', 'curl -i /ready'], expect: 'HTTP 503.' },
+    ]
+    const run = withTestResult({ ...written, testPlan: plan }, 't1', { outcome: 'passed', by: 'you', at: '2026-10-30T12:00:00.000Z' })
+    assert.deepEqual(testTally(run.testPlan), { total: 2, passed: 1, failed: 0 })
+    assert.equal(withTestResult(run, 't9', { outcome: 'failed', by: 'you', at: '' }), run, 'no such test, nothing changes')
+    assert.equal(withTestResult(run, 't1', null).testPlan![0].result, undefined, 'cleared')
+    const comment = debriefMarkdown(run, { agent: 'Writer' })
+    assert.ok(comment.includes('**Functional test plan** (2 tests)'))
+    assert.ok(comment.includes('- [x] **Health answers 200** (high risk): proves “GET /health answers 200.”'))
+    assert.ok(comment.includes('  1. Stop Redis.\n  2. curl -i /ready\n  Expect: HTTP 503.'))
+    assert.match(debriefSpeech(run, { title: 'the card', agent: 'Writer' }), /Its test plan has 2 functional tests: 1 passed, 0 failed\. Health answers 200\. Ready fails without Redis\./)
+    const markdown = testPlanMarkdown(run.testPlan!, 'change set #4')
+    assert.ok(markdown.startsWith('## Functional test plan: change set #4\n\n### t1. Health answers 200 (high risk)\nProves: GET /health answers 200.\nSetup: The preview running.\n\n1. curl -i /health\n\nExpect: HTTP 200.\nResult: passed (you, 2026-10-30)'))
   })
 })

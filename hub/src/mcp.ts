@@ -6,6 +6,7 @@ import { briefText, docsFolderName, docsGiven, repoDocs } from '../../shared/bri
 import { byWorst, challengeSet, confidences, setOfCard, replyVerdicts, doneWhenPoints, findingKinds, marks, numberedDiff, severities, type BlastRadius, type Confidence, type FindingKind, type Mark, type ReplyVerdict, type Severity } from '../../shared/changeSet.ts'
 import { briefId, briefJobFor, briefMost, briefOf, challengeFor, chatFor, debriefFor, defaultRunner, nextFor, worksIn, repliesFor, resumeFor, setChallengeFor, setDebriefFor, type Card, type ChangeSet, type Chat, type Provider, type RepoBrief } from '../../shared/work.ts'
 import type { Actions } from './actions.ts'
+import type { SentTest } from './actions/debriefs.ts'
 import { Refused, type Hub } from './hub.ts'
 
 // The hub's MCP server: how an agent registered here finds work, takes it, says what it's doing, asks, and hands it
@@ -36,7 +37,8 @@ A person may also talk with you about a note they're working on: wait_for_work t
 Read the note, do what they ask (edit_note changes it), and answer with chat_reply.
 
 A person may ask you for a card's debrief: wait_for_work then gives kind: debrief. get_change_set gives what the card's
-work proposes; read it, change nothing, and send the debrief's five sections with send_debrief. A debrief asked again
+work proposes; read it, change nothing, and send the debrief's five sections and its functional test plan with
+send_debrief. A debrief asked again
 after new commits on the pull request starts with since: what those commits changed, from the ones get_change_set lists.
 get_debrief reads a card's debrief back, with speech: the words to say aloud.
 
@@ -587,7 +589,7 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
   }))
 
   server.registerTool('send_debrief', {
-    description: 'Sends the debrief of a card a person asked you for. All five sections: does (what it does, a few plain lines); changes (what changed, grouped by area, not a file list); against (each of get_change_set’s done_when_points, in order, marked met, partly met or not met, with where: the file, test or what’s missing); look_at (risky spots, work outside the brief, new dependencies, migrations, settings, deleted code, missing tests, failing checks; empty if nothing stands out); try_it (the build or command, and what to click). Asked again after new commits on the pull request, it also needs since: what those commits changed, in a few plain lines, covering only the ones get_change_set lists in out_of_date. What add_to_debrief kept is taken in: then send only what’s left (does, try_it, and the rest of the points). Meanwhile, doing alone says what you are doing; failed says why you can’t.',
+    description: 'Sends the debrief of a card a person asked you for. All five sections: does (what it does, a few plain lines); changes (what changed, grouped by area, not a file list); against (each of get_change_set’s done_when_points, in order, marked met, partly met or not met, with where: the file, test or what’s missing); look_at (risky spots, work outside the brief, new dependencies, migrations, settings, deleted code, missing tests, failing checks; empty if nothing stands out); try_it (the build or command, and what to click); and test_plan, its functional test plan: 3 to 10 tests a person runs against the running product to see it does what the done-when says, riskiest first, each with title, point (the done-when point it proves, in its words; leave it out for an edge case the points imply), setup, steps (exact inputs and clicks), expect (what they should see) and risk (high, medium or low). Asked again after new commits on the pull request, it also needs since: what those commits changed, in a few plain lines, covering only the ones get_change_set lists in out_of_date. What add_to_debrief kept is taken in: then send only what’s left (does, try_it, and the rest of the points). Meanwhile, doing alone says what you are doing; failed says why you can’t.',
     inputSchema: {
       id: z.string(),
       doing: z.string().optional(),
@@ -598,10 +600,11 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
       look_at: z.array(z.string()).max(30).optional(),
       try_it: z.string().optional(),
       since: z.string().optional(),
+      test_plan: z.array(z.object({ title: z.string(), point: z.string().optional(), setup: z.string().optional(), steps: z.array(z.string()).max(30), expect: z.string(), risk: z.string().optional() })).max(30).optional(),
     },
-  }, run(async ({ id, look_at, try_it, since, ...sent }: { id: string; doing?: string; failed?: string; does?: string; changes?: { area: string; what: string }[]; against?: { point: string; mark: Mark; where: string }[]; look_at?: string[]; try_it?: string; since?: string }) => {
-    const debrief = await actions.sendDebrief(agentId, id, { ...sent, lookAt: look_at, tryIt: try_it, since })
-    return text(debrief.state === 'done' ? `Sent: ${debrief.against!.filter((p) => p.mark === 'met').length} of ${debrief.against!.length} done-when points met.` : debrief.state === 'failed' ? 'Noted that you couldn’t.' : 'Noted.')
+  }, run(async ({ id, look_at, try_it, since, test_plan, ...sent }: { id: string; doing?: string; failed?: string; does?: string; changes?: { area: string; what: string }[]; against?: { point: string; mark: Mark; where: string }[]; look_at?: string[]; try_it?: string; since?: string; test_plan?: SentTest[] }) => {
+    const debrief = await actions.sendDebrief(agentId, id, { ...sent, lookAt: look_at, tryIt: try_it, since, testPlan: test_plan })
+    return text(debrief.state === 'done' ? `Sent: ${debrief.against!.filter((p) => p.mark === 'met').length} of ${debrief.against!.length} done-when points met${debrief.testPlan?.length ? `, ${debrief.testPlan.length} functional tests` : ''}.` : debrief.state === 'failed' ? 'Noted that you couldn’t.' : 'Noted.')
   }))
 
   server.registerTool('get_debrief', {
@@ -627,6 +630,7 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
       against: debrief.against,
       look_at: debrief.lookAt,
       try_it: debrief.tryIt,
+      test_plan: debrief.testPlan,
       on_github: debrief.comment?.url,
       speech: actions.debriefOf(card.id).speech,
     })
