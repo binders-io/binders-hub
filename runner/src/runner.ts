@@ -317,6 +317,48 @@ export function managedMcpPath(platform: NodeJS.Platform = process.platform) {
 }
 
 /** Claude Code saying no to Binders' MCP server because an enterprise MCP config manages its servers. */
+/**
+ * Binders actions an agent without Binders' tools may ask the runner to take for it, as JSON at the end of its reply:
+ * what a card may need beyond its code (Distill's proposals, say). The runner takes them with the agent's own token,
+ * so an agent can do no more this way than it could with the tools.
+ */
+const proxied: Record<string, string> = {
+  propose_work_items: '{"note": "<the note’s id>", "items": [{"title": "…", "quote": "the note’s exact words it came from", "brief": "…", "done_when": "…", "size": "S | M | L", "meant_for": "an agent’s name, optional"}]}',
+  create_task: '{"binder": "<binder id or name>", "title": "…", "brief": "…", "done_when": "…", "size": "S | M | L"}',
+  append_to_note: '{"id": "<the note’s id>", "text": "Markdown to add at its end"}',
+}
+
+/** The Binders actions at the end of an agent's reply, between <binders-actions> and </binders-actions> (the last such block), and the reply without them. */
+export function actionsFromReply(text: string) {
+  const blocks = [...text.matchAll(/<binders-actions>\s*([\s\S]*?)\s*<\/binders-actions>/g)]
+  const last = blocks.at(-1)
+  if (!last) return { actions: [] as { tool: string; args: Record<string, unknown> }[], rest: text }
+  let actions: { tool: string; args: Record<string, unknown> }[] = []
+  try {
+    const parsed = JSON.parse(last[1]) as unknown
+    actions = (Array.isArray(parsed) ? parsed : [parsed]).filter((a): a is { tool: string; args: Record<string, unknown> } => !!a && typeof a === 'object' && typeof (a as { tool?: unknown }).tool === 'string' && typeof (a as { args?: unknown }).args === 'object')
+  } catch {
+    actions = []
+  }
+  return { actions, rest: (text.slice(0, last.index) + text.slice(last.index! + last[0].length)).trim() }
+}
+
+/**
+ * Claude Code's MCP servers, as `claude mcp list` says (its enterprise, user and project ones): each line
+ * `name: url (HTTP) - ✓ Connected`.
+ */
+export function parseMcpList(text: string) {
+  return text.split('\n').map((line) => /^\s*([^:\s][^:]*?):\s+(https?:\/\/\S+)/.exec(line)).filter((m): m is RegExpExecArray => !!m).map((m) => ({ name: m[1].trim(), url: m[2] }))
+}
+
+/** The server among them that's this hub's: at its address, or else named for Binders, at an /mcp path. */
+export function bindersAmong(servers: { name: string; url: string }[], hubUrl: string) {
+  const host = (url: string) => { try { return new URL(url).host.toLowerCase() } catch { return '' } }
+  const mcpPath = (url: string) => { try { return /\/mcp\/?$/.test(new URL(url).pathname) } catch { return false } }
+  return servers.find((s) => mcpPath(s.url) && host(s.url) === host(hubUrl))?.name
+    ?? servers.find((s) => mcpPath(s.url) && /binders/i.test(s.name))?.name
+}
+
 /** Without Binders' tools, Claude Code may write the files it's asked for in its .binders folder, and nowhere new. */
 const plainEdits = '--allowedTools=Edit(.binders/**),Write(.binders/**)'
 
@@ -417,6 +459,13 @@ export class Runner {
   /** An enterprise MCP config found (its file, or Claude Code refusing Binders' server): said once, here and to the hub. */
   private async enterpriseMcpFound(how: string) {
     if (this.enterpriseMcp) return
+    // Claude Code may have Binders' server already, from that config or its own: then it's Binders' tools from it.
+    const listed = this.managedServer ?? await claudeBinders(this.options.workspace, this.options.hubUrl)
+    if (listed) {
+      this.managedServer = listed
+      this.log(`${how}, and Claude Code has Binders’ server (${listed}): it uses Binders’ tools from it.`)
+      return
+    }
     this.enterpriseMcp = true
     this.log(`${how}: Claude Code works here without Binders’ MCP tools, and the runner reports for it. An admin can allow Binders’ server in the managed config instead (see the README).`)
     if (this.client) await this.call('update_profile', { runner: this.profile(this.parallel) }).catch(() => undefined)
@@ -426,7 +475,9 @@ export class Runner {
     const managedFile = this.options.managedMcp ?? managedMcpPath()
     // An enterprise MCP config that lists Binders' server gives Claude Code its tools: nothing to work around.
     if (existsSync(managedFile)) {
-      this.managedServer = await managedBinders(managedFile, this.options.hubUrl)
+      // Binders' server in the config itself, or among the servers Claude Code says it has (its address may be the
+      // hub's public one where this runner reaches it at another).
+      this.managedServer = await managedBinders(managedFile, this.options.hubUrl) ?? await claudeBinders(this.options.workspace, this.options.hubUrl)
       if (this.managedServer) this.log(`The enterprise MCP config on this machine lists Binders’ server (${this.managedServer}): Claude Code uses Binders’ tools from it.`)
     }
     if (!this.enterpriseMcp && !this.managedAllowed && existsSync(managedFile)) await this.enterpriseMcpFound(`An enterprise MCP config is on this machine (${this.options.managedMcp ?? managedMcpPath()})`)
@@ -1294,7 +1345,17 @@ export class Runner {
     }
     const last = ran.reader.summary.last
     if (!this.usesMcp(settings) && !ran.timedOut && ran.exit.code === 0) {
-      const summary = ran.reader.summary.reply ?? lastWords(ran.output) ?? 'Done.'
+      // The Binders actions it asked for, taken for it; what came of them goes on the card with its summary.
+      const asked = actionsFromReply(ran.reader.summary.reply ?? ran.output)
+      const done: string[] = []
+      for (const action of asked.actions) {
+        if (!(action.tool in proxied)) { done.push(`${action.tool}: not one the runner takes for an agent.`); continue }
+        const result = await this.call<unknown>(action.tool, action.args).then((r) => `${action.tool}: ${short(typeof r === 'string' ? r : JSON.stringify(r), 300)}`, (error) => `${action.tool} didn’t work: ${(error as Error).message}`)
+        done.push(result)
+        this.log(`“${card.title}”: ${result}`)
+      }
+      const reply = asked.actions.length ? asked.rest : undefined
+      const summary = [reply ?? ran.reader.summary.reply ?? lastWords(ran.output) ?? 'Done.', ...(done.length ? ['', 'Binders actions taken for it:', ...done.map((d) => `- ${d}`)] : [])].join('\n')
       await this.call('complete_task', { id: card.id, summary: short(summary, 4000) }).catch((error) => this.log(`Couldn’t finish “${card.title}”: ${(error as Error).message}`))
       this.log(`Finished “${card.title}”.`)
       return
@@ -1477,6 +1538,7 @@ export class Runner {
       note?.text ? `\nThe note it came from:\n\n${note.text.slice(0, 20_000)}` : '',
       answer ? `\nA person just wrote on it: “${answer.text}”` : '',
       `\nDo it in ${dir}. When you're done, end with a short summary of what you did: it goes on the card.`,
+      `\nBinders' own tools aren't available here. Where the card asks for a Binders action (proposing work items, making a card, adding to a note), don't call it: end your reply with the actions as JSON between <binders-actions> and </binders-actions>, a list of {"tool": …, "args": …}, and the runner takes them for you. The ones it takes:\n${Object.entries(proxied).map(([tool, args]) => `- ${tool}: ${args}`).join('\n')}${full.note ? `\nThe note's id is ${full.note.id}.` : ''}`,
     ].filter(Boolean).join('\n')
   }
 
@@ -1902,4 +1964,12 @@ async function modelsOf(tool: string): Promise<string[]> {
     // Not installed, or it couldn't say.
   }
   return []
+}
+
+/** Binders' server among Claude Code's own (`claude mcp list`), when Claude Code is here and lists one. */
+async function claudeBinders(dir: string, hubUrl: string) {
+  const claude = await whereIs('claude')
+  if (!claude) return undefined
+  const listed = await run(claude, ['mcp', 'list'], { cwd: dir, timeout: 30_000 }).then((r) => r.stdout, () => '')
+  return bindersAmong(parseMcpList(listed), hubUrl)
 }

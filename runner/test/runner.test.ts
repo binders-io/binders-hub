@@ -19,7 +19,7 @@ import { Sealer } from '../../hub/src/secrets.ts'
 import { buildServer } from '../../hub/src/server.ts'
 import { Spaces } from '../../hub/src/spaces.ts'
 import { Webhooks } from '../../hub/src/webhooks.ts'
-import { Runner, agentFile, noteFromReply, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
+import { Runner, actionsFromReply, agentFile, bindersAmong, noteFromReply, parseMcpList, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
 
 // The runner's own files (~/.binders/run) in a home of the tests' own, not this machine's.
 process.env.BINDERS_HOME ??= mkdtempSync(join(tmpdir(), 'binders-home-'))
@@ -803,6 +803,54 @@ console.log('Added the health check, and its test passes.')
     assert.equal(runner.usesMcp({ tool: 'claude' }), true)
     const { args } = runner.commandFor({ tool: 'claude', access: 'full', timeoutMinutes: 1, worktrees: false }, 'c1', dir, undefined, 'Do it.')
     assert.ok(args.includes('--allowedTools=mcp__company_binders') && !args.includes('--mcp-config'))
+  })
+
+  it('finds Binders’ server among Claude Code’s own, at the hub’s address or by its name', () => {
+    const listed = parseMcpList([
+      'Checking MCP server health…',
+      '',
+      'sentry: https://mcp.sentry.dev/mcp (HTTP) - ✓ Connected',
+      'Company Binders: https://binders.example.com/mcp (HTTP) - ✓ Connected',
+      'local-notes: node /opt/notes/server.js - ✓ Connected',
+    ].join('\n'))
+    assert.deepEqual(listed.map((s) => s.name), ['sentry', 'Company Binders'])
+    assert.equal(bindersAmong(listed, 'https://binders.example.com'), 'Company Binders', 'by its address')
+    assert.equal(bindersAmong(listed, 'http://localhost:4400'), 'Company Binders', 'by its name, reached here at another address')
+    assert.equal(bindersAmong(parseMcpList('sentry: https://mcp.sentry.dev/mcp (HTTP) - ✓ Connected'), 'http://localhost:4400'), undefined)
+  })
+
+  it('takes the Binders actions at the end of a reply, and leaves a reply without them as it is', () => {
+    const { actions, rest } = actionsFromReply('Proposed two.\n<binders-actions>\n[{"tool": "propose_work_items", "args": {"note": "n1", "items": []}}]\n</binders-actions>')
+    assert.deepEqual(actions, [{ tool: 'propose_work_items', args: { note: 'n1', items: [] } }])
+    assert.equal(rest, 'Proposed two.')
+    assert.deepEqual(actionsFromReply('Done.').actions, [])
+    assert.deepEqual(actionsFromReply('<binders-actions>not json</binders-actions>').actions, [])
+  })
+
+  it('distills a note with an agent that has no Binders tools: its proposals come back in its reply and the runner sends them', async () => {
+    const { hub, actions, url, dir, issued, card, close } = await setUp()
+    const script = join(dir, 'distill.mjs')
+    await writeFile(script, `
+const prompt = process.argv[2]
+const id = /The note's id is (\\S+)\\./.exec(prompt)[1]
+console.log('Proposed the note’s two items.')
+console.log('<binders-actions>')
+console.log(JSON.stringify([{ tool: 'propose_work_items', args: { note: id, items: [{ title: 'Annual toggle', quote: 'a toggle on the pricing page', size: 'S' }, { title: 'Renewal reminder', quote: 'a reminder before renewal' }] } }, { tool: 'delete_everything', args: {} }]))
+console.log('</binders-actions>')
+`)
+    await hub.submit('you', 'tab-1', [{ id: 'n', change: { type: 'note.put', note: { id: 'n1', title: 'Annual plans', binderId: 'b1', editedAt: 'now', editors: ['you'], text: '# Annual plans\nWe need a toggle on the pricing page and a reminder before renewal.\n' } } }])
+    const made = await actions.putAgent('you', { name: 'Distiller', runner: { tool: 'custom', access: 'full', timeoutMinutes: 1, worktrees: false, command: `node ${script} {prompt}` } })
+    const job = await card('Distill “Annual plans” into work items', made.id)
+    await hub.record({ kind: 'hub' }, { type: 'card.update', id: job.id, fields: { noteId: 'n1' } })
+    await new Runner({ hubUrl: url, token: await issued(made.id), workspace: dir, log: () => {}, waitSeconds: 1 }).start(true)
+    assert.deepEqual(hub.state.proposals.filter((p) => p.noteId === 'n1').map((p) => p.title).sort(), ['Annual toggle', 'Renewal reminder'])
+    const done = hub.state.cards.find((c) => c.id === job.id)!
+    assert.equal(done.stage, 'live')
+    const summary = done.activity.find((a) => a.kind === 'completed')!.text
+    assert.match(summary, /Proposed the note’s two items\./)
+    assert.match(summary, /delete_everything: not one the runner takes/)
+    assert.doesNotMatch(summary, /<binders-actions>/)
+    await close()
   })
 
   it('takes a changed note from the end of a reply, and leaves a reply without one as it is', () => {

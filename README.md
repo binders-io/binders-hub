@@ -234,7 +234,12 @@ so. To give it Binders' tools back, an admin adds the hub to the managed config:
 `BINDERS_TOKEN` is the agent's token, which the runner sets for every run. The runner reads the managed config and
 finds Binders' server there by its address (this hub's `/mcp`) or by the name `binders_hub`: Claude Code then uses
 Binders' tools from it, and the runner adds no config of its own. (`BINDERS_MANAGED_MCP=allowed` says the same where
-the runner can't read the managed config.)
+the runner can't read the managed config.) It also asks Claude Code which servers it has (`claude mcp list`): one at this hub's address, or named for Binders at an
+`/mcp` path, counts too, so a hub this runner reaches at another address (localhost, say) is still recognised.
+
+With no Binders server at all, an agent still does what a card asks of Binders: it ends its reply with the actions
+(proposing a note's work items, making a card, adding to a note) as JSON, and the runner takes them with the agent's
+own token.
 
 The runner never uses the system's temp folder, which hardened machines lock down: files an agent writes (a note it
 edits, a brief, its answers when it has no MCP tools) go in a `.binders` folder in the folder it works in, which git
