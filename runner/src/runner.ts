@@ -129,13 +129,15 @@ interface CardJSON {
   brief?: string
   done_when?: string
   holder?: string
+  /** The holder's id, from a hub that says it: a rename leaves it as it was. */
+  holder_id?: string
   /** The repo its work is in: its project's. */
   repo?: string
   needs_you?: string
   resume?: boolean
   note?: { id: string; title: string }
   quote?: string
-  conversation?: { at?: string; by: string; kind: string; text: string }[]
+  conversation?: { at?: string; by: string; from_agent?: boolean; kind: string; text: string }[]
   /** Cards it waits for, and how far each has got (review: its pull request is open, not merged yet). */
   waits_for?: { id: string; title?: string; stage?: string }[]
 }
@@ -300,7 +302,7 @@ export async function reviewCheckout(workspace: string, own: string | undefined,
   }
   // The pull request's branch, from the workspace's origin when that's the pull request's repo.
   const origin = pull ? await git(['remote', 'get-url', 'origin'], workspace).catch(() => '') : ''
-  if (pull && origin.replace(/\.git$/, '').endsWith(pull.repo)) {
+  if (pull && origin.replace(/\.git$/, '').toLowerCase().endsWith(pull.repo.toLowerCase())) {
     const fetched = await git(['fetch', '--quiet', 'origin', pull.branch], workspace).then(() => git(['rev-parse', 'FETCH_HEAD'], workspace), () => '')
     if (fetched) return add(workspace, fetched).catch(() => undefined)
   }
@@ -461,6 +463,13 @@ export class Runner {
   private modelsFor?: string
   private log: (line: string) => void
   name = ''
+  /** The agent's id, which a rename leaves as it was: how the runner knows a card is still its own. */
+  private agentId?: string
+  /** Whether this agent holds a card, as the hub says: by id, or by name from a hub that doesn't say its id. */
+  private holds(card: { holder?: string; holder_id?: string }) {
+    if (card.holder_id && this.agentId) return card.holder_id === this.agentId
+    return !!card.holder && card.holder.toLowerCase() === this.name.toLowerCase()
+  }
   /** This runner's own id, so the hub can tell it from another runner for the same agent. */
   readonly id = process.env.BINDERS_RUNNER_ID ?? randomBytes(6).toString('hex')
   /** This machine has an enterprise MCP config: Claude Code runs without Binders' MCP server. */
@@ -559,8 +568,9 @@ export class Runner {
     // own error) turns them off, the run then starting again without them.
     this.client = new Client({ name: 'binders-runner', version: '0.2.0' })
     await this.client.connect(new StreamableHTTPClientTransport(new URL(`${this.options.hubUrl}/mcp`), { requestInit: { headers: { authorization: `Bearer ${this.options.token}` } } }))
-    const me = await this.call<{ name: string; runner?: RunnerSettings }>('whoami')
+    const me = await this.call<{ id?: string; name: string; runner?: RunnerSettings }>('whoami')
     this.name = me.name
+    this.agentId = me.id
     // Not given a workspace, it works where the agent's settings say the code is.
     if (!this.options.workspaceGiven && me.runner?.workspace) this.options.workspace = resolve(me.runner.workspace.replace(/^~(?=\/|$)/, homedir()))
     await this.call('update_profile', { runs_on: `${this.options.machine ?? hostname().replace(/\.local$/, '')} · ${this.options.workspace.replace(homedir(), '~')}` })
@@ -757,8 +767,10 @@ export class Runner {
   private lastUpdateTry = 0
 
   private async settings() {
-    const me = await this.call<{ runner: RunnerSettings; latest_runner?: string; restartAsked?: { at: string; by: string } }>('whoami')
+    const me = await this.call<{ name?: string; runner: RunnerSettings; latest_runner?: string; restartAsked?: { at: string; by: string } }>('whoami')
     this.latest = me.latest_runner
+    // Renamed since it connected: it goes by its name now.
+    if (me.name) this.name = me.name
     const asked = me.restartAsked?.at ?? ''
     if (this.restartBefore === undefined) this.restartBefore = asked
     else if (asked !== this.restartBefore) {
@@ -828,7 +840,7 @@ export class Runner {
     let diffSent = Date.now()
     for (;;) {
       // What people have written so far; anything after this steers. Counted, so the hub's clock and this one needn't agree.
-      const people = (c: { kind: string; by: string }) => (c.kind === 'comment' || c.kind === 'answer') && c.by !== this.name
+      const people = (c: { kind: string; by: string; from_agent?: boolean }) => (c.kind === 'comment' || c.kind === 'answer') && (c.from_agent === undefined ? c.by.toLowerCase() !== this.name.toLowerCase() : !c.from_agent)
       const before = ((await this.call<CardJSON>('get_task', { id: card.id }).catch(() => card)).conversation ?? []).filter(people).length
       let steer: string | undefined
       let ticks = 0
@@ -843,9 +855,9 @@ export class Runner {
           }
           if (++ticks % 2) return
           void this.call<CardJSON>('get_task', { id: card.id }).then((now) => {
-            if (now.stage === 'blocked' && now.holder === this.name && !now.needs_you) return stop(`“${card.title}” was put in Blocked: stopping its run until it’s moved back.`)
+            if (now.stage === 'blocked' && this.holds(now) && !now.needs_you) return stop(`“${card.title}” was put in Blocked: stopping its run until it’s moved back.`)
             if (now.stage !== 'working' && now.stage !== 'blocked') return stop(`“${card.title}” was taken back: stopping its run.`)
-            if (now.holder !== this.name) return stop(`“${card.title}” was taken back: stopping its run.`)
+            if (!this.holds(now)) return stop(`“${card.title}” was taken back: stopping its run.`)
             const all = (now.conversation ?? []).filter(people)
             const said = all.slice(before)
             if (said.length && !steer) {
@@ -1481,7 +1493,7 @@ export class Runner {
     } catch {
       return
     }
-    if (now.stage !== 'working' || now.holder !== this.name) {
+    if (now.stage !== 'working' || !this.holds(now)) {
       this.log(`“${card.title}” is ${now.stage}.`)
       return
     }

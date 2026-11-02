@@ -7,6 +7,7 @@ import { GitHubError } from '../github.ts'
 import { Refused, type Actor } from '../hub.ts'
 import { CardService } from './cards.ts'
 import { mergeableOf, bump } from './base.ts'
+import { sameRepo } from '../../../shared/work.ts'
 
 // Change sets: a card's work as one thing, pull requests in order, approving and merging them, and promoting a version.
 
@@ -79,8 +80,9 @@ export abstract class ChangeSetService extends CardService {
 
   /** A pull request into the hub: read from GitHub when it can be, linked to its card, and put in its binder's change set. */
   async linkPull(repo: string, number: number, link: { cardId?: string; agentId?: string }): Promise<PullRequest> {
-    const id = `${repo}#${number}`
-    const known = this.hub.state.pulls.find((p) => p.id === id)
+    // The one the hub has already, however its repo was written (a webhook says it as GitHub does; a person may not).
+    const known = this.hub.state.pulls.find((p) => sameRepo(p.repo, repo) && p.number === number)
+    const id = known?.id ?? `${repo}#${number}`
     let pull: PullRequest = known ?? { id, repo, number, title: `Pull request ${number}`, branch: '', url: `https://github.com/${repo}/pull/${number}`, state: 'open', checks: [], files: [] }
     const github = await this.github.forRepo(repo).catch(() => undefined)
     if (github) {
@@ -275,7 +277,7 @@ export abstract class ChangeSetService extends CardService {
       const info = await github.pull(pull.repo, pull.number).catch(() => undefined)
       const main = await github.defaultBranch(pull.repo).catch(() => undefined)
       if (info && main && info.base !== main) {
-        const parent = this.hub.state.pulls.find((p) => p.repo === pull.repo && p.branch === info.base && p.state !== 'merged' && p.state !== 'closed')
+        const parent = this.hub.state.pulls.find((p) => sameRepo(p.repo, pull.repo) && p.branch === info.base && p.state !== 'merged' && p.state !== 'closed')
         if (parent) {
           waiting.push({ prId: id, why: `${short}: built on ${pull.repo.split('/')[1]}#${parent.number}, merges after it` })
           continue

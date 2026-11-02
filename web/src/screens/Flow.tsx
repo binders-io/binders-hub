@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type Dispatch,
 import { LayoutGroup, motion, AnimatePresence } from 'motion/react'
 import { ArrowRight, Check, Eye, EyeOff, GitPullRequest, MessageCircleQuestion, Plus, Sparkles } from 'lucide-react'
 import { stages, type Agent, type Card, type Proposal, type Stage } from '../data/model'
-import { mayTake } from '../../../shared/work.ts'
+import { mayTake, meantForNow } from '../../../shared/work.ts'
 import { nameFor, sameValues, useActions, useClock, useHub, type State } from '../data/store'
 import { AgentAvatar, CheckDots, Progress, RepoTag, Who, ago, checksSummary, codeRepo, stageTone } from '../components/bits'
 import { NewCardDialog } from '../components/NewCardDialog'
@@ -264,7 +264,7 @@ const Feed = memo(function Feed({ cards, agents }: { cards: Card[]; agents: Agen
 function cardFacts(state: State, card: Card) {
   const pull = state.pulls.find((p) => p.id === card.prId)
   return {
-    agent: state.agents.find((a) => a.id === (card.agentId ?? card.meantFor)),
+    agent: state.agents.find((a) => a.id === (card.agentId ?? meantForNow(state, card))),
     pull,
     set: pull && state.changeSets.find((c) => c.prIds.includes(pull.id)),
     binder: state.binders.find((b) => b.id === card.binderId),

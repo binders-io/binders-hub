@@ -908,6 +908,22 @@ console.log('</binders-actions>')
     assert.deepEqual(await runner.ship(card, repo, env, ''), {}, 'never in the person’s own checkout')
   })
 
+  it('keeps a card when its agent is renamed mid-run, as a change of capitals or any other', async () => {
+    const { hub, actions, url, dir, issued, card, close } = await setUp()
+    const script = join(dir, 'slow.mjs')
+    await writeFile(script, `await new Promise((done) => setTimeout(done, 5000))\nconsole.log('Done it.')\n`)
+    const runnerSettings = { tool: 'custom' as const, access: 'full' as const, timeoutMinutes: 1, worktrees: false, command: `node ${script} {prompt}` }
+    const made = await actions.putAgent('you', { name: 'test', runner: runnerSettings })
+    const job = await card('Add a health check', made.id)
+    const running = new Runner({ hubUrl: url, token: await issued(made.id), workspace: dir, log: () => {}, waitSeconds: 1 }).start(true)
+    await until(() => hub.state.cards.find((c) => c.id === job.id)?.stage === 'working', 4000)
+    await actions.putAgent('you', { name: 'Test', runner: runnerSettings }, made.id)
+    await running
+    const after = hub.state.cards.find((c) => c.id === job.id)!
+    assert.equal(after.stage, 'live', JSON.stringify(after.activity.slice(-2)))
+    await close()
+  })
+
   it('takes the Binders actions at the end of a reply, and leaves a reply without them as it is', () => {
     const { actions, rest } = actionsFromReply('Proposed two.\n<binders-actions>\n[{"tool": "propose_work_items", "args": {"note": "n1", "items": []}}]\n</binders-actions>')
     assert.deepEqual(actions, [{ tool: 'propose_work_items', args: { note: 'n1', items: [] } }])

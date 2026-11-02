@@ -12,6 +12,7 @@ import type { Webhooks } from './webhooks.ts'
 // arrive, it stands down.
 
 import type { PollMode } from './options.ts'
+import { sameRepo } from '../../shared/work.ts'
 
 interface IssueItem {
   number: number
@@ -122,7 +123,8 @@ export class GitHubPoller {
     const repos = new Set<string>()
     for (const binder of this.hub.state.binders) if (binder.repo) repos.add(binder.repo)
     for (const pull of this.hub.state.pulls) if (pull.state !== 'merged' && pull.state !== 'closed') repos.add(pull.repo)
-    return [...repos]
+    // Once each, however its capitals differ between a binder and a pull request.
+    return [...new Map([...repos].map((repo) => [repo.toLowerCase(), repo])).values()]
   }
 
   /** One round of asking. Returns the repos it reached. */
@@ -174,16 +176,17 @@ export class GitHubPoller {
       if (item.pull_request) {
         const info = await github.pull(repo, item.number)
         this.heads.set(key, info.headSha)
-        const known = this.hub.state.pulls.some((p) => p.id === key)
+        const known = this.hub.state.pulls.some((p) => sameRepo(p.repo, repo) && p.number === item.number)
         await this.webhooks.handle('pull_request', {
           action: known ? 'synchronize' : 'opened',
           pull_request: { number: info.number, title: info.title, body: info.body, state: info.state, merged: info.merged, html_url: info.url, head: { ref: info.branch, sha: info.headSha }, additions: info.additions, deletions: info.deletions },
           repository: { full_name: repo },
         })
         // It's been asked already: whether it merges as things are now.
-        if (this.hub.state.pulls.some((p) => p.id === key) && info.mergeable !== null) await this.hub.record({ kind: 'hub' }, { type: 'pr.update', id: key, fields: { mergeable: mergeableOf(info) } })
+        const followed = this.hub.state.pulls.find((p) => sameRepo(p.repo, repo) && p.number === item.number)
+        if (followed && info.mergeable !== null) await this.hub.record({ kind: 'hub' }, { type: 'pr.update', id: followed.id, fields: { mergeable: mergeableOf(info) } })
       } else {
-        const card = this.hub.state.cards.find((c) => c.issue?.repo === repo && c.issue.number === item.number)
+        const card = this.hub.state.cards.find((c) => sameRepo(c.issue?.repo, repo) && c.issue?.number === item.number)
         if (!card) continue
         const action = item.state === 'closed' && card.stage !== 'live' ? 'closed' : item.state === 'open' && card.stage === 'live' ? 'reopened' : 'edited'
         await this.webhooks.handle('issues', { action, issue: item, repository: { full_name: repo } })
@@ -194,7 +197,7 @@ export class GitHubPoller {
 
   /** The checks on each pull request the hub follows in this repo, as check_run webhooks would bring them. */
   private async checks(github: GitHub, repo: string) {
-    for (const pull of this.hub.state.pulls.filter((p) => p.repo === repo && (p.state === 'open' || p.state === 'approved' || p.state === 'queued'))) {
+    for (const pull of this.hub.state.pulls.filter((p) => sameRepo(p.repo, repo) && (p.state === 'open' || p.state === 'approved' || p.state === 'queued'))) {
       let head = this.heads.get(pull.id)
       if (!head) {
         head = (await github.pull(repo, pull.number)).headSha

@@ -11,6 +11,7 @@ export interface RepoAccess {
 }
 import type { Hub } from '../hub.ts'
 import { log } from '../logger.ts'
+import { sameRepo } from '../../../shared/work.ts'
 
 // Cards kept as GitHub Issues in their binder's repo. Edits to a card within a moment become one write; Binders' own
 // fields ride along in a hidden block at the end of the body, so the issue alone can rebuild the card and GitHub stays
@@ -144,7 +145,7 @@ export class IssuesSaver {
     this.problems.delete(binder.id)
     const body = this.bodyOf(card)
     const fields = { title: card.title, body, labels: this.labelsOf(card), state: card.stage === 'live' ? 'closed' as const : 'open' as const }
-    if (card.issue && card.issue.repo === repo) {
+    if (card.issue && sameRepo(card.issue.repo, repo)) {
       const key = `${repo}#${card.issue.number}`
       const written = hash(card.title, body)
       if (this.written.get(key) !== written || this.states.get(key) !== fields.state) {
@@ -170,7 +171,7 @@ export class IssuesSaver {
     const agent = this.hub.state.agents.find((a) => a.id === debrief.agentId)?.name ?? 'An agent'
     const body = `${debriefMarkdown(debrief, { agent, link: this.publicUrl ? `${this.publicUrl}/#/work/${card.id}` : undefined })}\n\n${marker}${JSON.stringify({ debrief: card.id })} -->`
     // A comment someone deleted on GitHub is made again.
-    const edited = debrief.comment?.repo === repo ? await github.updateComment(repo, debrief.comment.id, body).catch((error) => {
+    const edited = sameRepo(debrief.comment?.repo, repo) ? await github.updateComment(repo, debrief.comment!.id, body).catch((error) => {
       if (error instanceof GitHubError && error.status === 404) return undefined
       throw error
     }) : undefined

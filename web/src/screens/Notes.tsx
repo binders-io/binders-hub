@@ -121,7 +121,7 @@ function NoteScreen({ noteId }: { noteId: string }) {
   // The one you picked, else one that's listening, else one you set up yourself, else one that says it distills.
   const chosen = agents.find((a) => a.id === distiller)
     ?? agents.find((a) => isOnline(a))
-    ?? agents.find((a) => a.owner === login)
+    ?? agents.find((a) => a.owner.toLowerCase() === login?.toLowerCase())
     ?? agents.find((a) => a.skills.some((s) => /distill/i.test(s)))
     ?? agents[0]
   const { discardIfEmpty } = store

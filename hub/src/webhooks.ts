@@ -7,6 +7,7 @@ import type { Hub } from './hub.ts'
 import { readBody, readMetadata, withoutMetadata, type IssuesSaver } from './savers/issues.ts'
 import { log } from './logger.ts'
 import { whatsWrongWithWebhook } from './schemas.ts'
+import { sameRepo } from '../../shared/work.ts'
 
 // GitHub telling the hub what happened there: an issue edited or closed, a pull request opened or merged, a check
 // finished, a workflow run, a deployment. Each becomes changes in the log. A delivery whose signature doesn't match the
@@ -60,7 +61,7 @@ export class Webhooks {
 
   private cardForIssue(repo: string, number: number, body?: string | null): Card | undefined {
     const meta = readMetadata(body)
-    return this.hub.state.cards.find((c) => (meta?.card && c.id === meta.card) || (c.issue?.repo === repo && c.issue.number === number))
+    return this.hub.state.cards.find((c) => (meta?.card && c.id === meta.card) || (sameRepo(c.issue?.repo, repo) && c.issue?.number === number))
   }
 
   private async issue({ action, issue, repository }: { action: string; issue: IssueJSON; repository: Repo }) {
@@ -103,13 +104,14 @@ export class Webhooks {
     const issueNumbers = [...body.matchAll(/(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi)].map((m) => Number(m[1]))
     const fromBranch = /(?:^|\/)(\d+)-/.exec(pull.branch)?.[1]
     if (fromBranch) issueNumbers.push(Number(fromBranch))
-    return this.hub.state.cards.find((c) => c.issue?.repo === repo && issueNumbers.includes(c.issue.number))
+    return this.hub.state.cards.find((c) => sameRepo(c.issue?.repo, repo) && issueNumbers.includes(c.issue!.number))
   }
 
   private async pull({ action, pull_request: p, repository }: { action: string; pull_request: PullJSON; repository: Repo }) {
     const repo = repository.full_name
-    const id = `${repo}#${p.number}`
-    const known = this.hub.state.pulls.find((x) => x.id === id)
+    // The one the hub has already, however its repo was written when it was linked.
+    const known = this.hub.state.pulls.find((x) => sameRepo(x.repo, repo) && x.number === p.number)
+    const id = known?.id ?? `${repo}#${p.number}`
     const card = known?.cardId ? this.hub.state.cards.find((c) => c.id === known.cardId) : this.cardForPull(repo, { body: p.body, branch: p.head.ref })
     if (!known && !card) return 'not ours'
     const state: PullRequest['state'] = p.merged ? 'merged' : p.state === 'closed' ? 'closed' : known?.state === 'approved' || known?.state === 'queued' ? known.state : 'open'
@@ -139,7 +141,7 @@ export class Webhooks {
     const check = checkOf(check_run)
     let touched = 0
     for (const { number } of check_run.pull_requests ?? []) {
-      const pull = this.hub.state.pulls.find((p) => p.id === `${repository.full_name}#${number}`)
+      const pull = this.hub.state.pulls.find((p) => sameRepo(p.repo, repository.full_name) && p.number === number)
       if (!pull) continue
       const checks = pull.checks.some((c) => c.name === check.name) ? pull.checks.map((c) => (c.name === check.name ? check : c)) : [...pull.checks, check]
       await this.hub.record(hubActor, { type: 'pr.update', id: pull.id, fields: { checks } })

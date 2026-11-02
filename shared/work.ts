@@ -347,6 +347,24 @@ export const lessonMost = 400
 
 /** A repo's brief's id: its name in lower case. */
 export const briefId = (repo: string) => repo.trim().toLowerCase()
+/** The same repo, as GitHub takes it: owner/name without regard to capitals. */
+export const sameRepo = (a: string | undefined, b: string | undefined) => !!a && !!b && briefId(a) === briefId(b)
+
+/**
+ * The live agent a name means: the one written so, or else the one written so in other capitals. A revoked agent is
+ * nobody to give work to, whatever it was called.
+ */
+export function agentNamed<T extends { name: string; revoked?: boolean }>(agents: T[], name: string): T | undefined {
+  const live = agents.filter((a) => !a.revoked)
+  const wanted = name.trim()
+  return live.find((a) => a.name === wanted) ?? live.find((a) => a.name.toLowerCase() === wanted.toLowerCase())
+}
+
+/** Who a card is meant for, if that agent is still there: one meant for an agent since revoked or gone is open again. */
+export function meantForNow(state: { agents?: { id: string; revoked?: boolean }[] }, card: { meantFor?: string }) {
+  if (!card.meantFor) return undefined
+  return !state.agents || state.agents.some((a) => a.id === card.meantFor && !a.revoked) ? card.meantFor : undefined
+}
 export const briefOf = (state: Pick<WorkState, 'briefs'>, repo: string | undefined) => (repo ? (state.briefs ?? []).find((b) => b.id === briefId(repo)) : undefined)
 
 /** A brief a person or an agent asked this agent to write, not started yet: after replies, before cards. */
@@ -465,7 +483,8 @@ export function applyWork<S extends WorkState>(state: S, change: WorkChange): S 
           // Taken already, done, or meant for someone else: the claim does nothing.
           if (c.agentId && c.agentId !== change.agentId) return c
           if (c.stage !== 'ready' && !(c.stage === 'working' && c.agentId === change.agentId)) return c
-          if (c.meantFor && c.meantFor !== change.agentId) return c
+          const meant = meantForNow(state, c)
+          if (meant && meant !== change.agentId) return c
           const agent = state.agents.find((a) => a.id === change.agentId)
           return withActivity({ ...c, agentId: change.agentId, stage: 'working', progress: 0 }, { at: change.at, by: change.agentId, kind: 'claimed', text: `${agent?.name ?? 'An agent'} took it` })
         }),
@@ -613,10 +632,11 @@ export function nextFor(state: WorkState & { binders: { id: string; repo?: strin
  * Whether an agent may take a card, as the board offers them: one meant for it, whatever its binders and repos (a
  * person's to give), or one meant for nobody in a binder and repo it works in.
  */
-export function mayTake(state: { binders: { id: string; repo?: string }[] }, agent: Pick<Agent, 'id' | 'binders' | 'repos'>, card: Pick<Card, 'meantFor' | 'binderId'>) {
-  if (card.meantFor) return card.meantFor === agent.id
-  const repo = state.binders.find((b) => b.id === card.binderId)?.repo?.toLowerCase()
-  return worksIn(agent, card.binderId, state.binders) && (!agent.repos.length || !repo || agent.repos.some((r) => r.toLowerCase() === repo))
+export function mayTake(state: { binders: { id: string; repo?: string }[]; agents?: { id: string; revoked?: boolean }[] }, agent: Pick<Agent, 'id' | 'binders' | 'repos'>, card: Pick<Card, 'meantFor' | 'binderId'>) {
+  const meant = meantForNow(state, card)
+  if (meant) return meant === agent.id
+  const repo = state.binders.find((b) => b.id === card.binderId)?.repo
+  return worksIn(agent, card.binderId, state.binders) && (!agent.repos.length || !repo || agent.repos.some((r) => sameRepo(r, repo)))
 }
 
 /**

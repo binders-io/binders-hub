@@ -285,6 +285,9 @@ export abstract class CardService extends ActionsBase {
     const existing = id ? this.hub.state.agents.find((a) => a.id === id) : undefined
     if (id && !existing) throw new Refused(`No agent ${id}.`)
     if (!fields.name.trim()) throw new Refused('An agent needs a name.')
+    // Names are how people and agents hand out work, without regard to capitals: two that differ only by them can't be told apart.
+    const twin = this.hub.state.agents.find((a) => !a.revoked && a.id !== existing?.id && a.name.toLowerCase() === fields.name.trim().toLowerCase())
+    if (twin && existing?.name.toLowerCase() !== fields.name.trim().toLowerCase()) throw new Refused(`There’s an agent called ${twin.name} already.`)
     const agent: Agent = {
       runner: fields.runner ? checkedRunner(fields.runner) : existing?.runner,
       id: existing?.id ?? `agent-${randomUUID().slice(0, 8)}`,
