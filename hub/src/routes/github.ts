@@ -28,7 +28,7 @@ export async function githubRoutes(app: FastifyInstance, context: Context) {
 
   // People and organizations to suggest as names are typed: members of the organizations the app is installed on, the
   // person's own organizations, and GitHub's user search.
-  const members = new Map<string, { at: number; logins: { login: string; avatar?: string }[] }>()
+  const members = new Map<string, { at: number; logins: { login: string; avatar?: string }[]; managed?: string }>()
   app.get('/api/github/people', act(async (request) => {
     const { q = '', kind = 'user' } = request.query as { q?: string; kind?: 'user' | 'org' }
     const typed = q.trim().replace(/^@/, '').toLowerCase()
@@ -37,6 +37,7 @@ export async function githubRoutes(app: FastifyInstance, context: Context) {
       if (!typed || login.toLowerCase().includes(typed)) if (!found.has(login.toLowerCase())) found.set(login.toLowerCase(), { login, avatar, why })
     }
     const { github } = sp(request)
+    let managed = false
     // Their GitHub sign-in searches too: the GitHub App's, or the OAuth App's they signed in with.
     const searchWith = request.githubToken ?? request.identityToken
     const me = searchWith ? github.asUser(searchWith) : undefined
@@ -49,12 +50,15 @@ export async function githubRoutes(app: FastifyInstance, context: Context) {
         let cached = members.get(`${sp(request).id}:${account}`)
         if (!cached || Date.now() - cached.at > 5 * 60_000) {
           const client = await github.forAccount(account).catch(() => undefined)
-          cached = { at: Date.now(), logins: client ? await orgMembers(client, account) : [] }
+          const logins = client ? await orgMembers(client, account) : []
+          cached = { at: Date.now(), logins, managed: managedShortcode(logins.map((m) => m.login)) }
           members.set(`${sp(request).id}:${account}`, cached)
         }
         for (const member of cached.logins) add(member.login, `In ${account}`, member.avatar)
+        if (cached.managed) managed = true
       }
-      if (typed.length >= 2 && found.size < 8 && me) {
+      // An organization of managed users can only have its own accounts in it: nobody from the rest of GitHub to offer.
+      if (typed.length >= 2 && found.size < 8 && me && !managed) {
         const search = await me.get<{ items: { login: string; avatar_url: string }[] }>(`/search/users?q=${encodeURIComponent(`${typed} in:login`)}&per_page=8`).catch(() => ({ items: [] }))
         for (const user of search.items) add(user.login, 'On GitHub', user.avatar_url)
       }
@@ -282,4 +286,20 @@ export async function orgMembers(client: { get: <T>(path: string) => Promise<T> 
     if (list.length < 100) break
   }
   return out
+}
+
+/**
+ * The shortcode of an organization of Enterprise Managed Users, from its members: in one, the accounts end in the
+ * enterprise's shortcode (`jdoe_acme`). Undefined for an ordinary organization, where logins have no underscore.
+ */
+export function managedShortcode(logins: string[]) {
+  if (!logins.length) return undefined
+  // Most of them, not all: the enterprise's setup account is `<shortcode>_admin`.
+  const counts = new Map<string, number>()
+  for (const login of logins) {
+    const end = /_([A-Za-z0-9]{1,20})$/.exec(login)?.[1]?.toLowerCase()
+    if (end) counts.set(end, (counts.get(end) ?? 0) + 1)
+  }
+  const [top, count] = [...counts].sort((a, b) => b[1] - a[1])[0] ?? []
+  return top && count! >= Math.ceil(logins.length * 0.8) ? top : undefined
 }

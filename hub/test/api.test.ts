@@ -480,6 +480,9 @@ describe('several Binders on one hub', () => {
 
     // ana adds cy as a member; a member can't add people, and the last owner can't leave.
     assert.equal((await ana('PUT', '/api/spaces/acme/members/cy', { role: 'member' })).status, 200)
+    assert.equal((await ana('PUT', '/api/spaces/acme/members/jdoe_acme', { role: 'member' })).status, 200, 'an Enterprise Managed User’s login, with its shortcode')
+    assert.equal((await ana('DELETE', '/api/spaces/acme/members/jdoe_acme')).status, 200)
+    assert.equal((await ana('PUT', '/api/spaces/acme/members/no_such__login', { role: 'member' })).status, 422)
     const cy = await as('cy')
     assert.equal((await cy('GET', '/api/me')).body.space, 'acme')
     assert.equal((await cy('PUT', '/api/spaces/acme/members/dee', { role: 'member' })).status, 422)

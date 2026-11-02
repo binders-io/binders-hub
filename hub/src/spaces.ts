@@ -54,7 +54,8 @@ const reserved = new Set(['api', 'auth', 'setup', 'mcp', 'webhooks', 'runner', '
 export const spaceIdPattern = /^[a-z][a-z0-9-]{1,38}[a-z0-9]$/
 /** A person's own Binder is at /~login. */
 export const personalId = (login: string) => `~${login.toLowerCase()}`
-const loginPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/
+// A GitHub login, or an Enterprise Managed User's, which ends in its enterprise's shortcode (`jdoe_acme`).
+const loginPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:_[A-Za-z0-9]{1,20})?$/
 const listKey = 'spaces'
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()

@@ -61,7 +61,7 @@ export const optionVariables: Record<keyof HubOptions, string> = {
 }
 
 const list = (value: string) => value.split(',').map((v) => v.trim()).filter(Boolean)
-const login = /^[A-Za-z0-9-]{1,39}$/
+const login = /^[A-Za-z0-9-]{1,39}(?:_[A-Za-z0-9]{1,20})?$/
 
 /** What the environment sets, read as options. */
 export function optionsFromEnv(env: Record<string, string | undefined>): Partial<HubOptions> {

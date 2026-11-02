@@ -25,3 +25,12 @@ describe('an organization of managed users, to suggest people from', () => {
     for (const login of ['jdoe_acme', 'cafe_acme', 'octocat', 'deadbeef_acme']) assert.ok(!deprovisioned(login), login)
   })
 })
+
+describe('people to add in an organization of managed users', () => {
+  it('knows the organization is one by its members’ logins, its setup account aside', async () => {
+    const { managedShortcode } = await import('../src/routes/github.ts')
+    assert.equal(managedShortcode(['ana_acme', 'ben_acme', 'cy_acme', 'dee_acme', 'acme_admin']), 'acme')
+    assert.equal(managedShortcode(['ana', 'ben', 'cy']), undefined)
+    assert.equal(managedShortcode([]), undefined)
+  })
+})

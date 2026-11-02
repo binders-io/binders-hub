@@ -2,8 +2,8 @@
 // own board, and every call to the hub says which. On the hub's bare address there's none yet: the page asks the hub
 // for the person's first and goes there.
 
-// A team's Binder (/acme/), or a person's own (/~login/).
-const pattern = /^(?:[a-z][a-z0-9-]{1,38}[a-z0-9]|~[a-z0-9][a-z0-9-]{0,38})$/
+// A team's Binder (/acme/), or a person's own (/~login/, an Enterprise Managed User's with its shortcode: /~jdoe_acme/).
+const pattern = /^(?:[a-z][a-z0-9-]{1,38}[a-z0-9]|~[a-z0-9][a-z0-9-]{0,38}(?:_[a-z0-9]{1,20})?)$/
 
 export const space: string = (() => {
   const first = window.location.pathname.split('/')[1] ?? ''
