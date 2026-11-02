@@ -608,7 +608,7 @@ export class Runner {
     }
   }
 
-  private async workIn(card: CardJSON, settings: RunnerSettings, tool: ReturnType<typeof toolInfo>, dir: string, githubEnv: Record<string, string>) {
+  private async workIn(card: CardJSON, settings: RunnerSettings, tool: ReturnType<typeof toolInfo>, dir: string, githubEnv: Record<string, string>): Promise<void> {
     // With Binders' tools, or (a tool without MCP, or an enterprise MCP config here) with the runner reporting for it.
     const mcp = tool.mcp && this.usesMcp(settings)
     // What the team knows about its repo, unless it's carrying on in a session that has it already.
@@ -654,6 +654,14 @@ export class Runner {
         await this.call('release_task', { id: card.id, reason: (error as Error).message }).catch(() => {})
         this.log(`Put “${card.title}” back: ${(error as Error).message}`)
         return
+      }
+      // Claude Code refused Binders' MCP server for an enterprise MCP config: the runner works without it from now on,
+      // so the card runs again at once, on the plain prompt, rather than going back on the board (where the hub would
+      // keep it from this agent for a while, as it does any card given back).
+      if (ran.managedMcp && !this.stopped) {
+        this.log(`“${card.title}”: running it again without Binders’ MCP tools.`)
+        this.sessions.delete(card.id)
+        return this.workIn(card, settings, tool, dir, githubEnv)
       }
       await this.relay(card.id, ran.reader, true)
       if (own) await this.sendDiff(card.id, dir)

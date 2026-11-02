@@ -760,7 +760,7 @@ console.log('Added the health check, and its test passes.')
     }
   })
 
-  it('found by Claude Code refusing Binders’ server, the card goes back saying why, and the next run goes without it', async () => {
+  it('found by Claude Code refusing Binders’ server, the same card runs again at once without it, and the hub hears of it', async () => {
     const { hub, actions, url, dir, card, issued, close } = await setUp()
     const claude = await standInClaude(dir, true)
     try {
@@ -768,11 +768,9 @@ console.log('Added the health check, and its test passes.')
       const job = await card('Add a health check', made.id)
       const runner = new Runner({ hubUrl: url, token: await issued(made.id), workspace: dir, log: () => {}, waitSeconds: 5, managedMcp: join(dir, 'none.json') })
       await runner.start(true)
-      const back = hub.state.cards.find((c) => c.id === job.id)!
-      assert.equal(back.stage, 'ready')
-      assert.match(back.activity.find((a) => a.kind === 'released')!.text, /enterprise MCP config.*works without it from now on/)
+      const done = hub.state.cards.find((c) => c.id === job.id)!
+      assert.ok(!done.activity.some((a) => a.kind === 'released'))
       assert.equal(hub.state.agents.find((a) => a.id === made.id)!.runnerSeen?.enterpriseMcp, true)
-      await runner.start(true)
       const runs = await claude.runs()
       assert.equal(runs.length, 2)
       assert.ok(runs[0].includes('--mcp-config') && !runs[1].includes('--mcp-config'))
