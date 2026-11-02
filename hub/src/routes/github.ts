@@ -99,10 +99,15 @@ export async function githubRoutes(app: FastifyInstance, context: Context) {
       // Known for the repos GitHub listed as the person's; for the app's others, the check on linking says.
       const listed = new Set(mine.map((r) => r.full_name.toLowerCase()))
       const push = (name: string) => (listed.has(name.toLowerCase()) ? pushable.has(name.toLowerCase()) : undefined)
+      // Through another binder's app, only the repos this person sees on GitHub, or this binder linked already: the
+      // rest of that organization's repos aren't this binder's to list.
+      const borrowing = !!github.status().app?.borrowedFrom
+      const linked = new Set(sp(request).hub.state.binders.flatMap((x) => (x.repo ? [x.repo.toLowerCase()] : [])))
+      const shown = borrowing ? byApp.filter((r) => listed.has(r.fullName.toLowerCase()) || linked.has(r.fullName.toLowerCase())) : byApp
       known = {
         at: Date.now(),
         repos: [
-          ...byApp.map((r) => ({ ...r, reached: true, push: push(r.fullName) })),
+          ...shown.map((r) => ({ ...r, reached: true, push: push(r.fullName) })),
           // Only what this binder's app reaches: a repo it isn't installed on can't be worked in from here.
         ],
       }
@@ -156,36 +161,72 @@ export async function githubRoutes(app: FastifyInstance, context: Context) {
     if (!mayManageGitHub(request)) throw new Refused('Only the Binder’s owners and admins can change how it reaches GitHub.')
     await sp(request).github.disconnect()
   }))
-  /**
-   * Whether a person may lend a binder's app: one of its own owners or admins. Being the hub's admin isn't enough, since
-   * lending lets another binder's people reach that binder's repos, which its owners haven't agreed to.
-   */
-  const mayLend = (id: string, who: string) => ['owner', 'admin'].includes(spaces.roleOf(id, who) ?? '')
-  /**
-   * Apps other binders made on an organization, which this one may use rather than making one more: offered while it has
-   * none, to someone who runs both it and the binder that made the app. An app on a person's own account is never
-   * offered: it serves only the binder it was made for.
-   */
-  const reusable = (request: FastifyRequest) => {
-    const here = sp(request)
-    if (!mayManageGitHub(request) || here.github.status().mode !== 'none') return []
-    const who = login(request)
-    return spaces.list()
-      .filter((info) => info.id !== here.id && !info.personal && mayLend(info.id, who))
-      .flatMap((info) => {
-        const app = spaces.get(info.id)?.github.shareable()
-        return app ? [{ binder: { id: info.id, name: info.name }, app }] : []
-      })
+  /** The GitHub logins a person goes by here: their own, and the one they connected to this binder (an EMU's, say). */
+  const githubLogins = async (request: FastifyRequest) => {
+    const as = (await auth.githubLink(login(request), sp(request).id).catch(() => ({ as: undefined }))).as
+    return [...new Set([login(request), ...(as ? [as] : [])])]
   }
-  app.get('/api/github/reusable', act(async (request) => ({ apps: reusable(request) })))
+  /** The accounts of a binder's app whose installations this person can reach, as GitHub says with their own sign-in. */
+  const reachableOf = async (request: FastifyRequest, from: string, accounts: string[]) => {
+    const lender = spaces.get(from)?.github
+    if (!lender) return []
+    const token = request.githubToken ?? request.identityToken
+    const logins = await githubLogins(request)
+    const out: string[] = []
+    for (const account of accounts) {
+      for (const who of logins) {
+        if (await lender.mayReach(token, who, account).catch(() => false)) { out.push(account); break }
+      }
+    }
+    return out
+  }
+  /**
+   * Installations of other binders' GitHub Apps this one may use rather than making one more app (the hub's own first):
+   * offered to its owners and admins while it has no app of its own (or borrows one, for more of its installations),
+   * and only those GitHub lets them reach with their own sign-in: an organization they're in, or their own account.
+   */
+  const reusable = async (request: FastifyRequest) => {
+    const here = sp(request)
+    const status = here.github.status()
+    const borrowing = status.app?.borrowedFrom
+    if (!mayManageGitHub(request) || (status.mode !== 'none' && !borrowing)) return []
+    const taken = (status.app?.borrowedAccounts ?? []).map((a) => a.toLowerCase())
+    const first = firstGitHub()
+    const offers = []
+    for (const info of spaces.list()) {
+      if (info.id === here.id || info.personal || (borrowing && borrowing !== info.id)) continue
+      const lender = spaces.get(info.id)?.github
+      await lender?.knowInstallations().catch(() => undefined)
+      const app = lender?.shareable()
+      if (!lender || !app) continue
+      const open = app.installations.filter((i) => !taken.includes(i.account.toLowerCase()))
+      const reached = await reachableOf(request, info.id, open.map((i) => i.account))
+      const installations = open.filter((i) => reached.includes(i.account))
+      if (installations.length) offers.push({ binder: { id: info.id, name: info.name }, hub: lender === first, app: { ...app, installations } })
+    }
+    // The hub's own app first.
+    return offers.sort((a, b) => Number(b.hub) - Number(a.hub))
+  }
+  app.get('/api/github/reusable', act(async (request) => ({ apps: await reusable(request) })))
   app.post('/api/github/app/reuse', act(async (request) => {
     if (!mayManageGitHub(request)) throw new Refused('Only the Binder’s owners and admins can change how it reaches GitHub.')
-    const from = bodyOf(bodies.reuse, request).from ?? ''
-    const who = login(request)
+    const body = bodyOf(bodies.reuse, request)
+    const from = body.from ?? ''
     const info = spaces.info(from)
-    if (!info || info.personal || !spaces.get(from) || !mayLend(from, who)) throw new Refused('Only the app of a binder you’re an owner or admin of can be used here.')
-    const made = await sp(request).github.reuse(from, who)
-    return { app: made.name, from: { id: info.id, name: info.name }, github: sp(request).github.status() }
+    const lender = spaces.get(from)?.github
+    if (!info || info.personal || !lender) throw new Refused('That binder has no GitHub App to use here.')
+    await lender.knowInstallations().catch(() => undefined)
+    const app = lender.shareable()
+    if (!app) throw new Refused('That binder has no GitHub App of its own to share.')
+    // The accounts asked for, or every installation this person can reach.
+    const asked = body.accounts?.length ? body.accounts : app.installations.map((i) => i.account)
+    const reached = await reachableOf(request, from, asked)
+    const [who] = await githubLogins(request)
+    const barred = body.accounts?.length ? asked.find((a) => !reached.some((r) => r.toLowerCase() === a.toLowerCase())) : undefined
+    if (barred) throw new Refused(`GitHub doesn’t show @${who} as able to reach ${app.name} on @${barred}: an organization’s installation is for its members, and one on a person’s account for that person. Connect the GitHub account that’s in @${barred} (Your account, from your picture at the top), then try again.`)
+    if (!reached.length) throw new Refused(`GitHub doesn’t show @${who} as able to reach any of ${app.name}’s installations.`)
+    const made = await sp(request).github.reuse(from, who, reached)
+    return { app: made.name, from: { id: info.id, name: info.name }, accounts: reached, github: sp(request).github.status() }
   }))
   /** Ends a loan of this binder's app: that binder stops reaching GitHub through it at once. */
   app.delete('/api/github/app/loans/:to', act(async (request) => {

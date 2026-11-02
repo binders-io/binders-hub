@@ -125,7 +125,7 @@ export function ChangeSets({ id }: { id: string }) {
                 {set.state === 'assembling' && <button className="text-button" onClick={() => void attempt(() => store.sendForReview(set.id))}>Close it to new pull requests</button>}
               </>
             ) : set.approvedBy ? (
-              <span className="approve-note done"><ShieldCheck size={14} /> Approved by {set.approvedBy === state.me?.user.login ? 'you' : set.approvedBy}</span>
+              <span className="approve-note done"><ShieldCheck size={14} /> Approved by {set.approvedBy === state.me?.user.login ? 'you' : nameFor(state, set.approvedBy)}</span>
             ) : (
               <span className="approve-note">Agents add pull requests here as they finish cards.</span>
             )}

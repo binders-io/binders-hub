@@ -1,3 +1,4 @@
+import { shownName } from '../../../shared/people.ts'
 import { useEffect, useState } from 'react'
 import { Check as CheckIcon, CircleDashed, LoaderCircle, X } from 'lucide-react'
 import type { Agent, Check, CheckState, Stage } from '../data/model'
@@ -46,16 +47,29 @@ export function AgentAvatar({ agent, size = 26, live = false }: { agent?: Agent;
   )
 }
 
-/** A person by their GitHub login: their picture when it's the one signed in, else an initial on a colour of their own. */
+/** A person by their GitHub login, as shown: their name, with their login beside it when that's different. */
+export function useShown(id: string) {
+  const name = useHub((state) => shownName(id, state.me?.people, state.me?.emu))
+  return { name, title: name === id ? id : `${name} (@${id})` }
+}
+
+/** A person by their GitHub login: their GitHub picture when the hub has it, else an initial on a colour of their own. */
 export function PersonAvatar({ id, size = 22 }: { id: string; size?: number }) {
-  const picture = useHub((state) => (state.me?.user.login === id ? state.me.user.avatar : undefined))
+  const picture = useHub((state) => (state.me?.user.login === id ? state.me.user.avatar : state.me?.people?.[id.toLowerCase()]?.avatar))
+  const { name, title } = useShown(id)
   const hue = [...id].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7)
-  if (picture) return <img className="avatar person" src={picture} alt="" width={size} height={size} title={id} />
+  if (picture) return <img className="avatar person" src={picture} alt="" width={size} height={size} title={title} />
   return (
-    <span className="avatar person" style={{ width: size, height: size, fontSize: size * 0.45, background: `oklch(0.6 0.12 ${hue})` }} title={id}>
-      {id.charAt(0).toUpperCase()}
+    <span className="avatar person" style={{ width: size, height: size, fontSize: size * 0.45, background: `oklch(0.6 0.12 ${hue})` }} title={title}>
+      {name.charAt(0).toUpperCase()}
     </span>
   )
+}
+
+/** A person's name as shown, with their full login on hover. */
+export function PersonName({ id }: { id: string }) {
+  const { name, title } = useShown(id)
+  return <span title={title}>{name}</span>
 }
 
 /** Whoever did something: an agent, a person, or Binders itself. */

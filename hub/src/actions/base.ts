@@ -94,12 +94,20 @@ export abstract class ActionsBase {
 
   /** What agents may reach on GitHub: their owners' reach. None: no limit (a hub without GitHub, and tests). */
   reach?: AgentReach
+  /** Who agents' commits are by, as the hub's admins set it (Settings → Options): each agent's choice, or one for all. */
+  agentCommits: () => 'agent' | 'owner' | 'app' = () => 'agent'
   /** Cards an agent was turned away from for its owner's reach, until when, so they aren't offered again meanwhile. */
   protected turnedAway = new Map<string, number>()
 
   constructor(hub: Hub, github: GitHubAccess) {
     this.hub = hub
     this.github = github
+  }
+
+  /** Who this agent's commits, pushes and pull requests are by: the hub's admins' choice when they made one, else its own. */
+  commitsBy(agent: Agent): 'owner' | 'app' {
+    const fixed = this.agentCommits()
+    return fixed === 'agent' ? (agent.runner?.commitAs === 'app' ? 'app' : 'owner') : fixed
   }
 
   /** The repo a card's work is in: its project's. */
@@ -153,9 +161,11 @@ export abstract class ActionsBase {
     if (!this.reach) throw new Refused('This hub doesn’t hand out repo tokens: use this machine’s own GitHub login.')
     await this.mayWorkOn(agent, card, repo)
     // As its owner (the default): their own sign-in, so commits, pushes and pull requests are theirs. As the app, or
-    // when the hub holds no sign-in of theirs: the app's token for that repo alone.
-    const wanted = agent.runner?.commitAs === 'app' ? 'app' : 'owner'
+    // when the hub holds no sign-in of theirs: the app's token for that repo alone. When the hub's admins have said it's
+    // always the owner, there's no falling back to the app: the run waits for the owner to connect their GitHub.
+    const wanted = this.commitsBy(agent)
     const owned = wanted === 'owner' ? await this.reach.ownerToken?.(agent.owner).catch(() => undefined) : undefined
+    if (wanted === 'owner' && !owned && this.agentCommits() === 'owner') throw new Refused(`This hub’s admins have agents commit as their owners, and the hub holds no GitHub sign-in of @${agent.owner}’s: they connect their GitHub from their account page, top right.`)
     const made = owned ? { token: owned, expiresAt: new Date(Date.now() + 60 * 60_000).toISOString() } : await this.reach.runToken(repo)
     if (!made) throw new Refused(`This hub can’t make a token for ${repo} alone (no GitHub App, or it isn’t installed there): use this machine’s own GitHub login.`)
     const as = owned ? 'owner' : 'app'

@@ -1,4 +1,5 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir, hostname, tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
@@ -174,6 +175,13 @@ export interface RunnerOptions {
   idleMinutes?: number
   /** The runner's own file, when it may replace itself with a newer one from the hub and ask to be started again. */
   selfUpdate?: string
+  /** Where an enterprise's managed MCP config would be (this platform's place); tests point it elsewhere. */
+  managedMcp?: string
+  /**
+   * The managed config lists Binders' server (as binders_hub), so Claude Code has Binders' tools from it and the runner
+   * adds no config of its own (BINDERS_MANAGED_MCP=allowed).
+   */
+  managedMcpAllowed?: boolean
 }
 
 /** Whether version a is newer than b ("0.6.10" than "0.6.9"). */
@@ -249,13 +257,27 @@ const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`
  * Why an agent exited with an error: what it said went wrong, else its last line of errors. Lines about another MCP
  * server of the user's (one that wants a sign-in, say) are left out: the agent carries on without it, so they're not why.
  */
-export function stoppedWith(ran: { exit: { code: number | null }; errors: string; reader: StreamReader; cutOff?: string }, hubUrl: string) {
+export function stoppedWith(ran: { exit: { code: number | null }; errors: string; reader: StreamReader; cutOff?: string; managedMcp?: boolean }, hubUrl: string) {
   if (ran.cutOff) return ran.cutOff
+  if (ran.managedMcp) return 'Claude Code on this machine has an enterprise MCP config, which doesn’t let Binders add its MCP server. Its runner works without it from now on, reporting for it: try again.'
   const host = new URL(hubUrl).host
   const line = ran.errors.trim().split('\n').reverse().find((l) => l.trim() && (!/\brmcp::/.test(l) || l.includes(host)))
   const why = (ran.reader.summary.error ?? line?.trim())?.replace(/\.$/, '')
   return `The agent stopped with exit code ${ran.exit.code}${why ? `: ${why}` : ''}.`
 }
+
+/**
+ * Where an enterprise's managed MCP config is on this machine, when it has one: with it, Claude Code takes no MCP servers
+ * but the ones it lists, and refuses the one the runner adds for each run (Binders').
+ */
+export function managedMcpPath(platform: NodeJS.Platform = process.platform) {
+  return platform === 'darwin' ? '/Library/Application Support/ClaudeCode/managed-mcp.json'
+    : platform === 'win32' ? 'C:\\ProgramData\\ClaudeCode\\managed-mcp.json'
+      : '/etc/claude-code/managed-mcp.json'
+}
+
+/** Claude Code saying no to Binders' MCP server because an enterprise MCP config manages its servers. */
+export const refusedByManagedMcp = (text: string) => /cannot dynamically configure MCP servers|enterprise MCP config is present/i.test(text)
 
 /** Claude Code's thinking budget for each reasoning level a person can ask for. */
 const thinkingTokens: Record<Effort, number> = { low: 4_000, medium: 12_000, high: 32_000 }
@@ -279,6 +301,14 @@ export class Runner {
   name = ''
   /** This runner's own id, so the hub can tell it from another runner for the same agent. */
   readonly id = process.env.BINDERS_RUNNER_ID ?? randomBytes(6).toString('hex')
+  /** This machine has an enterprise MCP config: Claude Code runs without Binders' MCP server. */
+  private enterpriseMcp = false
+  /** Its enterprise MCP config lists Binders' server: Claude Code has Binders' tools from it, and no config is added. */
+  private get managedAllowed() {
+    return this.options.managedMcpAllowed ?? process.env.BINDERS_MANAGED_MCP === 'allowed'
+  }
+  /** How many cards it takes at once, as it last told the hub. */
+  private parallel = 3
 
   constructor(options: RunnerOptions) {
     this.options = { ...options, workspace: resolve(options.workspace), hubUrl: options.hubUrl.replace(/\/$/, '') }
@@ -306,7 +336,30 @@ export class Runner {
     }
   }
 
+  /**
+   * Whether a tool takes Binders' MCP server for its runs on this machine. Claude Code doesn't where an enterprise MCP
+   * config manages its servers: it gets the plain prompts, and the runner reports its steps, words and answers for it.
+   */
+  usesMcp(settings: Pick<RunnerSettings, 'tool'>) {
+    return toolInfo(settings.tool).mcp && !(settings.tool === 'claude' && this.enterpriseMcp)
+  }
+
+  /** What the runner tells the hub of itself: its version, how many cards it takes, and an enterprise MCP config. */
+  private profile(parallel: number) {
+    this.parallel = parallel
+    return { version: runnerVersion, parallel, id: this.id, ...(this.enterpriseMcp ? { enterprise_mcp: true } : {}) }
+  }
+
+  /** An enterprise MCP config found (its file, or Claude Code refusing Binders' server): said once, here and to the hub. */
+  private async enterpriseMcpFound(how: string) {
+    if (this.enterpriseMcp) return
+    this.enterpriseMcp = true
+    this.log(`${how}: Claude Code works here without Binders’ MCP tools, and the runner reports for it. An admin can allow Binders’ server in the managed config instead (see the README).`)
+    if (this.client) await this.call('update_profile', { runner: this.profile(this.parallel) }).catch(() => undefined)
+  }
+
   async connect() {
+    if (!this.enterpriseMcp && !this.managedAllowed && existsSync(this.options.managedMcp ?? managedMcpPath())) await this.enterpriseMcpFound(`An enterprise MCP config is on this machine (${this.options.managedMcp ?? managedMcpPath()})`)
     this.client = new Client({ name: 'binders-runner', version: '0.2.0' })
     await this.client.connect(new StreamableHTTPClientTransport(new URL(`${this.options.hubUrl}/mcp`), { requestInit: { headers: { authorization: `Bearer ${this.options.token}` } } }))
     const me = await this.call<{ name: string; runner?: RunnerSettings }>('whoami')
@@ -317,7 +370,7 @@ export class Runner {
     if (me.runner) await this.tellModels(me.runner)
     // Its version and how many cards it takes at once, so the app can tell an old runner from a busy one.
     const parallel = Math.max(1, me.runner?.parallel ?? 3)
-    const told = await this.call<{ other_runners?: { on?: string; at: string }[] }>('update_profile', { runner: { version: runnerVersion, parallel, id: this.id } }).catch(() => undefined)
+    const told = await this.call<{ other_runners?: { on?: string; at: string }[] }>('update_profile', { runner: this.profile(parallel) }).catch(() => undefined)
     // Two runners for one agent take the same work, each in its own folder: say so, plainly.
     const others = typeof told === 'object' ? told?.other_runners ?? [] : []
     if (others.length) this.log(`Warning: ${others.length === 1 ? 'another runner is' : `${others.length} other runners are`} already running as ${me.name}${others[0].on ? ` (${others.map((o) => o.on).filter(Boolean).join('; ')})` : ''}. Two runners for one agent take the same work: stop the one you don’t need.`)
@@ -556,9 +609,11 @@ export class Runner {
   }
 
   private async workIn(card: CardJSON, settings: RunnerSettings, tool: ReturnType<typeof toolInfo>, dir: string, githubEnv: Record<string, string>) {
+    // With Binders' tools, or (a tool without MCP, or an enterprise MCP config here) with the runner reporting for it.
+    const mcp = tool.mcp && this.usesMcp(settings)
     // What the team knows about its repo, unless it's carrying on in a session that has it already.
-    const brief = card.resume && tool.mcp && this.sessions.has(card.id) ? '' : await this.briefFor(card.repo ?? await repoOf(dir), tool.mcp)
-    const prompt = tool.mcp ? this.prompt(card, dir, brief) : await this.plainPrompt(card, dir, brief)
+    const brief = card.resume && mcp && this.sessions.has(card.id) ? '' : await this.briefFor(card.repo ?? await repoOf(dir), mcp)
+    const prompt = mcp ? this.prompt(card, dir, brief) : await this.plainPrompt(card, dir, brief)
     // A person writing on the card while it runs steers it, as Esc and a message would in the tool: the run stops,
     // and the same session carries on with what they wrote.
     let next = prompt
@@ -607,7 +662,7 @@ export class Runner {
         return
       }
       resume = true
-      next = tool.mcp && this.sessions.has(card.id)
+      next = mcp && this.sessions.has(card.id)
         ? `A person wrote on Binders card ${card.id} while you were working on it:\n${steer}\n\nTake it into account and carry on with the card (get_task has the whole conversation).`
         : `${await this.plainPrompt({ ...card, resume: false }, dir, brief)}\n\nWhile you were working on it, a person wrote:\n${steer}\nTake it into account.`
     }
@@ -620,14 +675,14 @@ export class Runner {
    */
   async chat(chat: ChatJSON) {
     const settings = await this.settings()
-    const tool = toolInfo(settings.tool)
+    const mcp = this.usesMcp(settings)
     const from = [...chat.messages].reverse().find((m) => m.from !== 'you')
     this.log(`${from?.from ?? 'Someone'} says about “${chat.note?.title ?? 'a note'}”: ${short(from?.text ?? '', 80)}`)
     await this.call('chat_reply', { id: chat.id, working: true, doing: 'Reading the note' }).catch(() => {})
     const resumed = this.sessions.has(chat.id)
     let noteFile: string | undefined
     let before = ''
-    if (!tool.mcp && chat.note) {
+    if (!mcp && chat.note) {
       before = (await this.call<{ text?: string }>('get_note', { id: chat.note.id }).catch(() => ({ text: '' }))).text ?? ''
       noteFile = join(tmpdir(), `binders-note-${randomBytes(6).toString('hex')}.md`)
       await writeFile(noteFile, before, { mode: 0o600 })
@@ -676,7 +731,7 @@ export class Runner {
    */
   async debrief(job: DebriefJSON) {
     const settings = { ...(await this.settings()), effort: job.effort }
-    const tool = toolInfo(settings.tool)
+    const mcp = this.usesMcp(settings)
     this.log(`${job.asked_by ?? 'Someone'} asked for a debrief of “${job.title}”.`)
     const doing = (text: string) => this.call('send_debrief', { id: job.id, doing: short(text, 120) }).catch(() => {})
     await doing('Reading the Change Set')
@@ -687,9 +742,9 @@ export class Runner {
     this.sessions.delete(key)
     let why: string | undefined
     // Without Binders' tools, the agent writes the sections to a file of its own.
-    const answer = tool.mcp ? undefined : join(tmpdir(), `binders-debrief-${randomBytes(6).toString('hex')}.json`)
+    const answer = mcp ? undefined : join(tmpdir(), `binders-debrief-${randomBytes(6).toString('hex')}.json`)
     try {
-      const brief = await this.briefFor(await repoOf(dir), tool.mcp)
+      const brief = await this.briefFor(await repoOf(dir), mcp)
       const prompt = answer ? await this.plainDebriefPrompt(job, dir, answer, brief) : this.debriefPrompt(job, dir, brief)
       const ran = await this.runWithRoom(settings, key, prompt, dir, { BINDERS_DEBRIEF: job.id }, job.id.startsWith('set-') ? settings.timeoutMinutes : Math.min(settings.timeoutMinutes, 20), (reader) => {
         const { steps } = reader.take(false)
@@ -772,7 +827,7 @@ export class Runner {
    */
   async challenge(job: ChallengeJSON) {
     const settings = { ...(await this.settings()), effort: job.effort }
-    const tool = toolInfo(settings.tool)
+    const mcp = this.usesMcp(settings)
     this.log(`${job.asked_by ?? 'Someone'} asked for a Challenge of “${job.title}”.`)
     const doing = (text: string) => this.call('send_challenge', { id: job.id, doing: short(text, 120) }).catch(() => {})
     await doing('Reading the diff')
@@ -781,7 +836,7 @@ export class Runner {
     this.sessions.delete(key)
     let why: string | undefined
     let checkout: Awaited<ReturnType<typeof reviewCheckout>>
-    const answer = tool.mcp ? undefined : join(tmpdir(), `binders-challenge-${randomBytes(6).toString('hex')}.json`)
+    const answer = mcp ? undefined : join(tmpdir(), `binders-challenge-${randomBytes(6).toString('hex')}.json`)
     try {
       const set = await this.call<ChallengeSetJSON>('get_challenge_set', { id: job.id })
       const own = await this.cardWorktree(job.id)
@@ -795,7 +850,7 @@ export class Runner {
         if (blast) await this.call('send_challenge', { id: job.id, doing: 'Mapping the blast radius', blast_radius: blast }).catch(() => {})
       }
       // What the team knows about the repo: a reviewer that knows its rules finds what breaks them.
-      const brief = await this.briefFor(set.pull?.repo ?? await repoOf(dir), tool.mcp)
+      const brief = await this.briefFor(set.pull?.repo ?? await repoOf(dir), mcp)
       const prompt = answer ? await this.plainChallengePrompt(job, set, checkout?.dir, answer, blast, brief) : this.challengePrompt(job, checkout?.dir, !!blast, brief)
       // A card's Challenge has 20 minutes; a whole change set's, the agent's own limit.
       const minutes = job.id.startsWith('set-') ? settings.timeoutMinutes : Math.min(settings.timeoutMinutes, 20)
@@ -878,14 +933,14 @@ export class Runner {
    */
   async replies(job: RepliesJSON) {
     const settings = await this.settings()
-    const tool = toolInfo(settings.tool)
+    const mcp = this.usesMcp(settings)
     this.log(`${job.asked_by ?? 'Someone'} asked for replies to the findings on “${job.title}”.`)
     const doing = (text: string) => this.call('reply_to_findings', { id: job.id, doing: short(text, 120) }).catch(() => {})
     await doing('Reading the findings')
     const own = await this.cardWorktree(job.id)
     const dir = await run('git', ['-C', own, 'rev-parse', '--git-dir']).then(() => own, () => this.options.workspace)
     let why: string | undefined
-    const answer = tool.mcp ? undefined : join(tmpdir(), `binders-replies-${randomBytes(6).toString('hex')}.json`)
+    const answer = mcp ? undefined : join(tmpdir(), `binders-replies-${randomBytes(6).toString('hex')}.json`)
     try {
       const challenge = await this.call<ChallengeJSONRead>('get_challenge', { id: job.id })
       const prompt = answer ? this.plainRepliesPrompt(job, challenge, dir, answer) : this.repliesPrompt(job, dir)
@@ -1090,7 +1145,11 @@ export class Runner {
       if (config.path) await rm(config.path, { force: true })
     }
     if (reader.summary.sessionId) this.sessions.set(key, reader.summary.sessionId)
-    return { reader, exit, errors, output, timedOut, idle, idleMinutes, cutOff: undefined as string | undefined }
+    // Claude Code refusing Binders' MCP server for an enterprise MCP config the runner didn't find by its file: from now
+    // on its runs go without it, and this one stops saying why.
+    const managedMcp = settings.tool === 'claude' && !!config.path && !!exit.code && refusedByManagedMcp(`${errors}\n${output}\n${reader.summary.error ?? ''}`)
+    if (managedMcp) await this.enterpriseMcpFound('Claude Code refused Binders’ MCP server for an enterprise MCP config')
+    return { reader, exit, errors, output, timedOut, idle, idleMinutes, cutOff: undefined as string | undefined, managedMcp }
   }
 
   /** Why a run was stopped as stuck, and where to look. */
@@ -1137,7 +1196,7 @@ export class Runner {
       return
     }
     const last = ran.reader.summary.last
-    if (!toolInfo(settings.tool).mcp && !ran.timedOut && ran.exit.code === 0) {
+    if (!this.usesMcp(settings) && !ran.timedOut && ran.exit.code === 0) {
       const summary = ran.reader.summary.reply ?? lastWords(ran.output) ?? 'Done.'
       await this.call('complete_task', { id: card.id, summary: short(summary, 4000) }).catch((error) => this.log(`Couldn’t finish “${card.title}”: ${(error as Error).message}`))
       this.log(`Finished “${card.title}”.`)
@@ -1271,6 +1330,10 @@ export class Runner {
    * `mcpServer`, so it can't merge into a server of the user's own called "binders" (the Mac app's, on stdio).
    */
   private async mcpConfig(settings: RunnerSettings): Promise<{ path?: string; env: Record<string, string>; quiet?: string[] }> {
+    // An enterprise MCP config on this machine: Claude Code refuses any other server, so it runs without Binders', or
+    // with Binders' from the managed config when it lists it.
+    if (!this.usesMcp(settings) && toolInfo(settings.tool).mcp) return { env: {} }
+    if (settings.tool === 'claude' && this.managedAllowed) return { env: {} }
     // Codex on another provider's model: the user's own MCP servers stay off for the run, as one tool schema such a
     // provider refuses (a top-level anyOf, say) fails every request. The hub's is the one it needs.
     if (settings.tool === 'codex' && settings.model && /^[A-Za-z][\w-]*\//.test(settings.model)) return { env: {}, quiet: (await codexServers()).filter((n) => n !== mcpServer) }
@@ -1454,7 +1517,7 @@ export class Runner {
       case 'claude': {
         const access = full ? 'bypassPermissions' : settings.access === 'auto' ? 'auto' : 'acceptEdits'
         // Binders' tools allowed up front, whatever its access: they're how it works with the hub.
-        return plain('claude', [...(mcp ? ['--mcp-config', mcp, `--allowedTools=mcp__${mcpServer}`] : []), '--permission-mode', access, ...(model ? ['--model', model] : [])])
+        return plain('claude', [...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcpServer}`] : []), '--permission-mode', access, ...(model ? ['--model', model] : [])])
       }
       case 'codex': {
         const routed = model ? /^([A-Za-z][\w-]*)\/(.+)$/.exec(model) : null
@@ -1498,7 +1561,7 @@ export class Runner {
         const access = full ? 'bypassPermissions' : settings.access === 'auto' ? 'auto' : 'acceptEdits'
         // Binders' tools allowed up front: run headless, a tool that needs asking is refused, and with Edits or Auto
         // access an MCP tool does.
-        return plain('claude', ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...(mcp ? ['--mcp-config', mcp, `--allowedTools=mcp__${mcpServer}`] : []), '--permission-mode', access, ...(model ? ['--model', model] : []), ...(session ? ['--resume', session] : [])],
+        return plain('claude', ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcpServer}`] : []), '--permission-mode', access, ...(model ? ['--model', model] : []), ...(session ? ['--resume', session] : [])],
           // The reasoning asked for, as how much it may think before each answer.
           effort ? { MAX_THINKING_TOKENS: String(thinkingTokens[effort]) } : {})
       }

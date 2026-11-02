@@ -4,7 +4,7 @@ import { call } from '../data/api'
 import type { Role, SpaceView } from '../data/model'
 import { space, spaceHref } from '../data/space'
 import { useStore } from '../data/store'
-import { PersonAvatar } from './bits'
+import { PersonAvatar, PersonName } from './bits'
 import { PeopleInput } from './PeopleInput'
 import { attempt } from './Toast'
 
@@ -78,7 +78,7 @@ function Members({ here, me, change }: { here: SpaceView; me: string; change: (w
             {here.members!.map((m) => (
               <li key={m.login}>
                 <PersonAvatar id={m.login} size={26} />
-                <b>{m.login}{m.login.toLowerCase() === me.toLowerCase() && <span className="faint"> (you)</span>}</b>
+                <b><PersonName id={m.login} />{m.login.toLowerCase() === me.toLowerCase() && <span className="faint"> (you)</span>}</b>
                 <select id={`member-role-${m.login}`} aria-label={`${m.login}’s role`} value={m.role} onChange={(e) => change(() => call('PUT', path(m.login), { role: e.target.value }))}>
                   {roles.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
                 </select>

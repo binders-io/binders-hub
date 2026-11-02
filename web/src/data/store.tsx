@@ -1,3 +1,4 @@
+import { shownName } from '../../../shared/people.ts'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { emptyState, type Change, type HubState } from '../../../shared/state.ts'
 import { isBlank, titleOf } from '../../../shared/notes.ts'
@@ -537,9 +538,12 @@ export function useStore(): Store {
   return useMemo(() => ({ ...actions, state, connection: state.sync.connection }), [actions, state])
 }
 
-/** An agent, a person (by GitHub login) or the hub, as a name to show. */
-export function nameFor(state: Pick<HubState, 'agents'>, by: string) {
-  return state.agents.find((a) => a.id === by)?.name ?? (by === 'hub' ? 'Binders' : by)
+/**
+ * An agent, a person (by GitHub login) or the hub, as a name to show: a person by their GitHub profile's name, or their
+ * login without a known enterprise shortcode. Their login stays who they are; only what's shown changes.
+ */
+export function nameFor(state: Pick<HubState, 'agents'> & { me?: Pick<Me, 'people' | 'emu'> }, by: string) {
+  return state.agents.find((a) => a.id === by)?.name ?? (by === 'hub' ? 'Binders' : shownName(by, state.me?.people, state.me?.emu))
 }
 
 /** The hub's presence as the store last heard it, for the checks below. */

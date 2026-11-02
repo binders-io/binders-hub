@@ -17,16 +17,19 @@ type Health = {
   installations: { account: string; gone?: boolean; selection?: 'all' | 'selected'; repos?: number; url?: string; suspended?: boolean; pending?: Lack[] }[]
 }
 
-/** An app another binder made on an organization, which this one may use instead of making its own. */
-type Offer = { binder: { id: string; name: string }; app: { name: string; slug: string; owner: string; htmlUrl: string; installations: string[] } }
+/**
+ * Another binder's GitHub App, whose installations this one may use instead of making its own: those GitHub lets this
+ * person reach (an organization they're in, or their own account). `hub`: the hub's first binder's, the hub's own app.
+ */
+export type Offer = { binder: { id: string; name: string }; hub?: boolean; app: { name: string; slug: string; owner: string; htmlUrl: string; installations: { account: string; type?: 'User' | 'Organization' }[] } }
 
 const words = (p: string) => p.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())
 
 /**
- * This binder's GitHub: a GitHub App, its own or, on an organization, one another binder there made. One made on a
- * person's own account serves only the binder it was made for. Until there's one, the two steps that make and install
- * it (GitHub's manifest flow makes the app and hands its keys back; installing it picks the repos), after offering an
- * organization's app that a binder this person runs has already. Once there is, how it stands as GitHub says now: the
+ * This binder's GitHub: a GitHub App, its own or another binder's (the hub's, usually), used through the installations
+ * its people can reach. Until there's one, the hub's app and any other binder's, by installation, then the two steps
+ * that make and install one of its own (GitHub's manifest flow makes the app and hands its keys back; installing it
+ * picks the repos). Once there is, how it stands as GitHub says now: the
  * app, what it lacks of what the hub needs and where to fix that, and each installation with its repos and any
  * permission its account hasn't accepted yet.
  */
@@ -62,20 +65,21 @@ function Steps({ me }: { me: Me }) {
   // App names are unique across GitHub, so the default carries who it's for.
   const [name, setName] = useState(() => `Binders for ${here(me) ?? me.user.login}`.slice(0, 34))
   const [busy, setBusy] = useState(false)
-  // Organizations' apps from binders this person runs, which this one may use rather than making one more.
+  // Other binders' apps, by the installations this person can reach, which this one may use rather than make one more.
   const [offers, setOffers] = useState<Offer[]>([])
   useEffect(() => {
     if (!github.admin || app) return
     void call<{ apps: Offer[] }>('GET', '/api/github/reusable').then((r) => setOffers(r.apps)).catch(() => setOffers([]))
   }, [github.admin, app])
-  const reuse = async (offer: Offer) => {
+  const reuse = async (offer: Offer, account: string) => {
     setBusy(true)
-    const done = await attempt(async () => { await call('POST', '/api/github/app/reuse', { from: offer.binder.id }); return true })
+    const done = await attempt(async () => { await call('POST', '/api/github/app/reuse', { from: offer.binder.id, accounts: [account] }); return true })
     setBusy(false)
     if (done) window.location.reload()
   }
-  // The organization typed in has an app already: say so, rather than make a second.
-  const sameOrg = owner === 'org' ? offers.find((o) => o.app.owner.toLowerCase() === org.trim().toLowerCase()) : undefined
+  // The organization typed in has an installation already: say so, rather than make a second app.
+  const typed = org.trim().toLowerCase()
+  const sameOrg = owner === 'org' && typed ? offers.find((o) => o.app.installations.some((i) => i.account.toLowerCase() === typed)) : undefined
   const create = async (event: FormEvent) => {
     event.preventDefault()
     setBusy(true)
@@ -104,22 +108,12 @@ function Steps({ me }: { me: Me }) {
             <p><b>{app.name}</b> on <b>@{app.owner}</b>. <a href={app.htmlUrl} target="_blank" rel="noreferrer">Open it on GitHub <ArrowUpRight size={11} /></a></p>
           ) : github.admin ? (
             <form className="setup-form" onSubmit={create}>
-              {offers.length > 0 && (
-                <div className="gh-offers">
-                  {offers.map((offer) => (
-                    <p key={offer.binder.id}>
-                      <b>@{offer.app.owner}</b> has <b>{offer.app.name}</b> already, made for the <b>{offer.binder.name}</b> binder{offer.app.installations.length ? `, installed on ${offer.app.installations.map((a) => `@${a}`).join(', ')}` : ''}. If this binder works in @{offer.app.owner} too, use it here rather than make another.{' '}
-                      <button type="button" className="button primary" disabled={busy} onClick={() => void reuse(offer)}><Github size={14} /> Use {offer.app.name}</button>
-                    </p>
-                  ))}
-                  <p className="faint">Or make this binder an app of its own:</p>
-                </div>
-              )}
-              <p>GitHub makes the app with everything Binders needs and hands its keys straight back here. Make it on the organization whose repos this binder works in: other binders in that organization can use it too. One made on your own account serves this binder alone.</p>
+              {offers.length > 0 && <Offers offers={offers} busy={busy} reuse={reuse} />}
+              <p>GitHub makes the app with everything Binders needs and hands its keys straight back here. Make it on the organization whose repos this binder works in. Other binders can use its installations on organizations their people are in; an installation on a person’s own account is shared only by them.</p>
               <div className="owner-choice" role="radiogroup" aria-label="Whose app">
                 <label className="check"><input type="radio" name="owner" id="owner-org" checked={owner === 'org'} onChange={() => setOwner('org')} /> An organization</label>
                 {owner === 'org' && <input id="owner-org-name" className="mono" value={org} onChange={(e) => setOrg(e.target.value)} placeholder="organization" required />}
-                {sameOrg && <span className="faint">@{sameOrg.app.owner} has an app already: <button type="button" className="text-button" disabled={busy} onClick={() => void reuse(sameOrg)}>use {sameOrg.app.name}</button>.</span>}
+                {sameOrg && <span className="faint">{sameOrg.app.name} is installed on @{org.trim()} already: <button type="button" className="text-button" disabled={busy} onClick={() => void reuse(sameOrg, org.trim())}>use it</button>.</span>}
                 <label className="check"><input type="radio" name="owner" id="owner-me" checked={owner === 'me'} onChange={() => setOwner('me')} /> My account</label>
               </div>
               <label className="field">
@@ -149,6 +143,32 @@ function Steps({ me }: { me: Me }) {
   )
 }
 
+/**
+ * The installations of other binders' apps this person can reach, the hub's own app first: one button each. Using one
+ * shares no more than that installation, and only the repos this binder links from it.
+ */
+export function Offers({ offers, busy, reuse }: { offers: Offer[]; busy: boolean; reuse: (offer: Offer, account: string) => void }) {
+  return (
+    <div className="gh-offers">
+      {offers.map((offer) => (
+        <div key={offer.binder.id} className="gh-offer">
+          <p><b>{offer.hub ? 'Use the hub’s GitHub App' : `Use ${offer.app.name}`}</b>{' '}
+            <span className="faint">{offer.app.name}, made for the {offer.binder.name} binder. Through it, this binder reaches only the repos it links.</span></p>
+          <ul className="gh-installs">
+            {offer.app.installations.map((i) => (
+              <li key={i.account}>
+                <span><b>@{i.account}</b> <span className="faint">{i.type === 'User' ? 'your own account' : 'an organization you’re in'}</span></span>
+                <button type="button" className="button primary" disabled={busy} onClick={() => reuse(offer, i.account)}><Github size={14} /> Use it for @{i.account}</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      <p className="faint">Or make this binder an app of its own:</p>
+    </div>
+  )
+}
+
 function Overview({ me }: { me: Me }) {
   const app = me.github.app!
   const lender = app.borrowedFrom ? me.spaces.find((s) => s.id === app.borrowedFrom)?.name ?? app.borrowedFrom : undefined
@@ -162,6 +182,19 @@ function Overview({ me }: { me: Me }) {
     if (await attempt(async () => { await call('DELETE', `/api/github/app/loans/${encodeURIComponent(to)}`); return true })) window.location.reload()
   }
   const nameOf = (id: string) => me.spaces.find((s) => s.id === id)?.name ?? id
+  // Borrowing: more installations of the same app this person can reach.
+  const [more, setMore] = useState<Offer[]>([])
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    if (!lender || !me.github.admin) return
+    void call<{ apps: Offer[] }>('GET', '/api/github/reusable').then((r) => setMore(r.apps)).catch(() => setMore([]))
+  }, [lender, me.github.admin])
+  const addInstall = async (offer: Offer, account: string) => {
+    setBusy(true)
+    const done = await attempt(async () => { await call('POST', '/api/github/app/reuse', { from: offer.binder.id, accounts: [account] }); return true })
+    setBusy(false)
+    if (done) window.location.reload()
+  }
   const problems = health ? health.missing.length + health.installations.reduce((n, i) => n + (i.pending?.length ?? 0) + (i.gone || i.suspended ? 1 : 0), 0) : 0
   return (
     <>
@@ -171,10 +204,8 @@ function Overview({ me }: { me: Me }) {
           <b>{app.name}</b>
           <span className="faint">
             {lender
-              ? <>The <b>{lender}</b> binder’s GitHub App, on the organization @{app.owner}, used here too. Its permissions and installations are changed from {lender}.</>
-              : app.ownerType === 'Organization'
-                ? <>This binder’s GitHub App, on the organization @{app.owner}. Its owners and admins may lend it to other binders in @{app.owner}, which reach only @{app.owner}’s installation.</>
-                : <>This binder’s GitHub App, on @{app.owner}’s own account: it serves this binder alone.</>}
+              ? <>The <b>{lender}</b> binder’s GitHub App, used here through its installation{(app.borrowedAccounts?.length ?? 0) === 1 ? '' : 's'} on {(app.borrowedAccounts ?? []).map((a) => `@${a}`).join(', ')}, for the repos this binder links. Its permissions and installations are changed from {lender}.</>
+              : <>This binder’s GitHub App, made on @{app.owner}. Other binders may use its installations on organizations their people are in, and reach only the repos they link; its installation on a person’s own account only that person may share.</>}
           </span>
         </div>
         <a className="button" href={app.htmlUrl} target="_blank" rel="noreferrer">On GitHub <ArrowUpRight size={12} /></a>
@@ -228,6 +259,13 @@ function Overview({ me }: { me: Me }) {
         ))}
       </ul>
 
+      {lender && more.length > 0 && (
+        <>
+          <h3 className="settings-sub">Use it for more</h3>
+          <Offers offers={more} busy={busy} reuse={(offer, account) => void addInstall(offer, account)} />
+        </>
+      )}
+
       {!lender && !!app.lentTo?.length && (
         <>
           <h3 className="settings-sub">Lent to</h3>
@@ -237,7 +275,7 @@ function Overview({ me }: { me: Me }) {
                 <span className="status-icon"><Check size={13} strokeWidth={3} /></span>
                 <div>
                   <b>{nameOf(loan.binder)}</b>
-                  <span>Lent by @{loan.by} on {new Date(loan.at).toLocaleDateString()} · its people sign in through this app and reach @{app.owner}’s repos with it, while @{loan.by} runs this binder.</span>
+                  <span>Asked for by @{loan.by} on {new Date(loan.at).toLocaleDateString()} · its installation{(loan.accounts?.length ?? 0) === 1 ? '' : 's'} on {(loan.accounts ?? [app.owner]).map((a) => `@${a}`).join(', ')}, for the repos it links there.</span>
                 </div>
                 {me.github.admin && <button className="button" onClick={() => void endLoan(loan.binder)}>Stop lending</button>}
               </li>

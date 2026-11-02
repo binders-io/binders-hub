@@ -128,6 +128,7 @@ function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent
           </span>
         </div>
       </header>
+      {agent.runnerSeen?.enterpriseMcp && (runner?.tool ?? 'claude') === 'claude' && <p className="agent-note" role="status">Enterprise MCP config on this machine: working without Binders’ MCP tools, its runner reporting for it.</p>}
       {runnersOf(agent) > 1 && <p className="agent-warning" role="status">{runnersOf(agent)} runners are running as {agent.name}. They take the same work, each in its own folder: stop all but one.</p>}
 
       <div className={`agent-doing${holding.length ? ' busy' : ''}${asks.length ? ' asks' : ''}`}>
@@ -200,6 +201,9 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
   const [binders, setBinders] = useState<string[]>(agent?.binders ?? [])
   const [runner, setRunner] = useState<RunnerSettings>(runnerShown(agent))
   const setRun = (fields: Partial<RunnerSettings>) => setRunner((r) => ({ ...r, ...fields }))
+  // Who its commits are by: the hub's admins' choice when they fixed one for every agent, else this agent's.
+  const commitsFixed = state.me?.agentCommits && state.me.agentCommits !== 'agent' ? state.me.agentCommits : undefined
+  const commitsBy = commitsFixed ?? runner.commitAs ?? 'owner'
   const tool = toolInfo(runner.tool)
   // Picking a tool keeps an access it allows, and drops a model meant for another tool.
   const pickTool = (id: AgentTool) => {
@@ -296,10 +300,10 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
               ))}
             </div>
           </Field>
-          <Field label="Commits and pull requests by" group hint={(runner.commitAs ?? 'owner') === 'owner' ? 'You: it pushes with your GitHub sign-in to the hub, and commits carry your name and private GitHub email.' : 'The hub’s GitHub App: commits and pull requests show as its bot.'}>
-            <div className="segmented" role="radiogroup" id="runner-commit-as">
+          <Field label="Commits and pull requests by" group hint={commitsFixed ? `Set by the hub’s admins: ${commitsFixed === 'owner' ? 'each agent’s owner, with their GitHub sign-in' : 'the hub’s GitHub App and its bot'}.` : commitsBy === 'owner' ? 'You: it pushes with your GitHub sign-in to the hub, and commits carry your name and private GitHub email.' : 'The hub’s GitHub App: commits and pull requests show as its bot.'}>
+            <div className="segmented" role="radiogroup" id="runner-commit-as" aria-disabled={commitsFixed ? true : undefined}>
               {([['owner', 'You'], ['app', 'The Binders app']] as const).map(([value, label]) => (
-                <button key={value} type="button" role="radio" aria-checked={(runner.commitAs ?? 'owner') === value} className={(runner.commitAs ?? 'owner') === value ? 'on' : ''} onClick={() => setRun({ commitAs: value })}>{label}</button>
+                <button key={value} type="button" role="radio" aria-checked={commitsBy === value} className={commitsBy === value ? 'on' : ''} disabled={!!commitsFixed} onClick={() => setRun({ commitAs: value })}>{label}</button>
               ))}
             </div>
           </Field>

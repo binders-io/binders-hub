@@ -93,6 +93,9 @@ const grantOf = (answer: TokenAnswer, now = Date.now()): GitHubGrant => ({
 })
 
 export const sessionCookie = 'binders_session'
+/** People's GitHub profiles, by login, and the enterprise shortcodes of managed accounts connected here. */
+const peopleKey = 'people'
+const shortcodesKey = 'emu-shortcodes'
 const sessionDays = 30
 const sha = (text: string) => createHash('sha256').update(text).digest('hex')
 
@@ -290,6 +293,8 @@ export class Auth {
     const me = (await (await fetch(new URL('/user', github.apiUrl), { headers })).json()) as { login: string; name?: string; avatar_url?: string }
     if (!me.login) throw new Refusal('GitHub didn’t say who you are.')
     const user = { login: me.login, name: me.name || me.login, avatar: me.avatar_url }
+    // How they're shown: the name on their GitHub profile, when it has one.
+    await this.rememberPerson({ login: me.login, name: me.name || undefined, avatar: me.avatar_url })
     // Their own GitHub, through their own OAuth App, for their personal binder: kept for them (`as`) alone.
     if (via === 'personal') {
       if (!as) throw new Refusal('Sign in to the hub first, then connect your GitHub.')
@@ -299,6 +304,10 @@ export class Auth {
     if (via === 'connect') {
       if (!as) throw new Refusal('Sign in to the hub first, then connect your GitHub.')
       await this.keepGitHub(as, space, { ...grantOf(body), ...(me.login.toLowerCase() !== as.toLowerCase() ? { as: me.login } : {}) })
+      // Another account of theirs, connected for an organization their own can't reach: an Enterprise Managed User's,
+      // whose login ends in its enterprise's shortcode. Logins ending in it are shown without it.
+      const shortcode = /_([A-Za-z0-9]{1,20})$/.exec(me.login)?.[1]
+      if (shortcode && me.login.toLowerCase() !== as.toLowerCase()) await this.rememberShortcode(shortcode)
       return { user }
     }
     await this.letIn(me.login, async () => {
@@ -310,6 +319,47 @@ export class Auth {
     if (via === 'oauth') return { user, identity: token }
     await this.keepGitHub(me.login, space, grantOf(body))
     return { user, token }
+  }
+
+  // How people are shown -------------------------------------------------------------------------------------------
+
+  /** People's GitHub profiles as last seen at sign-in, by login: the name and picture to show for them. */
+  async people(): Promise<Record<string, { name?: string; avatar?: string }>> {
+    const raw = await this.kv.get(peopleKey)
+    try {
+      return raw ? (JSON.parse(raw) as Record<string, { name?: string; avatar?: string }>) : {}
+    } catch {
+      return {}
+    }
+  }
+
+  async rememberPerson(person: { login: string; name?: string; avatar?: string }) {
+    const all = await this.people()
+    const key = person.login.toLowerCase()
+    const was = all[key]
+    if (was && was.name === person.name && was.avatar === person.avatar) return
+    delete all[key]
+    all[key] = { ...(person.name ? { name: person.name.slice(0, 100) } : {}), ...(person.avatar ? { avatar: person.avatar.slice(0, 300) } : {}) }
+    // The most recent few thousand: the oldest go first.
+    const keys = Object.keys(all)
+    for (const old of keys.slice(0, Math.max(0, keys.length - 3000))) delete all[old]
+    await this.kv.set(peopleKey, JSON.stringify(all))
+  }
+
+  /** The enterprise shortcodes of managed accounts connected here, in lower case. */
+  async shortcodes(): Promise<string[]> {
+    const raw = await this.kv.get(shortcodesKey)
+    try {
+      return raw ? (JSON.parse(raw) as string[]) : []
+    } catch {
+      return []
+    }
+  }
+
+  private async rememberShortcode(code: string) {
+    const all = await this.shortcodes()
+    if (all.includes(code.toLowerCase())) return
+    await this.kv.set(shortcodesKey, JSON.stringify([...all, code.toLowerCase()].slice(-50)))
   }
 
   // People's GitHub sign-ins ---------------------------------------------------------------------------------------

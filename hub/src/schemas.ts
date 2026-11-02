@@ -99,7 +99,7 @@ export const bodies = {
   newRepo: z.looseObject({ owner: maybe, name: maybe, private: flag, description: maybe }),
   oauth: z.looseObject({ clientId: maybe, clientSecret: maybe }),
   newApp: z.looseObject({ org: maybe, name: maybe }),
-  reuse: z.looseObject({ from: maybe }),
+  reuse: z.looseObject({ from: maybe, accounts: z.array(text.max(100)).max(20).optional() }),
   briefAsk: z.looseObject({ agentId: maybe, refresh: flag }),
   lesson: z.looseObject({ text: maybe }),
 }

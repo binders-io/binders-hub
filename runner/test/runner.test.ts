@@ -19,7 +19,7 @@ import { Sealer } from '../../hub/src/secrets.ts'
 import { buildServer } from '../../hub/src/server.ts'
 import { Spaces } from '../../hub/src/spaces.ts'
 import { Webhooks } from '../../hub/src/webhooks.ts'
-import { Runner, challengeFindings, debriefSections, findingReplies, reviewCheckout, worktreeDiff } from '../src/runner.ts'
+import { Runner, challengeFindings, debriefSections, findingReplies, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
 import { StreamReader } from '../src/stream.ts'
 import { until } from '../../hub/test/helpers.ts'
 
@@ -699,5 +699,97 @@ describe('restarting a runner from the Agents page', () => {
     byHand.stop()
     await handRun
     await close()
+  })
+})
+
+describe('an enterprise MCP config', () => {
+  // A stand-in for Claude Code, first on the PATH: it writes down what it was started with, refuses Binders' server as
+  // Claude Code does under an enterprise MCP config (when told to), and otherwise answers in plain words.
+  async function standInClaude(dir: string, refuse: boolean) {
+    const bin = join(dir, 'bin')
+    execFileSync('mkdir', ['-p', bin])
+    const seen = join(dir, 'claude-args.json')
+    await writeFile(join(bin, 'claude'), `#!/usr/bin/env node
+const fs = require('node:fs')
+const args = process.argv.slice(2)
+if (!args.includes('-p')) process.exit(0)
+const runs = fs.existsSync(${JSON.stringify(seen)}) ? JSON.parse(fs.readFileSync(${JSON.stringify(seen)}, 'utf8')) : []
+runs.push(args)
+fs.writeFileSync(${JSON.stringify(seen)}, JSON.stringify(runs))
+if (${refuse} && args.includes('--mcp-config')) {
+  console.error('Error: You cannot dynamically configure MCP servers when an enterprise MCP config is present')
+  process.exit(1)
+}
+console.log('Added the health check, and its test passes.')
+`, { mode: 0o755 })
+    const path = process.env.PATH
+    process.env.PATH = `${bin}:${path}`
+    return { runs: async () => JSON.parse(await readFile(seen, 'utf8').catch(() => '[]')) as string[][], done: () => { process.env.PATH = path } }
+  }
+
+  it('is found where Claude Code keeps it on each kind of machine, and in what Claude Code says', async () => {
+    assert.equal(managedMcpPath('darwin'), '/Library/Application Support/ClaudeCode/managed-mcp.json')
+    assert.equal(managedMcpPath('linux'), '/etc/claude-code/managed-mcp.json')
+    assert.equal(managedMcpPath('win32'), 'C:\\ProgramData\\ClaudeCode\\managed-mcp.json')
+    assert.ok(refusedByManagedMcp('Error: You cannot dynamically configure MCP servers when an enterprise MCP config is present'))
+    assert.ok(!refusedByManagedMcp('MCP server binders_hub failed to connect'))
+  })
+
+  it('found by its file, Claude Code runs without Binders’ MCP server, on the plain prompts, and the hub hears of it', async () => {
+    const { hub, actions, url, dir, card, issued, close } = await setUp()
+    const claude = await standInClaude(dir, false)
+    const managed = join(dir, 'managed-mcp.json')
+    await writeFile(managed, '{"mcpServers":{}}')
+    try {
+      const made = await actions.putAgent('you', { name: 'Managed', runner: { tool: 'claude', access: 'full', timeoutMinutes: 1, worktrees: false } })
+      const job = await card('Add a health check', made.id)
+      const lines: string[] = []
+      const runner = new Runner({ hubUrl: url, token: await issued(made.id), workspace: dir, log: (line) => lines.push(line), waitSeconds: 5, managedMcp: managed })
+      await runner.start(true)
+      const [args] = await claude.runs()
+      assert.ok(args && !args.includes('--mcp-config') && !args.some((a) => a.startsWith('--allowedTools')), 'no MCP config of its own')
+      assert.doesNotMatch(args[args.indexOf('-p') + 1], /report_progress|get_task/, 'the plain prompt, without Binders’ tools')
+      assert.equal(hub.state.cards.find((c) => c.id === job.id)!.stage, 'live', 'finished, the runner reporting for it')
+      assert.equal(hub.state.agents.find((a) => a.id === made.id)!.runnerSeen?.enterpriseMcp, true)
+      assert.equal(lines.filter((l) => /enterprise MCP config/.test(l)).length, 1, 'said once')
+      assert.equal(runner.usesMcp({ tool: 'claude' }), false)
+      assert.equal(runner.usesMcp({ tool: 'codex' }), true, 'only Claude Code is held to it')
+    } finally {
+      claude.done()
+      await close()
+    }
+  })
+
+  it('found by Claude Code refusing Binders’ server, the card goes back saying why, and the next run goes without it', async () => {
+    const { hub, actions, url, dir, card, issued, close } = await setUp()
+    const claude = await standInClaude(dir, true)
+    try {
+      const made = await actions.putAgent('you', { name: 'Refused', runner: { tool: 'claude', access: 'full', timeoutMinutes: 1, worktrees: false } })
+      const job = await card('Add a health check', made.id)
+      const runner = new Runner({ hubUrl: url, token: await issued(made.id), workspace: dir, log: () => {}, waitSeconds: 5, managedMcp: join(dir, 'none.json') })
+      await runner.start(true)
+      const back = hub.state.cards.find((c) => c.id === job.id)!
+      assert.equal(back.stage, 'ready')
+      assert.match(back.activity.find((a) => a.kind === 'released')!.text, /enterprise MCP config.*works without it from now on/)
+      assert.equal(hub.state.agents.find((a) => a.id === made.id)!.runnerSeen?.enterpriseMcp, true)
+      await runner.start(true)
+      const runs = await claude.runs()
+      assert.equal(runs.length, 2)
+      assert.ok(runs[0].includes('--mcp-config') && !runs[1].includes('--mcp-config'))
+      assert.equal(hub.state.cards.find((c) => c.id === job.id)!.stage, 'live')
+    } finally {
+      claude.done()
+      await close()
+    }
+  })
+
+  it('listing Binders’ server itself, Claude Code keeps Binders’ tools and the runner adds no config of its own', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'binders-runner-'))
+    const managed = join(dir, 'managed-mcp.json')
+    await writeFile(managed, '{"mcpServers":{"binders_hub":{}}}')
+    const runner = new Runner({ hubUrl: 'http://hub.test', token: 'bnd_x', workspace: dir, log: () => {}, managedMcp: managed, managedMcpAllowed: true })
+    assert.equal(runner.usesMcp({ tool: 'claude' }), true)
+    const { args } = runner.commandFor({ tool: 'claude', access: 'full', timeoutMinutes: 1, worktrees: false }, 'c1', dir, undefined, 'Do it.')
+    assert.ok(args.includes('--allowedTools=mcp__binders_hub') && !args.includes('--mcp-config'))
   })
 })

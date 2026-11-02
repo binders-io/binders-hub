@@ -14,6 +14,7 @@ import { buildServer } from '../src/server.ts'
 import { Spaces } from '../src/spaces.ts'
 import { Webhooks } from '../src/webhooks.ts'
 import type { Card } from '../../shared/work.ts'
+import type { Change } from '../../shared/state.ts'
 import { fakeGitHub, oneSpace, seed, until } from './helpers.ts'
 
 async function setUp(github: Awaited<ReturnType<typeof fakeGitHub>>, publicUrl = 'https://hub.test') {
@@ -112,6 +113,7 @@ describe('setting GitHub up from Settings', () => {
     const octo = cookieOf(back, 'binders_session')
     const me = await json(await fetch(`${url}/api/me`, { headers: { cookie: octo } }))
     assert.equal(me.user.login, 'octo')
+    assert.deepEqual(me.people.octo, { name: 'Octo Person', avatar: 'https://github.test/a.png' }, 'their GitHub profile, kept to show them by')
     assert.equal(me.github.admin, true)
     assert.equal(me.github.token, true)
     const implied = await json(await fetch(`${url}/api/options`, { headers: { cookie: octo } }))
@@ -229,36 +231,40 @@ describe('setting GitHub up from Settings', () => {
   })
 })
 
-describe('where a GitHub App is made scopes which binders use it', () => {
+describe('where a GitHub App is installed scopes which binders use it', () => {
   /**
-   * Four binders: two of acme's run by ana (the first with an app made on the organization), one ana runs whose app is
-   * on her own account, and one with an acme app that ana is only a member of.
+   * Four binders: acme-other (bo's, the hub's first), acme-one and acme-two (ana's; acme-two links acme/web and dee owns
+   * it too), and anas, whose app is made on ana's own account. ana is a member of acme, bo of acme and elsewhere, dee of
+   * acme. Their GitHub tokens are gho_<name>; GitHub lists no installations for them (they signed in through another app).
    */
   async function binders() {
-    // Changed by tests: the next app GitHub makes for acme's binders, and which accounts it's installed on.
-    const org: NonNullable<Parameters<typeof fakeGitHub>[0]> = { appOwner: { login: 'acme', type: 'Organization' }, installations: { 7: 'acme', 8: 'elsewhere' }, repoInstallations: { acme: 7, elsewhere: 8 } }
+    // Changed by tests: the next app GitHub makes for acme's binders.
+    const people = { memberships: { gho_ana: ['acme'], gho_bo: ['acme', 'elsewhere'], gho_dee: ['acme'] } }
+    const org: NonNullable<Parameters<typeof fakeGitHub>[0]> = { appOwner: { login: 'acme', type: 'Organization' }, installations: { 7: 'acme', 8: 'elsewhere', 9: 'ana' }, installationTypes: { 9: 'User' }, repoInstallations: { acme: 7, elsewhere: 8, ana: 9 }, ...people }
     const orgGitHub = await fakeGitHub(org)
-    const userGitHub = await fakeGitHub({ appOwner: { login: 'ana', type: 'User' } })
     const kv = new MemoryKV()
     const sealer = new Sealer('test-secret')
     let spaces: Spaces | undefined
-    // As main.ts: another binder's connection, and whether someone runs this one (owner or admin, by its members).
-    const sharing = (id: string) => ({ id, binder: (other: string) => spaces?.get(other)?.github, runs: (login: string) => ['owner', 'admin'].includes(spaces?.roleOf(id, login) ?? '') })
-    const make = async (id: string, github: Awaited<ReturnType<typeof fakeGitHub>>, members: { login: string; role: 'owner' | 'admin' | 'member' }[], cards: Card[] = []) => {
+    // As main.ts: another binder's connection, and the repos this one linked (its projects' and its agents').
+    const linkedIn = (id: string) => (repo: string) => {
+      const state = spaces?.get(id)?.hub.state
+      return !!state && (state.binders.some((b) => b.repo?.toLowerCase() === repo.toLowerCase()) || state.agents.some((a) => a.repos.some((r) => r.toLowerCase() === repo.toLowerCase())))
+    }
+    const sharing = (id: string) => ({ id, binder: (other: string) => spaces?.get(other)?.github, linked: linkedIn(id) })
+    const make = async (id: string, github: Awaited<ReturnType<typeof fakeGitHub>>, members: { login: string; role: 'owner' | 'admin' | 'member' }[], extra: Change[] = []) => {
       const connection = new GitHubConnection(new MemoryKV(), sealer, { webUrl: github.url, apiUrl: github.url }, {}, id, sharing(id))
       const hub = new Hub(new MemoryLog())
-      await hub.start([...seed(), ...cards.map((card) => ({ type: 'card.put' as const, card }))])
+      await hub.start([...seed(), ...extra])
       const actions = new Actions(hub, connection)
       return { info: { id, name: id, members }, space: { id, hub, actions, webhooks: new Webhooks(hub, actions), github: connection } }
     }
     const card: Card = { id: 'c-two', binderId: 'b1', title: 'In the second', brief: '', doneWhen: '', size: 'M', stage: 'review', createdAt: '2026-10-29T00:00:00Z', createdBy: 'ana', updatedAt: '2026-10-29T00:00:00Z', waitsFor: [], activity: [], issue: { repo: 'acme/web', number: 101, url: '' } }
     const ana = [{ login: 'ana', role: 'owner' as const }]
-    // acme-other first: whoever made the first binder's app runs the hub, and that's bo, not ana.
     spaces = Spaces.of(kv, [
       await make('acme-other', orgGitHub, [{ login: 'bo', role: 'owner' }, { login: 'ana', role: 'member' }]),
       await make('acme-one', orgGitHub, ana),
-      await make('acme-two', orgGitHub, ana, [card]),
-      await make('anas', userGitHub, ana),
+      await make('acme-two', orgGitHub, [...ana, { login: 'dee', role: 'owner' }, { login: 'root', role: 'member' }], [{ type: 'binder.put', binder: { id: 'b1', name: 'Server', repo: 'acme/web' } }, { type: 'card.put', card }]),
+      await make('anas', orgGitHub, ana),
     ])
     const appFor = async (id: string, maker = 'ana') => {
       const connection = spaces!.get(id)!.github
@@ -270,62 +276,82 @@ describe('where a GitHub App is made scopes which binders use it', () => {
     const app = await buildServer(spaces, { auth }, { publicUrl: 'https://hub.test', admins: ['root'] })
     await app.listen({ port: 0, host: '127.0.0.1' })
     const url = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
-    const as = async (who: string) => {
-      const dev = await fetch(`${url}/auth/dev`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-binders': '1' }, body: JSON.stringify({ login: who }) })
-      const cookie = cookieOf(dev, 'binders_session')
+    // Signed in as a person, with the token their GitHub sign-in left (none: signed in by name).
+    const as = async (who: string, token: string | undefined = `gho_${who}`) => {
+      const { id } = await auth.startSession({ login: who, name: who }, undefined, undefined, token)
       return async (space: string, method: string, path: string, body?: unknown) => {
-        const response = await fetch(`${url}${path}`, { method, headers: { cookie, 'x-binders': '1', 'x-binders-space': space, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined })
+        const response = await fetch(`${url}${path}`, { method, headers: { cookie: `binders_session=${id}`, 'x-binders': '1', 'x-binders-space': space, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined })
         return { status: response.status, body: await json(response) }
       }
     }
     const call = await as('ana')
-    return { spaces, org, sharing, appFor, url, call, as, close: async () => { await app.close(); await orgGitHub.close(); await userGitHub.close() } }
+    return { spaces, org, sharing, appFor, url, call, as, close: async () => { await app.close(); await orgGitHub.close() } }
   }
 
-  it('keeps an app on a person’s own account to the binder it was made for', async () => {
-    const { spaces, appFor, call, close } = await binders()
+  it('shares an app made on a person’s own account through its installation on an organization', async () => {
+    const { spaces, org, appFor, call, as, close } = await binders()
+    // GitHub makes anas's app on ana's own account.
+    org.appOwner = { login: 'ana', type: 'User' }
     const anas = await appFor('anas')
+    await anas.installed(7)
+    await anas.installed(9)
     assert.equal(anas.status().app?.ownerType, 'User')
-    assert.equal(anas.shareable(), undefined, 'not offered to anyone')
-    assert.equal(anas.status().app?.shareable, false)
+    assert.deepEqual(anas.shareable()?.installations, [{ account: 'acme', type: 'Organization' }, { account: 'ana', type: 'User' }])
+    assert.equal(anas.status().app?.shareable, true)
 
-    // Not offered to another binder she runs, nor taken when asked for by name.
-    assert.deepEqual((await call('acme-two', 'GET', '/api/github/reusable')).body.apps, [])
-    const refused = await call('acme-two', 'POST', '/api/github/app/reuse', { from: 'anas' })
-    assert.equal(refused.status, 422)
-    assert.match(refused.body.error, /on @ana’s own GitHub account, so it serves only the binder it was made for/)
+    // Offered to acme-two's owners: acme, which ana is in, and her own account's to her alone.
+    const offered = (await call('acme-two', 'GET', '/api/github/reusable')).body.apps
+    assert.deepEqual(offered.map((o: { binder: { id: string }; app: { installations: { account: string }[] } }) => [o.binder.id, o.app.installations.map((i) => i.account)]), [['anas', ['acme', 'ana']]])
+    const dee = await as('dee')
+    assert.deepEqual((await dee('acme-two', 'GET', '/api/github/reusable')).body.apps[0].app.installations.map((i: { account: string }) => i.account), ['acme'], 'not ana’s own account to dee')
+    const notHers = await dee('acme-two', 'POST', '/api/github/app/reuse', { from: 'anas', accounts: ['ana'] })
+    assert.equal(notHers.status, 422)
+    assert.match(notHers.body.error, /doesn’t show @dee as able to reach Binders test on @ana/)
+
+    const reused = await call('acme-two', 'POST', '/api/github/app/reuse', { from: 'anas', accounts: ['acme'] })
+    assert.equal(reused.status, 200, JSON.stringify(reused.body))
+    assert.deepEqual(reused.body.accounts, ['acme'])
     const two = spaces.get('acme-two')!.github
-    assert.equal(two.status().mode, 'none', 'still without an app')
-    assert.equal(two.signIn(), undefined)
-    await assert.rejects(two.reuse('anas', 'ana'), /serves only the binder it was made for/, 'refused below the API too')
+    assert.equal(two.status().mode, 'app')
+    assert.equal(two.borrowedFrom, 'anas')
+    assert.deepEqual(two.installedAccounts(), ['acme'])
+    assert.equal((await two.runToken('acme/web'))?.token, 'ghs_installation', 'it reaches the repo it linked')
+    assert.equal(await two.runToken('ana/diary'), undefined, 'not her own account’s')
+    assert.deepEqual(anas.status().app?.lentTo.map((l) => [l.binder, l.by, l.accounts]), [['acme-two', 'ana', ['acme']]])
     await close()
   })
 
-  it('offers an organization’s app to another binder in it, which then works through it', async () => {
+  it('reaches only the installations it was lent, and through them only the repos it linked', async () => {
     const { spaces, sharing, appFor, url, call, close } = await binders()
     const one = await appFor('acme-one')
     await one.installed(7)
-    await appFor('acme-other', 'bo')
+    await one.installed(8)
     const two = spaces.get('acme-two')!.github
-    assert.equal(one.status().app?.shareable, true)
 
-    // Offered: the app ana runs in acme-one. Not acme-other's, where she's only a member, nor to a binder with its own.
-    const offered = await call('acme-two', 'GET', '/api/github/reusable')
-    assert.deepEqual(offered.body.apps, [{ binder: { id: 'acme-one', name: 'acme-one' }, app: { name: 'Binders test', slug: 'binders-test', owner: 'acme', htmlUrl: 'https://github.test/apps/binders-test', installations: ['acme'] } }])
+    // ana is in acme, not elsewhere: only acme's installation is offered, or taken.
+    const offered = (await call('acme-two', 'GET', '/api/github/reusable')).body.apps
+    assert.deepEqual(offered.map((o: { binder: { id: string }; app: { installations: { account: string }[] } }) => [o.binder.id, o.app.installations.map((i) => i.account)]), [['acme-one', ['acme']]])
     assert.deepEqual((await call('acme-one', 'GET', '/api/github/reusable')).body.apps, [], 'acme-one has its own')
-    const notHers = await call('acme-two', 'POST', '/api/github/app/reuse', { from: 'acme-other' })
-    assert.match(notHers.body.error, /Only the app of a binder you’re an owner or admin of/)
-
+    const elsewhere = await call('acme-two', 'POST', '/api/github/app/reuse', { from: 'acme-one', accounts: ['elsewhere'] })
+    assert.equal(elsewhere.status, 422)
+    assert.match(elsewhere.body.error, /doesn’t show @ana as able to reach Binders test on @elsewhere/)
     const reused = await call('acme-two', 'POST', '/api/github/app/reuse', { from: 'acme-one' })
     assert.equal(reused.status, 200, JSON.stringify(reused.body))
-    assert.equal(reused.body.github.mode, 'app')
-    assert.equal(reused.body.github.app.borrowedFrom, 'acme-one')
-    assert.equal(reused.body.github.app.shareable, false, 'shared on from where it was made, not from here')
-    assert.deepEqual(one.status().app?.lentTo.map((l) => [l.binder, l.by]), [['acme-two', 'ana']], 'acme-one keeps the loan, in her name')
     assert.deepEqual(reused.body.github.app.installations, ['acme'])
+    assert.deepEqual(reused.body.github.app.borrowedAccounts, ['acme'])
+    assert.equal(reused.body.github.app.shareable, false, 'shared on from where it was made, not from here')
+    assert.deepEqual((await call('acme-two', 'GET', '/api/github/reusable')).body.apps, [], 'nothing more she can reach')
+
+    assert.deepEqual(two.installedAccounts(), ['acme'])
+    assert.equal((await two.runToken('acme/web'))?.token, 'ghs_installation')
+    assert.equal(await two.runToken('acme/payroll'), undefined, 'not a repo of acme’s it didn’t link')
+    assert.equal(await two.forRepo('acme/payroll'), undefined)
+    assert.equal(await two.gitAccess('acme/payroll'), undefined)
+    assert.ok(await one.runToken('acme/payroll'), 'acme-one, whose app it is, still does')
+    assert.equal(await two.runToken('elsewhere/secret'), undefined, 'nor another account’s')
+    assert.equal(await two.forAccount('elsewhere'), undefined)
+    assert.deepEqual((await call('acme-two', 'GET', '/api/github/owners')).body.owners, ['acme'], 'nor make repos there through the app')
     assert.equal(two.signIn()?.clientId, 'Iv1.app', 'people sign in to it through the same app')
-    assert.equal((await two.runToken('acme/web'))?.token, 'ghs_installation', 'and it reaches the organization’s repos')
-    assert.deepEqual((await call('acme-two', 'GET', '/api/github/reusable')).body.apps, [], 'nothing more to offer it')
 
     // Its webhook stays pointed at the binder that made it, which hands each delivery on.
     assert.equal(await two.pointWebhook('https://hub.test'), 'borrowed')
@@ -335,48 +361,27 @@ describe('where a GitHub App is made scopes which binders use it', () => {
     assert.equal(delivered.status, 200)
     assert.equal(spaces.get('acme-two')!.hub.state.cards.find((c) => c.id === 'c-two')?.stage, 'live', 'acme-two heard its issue close')
 
-    // Kept as a link, not a copy: reloaded, it still borrows, and the app's changes show at once.
+    // Kept as a link, not a copy: reloaded, it still borrows the same installations.
     const kv = new MemoryKV()
     const again = new GitHubConnection(kv, new Sealer('test-secret'), two.endpoints, {}, 'acme-two', sharing('acme-two'))
-    await again.reuse('acme-one', 'ana')
+    await again.reuse('acme-one', 'ana', ['acme'])
     const reloaded = new GitHubConnection(kv, new Sealer('test-secret'), two.endpoints, {}, 'acme-two', sharing('acme-two'))
     await reloaded.load()
     assert.equal(reloaded.borrowedFrom, 'acme-one')
-    assert.equal(reloaded.status().app?.name, 'Binders test')
-    await assert.rejects(one.reuse('acme-other', 'ana'), /has a GitHub App of its own/, 'a binder with its own app keeps it')
+    assert.deepEqual(reloaded.borrowedAccounts, ['acme'])
+    await assert.rejects(one.reuse('acme-other', 'ana', ['acme']), /has a GitHub App of its own/, 'a binder with its own app keeps it')
+    await assert.rejects(two.reuse('acme-one', 'ana', ['nowhere']), /isn’t installed on @nowhere/)
 
     // Forgotten here: acme-two stops using it, and acme-one keeps it.
     assert.equal((await call('acme-two', 'DELETE', '/api/github/app')).status, 200)
     assert.equal(two.status().mode, 'none')
     assert.equal(two.status().lost, undefined, 'handed back, not lost')
     assert.equal(one.status().mode, 'app')
-    assert.deepEqual(one.status().app?.lentTo, [], 'and the loan is handed back')
+    assert.deepEqual(one.status().app?.lentTo.filter((l) => l.binder === 'acme-two'), [], 'and the loan is handed back')
     await close()
   })
 
-  it('reaches only the organization’s installation of a borrowed app', async () => {
-    const { spaces, appFor, call, close } = await binders()
-    const one = await appFor('acme-one')
-    await one.installed(7)
-    await one.installed(8)
-    const two = spaces.get('acme-two')!.github
-    assert.equal((await call('acme-two', 'POST', '/api/github/app/reuse', { from: 'acme-one' })).status, 200)
-
-    // acme-one's app is installed on @elsewhere too: that stays acme-one's.
-    assert.deepEqual(one.installedAccounts(), ['acme', 'elsewhere'])
-    assert.deepEqual(two.installedAccounts(), ['acme'])
-    assert.deepEqual(two.status().app?.installations, ['acme'])
-    assert.equal((await two.runToken('acme/web'))?.token, 'ghs_installation')
-    assert.equal(await two.runToken('elsewhere/secret'), undefined, 'no token for another account’s repos')
-    assert.equal(await two.forRepo('elsewhere/secret'), undefined)
-    assert.equal(await two.gitAccess('elsewhere/secret'), undefined)
-    assert.equal(await two.forAccount('elsewhere'), undefined)
-    assert.deepEqual((await call('acme-two', 'GET', '/api/github/owners')).body.owners, ['acme'], 'nor make repos there through the app')
-    assert.ok(await one.runToken('elsewhere/secret'), 'acme-one still does')
-    await close()
-  })
-
-  it('holds a borrowed app only while acme-one lends it, through someone who runs acme-one', async () => {
+  it('holds a borrowed installation only while it’s lent, to people GitHub lets reach it', async () => {
     const { spaces, appFor, call, as, close } = await binders()
     const one = await appFor('acme-one')
     await one.installed(7)
@@ -394,25 +399,17 @@ describe('where a GitHub App is made scopes which binders use it', () => {
     assert.equal(two.status().lost?.from, 'acme-one')
     assert.match(two.status().lost!.why, /stopped lending it/)
     assert.equal((await call('acme-two', 'GET', '/api/github/reusable')).body.apps.length, 1, 'offered again')
-
-    // Lent again, then ana is no longer an owner of acme-one: the loan she made no longer holds; again one, it does.
     assert.equal((await reuse()).status, 200)
-    const members = spaces.info('acme-one')!.members
-    members[0] = { login: 'ana', role: 'member' }
-    assert.equal(two.status().mode, 'none')
-    assert.match(two.status().lost!.why, /@ana, who lent it, no longer runs it/)
-    assert.deepEqual(one.status().app?.lentTo, [], 'not shown as lent')
-    members[0] = { login: 'ana', role: 'owner' }
-    assert.equal(two.status().mode, 'app')
-
-    // The hub's admins run every binder's GitHub, but don't lend a binder's app for its owners.
     await two.disconnect()
-    const root = await as('root')
-    assert.deepEqual((await root('acme-two', 'GET', '/api/github/reusable')).body.apps, [])
-    const refused = await root('acme-two', 'POST', '/api/github/app/reuse', { from: 'acme-one' })
-    assert.equal(refused.status, 422)
-    assert.match(refused.body.error, /owner or admin of/)
-    await assert.rejects(two.reuse('acme-one', 'root'), /Only an owner or admin of the binder that made Binders test can lend it/)
+
+    // Someone GitHub doesn't show in acme, the hub's admin included, gets nothing: no sign-in token, or not a member.
+    for (const [who, token] of [['root', undefined], ['dee', 'gho_nobody']] as const) {
+      const person = await as(who, token)
+      assert.deepEqual((await person('acme-two', 'GET', '/api/github/reusable')).body.apps, [], who)
+      const refused = await person('acme-two', 'POST', '/api/github/app/reuse', { from: 'acme-one' })
+      assert.equal(refused.status, 422)
+      assert.match(refused.body.error, /able to reach any of Binders test’s installations|Only the Binder’s owners and admins/, who)
+    }
     assert.equal(two.status().mode, 'none')
     await close()
   })
@@ -429,30 +426,35 @@ describe('where a GitHub App is made scopes which binders use it', () => {
     assert.equal(two.status().mode, 'none')
     assert.match(two.status().lost!.why, /its app is gone/)
 
-    // Remade there on a person's own account: acme-two doesn't work through it.
-    org.appOwner = { login: 'ana', type: 'User' }
+    // Remade there, as another app: not picked up, until it's lent again.
+    org.appId = 43
     await appFor('acme-one')
-    assert.equal(one.status().app?.ownerType, 'User')
+    await one.installed(7)
     assert.equal(two.status().mode, 'none')
     assert.equal(two.status().app, undefined)
     assert.equal(two.signIn(), undefined)
     assert.equal(two.borrowedFrom, undefined)
     assert.equal(await two.runToken('acme/web'), undefined)
-    assert.ok(two.status().lost)
-
-    // Remade on the organization, as another app: not picked up either, until it's lent again.
-    org.appOwner = { login: 'acme', type: 'Organization' }
-    org.appId = 43
-    await one.disconnect()
-    await appFor('acme-one')
-    await one.installed(7)
-    assert.equal(one.status().app?.ownerType, 'Organization')
-    assert.equal(two.status().mode, 'none')
     assert.match(two.status().lost!.why, /its app is gone/)
     assert.deepEqual(one.status().app?.lentTo, [])
     assert.equal((await call('acme-two', 'POST', '/api/github/app/reuse', { from: 'acme-one' })).status, 200)
     assert.equal(two.status().mode, 'app')
     assert.equal(two.status().lost, undefined)
+    await close()
+  })
+
+  it('knows the kind of account of installations kept before it asked', async () => {
+    const { spaces, appFor, close } = await binders()
+    const one = await appFor('acme-one')
+    await one.installed(7)
+    await one.installed(9)
+    // As kept by an older hub: no kinds.
+    const kept = (one as unknown as { own: { installations: { id: number; account: string; type?: string }[] } }).own
+    kept.installations = kept.installations.map(({ id, account }) => ({ id, account }))
+    assert.deepEqual(one.shareable()?.installations, [{ account: 'acme', type: 'Organization' }, { account: 'ana', type: undefined }], 'its own organization’s is known from the app')
+    await one.knowInstallations()
+    assert.deepEqual(one.shareable()?.installations, [{ account: 'acme', type: 'Organization' }, { account: 'ana', type: 'User' }])
+    assert.equal(spaces.get('acme-two')!.github.status().mode, 'none')
     await close()
   })
 })

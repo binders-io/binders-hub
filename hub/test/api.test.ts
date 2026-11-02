@@ -790,6 +790,22 @@ describe('agents within their owners’ reach', () => {
     assert.equal(asApp.value.token, 'ghs_only_acme_web')
     assert.deepEqual(asApp.value.author, { name: 'binders[bot]', email: '9+binders[bot]@users.noreply.github.com' })
     await you('PATCH', `/api/agents/${made1.body.agent.id}`, { runner: { ...hub.state.agents.find((a) => a.id === made1.body.agent.id)!.runner, commitAs: 'owner' } })
+
+    // The hub's admins fix it for every agent: always the app, whatever the agent says; saving it keeps theirs.
+    actions.agentCommits = () => 'app'
+    assert.equal((await builder.call('repo_token', { id: webCard.id })).value.as, 'app', 'the admins’ choice wins over the agent’s own')
+    await you('PATCH', `/api/agents/${made1.body.agent.id}`, { runner: { ...hub.state.agents.find((a) => a.id === made1.body.agent.id)!.runner, commitAs: 'owner' }, name: 'Builder' })
+    assert.equal(hub.state.agents.find((a) => a.id === made1.body.agent.id)!.runner?.commitAs, 'app', 'saving an agent keeps the admins’ choice')
+    // Always the owner: theirs while the hub holds their sign-in, and no falling back to the app when it doesn't.
+    actions.agentCommits = () => 'owner'
+    assert.equal((await builder.call('repo_token', { id: webCard.id })).value.as, 'owner')
+    assert.equal(hub.state.agents.find((a) => a.id === made1.body.agent.id)!.runner?.commitAs, 'app', 'the agent’s stored choice is only replaced when it’s next saved')
+    actions.reach.ownerToken = async () => undefined
+    const noOwner = await builder.call('repo_token', { id: webCard.id })
+    assert.equal(noOwner.error, true)
+    assert.match(noOwner.text, /admins have agents commit as their owners/)
+    actions.agentCommits = () => 'agent'
+    await you('PATCH', `/api/agents/${made1.body.agent.id}`, { runner: { ...hub.state.agents.find((a) => a.id === made1.body.agent.id)!.runner, commitAs: 'owner' } })
     actions.reach.ownerToken = undefined
     actions.reach.author = undefined
 

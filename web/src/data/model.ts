@@ -2,6 +2,7 @@
 export type { Binder, Folder, Note, WorkLink, NotesState } from '../../../shared/notes.ts'
 export type { Activity, Agent, Card, ChangeSet, Check, CheckState, DiffLine, Environment, FileDiff, PlanStep, Proposal, Provider, PullRequest, Run, Stage } from '../../../shared/work.ts'
 export type { Change, Entry, HubState, Outgoing } from '../../../shared/state.ts'
+import type { Profile } from '../../../shared/people.ts'
 import type { Stage } from '../../../shared/work.ts'
 
 export const stages: { id: Stage; title: string; hint: string }[] = [
@@ -15,12 +16,16 @@ export const stages: { id: Stage; title: string; hint: string }[] = [
 
 export interface Me {
   user: { login: string; name: string; avatar?: string }
+  /** The GitHub profiles of the people this binder names, by login in lower case: how they're shown. */
+  people?: Record<string, Profile>
+  /** Enterprise shortcodes left off managed users' logins when they're shown (`jdoe_acme` as `jdoe`). */
+  emu?: string[]
   /** Their own GitHub, connected through the hub's OAuth App for their personal binder's repo; possible: the hub has one. */
   ownGitHub?: { connected: boolean; possible: boolean }
   github: {
     /** app: made from Settings; manual: set by hand on the hub; none: not yet. */
     mode: 'app' | 'manual' | 'none'
-    app?: { name: string; slug: string; owner: string; ownerType: 'User' | 'Organization'; htmlUrl: string; installations: string[]; installUrl: string; hookUrl?: string; madeLocally: boolean; settingsUrl: string; /** Another binder's app, used here. */ borrowedFrom?: string; /** Made here on an organization: other binders in it may use it. */ shareable?: boolean; /** The binders it's lent to: its owners may end each. */ lentTo?: { binder: string; by: string; at: string }[] }
+    app?: { name: string; slug: string; owner: string; ownerType: 'User' | 'Organization'; htmlUrl: string; installations: string[]; installUrl: string; hookUrl?: string; madeLocally: boolean; settingsUrl: string; /** Another binder's app, used here. */ borrowedFrom?: string; /** Of a borrowed app, the installations used here, by account. */ borrowedAccounts?: string[]; /** Made here and installed: other binders may use its installations their people can reach. */ shareable?: boolean; /** The binders it's lent to, and which installations: its owners may end each. */ lentTo?: { binder: string; by: string; at: string; accounts?: string[] }[] }
     signIn: boolean
     server: boolean
     webhooks: boolean
@@ -41,6 +46,8 @@ export interface Me {
   log?: 'redis' | 'memory'
   /** May run the hub: make Binders, change its options. */
   hubAdmin?: boolean
+  /** Who agents' commits are by: each agent's choice (agent), or fixed for all by the hub's admins. */
+  agentCommits?: 'agent' | 'owner' | 'app'
   /** The commit the hub runs, when it was built by the server's updater. */
   version?: { commit: string; subject?: string; repo?: string }
   /** For its admins: a newer commit the server didn't put in, because its tests failed, and how they ended. */
@@ -74,4 +81,5 @@ export interface HubOptions {
   allowedOrgs: string[]
   admins: string[]
   devLogin: 'auto' | 'on' | 'off'
+  agentCommits: 'agent' | 'owner' | 'app'
 }

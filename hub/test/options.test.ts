@@ -7,7 +7,7 @@ import { GitHubConnection } from '../src/githubConnection.ts'
 import { Hub } from '../src/hub.ts'
 import { MemoryKV } from '../src/kv.ts'
 import { MemoryLog } from '../src/log.ts'
-import { OptionsStore } from '../src/options.ts'
+import { OptionsStore, optionsFromEnv } from '../src/options.ts'
 import { Sealer } from '../src/secrets.ts'
 import { buildServer } from '../src/server.ts'
 import { Webhooks } from '../src/webhooks.ts'
@@ -53,6 +53,17 @@ describe('the hub’s options', () => {
     assert.equal((await patch(boss, { devLogin: 'off' })).status, 200)
     const late = await fetch(`${url}/auth/dev`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-binders': '1' }, body: JSON.stringify({ login: 'late' }) })
     assert.equal(late.status, 422)
+
+    // Who agents' commits are by: each agent's choice until an admin fixes it; people see it on /api/me.
+    const me = async (cookie: string) => (await (await fetch(`${url}/api/me`, { headers: { cookie } })).json() as { agentCommits?: string }).agentCommits
+    assert.equal(await me(boss), 'agent')
+    assert.match((await patch(boss, { agentCommits: 'everyone' })).body.error!, /each agent’s choice, its owner, or the hub’s GitHub App/)
+    assert.match((await patch(you, { agentCommits: 'app' })).body.error!, /Only the hub’s admins/)
+    assert.equal((await patch(boss, { agentCommits: 'app' })).status, 200)
+    assert.equal(await me(boss), 'app')
+    assert.deepEqual(new OptionsStore(kv, { agentCommits: 'owner' }).locked(), { agentCommits: 'HUB_AGENT_COMMITS' })
+    assert.equal(optionsFromEnv({ HUB_AGENT_COMMITS: 'app' }).agentCommits, 'app')
+    assert.equal(optionsFromEnv({ HUB_AGENT_COMMITS: 'nobody' }).agentCommits, undefined)
 
     // And they're kept: a hub reading the same store sees them.
     assert.equal((await new OptionsStore(kv).load()).get().notesQuietSeconds, 120)

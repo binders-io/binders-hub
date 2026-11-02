@@ -7,6 +7,8 @@ import { Refusal } from './auth.ts'
 export type PollMode = 'auto' | 'on' | 'off'
 export type DevLogin = 'auto' | 'on' | 'off'
 export type MergeMethod = 'merge' | 'squash' | 'rebase'
+/** Who agents' commits, pushes and pull requests are by: as each agent is set (agent), or the same for all. */
+export type AgentCommits = 'agent' | 'owner' | 'app'
 
 export interface HubOptions {
   /** Following GitHub by asking: while no webhook arrives (auto), always (on), or never (off). */
@@ -24,6 +26,11 @@ export interface HubOptions {
   admins: string[]
   /** Signing in with a name alone: on a hub run on this machine until GitHub is set up (auto), always, or never. */
   devLogin: DevLogin
+  /**
+   * Who agents' commits, pushes and pull requests are by: each agent's own choice on the Agents page (agent), always its
+   * owner, or always the hub's GitHub App. Fixed, it wins over every agent's setting.
+   */
+  agentCommits: AgentCommits
 }
 
 export const defaultOptions: HubOptions = {
@@ -36,6 +43,7 @@ export const defaultOptions: HubOptions = {
   allowedOrgs: [],
   admins: [],
   devLogin: 'auto',
+  agentCommits: 'agent',
 }
 
 /** The environment variable that fixes each option. */
@@ -49,6 +57,7 @@ export const optionVariables: Record<keyof HubOptions, string> = {
   allowedOrgs: 'HUB_ALLOWED_ORGS',
   admins: 'HUB_ADMINS',
   devLogin: 'HUB_DEV_LOGIN',
+  agentCommits: 'HUB_AGENT_COMMITS',
 }
 
 const list = (value: string) => value.split(',').map((v) => v.trim()).filter(Boolean)
@@ -67,6 +76,7 @@ export function optionsFromEnv(env: Record<string, string | undefined>): Partial
   if (env[v.allowedOrgs]) out.allowedOrgs = list(env[v.allowedOrgs]!)
   if (env[v.admins]) out.admins = list(env[v.admins]!)
   if (env[v.devLogin]) out.devLogin = env[v.devLogin] === '1' || env[v.devLogin] === 'on' ? 'on' : env[v.devLogin] === 'auto' ? 'auto' : 'off'
+  if (env[v.agentCommits] && ['agent', 'owner', 'app'].includes(env[v.agentCommits]!)) out.agentCommits = env[v.agentCommits] as AgentCommits
   return out
 }
 
@@ -102,6 +112,10 @@ function checked(fields: Partial<HubOptions>): Partial<HubOptions> {
   if (fields.devLogin !== undefined) {
     if (!['auto', 'on', 'off'].includes(fields.devLogin)) throw new Refusal('Signing in by name is auto, on or off.')
     out.devLogin = fields.devLogin
+  }
+  if (fields.agentCommits !== undefined) {
+    if (!['agent', 'owner', 'app'].includes(fields.agentCommits)) throw new Refusal('Agents’ commits are by each agent’s choice, its owner, or the hub’s GitHub App.')
+    out.agentCommits = fields.agentCommits
   }
   return out
 }

@@ -64,6 +64,12 @@ export async function fakeGitHub(options: {
   appId?: number
   /** Each installation's account (acme unless set), and the installation each account's repos are reached by (7). */
   installations?: Record<number, string>
+  /** The kind of account each installation is on: an organization unless it's the app owner's own, or set here. */
+  installationTypes?: Record<number, 'User' | 'Organization'>
+  /** By a person's token: the app's installations GitHub lists for them. Unset, /user/installations refuses (a token of another app). */
+  userInstallations?: Record<string, number[]>
+  /** By a person's token: the organizations they're an active member of. */
+  memberships?: Record<string, string[]>
   repoInstallations?: Record<string, number>
 } = {}) {
   const calls: GitHubCall[] = []
@@ -129,7 +135,23 @@ export async function fakeGitHub(options: {
     return { id: options.appId ?? 42, slug: 'binders-test', name: 'Binders test', owner: options.appOwner ?? { login: 'octo', type: 'User' }, client_id: 'Iv1.app', client_secret: 'app-secret', webhook_secret: 'app-hook-secret', pem, html_url: 'https://github.test/apps/binders-test' }
   })
   app.patch('/app/hook/config', async (request, reply) => (signedByApp(request.headers.authorization) ? request.body : reply.code(401).send({ message: 'Bad JWT' })))
-  app.get('/app/installations/:id', async (request, reply) => (signedByApp(request.headers.authorization) ? { id: Number((request.params as { id: string }).id), account: { login: options.installations?.[Number((request.params as { id: string }).id)] ?? 'acme' } } : reply.code(401).send({ message: 'Bad JWT' })))
+  app.get('/app/installations/:id', async (request, reply) => {
+    if (!signedByApp(request.headers.authorization)) return reply.code(401).send({ message: 'Bad JWT' })
+    const id = Number((request.params as { id: string }).id)
+    const login = options.installations?.[id] ?? 'acme'
+    const owner = options.appOwner ?? { login: 'octo', type: 'User' }
+    return { id, account: { login, type: options.installationTypes?.[id] ?? (login === owner.login ? owner.type : 'Organization') } }
+  })
+  const bearer = (request: { headers: { authorization?: string } }) => (request.headers.authorization ?? '').replace(/^(Bearer|token) /, '')
+  app.get('/user/installations', async (request, reply) => {
+    if (!options.userInstallations) return reply.code(403).send({ message: 'You must authenticate with an access token authorized to a GitHub App' })
+    const ids = options.userInstallations[bearer(request)] ?? []
+    return { total_count: ids.length, installations: ids.map((id) => ({ id })) }
+  })
+  app.get('/user/memberships/orgs/:org', async (request, reply) => {
+    const org = (request.params as { org: string }).org
+    return options.memberships?.[bearer(request)]?.includes(org) ? { state: 'active', organization: { login: org } } : reply.code(404).send({ message: 'Not Found' })
+  })
   app.get('/repos/:owner/:repo/installation', async (request, reply) => (signedByApp(request.headers.authorization) ? { id: options.repoInstallations?.[(request.params as { owner: string }).owner] ?? 7 } : reply.code(401).send({ message: 'Bad JWT' })))
   app.post('/app/installations/:id/access_tokens', async (request, reply) => (signedByApp(request.headers.authorization) ? { token: 'ghs_installation', expires_at: new Date(Date.now() + 3600_000).toISOString() } : reply.code(401).send({ message: 'Bad JWT' })))
   app.addHook('preHandler', async (request) => {

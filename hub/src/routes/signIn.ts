@@ -5,6 +5,7 @@ import { personalId } from '../spaces.ts'
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import type { GitHubLogin, User } from '../auth.ts'
 import type { Context } from './context.ts'
+import { loginsIn, shortcodesOf } from '../../../shared/people.ts'
 
 // Signing in and out: GitHub, an app on the Mac, by name on a hub on this machine, and who you are.
 
@@ -46,7 +47,7 @@ const setCookie = (reply: FastifyReply, name: string, value: string, maxAge: num
 
 
 export async function signInRoutes(app: FastifyInstance, context: Context) {
-  const { spaces, auth, options, secure, isLocal, login, isAdmin, mayManageGitHub, signInSpace, fail, callback } = context
+  const { spaces, auth, hubOptions, options, secure, isLocal, login, isAdmin, mayManageGitHub, signInSpace, fail, callback } = context
   /**
    * A newer commit the server's updater (deploy/update.sh) didn't put in, because its tests failed: what it wrote for
    * us, the commit, when, its subject and how the tests ended. Not the one running (a later run put it in after all).
@@ -224,13 +225,30 @@ export async function signInRoutes(app: FastifyInstance, context: Context) {
     return { ok: true }
   })
 
+  /** The names to show for the people this binder names (their GitHub profiles'), and the shortcodes to leave off logins. */
+  const shownPeople = async (request: { space?: { id: string; hub: { state: Parameters<typeof loginsIn>[0] }; github: { installedAccounts(): string[] } }; user?: User }) => {
+    const space = request.space
+    const known = await auth.people()
+    const logins = space ? loginsIn(space.hub.state) : new Set<string>()
+    for (const m of space ? spaces.info(space.id)?.members ?? [] : []) logins.add(m.login.toLowerCase())
+    if (request.user) logins.add(request.user.login.toLowerCase())
+    const people = Object.fromEntries([...logins].flatMap((l) => (known[l] ? [[l, known[l]]] : [])))
+    const set = (process.env.HUB_EMU_SHORTCODES ?? '').split(',').map((c) => c.trim().toLowerCase()).filter(Boolean)
+    const emu = [...new Set([...set, ...(await auth.shortcodes()), ...shortcodesOf(space?.github.installedAccounts() ?? [])])]
+    return { people, emu }
+  }
+
   app.get('/api/me', async (request) => ({
     user: request.user,
+    // How to show the people this binder names.
+    ...(await shownPeople(request)),
     // Their own GitHub, connected through the hub's OAuth App for their personal binder's repo; and whether it can be.
     ownGitHub: { connected: !!(await auth.personalToken(request.user!.login)), possible: (await auth.personalOAuthStatus(request.user!.login, isAdmin(request.user!.login))).set },
     // This Binder's GitHub.
     github: { ...(request.space?.github.status() ?? { mode: 'none' as const, signIn: false, server: false, webhooks: false }), token: !!request.githubToken, admin: mayManageGitHub(request), local: isLocal, polling: request.space?.poller?.status() },
     hubAdmin: isAdmin(request.user!.login),
+    // Who agents' commits are by, when the hub's admins fixed it for all: the Agents page shows it and can't change it.
+    agentCommits: hubOptions?.get().agentCommits ?? 'agent',
     // Which commit the hub runs, and for its admins a newer one that didn't get in because its tests failed.
     version: process.env.BINDERS_COMMIT ? { commit: process.env.BINDERS_COMMIT, subject: process.env.BINDERS_COMMIT_SUBJECT || undefined, repo: process.env.BINDERS_REPO_URL || undefined } : undefined,
     updateFailed: isAdmin(request.user!.login) ? await updateFailed() : undefined,

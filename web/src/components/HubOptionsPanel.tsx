@@ -65,6 +65,10 @@ export function HubOptionsPanel({ part }: { part: 'access' | 'sync' }) {
         <Segmented id="merge-method" value={options.mergeMethod} disabled={off('mergeMethod')} onChange={(mergeMethod) => void save({ mergeMethod })} choices={[['merge', 'Merge commits'], ['squash', 'Squash'], ['rebase', 'Rebase']]} />
       </Option>
 
+      <Option title="Agents’ commits and pull requests" detail="Who agents push and open pull requests as. Each agent’s owner chooses on the Agents page, or set one for every agent here: their owner’s GitHub sign-in, or the hub’s GitHub App and its bot." aside={note('agentCommits')}>
+        <Segmented id="agent-commits" value={options.agentCommits} disabled={off('agentCommits')} onChange={(agentCommits) => void save({ agentCommits })} choices={[['agent', 'Each agent chooses'], ['owner', 'Always its owner'], ['app', 'Always the GitHub App']]} />
+      </Option>
+
       <Option title="Committing notes" detail="Every note is saved to the hub as you type. Its commit to the notes repo waits for a pause, so typing makes one commit, not dozens.">
         <label className="inline-number">
           Commit after a pause of

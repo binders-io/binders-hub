@@ -286,6 +286,13 @@ export abstract class CardService extends ActionsBase {
       runnerSeen: existing?.runnerSeen,
       restartAsked: existing?.restartAsked,
     }
+    // The hub's admins' choice of who commits, when they made one, is what's kept, whatever the form sent.
+    const fixed = this.agentCommits()
+    if (fixed !== 'agent' && agent.runner) {
+      agent.runner = { ...agent.runner }
+      if (fixed === 'app') agent.runner.commitAs = 'app'
+      else delete agent.runner.commitAs
+    }
     if (!agent.restartAsked) delete agent.restartAsked
     if (!agent.toolModels) delete agent.toolModels
     if (!agent.runnerSeen) delete agent.runnerSeen

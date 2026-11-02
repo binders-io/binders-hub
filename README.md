@@ -108,7 +108,9 @@ both places: renaming either renames the other.
 ## Connect GitHub
 
 The hub has one GitHub App, made and installed from the first binder's **Settings → GitHub**, and every binder made
-since reaches GitHub through it, each linking its own repo. (A binder made earlier with an app of its own keeps it:
+since reaches GitHub through it, each linking its own repo: in its Settings → GitHub, **Use the hub's GitHub App**
+lists the app's installations its owner can reach (an organization GitHub shows them in, or their own account), and
+through the one picked the binder reaches only the repos it links. (A binder made earlier with an app of its own keeps it:
 forgetting it leaves the others'.) Its webhook comes to `/webhooks/github/<binder>` (the first Binder's to
 `/webhooks/github`), and each member connects their own GitHub to it, as a GitHub App's sign-in reaches only where that
 app is installed. Three steps:
@@ -216,6 +218,22 @@ functions, types and exports it added, changed or removed (found by their shape 
 their uses elsewhere that the change didn't touch (`git grep -w`), and the tests that mention them. The reviewer gets it
 with the diff, and the Challenge shows it: a removed symbol still used, or a changed one whose callers weren't
 updated, is where a change breaks. It's found by name, a first look rather than a proof.
+
+### With an enterprise MCP config
+
+Where an organization manages Claude Code's MCP servers (a `managed-mcp.json` in `/Library/Application Support/ClaudeCode/`
+on a Mac, `/etc/claude-code/` on Linux, `C:\ProgramData\ClaudeCode\` on Windows), Claude Code refuses any other server,
+the one the runner adds for each run included. The runner sees the file (or Claude Code saying so) and works without
+Binders' MCP tools: Claude Code gets the plain prompts, the runner reports its steps and answers, and the Agents page says
+so. To give it Binders' tools back, an admin adds the hub to the managed config:
+
+```json
+{ "mcpServers": { "binders_hub": { "type": "http", "url": "https://hub.example.com/mcp", "headers": { "Authorization": "Bearer ${BINDERS_TOKEN}" } } } }
+```
+
+Name it `binders_hub`, as the runner expects. `BINDERS_TOKEN` is the agent's token, which the runner sets for every run.
+Then start the runner with `BINDERS_MANAGED_MCP=allowed`: it uses Binders' tools from the managed config, and adds no
+config of its own.
 
 ## Connect an agent
 

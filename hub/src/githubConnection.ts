@@ -12,13 +12,15 @@ export type Access = 'push' | 'read' | 'none'
 // in the environment for the hub's first Binder, an OAuth app for signing in and a token for everything else. The
 // environment wins where both are set. Each Binder has its own: forgetting one's app leaves the others' alone.
 //
-// Where an app is made scopes who may use it. One on a person's own GitHub account serves the Binder it was made for and
-// no other. One on an organization may be shared: another Binder working in that organization uses it rather than making
-// one more, by reference (`borrowed`), so its keys, installations and webhook stay in one place, the Binder that made it.
-// That Binder keeps the loan (`loans`): who it's lent to, which app, and who lent it. Each use checks it again: the
-// same app still, still on the organization, still lent, by someone who still runs the lending Binder. Its owners see
-// each loan in its Settings and can end it; forgetting or remaking its app ends them all. A borrower reaches only the
-// app's installation on that organization, not every account the app is installed on.
+// Where an app is installed scopes who may use it, whichever account made it. Its installation on an organization may be
+// shared: another Binder working in that organization uses it rather than making one more app, by reference
+// (`borrowed`), so the app's keys, installations and webhook stay in one place, the Binder that made it. An installation
+// on a person's own account is shared only by that person. Whoever borrows proves, with their own GitHub, that they can
+// reach the installation (it's one GitHub lists for them, or they're a member of its organization); the lending Binder
+// keeps the loan (`loans`): who it's lent to, which app, which installations, and who asked. Each use checks it again:
+// the same app still, still installed there, still lent. Its owners see each loan in its Settings and can end it;
+// forgetting or remaking its app ends them all. A borrower reaches only the installations it was lent, and through them
+// only the repos it has linked (its projects' and its agents'), never the rest of the organization's.
 
 export interface AppSettings {
   appId: number
@@ -36,7 +38,7 @@ export interface AppSettings {
   madeLocally?: boolean
   createdBy: string
   createdAt: string
-  installations: { id: number; account: string }[]
+  installations: { id: number; account: string; type?: 'User' | 'Organization' }[]
 }
 
 export interface ManualSettings {
@@ -57,23 +59,27 @@ export interface Sharing {
   id: string
   /** Another Binder's connection. */
   binder: (id: string) => GitHubConnection | undefined
-  /** Whether a person runs this Binder (one of its owners or admins): who may lend its app, and keep it lent. */
-  runs: (login: string) => boolean
+  /** Whether a repo is one this Binder linked (a project's, or an agent's): the only ones a borrowed app reaches. */
+  linked?: (repo: string) => boolean
 }
 
 /** Another Binder's app, used here: which Binder, and which app it had when it was lent. */
 export interface Borrowed {
   from: string
   appId: number
+  /** The installations it was lent, by account. None, from before installations were lent: the app's own organization. */
+  accounts?: string[]
 }
 
 /** A loan of this Binder's app to another, kept by the Binder that lends it. */
 export interface Loan {
   to: string
   appId: number
-  /** Who lent it: one of this Binder's owners or admins, while they are. */
+  /** Who asked for it, having shown GitHub lets them reach those installations. */
   by: string
   at: string
+  /** The installations lent, by account. None, from before installations were lent: the app's own organization. */
+  accounts?: string[]
 }
 
 const appKey = 'github-app'
@@ -95,6 +101,9 @@ const parse = <T>(raw: string | undefined | null, ok: (value: any) => boolean): 
     return undefined
   }
 }
+const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
+/** The accounts a loan or a borrowing covers: those named, or (from before installations were lent) the app's own. */
+const lentAccounts = (app: AppSettings, accounts?: string[]) => accounts?.length ? accounts : app.owner.type === 'Organization' ? [app.owner.login] : []
 const isLocal = (url: string) => /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|[^/]+\.localhost)(:\d+)?(\/|$)/.test(url)
 
 export class GitHubConnection {
@@ -130,11 +139,13 @@ export class GitHubConnection {
     return this.own ?? this.lending()?.own
   }
 
-  /** The app's installations this Binder may use: all of its own app's; of a borrowed one, only the organization's. */
+  /** The app's installations this Binder may use: all of its own app's; of a borrowed one, those it was lent. */
   private get installations(): AppSettings['installations'] {
     if (this.own) return this.own.installations
     const app = this.lending()?.own
-    return app ? app.installations.filter((i) => i.account.toLowerCase() === app.owner.login.toLowerCase()) : []
+    if (!app) return []
+    const accounts = lentAccounts(app, this.borrowed?.accounts)
+    return app.installations.filter((i) => accounts.some((a) => same(a, i.account)))
   }
 
   /** The connection whose app this one borrows, while the loan holds. */
@@ -146,16 +157,17 @@ export class GitHubConnection {
   }
 
   /**
-   * Why a loan of this Binder's app to `to` doesn't hold, or undefined when it does: the same app it lent, still on the
-   * organization and shareable, still lent, by someone who still runs this Binder.
+   * Why a loan of this Binder's app to `to` doesn't hold, or undefined when it does: the same app it lent, still lent,
+   * and still installed on at least one of the accounts it was lent for.
    */
   private loanTo(to: string, appId: number): string | undefined {
     const app = this.own
     if (!app || app.appId !== appId) return 'its app is gone: forgotten or made again there'
-    if (!this.shareable()) return 'its app is no longer one on an organization'
+    if (this.manual.clientId || this.manual.token) return 'its GitHub is set up by hand on the hub now'
     const loan = this.loans.find((l) => l.to === to && l.appId === appId)
     if (!loan) return 'its owners stopped lending it'
-    if (!this.sharing?.runs(loan.by)) return `@${loan.by}, who lent it, no longer runs it`
+    const accounts = lentAccounts(app, loan.accounts)
+    if (!app.installations.some((i) => accounts.some((a) => same(a, i.account)))) return `its app isn’t installed on ${accounts.map((a) => `@${a}`).join(', ') || 'that account'} any more`
     return undefined
   }
 
@@ -184,12 +196,11 @@ export class GitHubConnection {
     if (this.loans.length !== before) await this.saveLoans()
   }
 
-  /** Lends this Binder's app to another, by one of its owners or admins. */
-  private async lend(to: string, by: string) {
+  /** Lends installations of this Binder's app to another, asked for by someone GitHub lets reach them. */
+  private async lend(to: string, by: string, accounts: string[]) {
     const app = this.own
     if (!app) throw new Refusal('That binder has no GitHub App of its own to share.')
-    if (!this.sharing?.runs(by)) throw new Refusal(`Only an owner or admin of the binder that made ${app.name} can lend it.`)
-    this.loans = [...this.loans.filter((l) => l.to !== to), { to, appId: app.appId, by, at: new Date().toISOString() }]
+    this.loans = [...this.loans.filter((l) => l.to !== to), { to, appId: app.appId, by, at: new Date().toISOString(), accounts }]
     await this.saveLoans()
   }
 
@@ -266,22 +277,64 @@ export class GitHubConnection {
   // Sharing an organization's app between Binders ----------------------------------------------------------------------
 
   /**
-   * What another Binder may be offered of this one's app: only one this Binder made itself, on an organization. One on a
-   * person's own account serves this Binder alone.
+   * What another Binder may be offered of this one's app: one this Binder made itself, with its installations and the
+   * kind of account each is on. Who may use which is for whoever asks to show (`mayReach`). Nothing while GitHub is set
+   * up by hand here.
    */
   shareable() {
     const app = this.own
-    if (!app || app.owner.type !== 'Organization' || this.manual.clientId || this.manual.token) return undefined
-    return { name: app.name, slug: app.slug, owner: app.owner.login, htmlUrl: app.htmlUrl, installations: app.installations.map((i) => i.account) }
+    if (!app || this.manual.clientId || this.manual.token) return undefined
+    return { name: app.name, slug: app.slug, owner: app.owner.login, htmlUrl: app.htmlUrl, installations: app.installations.map((i) => ({ account: i.account, type: this.kindOf(i) })) }
+  }
+
+  /** The kind of account an installation is on, as kept, or known from the app's owner when it's on that account. */
+  private kindOf(installation: AppSettings['installations'][number]): 'User' | 'Organization' | undefined {
+    if (installation.type) return installation.type
+    return this.own && same(installation.account, this.own.owner.login) ? this.own.owner.type : undefined
+  }
+
+  /** Fills in, from GitHub, the kind of account each installation is on, for those kept before it was asked. */
+  async knowInstallations() {
+    const app = this.own
+    if (!app || app.installations.every((i) => this.kindOf(i))) return
+    const known = await Promise.all(app.installations.map(async (i) => {
+      if (this.kindOf(i)) return i
+      const found = await this.asApp<{ account: { login: string; type: 'User' | 'Organization' } }>('GET', `/app/installations/${i.id}`).catch(() => undefined)
+      return found ? { ...i, type: found.account.type } : i
+    }))
+    this.own = { ...app, installations: known }
+    await this.save()
   }
 
   /**
-   * Uses another Binder's app, made on an organization, rather than making one more. Refused for an app on a person's
-   * own account (it stays with the Binder it was made for), for one that Binder borrows itself, and while this Binder
-   * has an app of its own or GitHub set by hand. `by` must run the lending Binder (one of its owners or admins, not
-   * just the hub's): that Binder keeps the loan in their name, and it holds only while they do.
+   * Whether a person can reach this app's installation on `account`, as GitHub says with their own token: on a person's
+   * own account, only that person; on an organization, it's one GitHub lists for them, or they're an active member.
    */
-  async reuse(from: string, by: string) {
+  async mayReach(token: string | undefined, login: string, account: string) {
+    const installation = this.own?.installations.find((i) => same(i.account, account))
+    if (!installation) return false
+    const kind = this.kindOf(installation)
+    if (kind === 'User') return same(account, login)
+    if (!token || !kind) return false
+    const me = this.asUser(token)
+    // A sign-in through this app lists the installations its person can reach; one through another app can't ask.
+    for (let n = 1; n <= 10; n++) {
+      const page = await me.get<{ installations: { id: number }[] }>(`/user/installations?per_page=100&page=${n}`).catch(() => undefined)
+      if (!page?.installations) break
+      if (page.installations.some((i) => i.id === installation.id)) return true
+      if (page.installations.length < 100) break
+    }
+    const membership = await me.get<{ state?: string }>(`/user/memberships/orgs/${encodeURIComponent(account)}`).catch(() => undefined)
+    return membership?.state === 'active'
+  }
+
+  /**
+   * Uses installations of another Binder's app rather than making one more app. Refused while this Binder has an app of
+   * its own or GitHub set by hand, for an app that Binder borrows itself, and for an account the app isn't installed on.
+   * Whoever asks must have shown GitHub lets them reach each installation (`mayReach`, which the caller checks). Asked
+   * again of the same Binder's app, the accounts are added to those it uses.
+   */
+  async reuse(from: string, by: string, accounts: string[]) {
     if (this.manual.clientId || this.manual.token) throw new Refusal('This binder’s GitHub is set up by hand on the hub, through its GITHUB_* settings.')
     if (this.own) throw new Refusal('This binder has a GitHub App of its own: forget it first to use another binder’s.')
     if (!this.sharing) throw new Refusal('This binder can’t use another binder’s app.')
@@ -289,16 +342,26 @@ export class GitHubConnection {
     const lender = this.sharing.binder(from)
     const app = lender && lender !== this ? lender.own : undefined
     if (!lender || !app) throw new Refusal('That binder has no GitHub App of its own to share.')
-    if (app.owner.type !== 'Organization') throw new Refusal(`${app.name} is on @${app.owner.login}’s own GitHub account, so it serves only the binder it was made for. Make this binder an app of its own.`)
     if (!lender.shareable()) throw new Refusal('That binder’s GitHub is set up by hand on the hub, so it can’t be shared.')
-    await lender.lend(this.sharing.id, by)
+    if (!accounts.length) throw new Refusal('Pick an account the app is installed on.')
+    const missing = accounts.find((a) => !app.installations.some((i) => same(i.account, a)))
+    if (missing) throw new Refusal(`${app.name} isn’t installed on @${missing}.`)
+    const kept = this.borrowed?.from === from && this.borrowed.appId === app.appId ? lentAccounts(app, this.borrowed.accounts) : []
+    const all = unique([...kept, ...accounts])
+    await lender.lend(this.sharing.id, by, all)
     // One loan at a time: whichever it had before is handed back.
     await this.endBorrowing(from)
-    this.borrowed = { from, appId: app.appId }
+    this.borrowed = { from, appId: app.appId, accounts: all }
     this.repoInstallations.clear()
     this.tokens.clear()
     await this.save()
     return app
+  }
+
+  /** The accounts of a borrowed app this Binder uses, while it does. */
+  get borrowedAccounts(): string[] {
+    const app = this.lending()?.own
+    return app ? lentAccounts(app, this.borrowed?.accounts) : []
   }
 
   /** Hands back the loan this Binder had, unless it's from `keep`. */
@@ -489,9 +552,10 @@ export class GitHubConnection {
         madeLocally: !!this.app.madeLocally,
         // Another Binder's, used here: changed there. Or this Binder's own, which others in its organization may use.
         borrowedFrom: this.borrowedFrom,
-        shareable: !!this.own && !!this.shareable(),
+        borrowedAccounts: this.borrowedAccounts,
+        shareable: !!this.own && !!this.shareable()?.installations.length,
         // The Binders this one's app is lent to, which its owners may end.
-        lentTo: this.own ? this.lentTo().map((l) => ({ binder: l.to, by: l.by, at: l.at })) : [],
+        lentTo: this.own ? this.lentTo().map((l) => ({ binder: l.to, by: l.by, at: l.at, accounts: lentAccounts(this.own!, l.accounts) })) : [],
         settingsUrl: new URL(this.app.owner.type === 'Organization' ? `/organizations/${this.app.owner.login}/settings/apps/${this.app.slug}` : `/settings/apps/${this.app.slug}`, this.endpoints.webUrl).toString(),
       } : undefined,
       signIn: !!this.signIn(),
@@ -588,9 +652,9 @@ export class GitHubConnection {
       return lender.installed(installationId)
     }
     if (!this.own) throw new Refusal('Make the GitHub App first.')
-    const installation = await this.asApp<{ id: number; account: { login: string } }>('GET', `/app/installations/${installationId}`)
+    const installation = await this.asApp<{ id: number; account: { login: string; type?: 'User' | 'Organization' } }>('GET', `/app/installations/${installationId}`)
     const rest = this.own.installations.filter((i) => i.id !== installation.id)
-    this.own = { ...this.own, installations: [...rest, { id: installation.id, account: installation.account.login }] }
+    this.own = { ...this.own, installations: [...rest, { id: installation.id, account: installation.account.login, ...(installation.account.type ? { type: installation.account.type } : {}) }] }
     this.repoInstallations.clear()
     await this.save()
     return installation.account.login
@@ -658,6 +722,8 @@ export class GitHubConnection {
       const { id } = await this.asApp<{ id: number }>('GET', `/repos/${repo}/installation`)
       // A borrowed app reaches only the organization it was lent for, not every account it's installed on.
       if (!this.own && !this.installations.some((i) => i.id === id)) return undefined
+      // And only the repos this Binder linked: the lending Binder's other repos there stay its own.
+      if (!this.own && this.sharing?.linked && !this.sharing.linked(repo)) return undefined
       this.repoInstallations.set(repo, id)
       return id
     } catch (error) {

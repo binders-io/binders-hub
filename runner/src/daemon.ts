@@ -58,6 +58,44 @@ async function one(name: string | undefined): Promise<Saved> {
 
 // The service --------------------------------------------------------------------------------------------------------
 
+// launchd's domains for this user, in order: the desktop session's (gui/<uid>), and the user's own (user/<uid>), which
+// every session has. Over SSH, or in a terminal without a desktop session (the hub's agent terminal among them),
+// launchd refuses gui/ with "125: Domain does not support specified action", so the service goes in user/ instead.
+const domains = () => [`gui/${process.getuid!()}`, `user/${process.getuid!()}`]
+
+/** Whether launchd refused a domain because this session doesn't have it. */
+export const refusedDomain = (error: unknown) => {
+  const e = error as { stderr?: string; message?: string } | undefined
+  return /\b125\b|domain does not support/i.test(`${e?.stderr ?? ''} ${e?.message ?? String(error)}`)
+}
+
+type Launchctl = (args: string[]) => Promise<unknown>
+const launchctl: Launchctl = (args) => run('launchctl', args)
+
+/** Loads a service from its plist, into the first of this user's domains this session has. Says which. */
+export async function bootstrap(plist: string, call: Launchctl = launchctl, all = domains()) {
+  let refused: unknown
+  for (const domain of all) {
+    try {
+      await call(['bootstrap', domain, plist])
+      return domain
+    } catch (error) {
+      if (!refusedDomain(error)) throw error
+      refused = error
+    }
+  }
+  throw refused
+}
+
+/** The domain an agent's service is loaded in, if it is. */
+async function loadedIn(name: string) {
+  for (const domain of domains()) if (await run('launchctl', ['print', `${domain}/${label(name)}`]).then(() => true, () => false)) return domain
+  return undefined
+}
+
+/** Takes an agent's service out of launchd, whichever domain it's in. */
+const bootout = (name: string) => Promise.all(domains().map((d) => run('launchctl', ['bootout', `${d}/${label(name)}`]).catch(() => undefined)))
+
 /** What the service runs: this Node, the runner file, and where to find the agent's token. */
 function command(s: Saved) {
   return [process.execPath, runnerFile(), '--hub', s.hub, '--workspace', s.workspace, '--token-file', tokenOf(s.name), '--name', s.name]
@@ -96,8 +134,8 @@ ${args}
 `
     await mkdir(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true })
     await writeFile(plistOf(s.name), plist)
-    await run('launchctl', ['bootout', `gui/${process.getuid!()}/${label(s.name)}`]).catch(() => undefined)
-    await run('launchctl', ['bootstrap', `gui/${process.getuid!()}`, plistOf(s.name)])
+    await bootout(s.name)
+    await bootstrap(plistOf(s.name))
     return
   }
   if (platform === 'linux') {
@@ -129,7 +167,8 @@ WantedBy=default.target
 /** Whether its service is running, and as which process. */
 async function status(s: Saved): Promise<{ running: boolean; pid?: number; loaded: boolean }> {
   if (platform === 'mac') {
-    const out = await run('launchctl', ['print', `gui/${process.getuid!()}/${label(s.name)}`]).then((r) => r.stdout, () => '')
+    const domain = await loadedIn(s.name)
+    const out = domain ? await run('launchctl', ['print', `${domain}/${label(s.name)}`]).then((r) => r.stdout, () => '') : ''
     if (!out) return { running: false, loaded: false }
     const pid = Number(/\bpid = (\d+)/.exec(out)?.[1]) || undefined
     return { running: /\bstate = running\b/.test(out), pid, loaded: true }
@@ -144,21 +183,23 @@ async function status(s: Saved): Promise<{ running: boolean; pid?: number; loade
 
 async function start(s: Saved) {
   if (platform === 'mac') {
-    if (!(await status(s)).loaded) return install(s)
-    await run('launchctl', ['kickstart', `gui/${process.getuid!()}/${label(s.name)}`])
+    const domain = await loadedIn(s.name)
+    if (!domain) return install(s)
+    await run('launchctl', ['kickstart', `${domain}/${label(s.name)}`])
   } else if (platform === 'linux') await run('systemctl', ['--user', 'start', unitName(s.name)])
 }
 
 async function stop(s: Saved) {
   // Taken out of launchd altogether: kept alive, a stopped one would only be started again.
-  if (platform === 'mac') await run('launchctl', ['bootout', `gui/${process.getuid!()}/${label(s.name)}`]).catch(() => undefined)
+  if (platform === 'mac') await bootout(s.name)
   else if (platform === 'linux') await run('systemctl', ['--user', 'stop', unitName(s.name)]).catch(() => undefined)
 }
 
 async function restart(s: Saved) {
   if (platform === 'mac') {
-    if (!(await status(s)).loaded) return install(s)
-    await run('launchctl', ['kickstart', '-k', `gui/${process.getuid!()}/${label(s.name)}`])
+    const domain = await loadedIn(s.name)
+    if (!domain) return install(s)
+    await run('launchctl', ['kickstart', '-k', `${domain}/${label(s.name)}`])
   } else if (platform === 'linux') await run('systemctl', ['--user', 'restart', unitName(s.name)])
 }
 

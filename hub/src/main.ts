@@ -29,6 +29,7 @@ import { log as hubLog } from './logger.ts'
 //   HUB_SECRET              seals what the hub keeps; without it, one is made in .data/secret and kept
 //   HUB_ADMINS              GitHub logins who may change GitHub's setup, besides whoever made the app
 //   HUB_ALLOWED_USERS, HUB_ALLOWED_ORGS      who may sign in, besides the app's maker and its organization
+//   HUB_EMU_SHORTCODES      Enterprise Managed Users' shortcodes (comma-separated), left off their logins where people are shown
 //   HUB_DEV_LOGIN           1 to allow signing in with a name alone; on by default on 127.0.0.1 until GitHub is set up
 //   GITHUB_URL, GITHUB_API_URL               for GitHub Enterprise (github.com and api.github.com by default)
 //   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, GITHUB_TOKEN, GITHUB_WEBHOOK_SECRET   GitHub set up by hand
@@ -104,17 +105,23 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   // Each binder's GitHub is its own: its app, its installations and its people's sign-ins to it, seen by no other
   // binder, so a binder set up for one organization shows its repos to nobody outside it. A personal binder has no
   // GitHub App: its notes repo is its person's own, reached through the hub's OAuth App (pushTo, below).
-  // The one exception, which the lending binder's owners see and can end: a binder in an organization whose app another
-  // binder made may use that one instead (found when it's asked for, as binders start one by one), lent by one of that
-  // binder's owners or admins and only while they are one, and reaching only that organization's installation.
-  const runs = (login: string) => ['owner', 'admin'].includes(spaces.roleOf(id, login) ?? '')
-  const github = new GitHubConnection(log instanceof RedisLog ? new RedisKV(log.redis, id) : new MemoryKV(), sealer, endpoints, first ? manual : {}, first ? undefined : id, { id, binder: (other) => spaces.get(other)?.github, runs })
+  // The one exception, which the lending binder's owners see and can end: a binder may use another binder's app through
+  // the installations its people can reach (an organization they're in, or their own account), found when it's asked
+  // for as binders start one by one, and reaching through them only the repos it linked itself.
+  let started: Hub | undefined
+  const linked = (repo: string) => {
+    const same = (r?: string) => !!r && r.toLowerCase() === repo.toLowerCase()
+    const state = started?.state
+    return !!state && (state.binders.some((b) => same(b.repo)) || state.agents.some((a) => !a.revoked && a.repos.some(same)))
+  }
+  const github = new GitHubConnection(log instanceof RedisLog ? new RedisKV(log.redis, id) : new MemoryKV(), sealer, endpoints, first ? manual : {}, first ? undefined : id, { id, binder: (other) => spaces.get(other)?.github, linked })
   await github.load()
   // An app made while the hub was only on this machine, or a tunnel with a new address: point its webhook here.
   const hook = info.personal ? 'already' : await github.pointWebhook(publicUrl).catch((error: Error) => `failed (${error.message})`)
   if (hook === 'pointed') console.log(`Pointed ${id}'s GitHub App's webhook at ${publicUrl}${github.path('hook')}.`)
   else if (hook.startsWith('failed')) hubLog.warn({ binder: id, why: hook }, 'Couldn’t point a GitHub App’s webhook here')
   const hub = new Hub(log)
+  started = hub
   // A Binder is one notebook: it starts with the one binder its notes and board are in, named as it is.
   await hub.start(first ? startingSeed(options.get().allowedUsers[0] ?? 'you') : [{ type: 'binder.put', binder: info.personal ? { id: 'notes', name: 'Notes', createdBy: info.personal } : { id: 'main', name: info.name, createdBy: info.createdBy } }])
   const actions = new Actions(hub, github)
@@ -123,6 +130,7 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   // Change sets merge as a train: the hub settles conflicts it can in its own working copies of the repos.
   actions.merger = new Merger({ dir: dir('repos'), access: (repo) => github.gitAccess(repo), author: gitAuthor })
   actions.mergeMethod = () => options.get().mergeMethod
+  actions.agentCommits = () => options.get().agentCommits
   actions.watchTrains()
   void actions.moveBriefsToNotes().catch(() => {})
   // Links back to the board; the first Binder's stay at the hub's address, as they were written in its issues.

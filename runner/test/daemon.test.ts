@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { bootstrap, refusedDomain } from '../src/daemon.ts'
 
 // The `binders` command's parts that install nothing: what it lists, how it finds an agent, and what it says without
 // one. (add, start, stop and restart reach launchd or systemd, so they're tried by hand on a machine.)
@@ -44,5 +45,27 @@ describe('the binders command', () => {
     await writeFile(file, script)
     execFileSync('sh', ['-n', file])
     assert.ok(!installer('https://hub.test"; rm -rf ~').includes('rm -rf'), 'the address can’t carry a command')
+  })
+})
+
+describe('agents in the background on a Mac', () => {
+  const refused = Object.assign(new Error('Command failed: launchctl bootstrap gui/501 …'), { stderr: 'Bootstrap failed: 125: Domain does not support specified action\n' })
+
+  it('goes in the user’s own domain when this session has no desktop', async () => {
+    const calls: string[][] = []
+    const domain = await bootstrap('/x.plist', async (args) => {
+      calls.push(args)
+      if (args[1].startsWith('gui/')) throw refused
+    }, ['gui/501', 'user/501'])
+    assert.equal(domain, 'user/501')
+    assert.deepEqual(calls.map((c) => c[1]), ['gui/501', 'user/501'])
+  })
+
+  it('stays in the desktop session’s domain when it has one, and passes on other failures', async () => {
+    assert.equal(await bootstrap('/x.plist', async () => undefined, ['gui/501', 'user/501']), 'gui/501')
+    const other = Object.assign(new Error('failed'), { stderr: 'Bootstrap failed: 5: Input/output error' })
+    await assert.rejects(bootstrap('/x.plist', async () => { throw other }, ['gui/501', 'user/501']), /failed/)
+    assert.ok(refusedDomain(refused))
+    assert.ok(!refusedDomain(other))
   })
 })
