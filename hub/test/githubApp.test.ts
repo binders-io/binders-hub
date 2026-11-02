@@ -232,6 +232,8 @@ describe('setting GitHub up from Settings', () => {
 })
 
 describe('where a GitHub App is installed scopes which binders use it', () => {
+  /** The offers with installations to use, leaving out those only named (that the person can't show they reach). */
+  const usable = (apps: { app: { installations: unknown[] } }[]) => apps.filter((o) => o.app.installations.length)
   /**
    * Four binders: acme-other (bo's, the hub's first), acme-one and acme-two (ana's; acme-two links acme/web and dee owns
    * it too), and anas, whose app is made on ana's own account. ana is a member of acme, bo of acme and elsewhere, dee of
@@ -285,8 +287,27 @@ describe('where a GitHub App is installed scopes which binders use it', () => {
       }
     }
     const call = await as('ana')
-    return { spaces, org, sharing, appFor, url, call, as, close: async () => { await app.close(); await orgGitHub.close() } }
+    return { spaces, org, sharing, appFor, url, call, as, auth, close: async () => { await app.close(); await orgGitHub.close() } }
   }
+
+  it('offers a new binder the app by the GitHub account someone connected where the app was made', async () => {
+    const { appFor, as, auth, close } = await binders()
+    const other = await appFor('acme-other', 'bo')
+    await other.installed(7)
+    // dee signed in without a GitHub sign-in that reaches acme (by name here; an account outside an organization of
+    // managed users, say), and acme-two has no app to connect one through: acme is named, not offered.
+    const dee = await as('dee', 'gho_nobody')
+    const before = (await dee('acme-two', 'GET', '/api/github/reusable')).body.apps
+    assert.deepEqual(before.map((o: { app: { installations: unknown[] }; unreached: string[] }) => [o.app.installations.length, o.unreached]), [[0, ['acme']]])
+    assert.equal((await dee('acme-two', 'POST', '/api/github/app/reuse', { from: 'acme-other', accounts: ['acme'] })).status, 422)
+    // The account dee connected in acme-other, where the app was made, is in acme: that shows it.
+    await auth.githubFor('dee', 'acme-other', 'gho_dee')
+    const after = (await dee('acme-two', 'GET', '/api/github/reusable')).body.apps
+    assert.deepEqual(after.map((o: { binder: { id: string }; app: { installations: { account: string }[] } }) => [o.binder.id, o.app.installations.map((i) => i.account)]), [['acme-other', ['acme']]])
+    const reused = await dee('acme-two', 'POST', '/api/github/app/reuse', { from: 'acme-other', accounts: ['acme'] })
+    assert.equal(reused.status, 200, JSON.stringify(reused.body))
+    await close()
+  })
 
   it('shares an app made on a person’s own account through its installation on an organization', async () => {
     const { spaces, org, appFor, call, as, close } = await binders()
@@ -340,7 +361,7 @@ describe('where a GitHub App is installed scopes which binders use it', () => {
     assert.deepEqual(reused.body.github.app.installations, ['acme'])
     assert.deepEqual(reused.body.github.app.borrowedAccounts, ['acme'])
     assert.equal(reused.body.github.app.shareable, false, 'shared on from where it was made, not from here')
-    assert.deepEqual((await call('acme-two', 'GET', '/api/github/reusable')).body.apps, [], 'nothing more she can reach')
+    assert.deepEqual(usable((await call('acme-two', 'GET', '/api/github/reusable')).body.apps), [], 'nothing more she can reach')
 
     assert.deepEqual(two.installedAccounts(), ['acme'])
     assert.equal((await two.runToken('acme/web'))?.token, 'ghs_installation')
@@ -405,7 +426,7 @@ describe('where a GitHub App is installed scopes which binders use it', () => {
     // Someone GitHub doesn't show in acme, the hub's admin included, gets nothing: no sign-in token, or not a member.
     for (const [who, token] of [['root', undefined], ['dee', 'gho_nobody']] as const) {
       const person = await as(who, token)
-      assert.deepEqual((await person('acme-two', 'GET', '/api/github/reusable')).body.apps, [], who)
+      assert.deepEqual(usable((await person('acme-two', 'GET', '/api/github/reusable')).body.apps), [], who)
       const refused = await person('acme-two', 'POST', '/api/github/app/reuse', { from: 'acme-one' })
       assert.equal(refused.status, 422)
       assert.match(refused.body.error, /able to reach any of Binders test’s installations|Only the Binder’s owners and admins/, who)

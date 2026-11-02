@@ -21,7 +21,7 @@ type Health = {
  * Another binder's GitHub App, whose installations this one may use instead of making its own: those GitHub lets this
  * person reach (an organization they're in, or their own account). `hub`: the hub's first binder's, the hub's own app.
  */
-export type Offer = { binder: { id: string; name: string }; hub?: boolean; app: { name: string; slug: string; owner: string; htmlUrl: string; installations: { account: string; type?: 'User' | 'Organization' }[] } }
+export type Offer = { binder: { id: string; name: string }; hub?: boolean; app: { name: string; slug: string; owner: string; htmlUrl: string; installations: { account: string; type?: 'User' | 'Organization' }[] }; unreached?: string[] }
 
 const words = (p: string) => p.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())
 
@@ -162,6 +162,9 @@ export function Offers({ offers, busy, reuse }: { offers: Offer[]; busy: boolean
               </li>
             ))}
           </ul>
+          {!!offer.unreached?.length && (
+            <p className="faint">Also installed on {offer.unreached.map((a) => `@${a}`).join(', ')}, which none of your GitHub sign-ins here shows you’re in. Connect the GitHub account that’s in {offer.unreached.length === 1 ? 'it' : 'them'} (in the {offer.binder.name} binder: Your account, from your picture at the top), then come back here.</p>
+          )}
         </div>
       ))}
       <p className="faint">Or make this binder an app of its own:</p>

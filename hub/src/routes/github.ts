@@ -170,16 +170,26 @@ export async function githubRoutes(app: FastifyInstance, context: Context) {
     const as = (await auth.githubLink(login(request), sp(request).id).catch(() => ({ as: undefined }))).as
     return [...new Set([login(request), ...(as ? [as] : [])])]
   }
-  /** The accounts of a binder's app whose installations this person can reach, as GitHub says with their own sign-in. */
+  /**
+   * The accounts of a binder's app whose installations this person can reach, as GitHub says with their own sign-in:
+   * this binder's (or the one they signed in with), or the one they keep in the binder that made the app. A binder
+   * without an app yet has no sign-in of its own, and the account that's in the app's organization (an Enterprise
+   * Managed User's, say) is often the one they connected there.
+   */
   const reachableOf = async (request: FastifyRequest, from: string, accounts: string[]) => {
     const lender = spaces.get(from)?.github
     if (!lender) return []
-    const token = request.githubToken ?? request.identityToken
-    const logins = await githubLogins(request)
+    const who = login(request)
+    const there = await auth.githubLink(who, from).catch(() => ({ as: undefined as string | undefined }))
+    const tries = [
+      { token: request.githubToken ?? request.identityToken, logins: await githubLogins(request) },
+      { token: await auth.githubFor(who, from).catch(() => undefined), logins: [...new Set([who, ...(there.as ? [there.as] : [])])] },
+    ]
     const out: string[] = []
     for (const account of accounts) {
-      for (const who of logins) {
-        if (await lender.mayReach(token, who, account).catch(() => false)) { out.push(account); break }
+      reach: for (const { token, logins } of tries) {
+        if (!token) continue
+        for (const as of logins) if (await lender.mayReach(token, as, account).catch(() => false)) { out.push(account); break reach }
       }
     }
     return out
@@ -206,7 +216,9 @@ export async function githubRoutes(app: FastifyInstance, context: Context) {
       const open = app.installations.filter((i) => !taken.includes(i.account.toLowerCase()))
       const reached = await reachableOf(request, info.id, open.map((i) => i.account))
       const installations = open.filter((i) => reached.includes(i.account))
-      if (installations.length) offers.push({ binder: { id: info.id, name: info.name }, hub: lender === first, app: { ...app, installations } })
+      // Installations they can't show they reach: named, so the screen can say which account to connect.
+      const unreached = open.filter((i) => !reached.includes(i.account)).map((i) => i.account)
+      if (installations.length || unreached.length) offers.push({ binder: { id: info.id, name: info.name }, hub: lender === first, app: { ...app, installations }, unreached })
     }
     // The hub's own app first.
     return offers.sort((a, b) => Number(b.hub) - Number(a.hub))
