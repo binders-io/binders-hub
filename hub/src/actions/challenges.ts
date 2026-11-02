@@ -1,5 +1,5 @@
 import type { Change } from '../../../shared/state.ts'
-import { findingCard, authorOf, authorsOf, byWorst, type BlastRadius, cardsOfSet, setOfCard, setPath, challengeable, confidences, findingComment, findingKinds, findingWhere, pullOf, repliable, replying, replyVerdicts, severities, type Challenge, type Finding, type FindingOutcome, type ReplyRound, type ReplyVerdict } from '../../../shared/changeSet.ts'
+import { findingCard, authorOf, authorsOf, byWorst, type BlastRadius, cardsOfSet, setOfCard, findingPull, challengeable, confidences, findingComment, findingKinds, findingWhere, pullOf, repliable, replying, replyVerdicts, severities, type Challenge, type Finding, type FindingOutcome, type ReplyRound, type ReplyVerdict } from '../../../shared/changeSet.ts'
 import { worksIn, type Agent, type Card } from '../../../shared/work.ts'
 import { Refused, type Actor } from '../hub.ts'
 import { DebriefService } from './debriefs.ts'
@@ -96,7 +96,7 @@ export abstract class ChallengeService extends DebriefService {
   }
 
   /** Findings as kept: each says where, what goes wrong, how sure and how bad, or they all go back to the reviewer. */
-  protected vetFindings(subject: Subject, sent: Omit<Finding, 'id'>[]) {
+  protected vetFindings(subject: Subject, sent: Omit<Finding, 'id'>[], place = false) {
     const set = this.reviewOf(subject)
     const missing: string[] = []
     const paths = new Set(set?.files.map((f) => f.path))
@@ -106,13 +106,21 @@ export abstract class ChallengeService extends DebriefService {
     const several = (set?.pulls?.length ?? 0) > 1
     const pulls = new Set(set?.pulls?.map((p) => p.id))
     const findings: Finding[] = sent.map((f, i) => {
-      const named = setPath(pathOf((f.file ?? '').trim()))
-      const pull = several ? named.pull : set?.pull?.id
+      const raw = (f.file ?? '').trim()
+      const named = several ? findingPull(raw, set!.pulls!, set!.files.map((file) => file.path)) : undefined
+      // Findings show on their pull request's card, so each goes on one. From a run that's over, which can't be asked
+      // again, one it can't place goes on the likeliest, saying so, rather than losing the whole review.
+      const placed = place && named && !named.pull ? named.among[0] ?? set!.pulls![0]?.id : undefined
+      const pull = several ? named!.pull ?? placed : set?.pull?.id
+      const note = placed ? ` (The reviewer named ${raw}, which ${named!.among.length ? 'more than one pull request changes' : 'isn’t in this change set’s diffs'}: it’s kept on this pull request.)` : ''
       const finding = {
-        kind: f.kind, file: (several ? named.path : pathOf((f.file ?? '').trim())).slice(0, 300), line: Math.floor(Number(f.line)), what: (f.what ?? '').trim().slice(0, 3000),
+        kind: f.kind, file: (several ? named!.path : pathOf(raw)).slice(0, 300), line: Math.floor(Number(f.line)), what: `${(f.what ?? '').trim().slice(0, 3000)}${(f.what ?? '').trim() ? note : ''}`,
         confidence: f.confidence, severity: f.severity, fix: f.fix?.trim().slice(0, 2000) || undefined, pull,
       }
-      if (several && (!pull || !pulls.has(pull))) missing.push(`finding ${i + 1}: file as get_challenge_set names it, with its pull request ("owner/repo#7: path")`)
+      if (several && (!pull || !pulls.has(pull))) {
+        const options = named?.among.length ? named.among : set!.pulls!.map((p) => p.id)
+        missing.push(`finding ${i + 1} (“${raw.slice(0, 120)}”): file with its pull request, one of ${options.join(', ')}, as “${options[0]}: ${(named?.path ?? 'path').slice(0, 120)}”${named?.among.length ? ', as more than one changes that file' : ', naming the one it’s about even for a file outside the diff'}`)
+      }
       const lacks = [
         !findingKinds.includes(finding.kind) && 'kind', !finding.file && 'file', !(finding.line >= 1) && 'line (1 or more)', !finding.what && 'what goes wrong',
         !confidences.includes(finding.confidence) && 'confidence (confirmed or plausible)', !severities.includes(finding.severity) && 'severity (high, medium or low)',
@@ -124,7 +132,7 @@ export abstract class ChallengeService extends DebriefService {
     return { findings, set }
   }
 
-  async sendChallenge(agentId: string, cardId: string, sent: { doing?: string; failed?: string; summary?: string; findings?: Omit<Finding, 'id'>[]; blast?: BlastRadius }) {
+  async sendChallenge(agentId: string, cardId: string, sent: { doing?: string; failed?: string; summary?: string; findings?: Omit<Finding, 'id'>[]; blast?: BlastRadius; place_unmatched?: boolean }) {
     const found = this.challenging(agentId, cardId)
     if (!found) throw new Refused('No Challenge of that is waiting for you.')
     const { subject, challenge } = found
@@ -147,7 +155,7 @@ export abstract class ChallengeService extends DebriefService {
       return this.exact(subject.id).challenge!
     }
     // What it sent as it went, then what it sends now.
-    const { findings, set } = this.vetFindings(subject, [...added, ...(sent.findings ?? [])].slice(0, maxFindings))
+    const { findings, set } = this.vetFindings(subject, [...added, ...(sent.findings ?? [])].slice(0, maxFindings), sent.place_unmatched)
     this.findingDrafts.delete(draftKey)
     findings.sort(byWorst).forEach((f, i) => (f.id = `f${i + 1}`))
     const summary = sent.summary?.trim().slice(0, 2000) || undefined

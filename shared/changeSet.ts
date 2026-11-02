@@ -645,6 +645,30 @@ export function setPath(name: string): { pull?: string; path: string } {
 }
 
 /**
+ * Which of a change set's pull requests a finding's file is in, as reviewers write it: "acme/web#7: src/a.ts" in any
+ * capitals, "web#7: src/a.ts", the pull request's address, or the file alone (a/ and b/ as git writes them, or the whole
+ * path in a checkout), which is enough when one pull request changed it. `among` is the others that could be meant: more
+ * than one changed that file, or none did and it says nothing of which.
+ */
+export function findingPull(file: string, pulls: { id: string; repo: string; number: number }[], paths: string[]): { pull?: string; path: string; among: string[] } {
+  const clean = file.trim().replace(/^[`'"]+|[`'"]+$/g, '').trim()
+  const tidy = (path: string) => path.trim().replace(/^\.\//, '').replace(/^[ab]\//, '')
+  const at = /^(?:https?:\/\/[^/]+\/)?([\w.-]+\/)?([\w.-]+)(?:#|\/pull\/)(\d+)\s*:\s*(.+)$/.exec(clean)
+  if (at) {
+    const named = pulls.find((p) => p.number === Number(at[3]) && (at[1] ? p.repo.toLowerCase() === `${at[1]}${at[2]}`.toLowerCase() : p.repo.split('/')[1]?.toLowerCase() === at[2].toLowerCase()))
+    if (named) return { pull: named.id, path: tidy(at[4]), among: [] }
+  }
+  const path = tidy(at ? at[4] : clean)
+  const inDiff = paths.map(setPath).filter((f) => f.pull)
+  const lower = path.toLowerCase()
+  const exact = inDiff.filter((f) => f.path === path)
+  const close = exact.length ? exact : inDiff.filter((f) => f.path.toLowerCase() === lower || lower.endsWith(`/${f.path.toLowerCase()}`) || f.path.toLowerCase().endsWith(`/${lower}`))
+  const candidates = [...new Set(close.map((f) => f.pull!))]
+  if (candidates.length === 1) return { pull: candidates[0], path: close[0].path, among: [] }
+  return { path: close[0]?.path ?? path, among: candidates }
+}
+
+/**
  * A change set as one piece of work, for its debrief and Challenge: every pull request's diff together (each file named
  * with its pull request when there are several), every card's brief, and every card's done-when points, each with its
  * card's title. Its head is all its pull requests' heads, so a new commit on any makes its debrief out of date.

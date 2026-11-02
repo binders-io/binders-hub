@@ -1236,7 +1236,18 @@ describe('agents over MCP', () => {
 
     // Each finding names its pull request; one that doesn't goes back.
     const finding = { kind: 'bug', line: 2, what: 'Both checks register the same route.', confidence: 'confirmed', severity: 'high' }
-    assert.match((await reviewer.call('send_challenge', { id: set.id, findings: [{ ...finding, file: 'src/a.ts' }] })).text, /with its pull request/)
+    const refused = (await reviewer.call('send_challenge', { id: set.id, findings: [{ ...finding, file: 'src/a.ts' }] })).text
+    assert.match(refused, /with its pull request/)
+    assert.match(refused, /acme\/web#7, acme\/web#8/, 'says which there are')
+    assert.match(refused, /“src\/a\.ts”/, 'and what it was sent')
+    // What a finished run wrote can't be asked again: kept on the likeliest pull request, saying so, rather than lost.
+    const onePlaced = await reviewer.call('send_challenge', { id: set.id, summary: 'From a run that’s over.', place_unmatched: true, findings: [{ ...finding, file: 'lib/outside.ts' }] })
+    assert.equal(onePlaced.text, 'Sent: 1 finding.')
+    const placed = hub.state.changeSets.find((s) => s.id === set.id)!.challenge!.findings![0]
+    assert.equal(placed.pull, 'acme/web#7')
+    assert.match(placed.what, /named lib\/outside\.ts, which isn’t in this change set’s diffs/)
+    assert.equal((await you('POST', `/api/sets/${set.id}/challenge`)).status, 200, 'asked again, for the rest of this test')
+    assert.equal((await reviewer.call('wait_for_work', { timeout_seconds: 0, challenges: true })).value.id, set.id)
     const sent = await reviewer.call('send_challenge', { id: set.id, summary: 'They clash.', findings: [{ ...finding, file: 'acme/web#7: src/a.ts' }, { ...finding, severity: 'low', confidence: 'plausible', what: 'Untested.', file: 'acme/web#8: src/a.ts', line: 3 }] })
     assert.equal(sent.text, 'Sent: 2 findings.')
     const whole = hub.state.changeSets.find((s) => s.id === set.id)!.challenge!

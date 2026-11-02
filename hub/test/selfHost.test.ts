@@ -108,3 +108,23 @@ describe('agents and repos, whatever their capitals', () => {
     assert.equal((await actions.putAgent('you', { name: 'Test' }, made.id)).name, 'Test')
   })
 })
+
+describe('which pull request a Challenge finding is in', () => {
+  const pulls = [{ id: 'Acme/Web#7', repo: 'Acme/Web', number: 7 }, { id: 'Acme/Api#8', repo: 'Acme/Api', number: 8 }]
+  const paths = ['Acme/Web#7: src/page.ts', 'Acme/Web#7: src/shared.ts', 'Acme/Api#8: src/shared.ts', 'Acme/Api#8: routes/plans.ts']
+  const said = async (file: string) => (await import('../../shared/changeSet.ts')).findingPull(file, pulls, paths)
+
+  it('reads it however a reviewer writes it', async () => {
+    for (const file of ['Acme/Web#7: src/page.ts', 'acme/web#7: src/page.ts', 'web#7: src/page.ts', 'acme/web#7:src/page.ts', '`acme/web#7: src/page.ts`', 'https://github.com/Acme/Web/pull/7: src/page.ts', 'src/page.ts', 'b/src/page.ts', './src/page.ts', 'SRC/page.ts', '/Users/me/.binders/worktrees/web-c1/src/page.ts']) {
+      const found = await said(file)
+      assert.equal(found.pull, 'Acme/Web#7', file)
+      assert.equal(found.path, 'src/page.ts', file)
+    }
+    assert.equal((await said('acme/web#7: lib/outside.ts')).pull, 'Acme/Web#7', 'a file outside the diff, its pull request named')
+  })
+
+  it('doesn’t guess: a file two changed, or none did, names what could be meant', async () => {
+    assert.deepEqual(await said('src/shared.ts'), { path: 'src/shared.ts', among: ['Acme/Web#7', 'Acme/Api#8'] })
+    assert.deepEqual(await said('lib/outside.ts'), { path: 'lib/outside.ts', among: [] })
+  })
+})

@@ -1116,7 +1116,7 @@ export class Runner {
       if (answer && !ran.timedOut && !ran.cutOff) {
         const found = challengeFindings(await readFile(answer, 'utf8').catch(() => '')) ?? challengeFindings(ran.reader.summary.reply ?? ran.output)
         if (!found) why = 'The agent didn’t write its findings as JSON.'
-        else await this.call('send_challenge', { id: job.id, ...found }).catch((error) => { why = (error as Error).message })
+        else await this.call('send_challenge', { id: job.id, ...found, place_unmatched: true }).catch((error) => { why = (error as Error).message })
       }
       why ??= ran.idle
         ? this.idleWhy(ran, settings)

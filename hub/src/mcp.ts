@@ -707,8 +707,9 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
         fix: z.string().optional(),
       })).max(50).optional(),
       blast_radius: z.record(z.string(), z.unknown()).optional().describe('for runners: the change’s blast radius, worked out before the review'),
+      place_unmatched: z.boolean().optional().describe('for runners sending what a finished run wrote: a finding whose pull request can’t be told goes on the likeliest, rather than the whole review going back'),
     },
-  }, run(async ({ id, blast_radius, ...sent }: { id: string; doing?: string; failed?: string; summary?: string; findings?: { kind: FindingKind; file: string; line: number; what: string; confidence: Confidence; severity: Severity; fix?: string }[]; blast_radius?: Record<string, unknown> }) => {
+  }, run(async ({ id, blast_radius, ...sent }: { id: string; doing?: string; failed?: string; summary?: string; findings?: { kind: FindingKind; file: string; line: number; what: string; confidence: Confidence; severity: Severity; fix?: string }[]; place_unmatched?: boolean; blast_radius?: Record<string, unknown> }) => {
     const challenge = await actions.sendChallenge(agentId, id, { ...sent, blast: blast_radius as unknown as BlastRadius | undefined })
     if (challenge.state === 'done') return text(`Sent: ${challenge.findings!.length} finding${challenge.findings!.length === 1 ? '' : 's'}.`)
     return text(challenge.state === 'failed' ? 'Noted that you couldn’t.' : 'Noted.')
