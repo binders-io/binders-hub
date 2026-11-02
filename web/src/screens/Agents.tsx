@@ -287,7 +287,7 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
             </Field>
           )}
           <div className="form-row">
-            <Field label="Model" hint={runner.tool === 'codex' ? 'Pick one, or type a provider’s deployment as provider/name (foundry/my-deployment). A name alone goes to your ChatGPT or OpenAI sign-in.' : models.length ? undefined : `Start a runner on a machine with ${tool.name} installed, and the models it finds are suggested here.`}>
+            <Field label="Model" hint={runner.tool === 'dsh' ? 'As provider/name, from its settings on that machine: azure/my-deployment, my-gateway/my-model. Empty is DeepSeek Harness’s own default.' : runner.tool === 'codex' ? 'Pick one, or type a provider’s deployment as provider/name (foundry/my-deployment). A name alone goes to your ChatGPT or OpenAI sign-in.' : models.length ? undefined : `Start a runner on a machine with ${tool.name} installed, and the models it finds are suggested here.`}>
               {/* Any name, with the models the runner found as suggestions: a provider's own (foundry/…) may not be listed. */}
               <input id="runner-model" list="runner-models" value={runner.model ?? ''} onChange={(e) => setRun({ model: e.target.value.trim() || undefined })} placeholder={`${tool.name}’s default`} autoComplete="off" />
               <datalist id="runner-models">{models.map((m) => <option key={m} value={m} />)}</datalist>

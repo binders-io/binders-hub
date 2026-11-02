@@ -2,7 +2,7 @@
 // given, and whether Binders' MCP tools can be handed to them for one run. Without those tools the runner does the
 // bookkeeping itself: it gives the agent the card or the note, and reports back what it printed.
 
-export type AgentTool = 'claude' | 'codex' | 'opencode' | 'pi' | 'copilot' | 'gemini' | 'cursor' | 'amp' | 'goose' | 'aider' | 'qwen' | 'custom'
+export type AgentTool = 'claude' | 'codex' | 'opencode' | 'dsh' | 'pi' | 'copilot' | 'gemini' | 'cursor' | 'amp' | 'goose' | 'aider' | 'qwen' | 'custom'
 export type Access = 'full' | 'auto' | 'edits'
 
 export interface ToolInfo {
@@ -26,6 +26,7 @@ export const tools: ToolInfo[] = [
   { id: 'claude', name: 'Claude Code', by: 'Anthropic', command: 'claude', mcp: true, access: ['full', 'auto', 'edits'], tried: true, models: ['opus', 'sonnet', 'haiku'] },
   { id: 'codex', name: 'Codex', by: 'OpenAI', command: 'codex', mcp: true, access: ['full', 'edits'], tried: true },
   { id: 'opencode', name: 'OpenCode', by: 'SST', command: 'opencode', mcp: true, access: ['full', 'edits'], tried: true },
+  { id: 'dsh', name: 'DeepSeek Harness', by: 'DeepSeek', command: 'dsh', mcp: true, access: ['full'], tried: true },
   { id: 'copilot', name: 'Copilot CLI', by: 'GitHub', command: 'copilot', mcp: true, access: ['full', 'edits'], tried: true },
   { id: 'pi', name: 'Pi', by: 'pi.dev', command: 'pi', mcp: false, access: ['full'], tried: true },
   { id: 'gemini', name: 'Gemini CLI', by: 'Google', command: 'gemini', mcp: false, access: ['full', 'edits'], tried: false },
@@ -40,7 +41,7 @@ export const tools: ToolInfo[] = [
 export const toolInfo = (id: AgentTool | undefined) => tools.find((t) => t.id === id) ?? tools[0]
 
 /** The runner the hub hands out; one older than this lacks things the app offers (several cards at once, chats). */
-export const runnerVersion = '0.8.12'
+export const runnerVersion = '0.8.13'
 
 /** The first runner that restarts when asked from the Agents page. */
 export const restartSince = '0.8.1'

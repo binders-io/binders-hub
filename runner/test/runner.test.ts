@@ -19,7 +19,7 @@ import { Sealer } from '../../hub/src/secrets.ts'
 import { buildServer } from '../../hub/src/server.ts'
 import { Spaces } from '../../hub/src/spaces.ts'
 import { Webhooks } from '../../hub/src/webhooks.ts'
-import { Runner, actionsFromReply, agentFile, allBindersAmong, bindersAmong, bypassTurnedOff, carryClaudeSettings, noteFromReply, parseMcpList, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
+import { Runner, actionsFromReply, agentFile, dshPatch, allBindersAmong, bindersAmong, bypassTurnedOff, carryClaudeSettings, noteFromReply, parseMcpList, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
 
 // The runner's own files (~/.binders/run) in a home of the tests' own, not this machine's.
 process.env.BINDERS_HOME ??= mkdtempSync(join(tmpdir(), 'binders-home-'))
@@ -922,6 +922,56 @@ console.log('</binders-actions>')
     const after = hub.state.cards.find((c) => c.id === job.id)!
     assert.equal(after.stage, 'live', JSON.stringify(after.activity.slice(-2)))
     await close()
+  })
+
+  it('runs DeepSeek Harness headless, its model and Binders’ server in a patch with no token in it and its uploads off', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'binders-runner-'))
+    const patch = dshPatch('https://hub.example.com', 'azure/my-deployment')
+    assert.match(patch, /serverName: binders_hub/)
+    assert.match(patch, /url: "https:\/\/hub\.example\.com\/mcp"/)
+    assert.match(patch, /process\.env\.BINDERS_TOKEN/)
+    assert.match(patch, /provider: "azure"\n {4}model: "my-deployment"/)
+    assert.match(patch, /id: session-log-deepseek\n {2}disabled: true/)
+    assert.match(patch, /id: session-telemetry-otel\n {2}disabled: true/)
+    assert.doesNotMatch(dshPatch('https://hub.example.com', 'deepseek-flash'), /agent-default-model/, 'no provider named: left to its default')
+
+    const runner = new Runner({ hubUrl: 'https://hub.example.com', token: 'bnd_x', workspace: dir, log: () => {} })
+    const run = runner.commandFor({ tool: 'dsh', access: 'full', timeoutMinutes: 1, worktrees: true }, 'c1', dir, '/p.yml', 'Do it.')
+    assert.equal(run.command, 'dsh')
+    assert.deepEqual(run.args, ['--profile', 'headless', '--patch', '/p.yml', '--json', 'Do it.'])
+    assert.equal(run.env.DSH_PERMISSION_MODE, 'danger-full-access')
+    assert.ok(!run.args.join(' ').includes('bnd_x'), 'the token isn’t on its command line')
+  })
+
+  it('reads DeepSeek Harness’s events: its session, steps, words, usage, refusals and how it ended', () => {
+    const reader = new StreamReader()
+    for (const event of [
+      { type: 'session', sessionId: 'session-1', cwd: '/x' },
+      { type: 'status', phase: 'turn_start', turn: 1 },
+      { type: 'text', text: 'Reading the code.' },
+      { type: 'tool_call', callId: 'c1', tool: 'shell', input: { command: 'npm test' } },
+      { type: 'tool_result', callId: 'c1', status: 'completed', result: '3 passed' },
+      { type: 'tool_call', callId: 'c2', tool: 'mcp__binders_hub__report_progress', input: { id: 'x' } },
+      { type: 'tool_call', callId: 'c3', tool: 'Bash', input: { command: 'rg eks' } },
+      { type: 'tool_result', callId: 'c3', status: 'error', result: 'no', error: { name: 'PermissionError', code: 'PERMISSION_DENIED' } },
+      { type: 'status', phase: 'step_end', turn: 1, step: 1, usage: { inputTokens: 10, outputTokens: 5 } },
+      { type: 'status', phase: 'step_end', turn: 1, step: 2, usage: { inputTokens: 1, outputTokens: 1, totalTokens: 20 } },
+      { type: 'final', sessionId: 'session-1', reason: { kind: 'completed' }, text: 'All done.' },
+    ]) reader.line(JSON.stringify(event))
+    const { steps, said } = reader.take(true)
+    assert.deepEqual(steps.map((s) => s.tool), ['shell', 'Bash'], 'its calls to Binders show on the card already')
+    assert.equal(steps[0].result, '3 passed')
+    assert.deepEqual(said, ['Reading the code.'])
+    const summary = reader.summary
+    assert.equal(summary.sessionId, 'session-1')
+    assert.equal(summary.reply, 'All done.')
+    assert.equal(summary.tokens, 35)
+    assert.equal(summary.failed, undefined)
+    assert.deepEqual(summary.denied, ['run `rg eks`'])
+    const stopped = new StreamReader()
+    stopped.line(JSON.stringify({ type: 'final', sessionId: 's', reason: { kind: 'error', message: 'The model refused.' }, text: '' }))
+    assert.equal(stopped.summary.failed, true)
+    assert.equal(stopped.summary.error, 'The model refused.')
   })
 
   it('takes the Binders actions at the end of a reply, and leaves a reply without them as it is', () => {

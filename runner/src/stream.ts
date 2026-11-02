@@ -68,6 +68,8 @@ function resultText(content: unknown): string {
 /** Reads one stream: feed it lines, take what's new with `take`. */
 export class StreamReader {
   private pending = new Map<string, Step>()
+  /** DeepSeek Harness's tool calls, by id: its results don't repeat what was called. */
+  private calls = new Map<string, { tool_name?: string; tool_input?: Record<string, unknown> }>()
   private reading: Reading = { steps: [], said: [] }
 
   /** Whether it has printed any JSON events; a tool that prints plain text has its lines shown as they come. */
@@ -131,6 +133,50 @@ export class StreamReader {
       if (typeof event.result === 'string' && event.result.trim()) {
         this.reading.last = short(event.result, 300)
         this.reading.reply = event.result.trim()
+      }
+    }
+
+    // DeepSeek Harness (--json) ---------------------------------------------------------------------------------------
+    if (type === 'session' && typeof event.sessionId === 'string') this.reading.sessionId = event.sessionId
+    if (type === 'text' && typeof event.text === 'string' && event.text.trim()) {
+      this.reading.said.push(event.text.trim().slice(0, 1200))
+      this.reading.last = short(event.text, 300)
+    }
+    if (type === 'tool_call' && typeof event.tool === 'string' && !event.tool.startsWith(`mcp__${mcpServer}__`)) {
+      const input = event.input as Record<string, unknown> | undefined
+      const step: Step = { tool: event.tool.replace(/^mcp__([^_]+)__/, '$1:'), text: target(input) }
+      this.reading.steps.push(step)
+      if (typeof event.callId === 'string') {
+        this.pending.set(event.callId, step)
+        this.calls.set(event.callId, { tool_name: event.tool, tool_input: input })
+      }
+    }
+    if (type === 'tool_result' && typeof event.callId === 'string') {
+      const step = this.pending.get(event.callId)
+      if (step) {
+        step.result = (event.status === 'error' ? 'Failed: ' : '') + short(String(event.result ?? ''))
+        this.pending.delete(event.callId)
+      }
+      // Refused by its permissions, as distinct from a command that ran and failed: said on the card, as Claude Code's are.
+      const error = event.error as { name?: string; code?: string; reason?: string } | undefined
+      if (error && /denied|permission|approval|sandbox/i.test(`${error.code ?? ''} ${error.name ?? ''}`)) {
+        const denial = deniedAs(this.calls.get(event.callId) ?? {})
+        this.reading.denied = [...new Set([...(this.reading.denied ?? []), denial])].slice(0, 20)
+      }
+    }
+    if (type === 'status' && event.phase === 'step_end') {
+      const usage = event.usage as { inputTokens?: number; outputTokens?: number; totalTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number } | undefined
+      if (usage) this.reading.tokens = (this.reading.tokens ?? 0) + (usage.totalTokens ?? (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0) + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0))
+    }
+    if (type === 'final') {
+      if (typeof event.text === 'string' && event.text.trim()) {
+        this.reading.reply = event.text.trim()
+        this.reading.last = short(event.text, 300)
+      }
+      const reason = event.reason as { kind?: string; message?: string } | null | undefined
+      if (reason?.kind && reason.kind !== 'completed') {
+        this.reading.failed = true
+        this.reading.error = reason.message ?? `It stopped: ${reason.kind}.`
       }
     }
 

@@ -245,6 +245,25 @@ The runner never uses the system's temp folder, which hardened machines lock dow
 edits, a brief, its answers when it has no MCP tools) go in a `.binders` folder in the folder it works in, which git
 ignores, and the runner's own in `~/.binders` (`BINDERS_HOME`).
 
+### DeepSeek Harness, for your own models
+
+The runner can start agents with [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`npm install -g @deepseek-ai/dsh`): choose it as the agent's tool on the Agents page. It reaches Azure OpenAI, OpenAI-compatible gateways and self-hosted servers through its own settings, in `$DSH_HOME/profiles/headless/cordis.patch.yml`, with keys read from the environment or `$DSH_HOME/.env`:
+
+```yaml
+- id: llm-pi-ai
+  config:
+    providers:
+      my-gateway:
+        api: openai-completions
+        baseURL: https://gateway.example.com/v1
+        apiKeyEnv: MY_GATEWAY_KEY
+        models:
+          - id: my-model
+            contextWindow: 200000
+```
+
+Name the agent's model as `provider/model` (`my-gateway/my-model`, or `azure/my-deployment` with `AZURE_OPENAI_*` set). Each run adds Binders' MCP server with the agent's token from the environment, never in a file, and turns off Harness's session-log and telemetry uploads. Runs use full access: its released versions can't grant a worktree the git folder its commits go in. Harness is in developer preview, so an upgrade of it can break this.
+
 ### What an agent may do without asking
 
 A run has nobody to approve a step, so Claude Code refuses whatever it would ask about. The runner gives it what the

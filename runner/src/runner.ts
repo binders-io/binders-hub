@@ -74,6 +74,33 @@ export async function carryClaudeSettings(fromDirs: string[], to: string) {
 }
 
 /**
+ * What a DeepSeek Harness run adds to its headless profile, as a --patch overlay: Binders' MCP server (its token read
+ * from the run's environment, so it's never in the file), the model when one's named as provider/model (Harness has no
+ * flag for it), and neither of its uploads, which are on by default: session logs on requests to DeepSeek's own API, and
+ * telemetry when someone gives feedback.
+ */
+export function dshPatch(hubUrl: string, model?: string) {
+  const routed = model ? /^([A-Za-z][\w-]*)\/(.+)$/.exec(model) : null
+  return [
+    '- id: session-log-deepseek',
+    '  disabled: true',
+    '- id: session-telemetry-otel',
+    '  disabled: true',
+    '- insert:',
+    '    - id: binders-mcp',
+    "      name: '@deepseek-ai/dsh-mcp-client'",
+    '      config:',
+    `        serverName: ${mcpServer}`,
+    '        transport: streamable-http',
+    `        url: ${JSON.stringify(`${hubUrl}/mcp`)}`,
+    '        headers:',
+    "          Authorization: !!js '`Bearer ${process.env.BINDERS_TOKEN}`'",
+    ...(routed ? ['- id: agent-default-model', '  config:', `    provider: ${JSON.stringify(routed[1])}`, `    model: ${JSON.stringify(routed[2])}`] : []),
+    '',
+  ].join('\n')
+}
+
+/**
  * The name of Binders' server in an enterprise MCP config, when the config lists one: by its address (this hub's
  * /mcp) or by the name the README gives it. Claude Code then has Binders' tools from the config itself.
  */
@@ -1674,6 +1701,12 @@ export class Runner {
     // with Binders' from the managed config when it lists it.
     if (!this.usesMcp(settings) && toolInfo(settings.tool).mcp) return { env: {} }
     if (settings.tool === 'claude' && this.managedAllowed) return { env: {} }
+    if (settings.tool === 'dsh') {
+      if (settings.model && !settings.model.includes('/')) this.log(`DeepSeek Harness takes a model as provider/model, such as azure/my-deployment: “${settings.model}” is left to its own default.`)
+      const patch = await ownFile(`dsh-${randomBytes(6).toString('hex')}.yml`)
+      await writeFile(patch, dshPatch(this.options.hubUrl, settings.model), { mode: 0o600 })
+      return { path: patch, env: {} }
+    }
     // Codex on another provider's model: the user's own MCP servers stay off for the run, as one tool schema such a
     // provider refuses (a top-level anyOf, say) fails every request. The hub's is the one it needs.
     if (settings.tool === 'codex' && settings.model && /^[A-Za-z][\w-]*\//.test(settings.model)) return { env: {}, quiet: (await codexServers()).filter((n) => n !== mcpServer) }
@@ -1882,6 +1915,9 @@ export class Runner {
       }
       case 'opencode':
         return plain('opencode', [...(model ? ['-m', model] : [])])
+      case 'dsh':
+        // Binders' server and the model are in its --patch overlay.
+        return plain('dsh', ['--profile', 'tui', ...(mcp ? ['--patch', mcp] : [])])
       case 'copilot':
         return plain('copilot', [full ? '--allow-all' : '--allow-all-tools', ...(mcp ? ['--additional-mcp-config', `@${mcp}`] : []), ...(model ? ['--model', model] : [])])
       case 'pi':
@@ -1935,6 +1971,10 @@ export class Runner {
       case 'opencode':
         // Its config (with Binders' MCP server) comes from OPENCODE_CONFIG.
         return plain('opencode', ['run', ...(full ? ['--auto'] : []), ...(model ? ['-m', model] : []), ...(session ? ['--session', session] : []), prompt])
+      case 'dsh':
+        // Full access, by DSH_PERMISSION_MODE: its released versions have no flag for it, and can't grant a worktree the
+        // shared git folder its commits go in, so less wouldn't let it commit. Nobody's there to approve a step either.
+        return plain('dsh', ['--profile', 'headless', ...(mcp ? ['--patch', mcp] : []), '--json', ...(session ? ['--session-id', session] : []), prompt], { DSH_PERMISSION_MODE: 'danger-full-access' })
       case 'copilot':
         return plain('copilot', ['-p', prompt, '-s', full ? '--allow-all' : '--allow-all-tools', ...(mcp ? ['--additional-mcp-config', `@${mcp}`] : []), ...(model ? ['--model', model] : [])])
       case 'pi':

@@ -10,6 +10,7 @@ const tints: Record<Agent['provider'], string> = {
   openai: 'linear-gradient(150deg, #3a3a44, #18181e)',
   copilot: 'linear-gradient(150deg, #6e7681, #30363d)',
   opencode: 'linear-gradient(150deg, #4b4f5c, #1f2129)',
+  dsh: 'linear-gradient(150deg, #3f6fe0, #1d3a8a)',
   cursor: 'linear-gradient(150deg, #3a3a44, #121216)',
   gemini: 'linear-gradient(150deg, #5b8cff, #8b5cf6)',
   pi: 'linear-gradient(150deg, #4b4f5c, #1f2129)',

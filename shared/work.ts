@@ -11,7 +11,7 @@ export type Stage = 'proposed' | 'ready' | 'working' | 'blocked' | 'review' | 'l
 export const stageOrder: Stage[] = ['proposed', 'ready', 'working', 'blocked', 'review', 'live']
 const current = (stage: string | undefined) => (stage === 'shipping' ? 'live' : stage) as Stage
 
-export type Provider = 'claude' | 'openai' | 'copilot' | 'opencode' | 'cursor' | 'gemini' | 'pi' | 'amp' | 'goose' | 'aider' | 'qwen' | 'other'
+export type Provider = 'claude' | 'openai' | 'copilot' | 'opencode' | 'dsh' | 'cursor' | 'gemini' | 'pi' | 'amp' | 'goose' | 'aider' | 'qwen' | 'other'
 
 /** How the Binders runner starts an agent for each card, set on the Agents page. */
 export interface RunnerSettings {

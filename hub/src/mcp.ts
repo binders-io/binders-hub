@@ -100,7 +100,7 @@ export interface AgentMaking {
 
 // How far an agent's runner may go, least first: an agent sets another up with no more than its own.
 const accessOrder = ['edits', 'auto', 'full'] as const
-const providers: Provider[] = ['claude', 'openai', 'copilot', 'opencode', 'cursor', 'gemini', 'pi', 'amp', 'goose', 'aider', 'qwen', 'other']
+const providers: Provider[] = ['claude', 'openai', 'copilot', 'opencode', 'dsh', 'cursor', 'gemini', 'pi', 'amp', 'goose', 'aider', 'qwen', 'other']
 /** An owner's agents an agent may set up, all told: enough for a team, not a runaway loop. */
 export const maxAgentsMade = 20
 
@@ -180,7 +180,7 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
 
   server.registerTool('update_profile', {
     description: 'Says what this agent can do and where it runs, so work meant for it finds it: skills, repos, where it runs (a runner says its machine and folder here).',
-    inputSchema: { skills: z.array(z.string()).optional(), repos: z.array(z.string()).optional(), runs_on: z.string().optional(), provider: z.enum(['claude', 'openai', 'copilot', 'opencode', 'cursor', 'gemini', 'pi', 'amp', 'goose', 'aider', 'qwen', 'other']).optional(), models: z.array(z.string()).max(400).optional(), tool_models: z.record(z.string(), z.array(z.string()).max(400)).optional(), runner: z.object({ version: z.string().max(20), parallel: z.number().int().min(1).max(16), id: z.string().max(64).optional(), enterprise_mcp: z.boolean().optional(), bypass_off: z.boolean().optional() }).optional() },
+    inputSchema: { skills: z.array(z.string()).optional(), repos: z.array(z.string()).optional(), runs_on: z.string().optional(), provider: z.enum(['claude', 'openai', 'copilot', 'opencode', 'dsh', 'cursor', 'gemini', 'pi', 'amp', 'goose', 'aider', 'qwen', 'other']).optional(), models: z.array(z.string()).max(400).optional(), tool_models: z.record(z.string(), z.array(z.string()).max(400)).optional(), runner: z.object({ version: z.string().max(20), parallel: z.number().int().min(1).max(16), id: z.string().max(64).optional(), enterprise_mcp: z.boolean().optional(), bypass_off: z.boolean().optional() }).optional() },
   }, run(async (args: { skills?: string[]; repos?: string[]; runs_on?: string; provider?: Provider; models?: string[]; tool_models?: Record<string, string[]>; runner?: { version: string; parallel: number; id?: string; enterprise_mcp?: boolean; bypass_off?: boolean } }) => {
     const agent = me()
     const updated = await actions.putAgent(agent.owner, { name: agent.name, skills: args.skills ?? agent.skills, repos: args.repos ?? agent.repos, runsOn: args.runs_on ?? agent.runsOn, provider: args.provider ?? agent.provider }, agent.id)
