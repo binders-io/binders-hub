@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'motion/react'
 import { ChevronDown, GitBranch, GitMerge, GitPullRequest, ShieldCheck } from 'lucide-react'
-import type { ChangeSet, PullRequest } from '../data/model'
+import type { ChangeSet, Environment, PullRequest } from '../data/model'
 import { call } from '../data/api'
 import { nameFor, useStore } from '../data/store'
 import { attempt } from '../components/Toast'
@@ -30,6 +30,21 @@ const mergeHelp: Record<NonNullable<PullRequest['mergeable']>, string> = {
   conflicts: 'Its changes clash with its base: someone has to resolve them.',
   blocked: 'The repo’s rules (reviews, required checks) don’t allow merging yet.',
   unknown: 'GitHub is working it out.',
+}
+
+/** What deleting a change set does, said before it happens. */
+function deleteWarning(set: ChangeSet, pulls: PullRequest[], environments: Environment[]) {
+  const open = pulls.filter((p) => p.state !== 'merged' && p.state !== 'closed').length
+  const on = environments.filter((e) => e.changeSetIds.includes(set.id)).map((e) => e.name)
+  return [
+    `Delete change set #${set.number}?`,
+    [
+      set.state === 'merging' ? 'Its merging stops.' : '',
+      open ? `${open === 1 ? 'Its open pull request stays' : `Its ${open} open pull requests stay`} open on GitHub, outside any change set.` : '',
+      on.length ? `It also leaves ${on.join(' and ')} in Delivery.` : '',
+      'Its cards stay. This can’t be undone.',
+    ].filter(Boolean).join(' '),
+  ].join('\n\n')
 }
 
 const prLabel: Record<PullRequest['state'], string> = { open: 'Open', approved: 'Approved', queued: 'In merge queue', merged: 'Merged', closed: 'Closed' }
@@ -129,6 +144,7 @@ export function ChangeSets({ id }: { id: string }) {
             ) : (
               <span className="approve-note">Agents add pull requests here as they finish cards.</span>
             )}
+            <button className="text-button delete-set" onClick={() => { if (window.confirm(deleteWarning(set, pulls, state.environments))) void attempt(() => store.deleteSet(set.id)) }}>Delete change set</button>
           </div>
         </header>
 

@@ -94,6 +94,36 @@ describe('agents and repos, whatever their capitals', () => {
     assert.equal(hub.state.changeSets.filter((s) => s.prIds.includes(linked.id)).length, 1)
   })
 
+  it('deletes a change set: its train stops, its pull request stays out until its agent finishes again, and its number isn’t reused', async () => {
+    const { Hub } = await import('../src/hub.ts')
+    const { MemoryLog } = await import('../src/log.ts')
+    const { Actions } = await import('../src/actions.ts')
+    const { Webhooks } = await import('../src/webhooks.ts')
+    const { GitHubConnection } = await import('../src/githubConnection.ts')
+    const { Sealer } = await import('../src/secrets.ts')
+    const hub = new Hub(new MemoryLog())
+    await hub.start([{ type: 'binder.put', binder: { id: 'b1', name: 'Web', repo: 'acme/web' } }])
+    const actions = new Actions(hub, new GitHubConnection(new MemoryKV(), new Sealer('x'), { webUrl: 'http://unused', apiUrl: 'http://unused' }))
+    const card = await actions.createCard({ kind: 'user', login: 'you' }, { binderId: 'b1', title: 'A page' })
+    await actions.linkPull('acme/web', 7, { cardId: card.id })
+    const first = hub.state.changeSets[0]
+    assert.equal(first.number, 1)
+    await hub.record({ kind: 'hub' }, { type: 'set.update', id: first.id, fields: { state: 'merging', approvedBy: 'you' } })
+
+    await actions.deleteSet('you', first.id)
+    assert.equal(hub.state.changeSets.length, 0)
+    await actions.runTrain(first.id)
+    assert.equal(hub.state.pulls[0].state, 'open', 'its train merges nothing more')
+    assert.match(hub.state.cards[0].activity.at(-1)!.text, /Deleted change set #1/)
+    await assert.rejects(actions.deleteSet('you', first.id), /No change set/)
+
+    await new Webhooks(hub, actions).handle('pull_request', { action: 'synchronize', pull_request: { number: 7, title: 'A page', body: '', state: 'open', merged: false, html_url: 'https://github.com/Acme/Web/pull/7', head: { ref: 'b', sha: 'abc' } }, repository: { full_name: 'Acme/Web' } })
+    assert.equal(hub.state.changeSets.length, 0, 'news from GitHub doesn’t bring it back')
+
+    await actions.linkPull('acme/web', 7, { cardId: card.id })
+    assert.equal(hub.state.changeSets[0].number, 2, 'its agent finished again: a new set, under a new number')
+  })
+
   it('won’t have two live agents whose names differ only by capitals, but lets one change its own', async () => {
     const { Hub } = await import('../src/hub.ts')
     const { MemoryLog } = await import('../src/log.ts')

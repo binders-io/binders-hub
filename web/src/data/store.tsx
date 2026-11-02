@@ -118,6 +118,7 @@ export interface Actions {
   saveNotes: () => Promise<NotesSaved>
   // Change sets and environments
   sendForReview: (setId: string) => Promise<void>
+  deleteSet: (setId: string) => Promise<void>
   approveSet: (setId: string) => Promise<void>
   promote: (envId: string) => Promise<void>
   // Agents
@@ -433,6 +434,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         })
       },
       sendForReview: (setId) => call('POST', `/api/sets/${setId}/review`),
+      deleteSet: (setId) => call('DELETE', `/api/sets/${setId}`),
       approveSet: (setId) => call('POST', `/api/sets/${setId}/approve`),
       promote: (envId) => call('POST', `/api/environments/${envId}/promote`),
       createAgent: (agent) => call('POST', '/api/agents', agent),

@@ -1,7 +1,7 @@
 import type { Merger } from '../merger.ts'
 import type { Change } from '../../../shared/state.ts'
 import { titleOf } from '../../../shared/notes.ts'
-import { cardChangeSet, setChangeSet, pullOf } from '../../../shared/changeSet.ts'
+import { cardChangeSet, cardsOfSet, setChangeSet, pullOf } from '../../../shared/changeSet.ts'
 import type { Activity, ChangeSet, PullRequest } from '../../../shared/work.ts'
 import { GitHubError } from '../github.ts'
 import { Refused, type Actor } from '../hub.ts'
@@ -108,7 +108,7 @@ export abstract class ChangeSetService extends CardService {
       await this.hub.record({ kind: 'hub' }, { type: 'set.update', id: open.id, fields: { prIds: [...open.prIds, prId], noteIds: noteId && !open.noteIds.includes(noteId) ? [...open.noteIds, noteId] : open.noteIds } })
       return
     }
-    const number = Math.max(0, ...this.hub.state.changeSets.map((s) => s.number)) + 1
+    const number = Math.max(this.hub.state.setsMade ?? 0, ...this.hub.state.changeSets.map((s) => s.number)) + 1
     const note = noteId ? this.hub.state.notes.find((n) => n.id === noteId) : undefined
     const set: ChangeSet = { id: `set-${number}`, binderId, number, title: note ? titleOf(note.text) : `Change set ${number}`, summary: '', state: 'assembling', prIds: [prId], noteIds: noteId ? [noteId] : [] }
     await this.hub.record({ kind: 'hub' }, { type: 'set.put', set })
@@ -121,6 +121,28 @@ export abstract class ChangeSetService extends CardService {
     if (!set) throw new Refused(`No change set ${setId}.`)
     if (set.state !== 'assembling') throw new Refused('That change set isn’t taking pull requests any more.')
     await this.hub.record({ kind: 'user', login }, { type: 'set.update', id: set.id, fields: { state: 'review' } })
+  }
+
+  /**
+   * Deletes a change set, in any state. Nothing changes on GitHub: its pull requests stay as they are, and stay out of
+   * change sets unless their agent finishes the card again. An approved set's train stops, after any merge under way.
+   */
+  async deleteSet(login: string, setId: string) {
+    if (!this.hub.state.changeSets.some((s) => s.id === setId)) throw new Refused(`No change set ${setId}.`)
+    clearTimeout(this.trainTimers.get(setId))
+    this.trainTimers.delete(setId)
+    const before = this.trains.get(setId) ?? Promise.resolve()
+    return before.catch(() => undefined).then(async () => {
+      this.trains.delete(setId)
+      const set = this.hub.state.changeSets.find((s) => s.id === setId)
+      if (!set) return
+      const changes: Change[] = [
+        ...cardsOfSet(this.hub.state, set).map((card): Change => ({ type: 'card.activity', id: card.id, activity: { at: this.now(), by: login, kind: 'said', text: `Deleted change set #${set.number}. Its pull request stays as it is on GitHub.` } })),
+        ...this.hub.state.environments.filter((e) => e.changeSetIds.includes(setId)).map((e): Change => ({ type: 'env.update', id: e.id, fields: { changeSetIds: e.changeSetIds.filter((s) => s !== setId) } })),
+        { type: 'set.delete', id: setId },
+      ]
+      await this.hub.recordAll({ kind: 'user', login }, changes)
+    })
   }
 
   async reorderSet(login: string, setId: string, prIds: string[]) {

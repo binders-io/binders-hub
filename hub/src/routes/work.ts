@@ -58,6 +58,7 @@ export async function workRoutes(app: FastifyInstance, context: Context) {
   app.delete('/api/briefs/:owner/:name/lessons/:at', act(async (request) => sp(request).actions.removeLesson(login(request), repoParam(request), param(request, 'at'))))
   app.delete('/api/briefs/:owner/:name', act(async (request) => sp(request).actions.forgetBrief(login(request), repoParam(request))))
   app.post('/api/proposals/:id/accept', act(async (request) => sp(request).actions.acceptProposal({ kind: 'user', login: login(request) }, param(request, 'id'))))
+  app.delete('/api/sets/:id', act(async (request) => sp(request).actions.deleteSet(login(request), param(request, 'id'))))
   app.post('/api/sets/:id/review', act(async (request) => sp(request).actions.sendForReview(login(request), param(request, 'id'))))
   app.post('/api/sets/:id/order', act(async (request) => sp(request).actions.reorderSet(login(request), param(request, 'id'), bodyOf(bodies.order, request).prIds)))
   app.post('/api/sets/:id/check', act(async (request) => sp(request).actions.checkSet(param(request, 'id'), request.githubToken)))

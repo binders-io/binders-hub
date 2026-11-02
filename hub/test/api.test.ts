@@ -986,6 +986,17 @@ describe('agents over MCP', () => {
     assert.equal((await builder.call('list_tasks', { stage: 'done' })).value.length, 1)
     assert.equal(hub.state.changeSets.find((s) => s.id === set.id)!.state, 'shipped')
 
+    // Deleted, though shipped: gone from the hub and its environments, with its card kept and nothing asked of GitHub.
+    const askedGitHub = github.calls.length
+    const deleted = await you('DELETE', `/api/sets/${set.id}`)
+    assert.equal(deleted.status, 200, JSON.stringify(deleted.body))
+    assert.ok(!hub.state.changeSets.some((s) => s.id === set.id))
+    assert.ok(hub.state.environments.every((e) => !e.changeSetIds.includes(set.id)))
+    assert.equal(hub.state.cards.find((c) => c.id === cardId)!.stage, 'live')
+    assert.equal(hub.state.pulls.find((p) => p.id === pull.id)!.state, 'merged')
+    assert.equal(github.calls.length, askedGitHub)
+    assert.equal((await you('DELETE', `/api/sets/${set.id}`)).status, 422, 'it’s gone')
+
     // Revoked: its token stops working at once.
     await you('DELETE', `/api/agents/${second.body.agent.id}`)
     const revoked = await fetch(`${url}/mcp`, { method: 'POST', headers: { authorization: `Bearer ${second.body.token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) })

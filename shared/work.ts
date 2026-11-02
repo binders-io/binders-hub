@@ -378,6 +378,8 @@ export interface WorkState {
   proposals: Proposal[]
   pulls: PullRequest[]
   changeSets: ChangeSet[]
+  /** The highest number a change set has had: a deleted one's number isn't used again, as cards' findings still name it. */
+  setsMade?: number
   environments: Environment[]
   runs: Run[]
   chats: Chat[]
@@ -509,7 +511,7 @@ export function applyWork<S extends WorkState>(state: S, change: WorkChange): S 
     case 'pr.update':
       return { ...state, pulls: patch(state.pulls, change.id, change.fields) }
     case 'set.put':
-      return { ...state, changeSets: upsert(state.changeSets, change.set) }
+      return { ...state, changeSets: upsert(state.changeSets, change.set), setsMade: Math.max(state.setsMade ?? 0, change.set.number) }
     case 'set.update':
       return { ...state, changeSets: patch(state.changeSets, change.id, change.fields) }
     case 'env.put':
