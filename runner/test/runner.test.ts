@@ -19,7 +19,10 @@ import { Sealer } from '../../hub/src/secrets.ts'
 import { buildServer } from '../../hub/src/server.ts'
 import { Spaces } from '../../hub/src/spaces.ts'
 import { Webhooks } from '../../hub/src/webhooks.ts'
-import { Runner, challengeFindings, debriefSections, findingReplies, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
+import { Runner, agentFile, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
+
+// The runner's own files (~/.binders/run) in a home of the tests' own, not this machine's.
+process.env.BINDERS_HOME ??= mkdtempSync(join(tmpdir(), 'binders-home-'))
 import { StreamReader } from '../src/stream.ts'
 import { until } from '../../hub/test/helpers.ts'
 
@@ -29,6 +32,7 @@ import { until } from '../../hub/test/helpers.ts'
 const standIn = `
 import { Client } from '${join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js')}'
 import { StreamableHTTPClientTransport } from '${join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js')}'
+
 const mode = process.argv[2]
 const client = new Client({ name: 'stand-in', version: '1' })
 await client.connect(new StreamableHTTPClientTransport(new URL(process.env.BINDERS_URL + '/mcp'), { requestInit: { headers: { authorization: 'Bearer ' + process.env.BINDERS_TOKEN } } }))
@@ -779,6 +783,32 @@ console.log('Added the health check, and its test passes.')
       claude.done()
       await close()
     }
+  })
+
+  it('listing Binders’ server by its address, Claude Code keeps Binders’ tools without being told', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'binders-runner-'))
+    const managed = join(dir, 'managed-mcp.json')
+    await writeFile(managed, JSON.stringify({ mcpServers: { company_binders: { type: 'http', url: 'https://hub.test/mcp/', headers: { Authorization: 'Bearer ${BINDERS_TOKEN}' } }, other: { url: 'https://elsewhere.test/mcp' } } }))
+    assert.equal(await managedBinders(managed, 'https://hub.test'), 'company_binders')
+    await writeFile(join(dir, 'by-name.json'), JSON.stringify({ mcpServers: { binders_hub: { url: 'https://moved.test/mcp' } } }))
+    assert.equal(await managedBinders(join(dir, 'by-name.json'), 'https://hub.test'), 'binders_hub')
+    await writeFile(join(dir, 'neither.json'), JSON.stringify({ mcpServers: { other: { url: 'https://elsewhere.test/mcp' } } }))
+    assert.equal(await managedBinders(join(dir, 'neither.json'), 'https://hub.test'), undefined)
+    assert.equal(await managedBinders(join(dir, 'missing.json'), 'https://hub.test'), undefined)
+    const runner = new Runner({ hubUrl: 'https://hub.test', token: 'bnd_x', workspace: dir, log: () => {}, managedMcp: managed }) as unknown as { managedServer?: string; usesMcp: Runner['usesMcp']; commandFor: Runner['commandFor'] }
+    runner.managedServer = await managedBinders(managed, 'https://hub.test')
+    assert.equal(runner.usesMcp({ tool: 'claude' }), true)
+    const { args } = runner.commandFor({ tool: 'claude', access: 'full', timeoutMinutes: 1, worktrees: false }, 'c1', dir, undefined, 'Do it.')
+    assert.ok(args.includes('--allowedTools=mcp__company_binders') && !args.includes('--mcp-config'))
+  })
+
+  it('has the agent write its files in its own folder, never the system’s temp folder, and never into the work', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'binders-runner-'))
+    execFileSync('git', ['init', '-q', dir])
+    const file = await agentFile(dir, 'note-1.md')
+    assert.equal(file, join(dir, '.binders', 'note-1.md'))
+    await writeFile(file, 'the note')
+    assert.equal(execFileSync('git', ['-C', dir, 'status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' }), '', 'ignored by git, folder and all')
   })
 
   it('listing Binders’ server itself, Claude Code keeps Binders’ tools and the runner adds no config of its own', async () => {

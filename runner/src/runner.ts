@@ -1,7 +1,7 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
-import { homedir, hostname, tmpdir } from 'node:os'
+import { homedir, hostname } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { randomBytes } from 'node:crypto'
@@ -21,6 +21,46 @@ import { briefMost, type RunnerSettings } from '../../shared/work.ts'
 // too long puts it back with why. An agent that asks a person and stops is started again on that card with the answer.
 
 const run = promisify(execFile)
+
+// The runner's files are never in the system's temp folder, which hardened machines lock down and agents' own sandboxes
+// may not reach. What the runner alone (or the agent's tool) reads goes in ~/.binders (BINDERS_HOME); what the agent
+// writes goes in a .binders folder in the folder it works in, which ignores itself in git.
+const runnerHome = () => process.env.BINDERS_HOME ?? join(homedir(), '.binders')
+
+/** A file of the runner's own, in ~/.binders/run. */
+async function ownFile(name: string) {
+  const dir = join(runnerHome(), 'run')
+  await mkdir(dir, { recursive: true, mode: 0o700 })
+  return join(dir, name)
+}
+
+/**
+ * A file for the agent to write, in the folder it runs in (so a tool that keeps to its own folder may write it): in its
+ * .binders folder, which ignores itself in git, so nothing in it is ever committed or counted as part of the work.
+ */
+export async function agentFile(dir: string, name: string) {
+  const folder = join(dir, '.binders')
+  await mkdir(folder, { recursive: true })
+  await writeFile(join(folder, '.gitignore'), '*\n', { flag: 'wx' }).catch(() => undefined)
+  return join(folder, name)
+}
+
+/**
+ * The name of Binders' server in an enterprise MCP config, when the config lists one: by its address (this hub's
+ * /mcp) or by the name the README gives it. Claude Code then has Binders' tools from the config itself.
+ */
+export async function managedBinders(file: string, hubUrl: string) {
+  const text = await readFile(file, 'utf8').catch(() => '')
+  if (!text) return undefined
+  let servers: Record<string, { url?: string }> = {}
+  try {
+    servers = (JSON.parse(text) as { mcpServers?: Record<string, { url?: string }> }).mcpServers ?? {}
+  } catch {
+    return undefined
+  }
+  const ours = `${hubUrl.replace(/\/$/, '')}/mcp`.toLowerCase()
+  return Object.entries(servers).find(([name, server]) => server?.url?.replace(/\/$/, '').toLowerCase() === ours || name === mcpServer)?.[0]
+}
 
 /**
  * Stops an agent and everything it started: its process group where there is one (a command run through a shell
@@ -235,7 +275,7 @@ export async function reviewCheckout(workspace: string, own: string | undefined,
     if (fetched) return add(workspace, fetched).catch(() => undefined)
   }
   if (!own || !(await git(['rev-parse', '--git-dir'], own).catch(() => ''))) return undefined
-  const index = join(tmpdir(), `binders-review-index-${randomBytes(6).toString('hex')}`)
+  const index = await ownFile(`review-index-${randomBytes(6).toString('hex')}`)
   try {
     const env = { GIT_INDEX_FILE: index, GIT_AUTHOR_NAME: 'Binders', GIT_AUTHOR_EMAIL: 'binders@localhost', GIT_COMMITTER_NAME: 'Binders', GIT_COMMITTER_EMAIL: 'binders@localhost' }
     await git(['read-tree', 'HEAD'], own, env)
@@ -305,7 +345,13 @@ export class Runner {
   private enterpriseMcp = false
   /** Its enterprise MCP config lists Binders' server: Claude Code has Binders' tools from it, and no config is added. */
   private get managedAllowed() {
-    return this.options.managedMcpAllowed ?? process.env.BINDERS_MANAGED_MCP === 'allowed'
+    return this.options.managedMcpAllowed ?? (process.env.BINDERS_MANAGED_MCP === 'allowed' || !!this.managedServer)
+  }
+  /** Binders' server as the enterprise MCP config names it, when it lists it. */
+  private managedServer?: string
+  /** Where card worktrees and the checkouts reviews and briefs read go. */
+  private worktreesRoot() {
+    return this.options.worktreesDir ?? process.env.BINDERS_WORKTREES_DIR ?? join(runnerHome(), 'worktrees')
   }
   /** How many cards it takes at once, as it last told the hub. */
   private parallel = 3
@@ -359,7 +405,13 @@ export class Runner {
   }
 
   async connect() {
-    if (!this.enterpriseMcp && !this.managedAllowed && existsSync(this.options.managedMcp ?? managedMcpPath())) await this.enterpriseMcpFound(`An enterprise MCP config is on this machine (${this.options.managedMcp ?? managedMcpPath()})`)
+    const managedFile = this.options.managedMcp ?? managedMcpPath()
+    // An enterprise MCP config that lists Binders' server gives Claude Code its tools: nothing to work around.
+    if (existsSync(managedFile)) {
+      this.managedServer = await managedBinders(managedFile, this.options.hubUrl)
+      if (this.managedServer) this.log(`The enterprise MCP config on this machine lists Binders’ server (${this.managedServer}): Claude Code uses Binders’ tools from it.`)
+    }
+    if (!this.enterpriseMcp && !this.managedAllowed && existsSync(managedFile)) await this.enterpriseMcpFound(`An enterprise MCP config is on this machine (${this.options.managedMcp ?? managedMcpPath()})`)
     this.client = new Client({ name: 'binders-runner', version: '0.2.0' })
     await this.client.connect(new StreamableHTTPClientTransport(new URL(`${this.options.hubUrl}/mcp`), { requestInit: { headers: { authorization: `Bearer ${this.options.token}` } } }))
     const me = await this.call<{ name: string; runner?: RunnerSettings }>('whoami')
@@ -692,7 +744,7 @@ export class Runner {
     let before = ''
     if (!mcp && chat.note) {
       before = (await this.call<{ text?: string }>('get_note', { id: chat.note.id }).catch(() => ({ text: '' }))).text ?? ''
-      noteFile = join(tmpdir(), `binders-note-${randomBytes(6).toString('hex')}.md`)
+      noteFile = await agentFile(this.options.workspace, `note-${randomBytes(6).toString('hex')}.md`)
       await writeFile(noteFile, before, { mode: 0o600 })
     }
     const said = [
@@ -750,7 +802,7 @@ export class Runner {
     this.sessions.delete(key)
     let why: string | undefined
     // Without Binders' tools, the agent writes the sections to a file of its own.
-    const answer = mcp ? undefined : join(tmpdir(), `binders-debrief-${randomBytes(6).toString('hex')}.json`)
+    const answer = mcp ? undefined : await agentFile(dir, `debrief-${randomBytes(6).toString('hex')}.json`)
     try {
       const brief = await this.briefFor(await repoOf(dir), mcp)
       const prompt = answer ? await this.plainDebriefPrompt(job, dir, answer, brief) : this.debriefPrompt(job, dir, brief)
@@ -844,12 +896,13 @@ export class Runner {
     this.sessions.delete(key)
     let why: string | undefined
     let checkout: Awaited<ReturnType<typeof reviewCheckout>>
-    const answer = mcp ? undefined : join(tmpdir(), `binders-challenge-${randomBytes(6).toString('hex')}.json`)
+    let answer: string | undefined
     try {
       const set = await this.call<ChallengeSetJSON>('get_challenge_set', { id: job.id })
       const own = await this.cardWorktree(job.id)
-      checkout = await reviewCheckout(this.options.workspace, own, set.pull, join(tmpdir(), `binders-challenge-${job.id}-${randomBytes(4).toString('hex')}`))
+      checkout = await reviewCheckout(this.options.workspace, own, set.pull, join(this.worktreesRoot(), `challenge-${job.id}-${randomBytes(4).toString('hex')}`))
       const dir = checkout?.dir ?? this.options.workspace
+      if (!mcp) answer = await agentFile(dir, `challenge-${randomBytes(6).toString('hex')}.json`)
       // What the change touches beyond itself, worked out here before the review, for the reviewer and the people.
       let blast: BlastRadius | undefined
       if (await run('git', ['-C', dir, 'rev-parse', '--git-dir']).then(() => true, () => false)) {
@@ -948,7 +1001,7 @@ export class Runner {
     const own = await this.cardWorktree(job.id)
     const dir = await run('git', ['-C', own, 'rev-parse', '--git-dir']).then(() => own, () => this.options.workspace)
     let why: string | undefined
-    const answer = mcp ? undefined : join(tmpdir(), `binders-replies-${randomBytes(6).toString('hex')}.json`)
+    const answer = mcp ? undefined : await agentFile(dir, `replies-${randomBytes(6).toString('hex')}.json`)
     try {
       const challenge = await this.call<ChallengeJSONRead>('get_challenge', { id: job.id })
       const prompt = answer ? this.plainRepliesPrompt(job, challenge, dir, answer) : this.repliesPrompt(job, dir)
@@ -1036,7 +1089,8 @@ export class Runner {
       return none
     }
     if (!first?.token) return none
-    const keep = await mkdtemp(join(tmpdir(), 'binders-github-'))
+    await mkdir(join(runnerHome(), 'run'), { recursive: true, mode: 0o700 })
+    const keep = await mkdtemp(join(runnerHome(), 'run', 'github-'))
     const file = join(keep, 'token')
     await writeFile(file, first.token, { mode: 0o600 })
     const web = (first.github || 'https://github.com').replace(/\/$/, '')
@@ -1240,7 +1294,7 @@ export class Runner {
    */
   private async directoryFor(card: CardJSON, _settings: RunnerSettings) {
     const workspace = this.options.workspace
-    const root = this.options.worktreesDir ?? process.env.BINDERS_WORKTREES_DIR ?? join(homedir(), '.binders', 'worktrees')
+    const root = this.worktreesRoot()
     const top = await run('git', ['rev-parse', '--show-toplevel'], { cwd: workspace }).then((r) => r.stdout.trim(), () => '')
     if (top) {
       const [realTop, realWorkspace] = await Promise.all([realpath(top), realpath(workspace)])
@@ -1353,7 +1407,7 @@ export class Runner {
         ? { mcpServers: { [mcpServer]: { type: 'http', url, headers, ...(settings.tool === 'copilot' ? { tools: ['*'] } : {}) } } }
         : undefined
     if (!config) return { env: {} }
-    const path = join(tmpdir(), `binders-mcp-${randomBytes(6).toString('hex')}.json`)
+    const path = await ownFile(`mcp-${randomBytes(6).toString('hex')}.json`)
     await writeFile(path, JSON.stringify(config), { mode: 0o600 })
     return { path, env: settings.tool === 'opencode' ? { OPENCODE_CONFIG: path } : {} }
   }
@@ -1434,14 +1488,15 @@ export class Runner {
     const doing = (text: string) => send({ doing: short(text, 120) }).catch(() => {})
     const key = `brief-${job.id}`
     this.sessions.delete(key)
-    const answer = join(tmpdir(), `binders-brief-${randomBytes(6).toString('hex')}.md`)
+    let answer = ''
     let checkout: Awaited<ReturnType<typeof briefCheckout>> | undefined
     let why: string | undefined
     try {
       const clone = await this.cloneOf(job.repo)
       if (!clone) throw new Error(`${job.repo} isn’t on this machine: there’s no clone of it in ${this.options.workspace}.`)
       await doing('Checking out its default branch')
-      checkout = await briefCheckout(clone, join(tmpdir(), `binders-brief-${randomBytes(4).toString('hex')}`))
+      checkout = await briefCheckout(clone, join(this.worktreesRoot(), `brief-${randomBytes(4).toString('hex')}`))
+      answer = await agentFile(checkout.dir, `brief-${randomBytes(6).toString('hex')}.md`)
       const before = await this.call<BriefRead>('get_repo_brief', { repo: job.repo }).catch(() => undefined)
       const since = before?.text && before.written_from ? await changesSince(checkout.dir, before.written_from, checkout.sha) : undefined
       const prompt = briefPrompt({ name: this.name, job, dir: checkout.dir, sha: checkout.sha, branch: checkout.branch, answer, before, since })
@@ -1464,7 +1519,7 @@ export class Runner {
     } catch (error) {
       why = (error as Error).message
     } finally {
-      await rm(answer, { force: true })
+      if (answer) await rm(answer, { force: true })
       await checkout?.remove()
     }
     if (why) {
@@ -1525,7 +1580,7 @@ export class Runner {
       case 'claude': {
         const access = full ? 'bypassPermissions' : settings.access === 'auto' ? 'auto' : 'acceptEdits'
         // Binders' tools allowed up front, whatever its access: they're how it works with the hub.
-        return plain('claude', [...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcpServer}`] : []), '--permission-mode', access, ...(model ? ['--model', model] : [])])
+        return plain('claude', [...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcp ? mcpServer : this.managedServer ?? mcpServer}`] : []), '--permission-mode', access, ...(model ? ['--model', model] : [])])
       }
       case 'codex': {
         const routed = model ? /^([A-Za-z][\w-]*)\/(.+)$/.exec(model) : null
@@ -1569,7 +1624,7 @@ export class Runner {
         const access = full ? 'bypassPermissions' : settings.access === 'auto' ? 'auto' : 'acceptEdits'
         // Binders' tools allowed up front: run headless, a tool that needs asking is refused, and with Edits or Auto
         // access an MCP tool does.
-        return plain('claude', ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcpServer}`] : []), '--permission-mode', access, ...(model ? ['--model', model] : []), ...(session ? ['--resume', session] : [])],
+        return plain('claude', ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcp ? mcpServer : this.managedServer ?? mcpServer}`] : []), '--permission-mode', access, ...(model ? ['--model', model] : []), ...(session ? ['--resume', session] : [])],
           // The reasoning asked for, as how much it may think before each answer.
           effort ? { MAX_THINKING_TOKENS: String(thinkingTokens[effort]) } : {})
       }

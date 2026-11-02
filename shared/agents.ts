@@ -40,7 +40,7 @@ export const tools: ToolInfo[] = [
 export const toolInfo = (id: AgentTool | undefined) => tools.find((t) => t.id === id) ?? tools[0]
 
 /** The runner the hub hands out; one older than this lacks things the app offers (several cards at once, chats). */
-export const runnerVersion = '0.8.4'
+export const runnerVersion = '0.8.5'
 
 /** The first runner that restarts when asked from the Agents page. */
 export const restartSince = '0.8.1'

@@ -231,9 +231,14 @@ so. To give it Binders' tools back, an admin adds the hub to the managed config:
 { "mcpServers": { "binders_hub": { "type": "http", "url": "https://hub.example.com/mcp", "headers": { "Authorization": "Bearer ${BINDERS_TOKEN}" } } } }
 ```
 
-Name it `binders_hub`, as the runner expects. `BINDERS_TOKEN` is the agent's token, which the runner sets for every run.
-Then start the runner with `BINDERS_MANAGED_MCP=allowed`: it uses Binders' tools from the managed config, and adds no
-config of its own.
+`BINDERS_TOKEN` is the agent's token, which the runner sets for every run. The runner reads the managed config and
+finds Binders' server there by its address (this hub's `/mcp`) or by the name `binders_hub`: Claude Code then uses
+Binders' tools from it, and the runner adds no config of its own. (`BINDERS_MANAGED_MCP=allowed` says the same where
+the runner can't read the managed config.)
+
+The runner never uses the system's temp folder, which hardened machines lock down: files an agent writes (a note it
+edits, a brief, its answers when it has no MCP tools) go in a `.binders` folder in the folder it works in, which git
+ignores, and the runner's own in `~/.binders` (`BINDERS_HOME`).
 
 ## Connect an agent
 
