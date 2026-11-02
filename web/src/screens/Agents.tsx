@@ -129,6 +129,7 @@ function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent
         </div>
       </header>
       {agent.runnerSeen?.enterpriseMcp && (runner?.tool ?? 'claude') === 'claude' && <p className="agent-note" role="status">Enterprise MCP config on this machine: working without Binders’ MCP tools, its runner reporting for it.</p>}
+      {agent.runnerSeen?.bypassOff && (runner?.tool ?? 'claude') === 'claude' && runner?.access === 'full' && <p className="agent-note" role="status">This machine’s Claude Code policy turns full access off: it edits files without asking, and the commands it runs follow the policy’s rules.</p>}
       {runnersOf(agent) > 1 && <p className="agent-warning" role="status">{runnersOf(agent)} runners are running as {agent.name}. They take the same work, each in its own folder: stop all but one.</p>}
 
       <div className={`agent-doing${holding.length ? ' busy' : ''}${asks.length ? ' asks' : ''}`}>

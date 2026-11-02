@@ -13,7 +13,7 @@ import { behindBy, briefCheckout, briefDue, briefPrompt, briefSection, changesSi
 import type { BlastRadius, Effort } from '../../shared/changeSet.ts'
 import { runnerVersion, toolInfo, tools } from '../../shared/agents.ts'
 import { Terminals, type Started } from './terminal.ts'
-import { briefMost, type RunnerSettings } from '../../shared/work.ts'
+import { briefMost, defaultRunner, type RunnerSettings } from '../../shared/work.ts'
 
 // The Binders runner: stays connected to the hub as one agent, so work reaches it within a second, and for each card
 // starts the agent's command line headless in the workspace, with Binders' MCP tools attached. It relays what the agent
@@ -222,6 +222,8 @@ export interface RunnerOptions {
    * adds no config of its own (BINDERS_MANAGED_MCP=allowed).
    */
   managedMcpAllowed?: boolean
+  /** Claude Code's managed settings files, to see whether they turn full access off (where Claude Code keeps them, unless set). */
+  managedSettings?: string[]
 }
 
 /** Whether version a is newer than b ("0.6.10" than "0.6.9"). */
@@ -351,12 +353,43 @@ export function parseMcpList(text: string) {
   return text.split('\n').map((line) => /^\s*([^:\s][^:]*?):\s+(https?:\/\/\S+)/.exec(line)).filter((m): m is RegExpExecArray => !!m).map((m) => ({ name: m[1].trim(), url: m[2] }))
 }
 
+/** Every server among them that's a Binders hub's: at this hub's address, or named for Binders, at an /mcp path. */
+export function allBindersAmong(servers: { name: string; url: string }[], hubUrl: string) {
+  const host = (url: string) => { try { return new URL(url).host.toLowerCase() } catch { return '' } }
+  const mcpPath = (url: string) => { try { return /\/mcp\/?$/.test(new URL(url).pathname) } catch { return false } }
+  return servers.filter((s) => mcpPath(s.url) && (host(s.url) === host(hubUrl) || /binders/i.test(s.name))).map((s) => s.name)
+}
+
 /** The server among them that's this hub's: at its address, or else named for Binders, at an /mcp path. */
 export function bindersAmong(servers: { name: string; url: string }[], hubUrl: string) {
   const host = (url: string) => { try { return new URL(url).host.toLowerCase() } catch { return '' } }
   const mcpPath = (url: string) => { try { return /\/mcp\/?$/.test(new URL(url).pathname) } catch { return false } }
   return servers.find((s) => mcpPath(s.url) && host(s.url) === host(hubUrl))?.name
     ?? servers.find((s) => mcpPath(s.url) && /binders/i.test(s.name))?.name
+}
+
+/** Where an organization keeps Claude Code's managed settings on each kind of machine. */
+export function managedSettingsPaths(platform: NodeJS.Platform = process.platform) {
+  if (platform === 'darwin') return ['/Library/Application Support/ClaudeCode/managed-settings.json']
+  if (platform === 'win32') return ['C:\\Program Files\\ClaudeCode\\managed-settings.json', 'C:\\ProgramData\\ClaudeCode\\managed-settings.json']
+  return ['/etc/claude-code/managed-settings.json']
+}
+
+/**
+ * Whether an organization's managed settings turn Claude Code's full access (bypassPermissions) off. Asked for it then,
+ * Claude Code falls back to asking before every write, which a run without a person can't answer.
+ */
+export async function bypassTurnedOff(files = managedSettingsPaths()) {
+  for (const file of files) {
+    const text = await readFile(file, 'utf8').catch(() => '')
+    if (!text) continue
+    try {
+      if ((JSON.parse(text) as { permissions?: { disableBypassPermissionsMode?: string } }).permissions?.disableBypassPermissionsMode === 'disable') return true
+    } catch {
+      // Not JSON: Claude Code wouldn't read it either.
+    }
+  }
+  return false
 }
 
 /** Without Binders' tools, Claude Code may write the files it's asked for in its .binders folder, and nowhere new. */
@@ -409,6 +442,16 @@ export class Runner {
   }
   /** Binders' server as the enterprise MCP config names it, when it lists it. */
   private managedServer?: string
+  /**
+   * Other Binders servers in Claude Code's own settings (one set up by hand, with another agent's token, say): kept
+   * out of the runs that have the runner's own, so the agent calls Binders as itself and isn't refused.
+   */
+  private otherBinders: string[] = []
+  /**
+   * This machine's managed settings turn full access off: Claude Code asked for it runs with edits accepted instead
+   * (files in its folder written without asking; the commands it runs follow the organization's rules).
+   */
+  private bypassOff = false
   /** Where card worktrees and the checkouts reviews and briefs read go. */
   private worktreesRoot() {
     return this.options.worktreesDir ?? process.env.BINDERS_WORKTREES_DIR ?? join(runnerHome(), 'worktrees')
@@ -453,7 +496,7 @@ export class Runner {
   /** What the runner tells the hub of itself: its version, how many cards it takes, and an enterprise MCP config. */
   private profile(parallel: number) {
     this.parallel = parallel
-    return { version: runnerVersion, parallel, id: this.id, ...(this.enterpriseMcp ? { enterprise_mcp: true } : {}) }
+    return { version: runnerVersion, parallel, id: this.id, ...(this.enterpriseMcp ? { enterprise_mcp: true } : {}), ...(this.bypassOff ? { bypass_off: true } : {}) }
   }
 
   /** An enterprise MCP config found (its file, or Claude Code refusing Binders' server): said once, here and to the hub. */
@@ -472,6 +515,8 @@ export class Runner {
   }
 
   async connect() {
+    this.bypassOff = await bypassTurnedOff(this.options.managedSettings)
+    if (this.bypassOff) this.log('This machine’s Claude Code policy turns full access off: Claude Code edits files without asking, and the commands it runs follow the policy’s rules.')
     const managedFile = this.options.managedMcp ?? managedMcpPath()
     // An enterprise MCP config that lists Binders' server gives Claude Code its tools: nothing to work around.
     if (existsSync(managedFile)) {
@@ -489,6 +534,8 @@ export class Runner {
     if (!this.options.workspaceGiven && me.runner?.workspace) this.options.workspace = resolve(me.runner.workspace.replace(/^~(?=\/|$)/, homedir()))
     await this.call('update_profile', { runs_on: `${this.options.machine ?? hostname().replace(/\.local$/, '')} · ${this.options.workspace.replace(homedir(), '~')}` })
     if (me.runner) await this.tellModels(me.runner)
+    // Claude Code's own Binders servers, learned beside the work rather than before it (it checks each server it has).
+    if ((me.runner?.tool ?? defaultRunner.tool) === 'claude') void this.learnOtherBinders()
     // Its version and how many cards it takes at once, so the app can tell an old runner from a busy one.
     const parallel = Math.max(1, me.runner?.parallel ?? 3)
     const told = await this.call<{ other_runners?: { on?: string; at: string }[] }>('update_profile', { runner: this.profile(parallel) }).catch(() => undefined)
@@ -497,6 +544,12 @@ export class Runner {
     if (others.length) this.log(`Warning: ${others.length === 1 ? 'another runner is' : `${others.length} other runners are`} already running as ${me.name}${others[0].on ? ` (${others.map((o) => o.on).filter(Boolean).join('; ')})` : ''}. Two runners for one agent take the same work: stop the one you don’t need.`)
     void this.tellAllModels()
     this.log(`Connected to ${this.options.hubUrl} as ${me.name} (runner ${runnerVersion}), working in ${this.options.workspace}, up to ${parallel} card${parallel === 1 ? '' : 's'} at once.`)
+  }
+
+  /** Other Binders servers in Claude Code's own settings, to keep out of runs that have the runner's. */
+  private async learnOtherBinders() {
+    this.otherBinders = allBindersAmong(await claudeServers(this.options.workspace), this.options.hubUrl).filter((name) => name !== mcpServer)
+    if (this.otherBinders.length) this.log(`Claude Code here has its own Binders server${this.otherBinders.length === 1 ? '' : 's'} (${this.otherBinders.join(', ')}): its runs use the runner’s, as this agent.`)
   }
 
   /** The models the agent's tool can use on this machine, for the Agents page to offer by name. */
@@ -1675,9 +1728,9 @@ export class Runner {
     const plain = (command: string, args: string[]) => ({ command, args })
     switch (settings.tool) {
       case 'claude': {
-        const access = full ? 'bypassPermissions' : settings.access === 'auto' ? 'auto' : 'acceptEdits'
+        const access = full && !this.bypassOff ? 'bypassPermissions' : settings.access === 'auto' ? 'auto' : 'acceptEdits'
         // Binders' tools allowed up front, whatever its access: they're how it works with the hub.
-        return plain('claude', [...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcp ? mcpServer : this.managedServer ?? mcpServer}`] : []), ...(!mcp && !this.managedAllowed ? [plainEdits] : []), '--permission-mode', access, ...(model ? ['--model', model] : [])])
+        return plain('claude', [...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcp ? mcpServer : this.managedServer ?? mcpServer}`] : []), ...(!mcp && !this.managedAllowed ? [plainEdits] : []), ...(mcp && this.otherBinders.length ? [`--disallowedTools=${this.otherBinders.map((n) => `mcp__${n}`).join(',')}`] : []), '--permission-mode', access, ...(model ? ['--model', model] : [])])
       }
       case 'codex': {
         const routed = model ? /^([A-Za-z][\w-]*)\/(.+)$/.exec(model) : null
@@ -1718,10 +1771,10 @@ export class Runner {
     const plain = (command: string, args: string[], env: Record<string, string> = {}) => ({ command, args, shell: false, env })
     switch (settings.tool) {
       case 'claude': {
-        const access = full ? 'bypassPermissions' : settings.access === 'auto' ? 'auto' : 'acceptEdits'
+        const access = full && !this.bypassOff ? 'bypassPermissions' : settings.access === 'auto' ? 'auto' : 'acceptEdits'
         // Binders' tools allowed up front: run headless, a tool that needs asking is refused, and with Edits or Auto
         // access an MCP tool does.
-        return plain('claude', ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcp ? mcpServer : this.managedServer ?? mcpServer}`] : []), ...(!mcp && !this.managedAllowed ? [plainEdits] : []), '--permission-mode', access, ...(model ? ['--model', model] : []), ...(session ? ['--resume', session] : [])],
+        return plain('claude', ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcp ? mcpServer : this.managedServer ?? mcpServer}`] : []), ...(!mcp && !this.managedAllowed ? [plainEdits] : []), ...(mcp && this.otherBinders.length ? [`--disallowedTools=${this.otherBinders.map((n) => `mcp__${n}`).join(',')}`] : []), '--permission-mode', access, ...(model ? ['--model', model] : []), ...(session ? ['--resume', session] : [])],
           // The reasoning asked for, as how much it may think before each answer.
           effort ? { MAX_THINKING_TOKENS: String(thinkingTokens[effort]) } : {})
       }
@@ -1966,10 +2019,15 @@ async function modelsOf(tool: string): Promise<string[]> {
   return []
 }
 
-/** Binders' server among Claude Code's own (`claude mcp list`), when Claude Code is here and lists one. */
-async function claudeBinders(dir: string, hubUrl: string) {
+/** Claude Code's MCP servers here (`claude mcp list`), when it's installed; none when it can't say. */
+async function claudeServers(dir: string) {
   const claude = await whereIs('claude')
-  if (!claude) return undefined
+  if (!claude) return []
   const listed = await run(claude, ['mcp', 'list'], { cwd: dir, timeout: 30_000 }).then((r) => r.stdout, () => '')
-  return bindersAmong(parseMcpList(listed), hubUrl)
+  return parseMcpList(listed)
+}
+
+/** Binders' server among Claude Code's own, when it lists one. */
+async function claudeBinders(dir: string, hubUrl: string) {
+  return bindersAmong(await claudeServers(dir), hubUrl)
 }

@@ -19,7 +19,7 @@ import { Sealer } from '../../hub/src/secrets.ts'
 import { buildServer } from '../../hub/src/server.ts'
 import { Spaces } from '../../hub/src/spaces.ts'
 import { Webhooks } from '../../hub/src/webhooks.ts'
-import { Runner, actionsFromReply, agentFile, bindersAmong, noteFromReply, parseMcpList, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
+import { Runner, actionsFromReply, agentFile, allBindersAmong, bindersAmong, bypassTurnedOff, noteFromReply, parseMcpList, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
 
 // The runner's own files (~/.binders/run) in a home of the tests' own, not this machine's.
 process.env.BINDERS_HOME ??= mkdtempSync(join(tmpdir(), 'binders-home-'))
@@ -817,6 +817,33 @@ console.log('Added the health check, and its test passes.')
     assert.equal(bindersAmong(listed, 'https://binders.example.com'), 'Company Binders', 'by its address')
     assert.equal(bindersAmong(listed, 'http://localhost:4400'), 'Company Binders', 'by its name, reached here at another address')
     assert.equal(bindersAmong(parseMcpList('sentry: https://mcp.sentry.dev/mcp (HTTP) - ✓ Connected'), 'http://localhost:4400'), undefined)
+  })
+
+  it('keeps Claude Code’s own Binders servers out of runs that have the runner’s, so the agent calls Binders as itself', async () => {
+    const servers = parseMcpList('Binders: https://binders.example.com/mcp (HTTP) - ✓ Connected\nsentry: https://mcp.sentry.dev/mcp (HTTP) - ✓ Connected')
+    assert.deepEqual(allBindersAmong(servers, 'http://localhost:4400'), ['Binders'])
+    const dir = await mkdtemp(join(tmpdir(), 'binders-runner-'))
+    const runner = new Runner({ hubUrl: 'http://localhost:4400', token: 'bnd_x', workspace: dir, log: () => {}, managedMcp: join(dir, 'none.json') }) as unknown as { otherBinders: string[]; commandFor: Runner['commandFor'] }
+    runner.otherBinders = ['Binders']
+    const { args } = runner.commandFor({ tool: 'claude', access: 'full', timeoutMinutes: 1, worktrees: false }, 'c1', dir, join(dir, 'mcp.json'), 'Do it.')
+    assert.ok(args.includes('--allowedTools=mcp__binders_hub'), 'its own')
+    assert.ok(args.includes('--disallowedTools=mcp__Binders'), 'not the other, with another agent’s token')
+    assert.ok(!args.some((a) => a.includes('sentry')), 'the rest of its servers left as they are')
+  })
+
+  it('runs Claude Code with edits accepted where the organization turns full access off, rather than asking nobody', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'binders-runner-'))
+    const policy = join(dir, 'managed-settings.json')
+    await writeFile(policy, JSON.stringify({ permissions: { disableBypassPermissionsMode: 'disable' } }))
+    await writeFile(join(dir, 'open.json'), JSON.stringify({ permissions: { allow: ['Bash(git:*)'] } }))
+    assert.equal(await bypassTurnedOff([policy]), true)
+    assert.equal(await bypassTurnedOff([join(dir, 'open.json'), join(dir, 'missing.json')]), false)
+    const runner = new Runner({ hubUrl: 'http://hub.test', token: 'bnd_x', workspace: dir, log: () => {}, managedMcp: join(dir, 'none.json') }) as unknown as { bypassOff: boolean; commandFor: Runner['commandFor'] }
+    const full = { tool: 'claude' as const, access: 'full' as const, timeoutMinutes: 1, worktrees: false }
+    const mode = (args: string[]) => args[args.indexOf('--permission-mode') + 1]
+    assert.equal(mode(runner.commandFor(full, 'c1', dir, undefined, 'Do it.').args), 'bypassPermissions')
+    runner.bypassOff = true
+    assert.equal(mode(runner.commandFor(full, 'c1', dir, undefined, 'Do it.').args), 'acceptEdits')
   })
 
   it('takes the Binders actions at the end of a reply, and leaves a reply without them as it is', () => {

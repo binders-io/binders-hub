@@ -67,7 +67,7 @@ export interface Agent {
    * The runner it last connected with: its version, how many cards it takes at once, and whether its machine has an
    * enterprise MCP config (Claude Code there works without Binders' MCP tools, the runner reporting for it).
    */
-  runnerSeen?: { version: string; parallel: number; at: string; enterpriseMcp?: boolean }
+  runnerSeen?: { version: string; parallel: number; at: string; enterpriseMcp?: boolean; bypassOff?: boolean }
   /** The models its runner found for every agent tool installed on its machine, by tool. */
   toolModels?: Partial<Record<AgentTool, string[]>>
   createdAt: string
