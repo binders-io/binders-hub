@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type Dispatch,
 import { LayoutGroup, motion, AnimatePresence } from 'motion/react'
 import { ArrowRight, Check, Eye, EyeOff, GitPullRequest, MessageCircleQuestion, Plus, Sparkles } from 'lucide-react'
 import { stages, type Agent, type Card, type Proposal, type Stage } from '../data/model'
+import { mayTake } from '../../../shared/work.ts'
 import { nameFor, sameValues, useActions, useClock, useHub, type State } from '../data/store'
 import { AgentAvatar, CheckDots, Progress, RepoTag, Who, ago, checksSummary, codeRepo, stageTone } from '../components/bits'
 import { NewCardDialog } from '../components/NewCardDialog'
@@ -268,6 +269,8 @@ function cardFacts(state: State, card: Card) {
     set: pull && state.changeSets.find((c) => c.prIds.includes(pull.id)),
     binder: state.binders.find((b) => b.id === card.binderId),
     noteTitle: state.notes.find((n) => n.id === card.noteId)?.title,
+    // Ready and nobody's: whether any agent may take it at all, by its binders and repos.
+    untakeable: card.stage === 'ready' && !card.agentId && !state.agents.some((a) => !a.revoked && mayTake(state, a, card)),
   }
 }
 
@@ -275,7 +278,7 @@ const CardView = memo(function CardView({ card, stage }: { card: Card; stage: St
   const store = useActions()
   const { openItem } = useUI()
   const select = useCallback((state: State) => cardFacts(state, card), [card])
-  const { agent, pull, set, binder, noteTitle } = useHub(select, sameValues)
+  const { agent, pull, set, binder, noteTitle, untakeable } = useHub(select, sameValues)
 
   return (
     // The whole card opens it for a pointer, and its title's button for a keyboard or a screen reader: a button can't hold the card's others.
@@ -298,7 +301,7 @@ const CardView = memo(function CardView({ card, stage }: { card: Card; stage: St
         </div>
       )}
       <div className="card-foot">
-        {agent ? <AgentAvatar agent={agent} size={20} live={stage === 'working'} /> : <span className="unclaimed">{stage === 'ready' ? 'Any agent' : ''}</span>}
+        {agent ? <AgentAvatar agent={agent} size={20} live={stage === 'working'} /> : <span className={untakeable ? 'unclaimed none' : 'unclaimed'} title={untakeable ? 'No agent works in this binder and its repo: set an agent’s binders and repos on the Agents page, or mean this card for one.' : undefined}>{stage === 'ready' ? (untakeable ? 'No agent can take it' : 'Any agent') : ''}</span>}
         {pull ? (
           <span className={`pr-mini ${checksSummary(pull.checks).state}`}>
             <DebriefButton card={card} inline />

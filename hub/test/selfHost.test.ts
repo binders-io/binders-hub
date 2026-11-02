@@ -21,3 +21,15 @@ describe('a hub on someone’s own server', () => {
     for (const a of ['8.8.8.8', '172.32.0.1', '::ffff:1.2.3.4', '2001:db8::1', undefined]) assert.ok(!nearby(a), String(a))
   })
 })
+
+describe('who may take a ready card', () => {
+  it('matches an agent’s repos to the binder’s whatever their case, and a card meant for an agent to it alone', async () => {
+    const { mayTake } = await import('../../shared/work.ts')
+    const state = { binders: [{ id: 'b1', repo: 'acme/Provisioning' }] }
+    const agent = { id: 'a1', binders: [], repos: ['Acme/provisioning'] }
+    assert.ok(mayTake(state, agent, { binderId: 'b1' }))
+    assert.ok(!mayTake(state, { ...agent, repos: ['acme/other'] }, { binderId: 'b1' }))
+    assert.ok(mayTake(state, { ...agent, repos: ['acme/other'] }, { binderId: 'b1', meantFor: 'a1' }), 'meant for it, wherever it works')
+    assert.ok(!mayTake(state, agent, { binderId: 'b1', meantFor: 'a2' }))
+  })
+})

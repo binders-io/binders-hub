@@ -600,15 +600,21 @@ export function resumeFor(state: WorkState, agent: Agent, busy: string[] = []): 
  */
 export function nextFor(state: WorkState & { binders: { id: string; repo?: string }[] }, agent: Agent, busy: string[] = []): Card | undefined {
   const done = new Set(state.cards.filter((c) => c.stage === 'review' || c.stage === 'live').map((c) => c.id))
-  const repoOf = (card: Card) => state.binders.find((b) => b.id === card.binderId)?.repo
   return state.cards
     .filter((c) => c.stage === 'ready' && !c.agentId && !busy.includes(c.id))
-    .filter((c) => !c.meantFor || c.meantFor === agent.id)
-    // Meant for it by a person: theirs to give, whatever the agent's binders and repos.
-    .filter((c) => c.meantFor === agent.id || worksIn(agent, c.binderId, state.binders))
-    .filter((c) => c.meantFor === agent.id || !agent.repos.length || !repoOf(c) || agent.repos.includes(repoOf(c)!))
+    .filter((c) => mayTake(state, agent, c))
     .filter((c) => c.waitsFor.every((w) => done.has(w)))
     .sort((a, b) => Number(b.meantFor === agent.id) - Number(a.meantFor === agent.id) || a.createdAt.localeCompare(b.createdAt))[0]
+}
+
+/**
+ * Whether an agent may take a card, as the board offers them: one meant for it, whatever its binders and repos (a
+ * person's to give), or one meant for nobody in a binder and repo it works in.
+ */
+export function mayTake(state: { binders: { id: string; repo?: string }[] }, agent: Pick<Agent, 'id' | 'binders' | 'repos'>, card: Pick<Card, 'meantFor' | 'binderId'>) {
+  if (card.meantFor) return card.meantFor === agent.id
+  const repo = state.binders.find((b) => b.id === card.binderId)?.repo?.toLowerCase()
+  return worksIn(agent, card.binderId, state.binders) && (!agent.repos.length || !repo || agent.repos.some((r) => r.toLowerCase() === repo))
 }
 
 /**

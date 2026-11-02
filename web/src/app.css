@@ -165,6 +165,7 @@
 .card-work .doing { font-size: 12px; color: var(--blue); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 20px; }
 .unclaimed { font-size: 11.5px; color: var(--faint); }
+.unclaimed.none { color: var(--amber); font-weight: 700; }
 .from-note { font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pr-mini { display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--muted); }
 .card.working { border-color: var(--blue-line); }
