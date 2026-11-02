@@ -5,6 +5,7 @@ import { personalId } from '../spaces.ts'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { HubOptions } from '../options.ts'
 import type { Context } from './context.ts'
+import { deprovisioned } from '../../../shared/people.ts'
 
 // The hub's options, GitHub as people reach it, and setting up a Binder's GitHub App.
 
@@ -48,8 +49,7 @@ export async function githubRoutes(app: FastifyInstance, context: Context) {
         let cached = members.get(`${sp(request).id}:${account}`)
         if (!cached || Date.now() - cached.at > 5 * 60_000) {
           const client = await github.forAccount(account).catch(() => undefined)
-          const list = await client?.get<{ login: string; avatar_url: string }[]>(`/orgs/${account}/members?per_page=100`).catch(() => undefined)
-          cached = { at: Date.now(), logins: (list ?? []).map((m) => ({ login: m.login, avatar: m.avatar_url })) }
+          cached = { at: Date.now(), logins: client ? await orgMembers(client, account) : [] }
           members.set(`${sp(request).id}:${account}`, cached)
         }
         for (const member of cached.logins) add(member.login, `In ${account}`, member.avatar)
@@ -266,4 +266,20 @@ export async function githubRoutes(app: FastifyInstance, context: Context) {
   app.get('/setup/github/created/:space', created)
   app.get('/setup/github/installed', installed)
   app.get('/setup/github/installed/:space', installed)
+}
+
+/**
+ * An organization's members, every page of them, without deprovisioned managed accounts: GitHub lists members by login,
+ * so in an enterprise of managed users the first pages can be all hashes of people who left, and the people who are
+ * there come after them. Up to 5,000.
+ */
+export async function orgMembers(client: { get: <T>(path: string) => Promise<T> }, account: string) {
+  const out: { login: string; avatar?: string }[] = []
+  for (let page = 1; page <= 50; page++) {
+    const list = await client.get<{ login: string; avatar_url?: string }[]>(`/orgs/${encodeURIComponent(account)}/members?per_page=100&page=${page}`).catch(() => undefined)
+    if (!list?.length) break
+    for (const m of list) if (!deprovisioned(m.login)) out.push({ login: m.login, avatar: m.avatar_url })
+    if (list.length < 100) break
+  }
+  return out
 }

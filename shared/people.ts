@@ -16,6 +16,12 @@ export function withoutShortcode(login: string, shortcodes: readonly string[] = 
   return found && shortcodes.includes(found[2].toLowerCase()) ? found[1] : login
 }
 
+/**
+ * Whether a login is a deprovisioned Enterprise Managed User's: GitHub renames one to a hash and its enterprise's
+ * shortcode (`3f9a1c0b7d2e4a65_acme`), and it stays in its organization's member list, alphabetically before everyone.
+ */
+export const deprovisioned = (login: string) => /^[0-9a-f]{12,}_[A-Za-z0-9]{1,20}$/i.test(login)
+
 /** A person's name to show: their profile's, or their login (without a known enterprise shortcode). */
 export function shownName(login: string, people: Record<string, Profile> = {}, shortcodes: readonly string[] = []) {
   return people[login.toLowerCase()]?.name?.trim() || withoutShortcode(login, shortcodes)
