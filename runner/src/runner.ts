@@ -317,6 +317,24 @@ export function managedMcpPath(platform: NodeJS.Platform = process.platform) {
 }
 
 /** Claude Code saying no to Binders' MCP server because an enterprise MCP config manages its servers. */
+/** Without Binders' tools, Claude Code may write the files it's asked for in its .binders folder, and nowhere new. */
+const plainEdits = '--allowedTools=Edit(.binders/**),Write(.binders/**)'
+
+/** The most of a note that goes into a chat's prompt; a longer one goes in as a file. */
+const noteInPrompt = 40_000
+
+/**
+ * A changed note at the end of an agent's reply, between <note> and </note> (the last such block), and the reply
+ * without it. So an agent without Binders' tools changes a note without writing a file, which hardened machines and
+ * tools' permissions may not let it do.
+ */
+export function noteFromReply(text: string) {
+  const blocks = [...text.matchAll(/<note>\n?([\s\S]*?)\n?<\/note>/g)]
+  const last = blocks.at(-1)
+  if (!last) return { rest: text }
+  return { note: last[1], rest: (text.slice(0, last.index) + text.slice(last.index! + last[0].length)).trim() }
+}
+
 export const refusedByManagedMcp = (text: string) => /cannot dynamically configure MCP servers|enterprise MCP config is present/i.test(text)
 
 /** Claude Code's thinking budget for each reasoning level a person can ask for. */
@@ -731,7 +749,8 @@ export class Runner {
   /**
    * A person talking about a note: the agent reads the note and the chat, does what they ask, and its last words are
    * the reply. The same session carries on through the chat, so it remembers what was said. An agent without
-   * Binders' tools gets the note as a file, and what it changes there goes back into the note.
+   * Binders' tools gets the note in its prompt and ends its reply with the note as it should be, which the runner puts
+   * back: no file to write (a very long note goes in as a file in its .binders folder instead).
    */
   async chat(chat: ChatJSON) {
     const settings = await this.settings()
@@ -742,10 +761,13 @@ export class Runner {
     const resumed = this.sessions.has(chat.id)
     let noteFile: string | undefined
     let before = ''
-    if (!mcp && chat.note) {
-      before = (await this.call<{ text?: string }>('get_note', { id: chat.note.id }).catch(() => ({ text: '' }))).text ?? ''
-      noteFile = await agentFile(this.options.workspace, `note-${randomBytes(6).toString('hex')}.md`)
-      await writeFile(noteFile, before, { mode: 0o600 })
+    const inline = !mcp && !!chat.note
+    if (inline) {
+      before = (await this.call<{ text?: string }>('get_note', { id: chat.note!.id }).catch(() => ({ text: '' }))).text ?? ''
+      if (before.length > noteInPrompt) {
+        noteFile = await agentFile(this.options.workspace, `note-${randomBytes(6).toString('hex')}.md`)
+        await writeFile(noteFile, before, { mode: 0o600 })
+      }
     }
     const said = [
       resumed
@@ -755,9 +777,11 @@ export class Runner {
       ...(resumed ? [] : ['What has been said so far:', ...chat.messages.slice(0, -1).map((m) => `${m.from}: ${m.text}`), '', 'Their new message:']),
       from?.text ?? '',
       '',
-      noteFile
-        ? `The note is in ${noteFile}. Read it, and change that file when they ask you to change the note: what you write there goes back into it.`
-        : `Read the note with get_note (id ${chat.note?.id}) first: they may have changed it. Change it with edit_note (find and replace) or append_to_note when they ask, make cards with create_task, or look at the code here.`,
+      ...(noteFile
+        ? [`The note is in ${noteFile}. Read it, and change that file when they ask you to change the note: what you write there goes back into it.`]
+        : inline
+          ? ['The note as it is now:', '<note>', before, '</note>', '', 'When they ask you to change it, end your reply with the whole note as it should be, between <note> and </note> on lines of their own: it replaces the note. Leave that out when you don’t change it. Don’t write the note to a file.']
+          : [`Read the note with get_note (id ${chat.note?.id}) first: they may have changed it. Change it with edit_note (find and replace) or append_to_note when they ask, make cards with create_task, or look at the code here.`]),
       'Your last message is sent to them as your reply: keep it short and plain, and say what you changed.',
     ].join('\n')
     let reply = ''
@@ -771,6 +795,16 @@ export class Runner {
       })
       // Its final answer when it says one apart (Claude Code, Codex); else the end of what it printed.
       reply = ran.reader.summary.reply ?? lastWords(ran.output) ?? ran.reader.summary.last ?? ''
+      if (inline && !noteFile && chat.note) {
+        // The note as it should be, from the end of its reply (or, cut from the reply, from all it printed).
+        const fromReply = noteFromReply(reply)
+        const changed = fromReply.note ?? noteFromReply(ran.output).note
+        reply = fromReply.rest
+        if (changed !== undefined && changed.trim() && changed !== before) {
+          await this.call('edit_note', { id: chat.note.id, text: changed }).catch((error) => this.log(`Couldn’t put the note back: ${(error as Error).message}`))
+          if (!reply.trim()) reply = 'I changed the note.'
+        }
+      }
       if (noteFile && chat.note) {
         const after = await readFile(noteFile, 'utf8').catch(() => before)
         if (after !== before && after.trim()) await this.call('edit_note', { id: chat.note.id, text: after }).catch((error) => this.log(`Couldn’t put the note back: ${(error as Error).message}`))
@@ -1209,7 +1243,8 @@ export class Runner {
     if (reader.summary.sessionId) this.sessions.set(key, reader.summary.sessionId)
     // Claude Code refusing Binders' MCP server for an enterprise MCP config the runner didn't find by its file: from now
     // on its runs go without it, and this one stops saying why.
-    const managedMcp = settings.tool === 'claude' && !!config.path && !!exit.code && refusedByManagedMcp(`${errors}\n${output}\n${reader.summary.error ?? ''}`)
+    // Only what Claude Code itself says went wrong: never the agent's own words, which may quote that error.
+    const managedMcp = settings.tool === 'claude' && !!config.path && !!exit.code && refusedByManagedMcp(`${errors}\n${reader.summary.error ?? ''}`)
     if (managedMcp) await this.enterpriseMcpFound('Claude Code refused Binders’ MCP server for an enterprise MCP config')
     return { reader, exit, errors, output, timedOut, idle, idleMinutes, cutOff: undefined as string | undefined, managedMcp }
   }
@@ -1580,7 +1615,7 @@ export class Runner {
       case 'claude': {
         const access = full ? 'bypassPermissions' : settings.access === 'auto' ? 'auto' : 'acceptEdits'
         // Binders' tools allowed up front, whatever its access: they're how it works with the hub.
-        return plain('claude', [...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcp ? mcpServer : this.managedServer ?? mcpServer}`] : []), '--permission-mode', access, ...(model ? ['--model', model] : [])])
+        return plain('claude', [...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcp ? mcpServer : this.managedServer ?? mcpServer}`] : []), ...(!mcp && !this.managedAllowed ? [plainEdits] : []), '--permission-mode', access, ...(model ? ['--model', model] : [])])
       }
       case 'codex': {
         const routed = model ? /^([A-Za-z][\w-]*)\/(.+)$/.exec(model) : null
@@ -1624,7 +1659,7 @@ export class Runner {
         const access = full ? 'bypassPermissions' : settings.access === 'auto' ? 'auto' : 'acceptEdits'
         // Binders' tools allowed up front: run headless, a tool that needs asking is refused, and with Edits or Auto
         // access an MCP tool does.
-        return plain('claude', ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcp ? mcpServer : this.managedServer ?? mcpServer}`] : []), '--permission-mode', access, ...(model ? ['--model', model] : []), ...(session ? ['--resume', session] : [])],
+        return plain('claude', ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcp ? mcpServer : this.managedServer ?? mcpServer}`] : []), ...(!mcp && !this.managedAllowed ? [plainEdits] : []), '--permission-mode', access, ...(model ? ['--model', model] : []), ...(session ? ['--resume', session] : [])],
           // The reasoning asked for, as how much it may think before each answer.
           effort ? { MAX_THINKING_TOKENS: String(thinkingTokens[effort]) } : {})
       }

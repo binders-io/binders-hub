@@ -19,7 +19,7 @@ import { Sealer } from '../../hub/src/secrets.ts'
 import { buildServer } from '../../hub/src/server.ts'
 import { Spaces } from '../../hub/src/spaces.ts'
 import { Webhooks } from '../../hub/src/webhooks.ts'
-import { Runner, agentFile, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
+import { Runner, agentFile, noteFromReply, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
 
 // The runner's own files (~/.binders/run) in a home of the tests' own, not this machine's.
 process.env.BINDERS_HOME ??= mkdtempSync(join(tmpdir(), 'binders-home-'))
@@ -208,15 +208,16 @@ describe('reading what an agent prints', () => {
     assert.equal(reader.summary.cost, 0.42)
   })
 
-  it('answers a chat about a note with an agent that has no Binders tools: the note goes in as a file and comes back', async () => {
+  it('answers a chat about a note with an agent that has no Binders tools: the note goes in its prompt and comes back in its reply, no file written', async () => {
     const { hub, actions, url, dir, issued, close } = await setUp()
     const script = join(dir, 'chat.mjs')
     await writeFile(script, `
-import { appendFileSync } from 'node:fs'
 const prompt = process.argv[2]
-const file = /The note is in (\\S+)\\./.exec(prompt)[1]
-appendFileSync(file, '- Added by the stand-in\\n')
+const note = /<note>\\n([\\s\\S]*?)\\n<\\/note>/.exec(prompt)[1]
 console.log('Added a line to the note.')
+console.log('<note>')
+console.log(note + '- Added by the stand-in')
+console.log('</note>')
 `)
     await hub.submit('you', 'tab-1', [{ id: 'n', change: { type: 'note.put', note: { id: 'n1', title: 'Plan', binderId: 'b1', editedAt: 'now', editors: ['you'], text: '# Plan\n' } } }])
     const made = await actions.putAgent('you', { name: 'Talker', runner: { tool: 'custom', access: 'full', timeoutMinutes: 1, worktrees: false, command: `node ${script} {prompt}` } })
@@ -226,8 +227,9 @@ console.log('Added a line to the note.')
     const found = await (runner as unknown as { call: (n: string, a: object) => Promise<Record<string, unknown>> }).call('wait_for_work', { timeout_seconds: 1, chats: true })
     await runner.chat(found as never)
     const chat = hub.state.chats.find((c) => c.noteId === 'n1')!
-    assert.equal(chat.messages[chat.messages.length - 1].text, 'Added a line to the note.')
-    assert.match(hub.state.notes.find((n) => n.id === 'n1')!.text, /- Added by the stand-in/)
+    assert.equal(chat.messages[chat.messages.length - 1].text, 'Added a line to the note.', 'the note left out of the reply')
+    assert.equal(hub.state.notes.find((n) => n.id === 'n1')!.text, '# Plan\n- Added by the stand-in')
+    assert.ok(!(await readdir(dir)).includes('.binders'), 'no file written for it')
     await close()
   })
 
@@ -751,7 +753,8 @@ console.log('Added the health check, and its test passes.')
       const runner = new Runner({ hubUrl: url, token: await issued(made.id), workspace: dir, log: (line) => lines.push(line), waitSeconds: 5, managedMcp: managed })
       await runner.start(true)
       const [args] = await claude.runs()
-      assert.ok(args && !args.includes('--mcp-config') && !args.some((a) => a.startsWith('--allowedTools')), 'no MCP config of its own')
+      assert.ok(args && !args.includes('--mcp-config') && !args.some((a) => a.startsWith('--allowedTools=mcp__')), 'no MCP config of its own')
+      assert.ok(args.includes('--allowedTools=Edit(.binders/**),Write(.binders/**)'), 'and leave to write its files in its .binders folder')
       assert.doesNotMatch(args[args.indexOf('-p') + 1], /report_progress|get_task/, 'the plain prompt, without Binders’ tools')
       assert.equal(hub.state.cards.find((c) => c.id === job.id)!.stage, 'live', 'finished, the runner reporting for it')
       assert.equal(hub.state.agents.find((a) => a.id === made.id)!.runnerSeen?.enterpriseMcp, true)
@@ -800,6 +803,12 @@ console.log('Added the health check, and its test passes.')
     assert.equal(runner.usesMcp({ tool: 'claude' }), true)
     const { args } = runner.commandFor({ tool: 'claude', access: 'full', timeoutMinutes: 1, worktrees: false }, 'c1', dir, undefined, 'Do it.')
     assert.ok(args.includes('--allowedTools=mcp__company_binders') && !args.includes('--mcp-config'))
+  })
+
+  it('takes a changed note from the end of a reply, and leaves a reply without one as it is', () => {
+    assert.deepEqual(noteFromReply('Fixed the typo.\n<note>\n# Plan\n- one\n</note>'), { note: '# Plan\n- one', rest: 'Fixed the typo.' })
+    assert.deepEqual(noteFromReply('Nothing to change.'), { rest: 'Nothing to change.' })
+    assert.equal(noteFromReply('<note>\nold\n</note> then <note>\nnew\n</note>').note, 'new', 'the last one')
   })
 
   it('has the agent write its files in its own folder, never the system’s temp folder, and never into the work', async () => {
