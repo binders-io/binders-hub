@@ -600,10 +600,12 @@ export function resumeFor(state: WorkState, agent: Agent, busy: string[] = []): 
  */
 export function nextFor(state: WorkState & { binders: { id: string; repo?: string }[] }, agent: Agent, busy: string[] = []): Card | undefined {
   const done = new Set(state.cards.filter((c) => c.stage === 'review' || c.stage === 'live').map((c) => c.id))
+  // A wait for a card that isn't on the board (deleted, or never a card's id) holds nothing up.
+  const there = new Set(state.cards.map((c) => c.id))
   return state.cards
     .filter((c) => c.stage === 'ready' && !c.agentId && !busy.includes(c.id))
     .filter((c) => mayTake(state, agent, c))
-    .filter((c) => c.waitsFor.every((w) => done.has(w)))
+    .filter((c) => c.waitsFor.every((w) => done.has(w) || !there.has(w)))
     .sort((a, b) => Number(b.meantFor === agent.id) - Number(a.meantFor === agent.id) || a.createdAt.localeCompare(b.createdAt))[0]
 }
 

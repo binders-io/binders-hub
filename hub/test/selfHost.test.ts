@@ -33,3 +33,18 @@ describe('who may take a ready card', () => {
     assert.ok(!mayTake(state, agent, { binderId: 'b1', meantFor: 'a2' }))
   })
 })
+
+describe('cards waiting on others', () => {
+  it('aren’t held up by a wait for a card that isn’t on the board', async () => {
+    const { nextFor } = await import('../../shared/work.ts')
+    const base = { binderId: 'b1', brief: '', doneWhen: '', size: 'S' as const, createdAt: '2026-11-01', createdBy: 'you', updatedAt: '2026-11-01', activity: [] }
+    const state = { binders: [{ id: 'b1' }], cards: [
+      { ...base, id: 'a', title: 'First', stage: 'ready' as const, waitsFor: ['Set up the bucket'] },
+      { ...base, id: 'b', title: 'Second', stage: 'ready' as const, waitsFor: ['c'] },
+      { ...base, id: 'c', title: 'Third', stage: 'working' as const, waitsFor: [] },
+    ] }
+    const agent = { id: 'a1', name: 'Test', provider: 'claude' as const, owner: 'you', repos: [], binders: [], skills: [], createdAt: '' }
+    assert.equal(nextFor(state as never, agent as never)?.id, 'a', 'a wait naming no card holds nothing up')
+    assert.equal(nextFor({ ...state, cards: state.cards.slice(1) } as never, agent as never), undefined, 'one for a card still being worked does')
+  })
+})

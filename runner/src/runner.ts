@@ -554,7 +554,9 @@ export class Runner {
       this.managedServer = await managedBinders(managedFile, this.options.hubUrl) ?? await claudeBinders(this.options.workspace, this.options.hubUrl)
       if (this.managedServer) this.log(`The enterprise MCP config on this machine lists Binders’ server (${this.managedServer}): Claude Code uses Binders’ tools from it.`)
     }
-    if (!this.enterpriseMcp && !this.managedAllowed && existsSync(managedFile)) await this.enterpriseMcpFound(`An enterprise MCP config is on this machine (${this.options.managedMcp ?? managedMcpPath()})`)
+    // An enterprise MCP config that doesn't list Binders' server (or that this runner can't read) isn't taken to mean
+    // Claude Code refuses the runner's: runs start with Binders' tools, and only Claude Code refusing them (said in its
+    // own error) turns them off, the run then starting again without them.
     this.client = new Client({ name: 'binders-runner', version: '0.2.0' })
     await this.client.connect(new StreamableHTTPClientTransport(new URL(`${this.options.hubUrl}/mcp`), { requestInit: { headers: { authorization: `Bearer ${this.options.token}` } } }))
     const me = await this.call<{ name: string; runner?: RunnerSettings }>('whoami')
@@ -872,7 +874,7 @@ export class Runner {
       if (refused.length && this.usesMcp(settings)) await this.call('report_progress', { id: card.id, said: `Claude Code wasn’t allowed to ${refused.join('; ')}. Allow what it needs in the agent’s settings on the Agents page (Commands it may run).` }).catch(() => {})
       if (own) await this.sendDiff(card.id, dir)
       if (!steer || this.stopped) {
-        await this.settle(card, ran, settings)
+        await this.settle(card, ran, settings, dir, githubEnv)
         return
       }
       resume = true
@@ -888,7 +890,7 @@ export class Runner {
    * Binders' tools gets the note in its prompt and ends its reply with the note as it should be, which the runner puts
    * back: no file to write (a very long note goes in as a file in its .binders folder instead).
    */
-  async chat(chat: ChatJSON) {
+  async chat(chat: ChatJSON): Promise<void> {
     const settings = await this.settings()
     const mcp = this.usesMcp(settings)
     const from = [...chat.messages].reverse().find((m) => m.from !== 'you')
@@ -929,6 +931,8 @@ export class Runner {
         const doing = step ? `${step.tool} ${step.text}` : words
         if (doing) void this.call('chat_reply', { id: chat.id, working: true, doing: short(doing, 120) }).catch(() => {})
       })
+      // Claude Code refused Binders' tools here: it's started again without them.
+      if (ran.managedMcp) return this.chat(chat)
       // Its final answer when it says one apart (Claude Code, Codex); else the end of what it printed.
       reply = ran.reader.summary.reply ?? lastWords(ran.output) ?? ran.reader.summary.last ?? ''
       const refused = ran.reader.summary.denied ?? []
@@ -961,7 +965,7 @@ export class Runner {
    * Change Set in its prompt and ends with the sections as JSON, which the runner sends. One that stops without a
    * debrief says so on the card.
    */
-  async debrief(job: DebriefJSON) {
+  async debrief(job: DebriefJSON): Promise<void> {
     const settings = { ...(await this.settings()), effort: job.effort }
     const mcp = this.usesMcp(settings)
     this.log(`${job.asked_by ?? 'Someone'} asked for a debrief of “${job.title}”.`)
@@ -983,6 +987,8 @@ export class Runner {
         const step = steps[steps.length - 1]
         if (step) void doing(`${step.tool} ${step.text}`)
       })
+      // Claude Code refused Binders' tools here: it's started again without them.
+      if (ran.managedMcp) return this.debrief(job)
       if (answer && !ran.timedOut && !ran.cutOff) {
         const sections = debriefSections(await readFile(answer, 'utf8').catch(() => '')) ?? debriefSections(ran.reader.summary.reply ?? ran.output)
         if (!sections) why = 'The agent didn’t write the debrief’s sections as JSON.'
@@ -1057,7 +1063,7 @@ export class Runner {
    * never the author's plan or log, in a checkout of its own, changes nothing, and sends what it finds wrong. An agent
    * without Binders' tools gets the diff in its prompt and writes the findings as JSON, which the runner sends.
    */
-  async challenge(job: ChallengeJSON) {
+  async challenge(job: ChallengeJSON): Promise<void> {
     const settings = { ...(await this.settings()), effort: job.effort }
     const mcp = this.usesMcp(settings)
     this.log(`${job.asked_by ?? 'Someone'} asked for a Challenge of “${job.title}”.`)
@@ -1093,6 +1099,8 @@ export class Runner {
         const step = steps[steps.length - 1]
         if (step) void doing(`${step.tool} ${step.text}`)
       })
+      // Claude Code refused Binders' tools here: it's started again without them.
+      if (ran.managedMcp) return this.challenge(job)
       if (answer && !ran.timedOut && !ran.cutOff) {
         const found = challengeFindings(await readFile(answer, 'utf8').catch(() => '')) ?? challengeFindings(ran.reader.summary.reply ?? ran.output)
         if (!found) why = 'The agent didn’t write its findings as JSON.'
@@ -1165,7 +1173,7 @@ export class Runner {
    * there is one, so it can fix what's wrong there. An agent without Binders' tools gets the findings in its prompt and
    * writes its replies as JSON, which the runner sends. Nothing goes back to the reviewer.
    */
-  async replies(job: RepliesJSON) {
+  async replies(job: RepliesJSON): Promise<void> {
     const settings = await this.settings()
     const mcp = this.usesMcp(settings)
     this.log(`${job.asked_by ?? 'Someone'} asked for replies to the findings on “${job.title}”.`)
@@ -1186,6 +1194,8 @@ export class Runner {
         const step = steps[steps.length - 1]
         if (step) void doing(`${step.tool} ${step.text}`)
       }).finally(() => github.done())
+      // Claude Code refused Binders' tools here: it's started again without them.
+      if (ran.managedMcp) return this.replies(job)
       if (dir !== this.options.workspace) await this.sendDiff(job.id, dir)
       if (answer && !ran.timedOut && !ran.cutOff) {
         const found = findingReplies(await readFile(answer, 'utf8').catch(() => '')) ?? findingReplies(ran.reader.summary.reply ?? ran.output)
@@ -1424,7 +1434,47 @@ export class Runner {
    * After the agent stops: done, waiting on a person, or given back with why. An agent without Binders' tools that
    * finished cleanly is done, with what it printed last as the summary.
    */
-  private async settle(card: CardJSON, ran: { exit: { code: number | null }; errors: string; output: string; timedOut: boolean; idle: boolean; idleMinutes: number; reader: StreamReader }, settings: RunnerSettings) {
+  /**
+   * A card's work sent the way Binders expects, for an agent without its tools: what it changed in the card's worktree
+   * committed on the card's branch (with "binders-card: <id>"), pushed with the card's own token, and its pull request
+   * opened against the default branch, or the open one for that branch found. Nothing changed and nothing ahead of the
+   * default branch: nothing to send.
+   */
+  private async ship(card: CardJSON, dir: string, env: Record<string, string>, summary: string): Promise<{ url?: string; failed?: string }> {
+    // Only in a card's own worktree: never commits in the person's own checkout (an agent that runs without worktrees).
+    if (resolve(dir) === this.options.workspace || !(await run('git', ['-C', dir, 'rev-parse', '--git-dir']).then(() => true, () => false))) return {}
+    const repo = await repoOf(dir)
+    const git = (args: string[]) => run('git', ['-C', dir, ...args], { env: { ...process.env, ...env } }).then((r) => r.stdout.trim())
+    const branch = await git(['rev-parse', '--abbrev-ref', 'HEAD'])
+    if (!branch || branch === 'HEAD') return {}
+    if (await git(['status', '--porcelain'])) {
+      await git(['add', '-A'])
+      await git(['commit', '-q', '-m', `${card.title}\n\n${short(summary, 1500)}\n\nbinders-card: ${card.id}`])
+    }
+    const base = (await git(['rev-parse', '--abbrev-ref', 'origin/HEAD']).catch(() => 'origin/main')).replace(/^origin\//, '') || 'main'
+    const ahead = Number(await git(['rev-list', '--count', `origin/${base}..HEAD`]).catch(() => '0')) || 0
+    if (!ahead) return {}
+    try {
+      await git(['push', '-q', '-u', 'origin', `HEAD:refs/heads/${branch}`])
+    } catch (error) {
+      return { failed: `git push said: ${short((error as { stderr?: string }).stderr || (error as Error).message, 400)}` }
+    }
+    // Not on GitHub: sent, with no pull request to open.
+    if (!repo) return {}
+    const token = env.GH_TOKEN ?? env.GH_ENTERPRISE_TOKEN ?? env.GITHUB_TOKEN
+    if (!token) return { failed: 'this hub gave no GitHub token for the card’s repo, so the pull request couldn’t be opened.' }
+    const api = env.GH_HOST ? `https://${env.GH_HOST}/api/v3` : 'https://api.github.com'
+    const headers = { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'content-type': 'application/json' }
+    const owner = repo.split('/')[0]
+    const open = await fetch(`${api}/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}`, { headers }).then((r) => r.ok ? r.json() as Promise<{ html_url: string }[]> : []).catch(() => [] as { html_url: string }[])
+    if (open[0]?.html_url) return { url: open[0].html_url }
+    const made = await fetch(`${api}/repos/${repo}/pulls`, { method: 'POST', headers, body: JSON.stringify({ title: card.title, head: branch, base, body: `${summary.trim()}\n\nbinders-card: ${card.id}` }) })
+    const body = await made.json().catch(() => ({})) as { html_url?: string; message?: string; errors?: { message?: string }[] }
+    if (!made.ok || !body.html_url) return { failed: `GitHub didn’t open the pull request: ${body.errors?.[0]?.message ?? body.message ?? made.status}.` }
+    return { url: body.html_url }
+  }
+
+  private async settle(card: CardJSON, ran: { exit: { code: number | null }; errors: string; output: string; timedOut: boolean; idle: boolean; idleMinutes: number; reader: StreamReader }, settings: RunnerSettings, dir = this.options.workspace, githubEnv: Record<string, string> = {}) {
     let now: CardJSON
     try {
       now = await this.call<CardJSON>('get_task', { id: card.id })
@@ -1467,7 +1517,15 @@ export class Runner {
       }
       const reply = asked.actions.length ? asked.rest : undefined
       const summary = [reply ?? ran.reader.summary.reply ?? lastWords(ran.output) ?? 'Done.', ...(done.length ? ['', 'Binders actions taken for it:', ...done.map((d) => `- ${d}`)] : [])].join('\n')
-      await this.call('complete_task', { id: card.id, summary: short(summary, 4000) }).catch((error) => this.log(`Couldn’t finish “${card.title}”: ${(error as Error).message}`))
+      // Its changes, shipped as an agent with Binders' tools would: committed on the card's branch, pushed, and its
+      // pull request opened, so the card goes to review and the pull request into its change set, never straight to done.
+      const shipped = await this.ship(card, dir, githubEnv, reply ?? ran.reader.summary.reply ?? '').catch((error) => ({ url: undefined, failed: (error as Error).message }))
+      if (shipped.failed) {
+        await this.call('ask', { id: card.id, question: short(`The work is done in its worktree (${dir}), but the runner couldn’t send it: ${shipped.failed} Fix that, or push it and open its pull request by hand, then answer here.`, 3000) }).catch(() => {})
+        this.log(`“${card.title}” waits for a person: couldn’t send its work: ${shipped.failed}`)
+        return
+      }
+      await this.call('complete_task', { id: card.id, summary: short(summary, 4000), ...(shipped.url ? { pull_request: shipped.url } : {}) }).catch((error) => this.log(`Couldn’t finish “${card.title}”: ${(error as Error).message}`))
       this.log(`Finished “${card.title}”.`)
       return
     }
@@ -1650,6 +1708,7 @@ export class Runner {
       note?.text ? `\nThe note it came from:\n\n${note.text.slice(0, 20_000)}` : '',
       answer ? `\nA person just wrote on it: “${answer.text}”` : '',
       `\nDo it in ${dir}. When you're done, end with a short summary of what you did: it goes on the card.`,
+      `\nLeave what you change in that folder: don't commit, push or open a pull request yourself, in a browser or otherwise. The runner commits your changes on the card's branch, pushes them and opens the card's pull request for you, so it's linked to the card and joins its change set.`,
       `\nBinders' own tools aren't available here. Where the card asks for a Binders action (proposing work items, making a card, adding to a note), don't call it: end your reply with the actions as JSON between <binders-actions> and </binders-actions>, a list of {"tool": …, "args": …}, and the runner takes them for you. When the card needs a person to decide or answer something, ask them (the ask action) rather than deciding it yourself or finishing: the card waits for them. The ones it takes:\n${Object.entries(proxied).map(([tool, args]) => `- ${tool}: ${args}`).join('\n')}${full.note ? `\nThe note's id is ${full.note.id}.` : ''}`,
     ].filter(Boolean).join('\n')
   }
@@ -1690,7 +1749,7 @@ export class Runner {
    * A repo's brief to write: the agent reads its default branch in a checkout of its own, changes nothing, and writes
    * the brief to a file, which the runner sends. Written again, it starts from the last one and what's changed since.
    */
-  async brief(job: BriefJSON) {
+  async brief(job: BriefJSON): Promise<void> {
     const settings = await this.settings()
     this.log(`${job.asked_by ?? 'Someone'} asked for ${job.repo}’s brief${job.refresh ? ' to be written again' : ''}.`)
     const send = (args: Record<string, unknown>) => this.call('send_repo_brief', { repo: job.repo, ...args })
@@ -1715,6 +1774,8 @@ export class Runner {
         const step = reader.take(false).steps.at(-1)
         if (step) void doing(`${step.tool} ${step.text}`)
       })
+      // Claude Code refused Binders' tools here: it's started again without them.
+      if (ran.managedMcp) return this.brief(job)
       const text = !ran.timedOut && !ran.cutOff ? (await readFile(answer, 'utf8').catch(() => '')).trim() : ''
       if (text) await send({ text: text.slice(0, briefMost), sha: checkout.sha }).catch((error) => { why = (error as Error).message })
       else {

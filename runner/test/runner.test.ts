@@ -741,26 +741,21 @@ console.log('Added the health check, and its test passes.')
     assert.ok(!refusedByManagedMcp('MCP server binders_hub failed to connect'))
   })
 
-  it('found by its file, Claude Code runs without Binders’ MCP server, on the plain prompts, and the hub hears of it', async () => {
+  it('an enterprise MCP config alone doesn’t take Binders’ tools away: runs start with them, until Claude Code refuses', async () => {
     const { hub, actions, url, dir, card, issued, close } = await setUp()
     const claude = await standInClaude(dir, false)
     const managed = join(dir, 'managed-mcp.json')
     await writeFile(managed, '{"mcpServers":{}}')
     try {
       const made = await actions.putAgent('you', { name: 'Managed', runner: { tool: 'claude', access: 'full', timeoutMinutes: 1, worktrees: false } })
-      const job = await card('Add a health check', made.id)
-      const lines: string[] = []
-      const runner = new Runner({ hubUrl: url, token: await issued(made.id), workspace: dir, log: (line) => lines.push(line), waitSeconds: 5, managedMcp: managed })
+      await card('Add a health check', made.id)
+      const runner = new Runner({ hubUrl: url, token: await issued(made.id), workspace: dir, log: () => {}, waitSeconds: 5, managedMcp: managed })
       await runner.start(true)
       const [args] = await claude.runs()
-      assert.ok(args && !args.includes('--mcp-config') && !args.some((a) => a.startsWith('--allowedTools=mcp__')), 'no MCP config of its own')
-      assert.ok(args.includes('--allowedTools=Edit(.binders/**),Write(.binders/**)'), 'and leave to write its files in its .binders folder')
-      assert.doesNotMatch(args[args.indexOf('-p') + 1], /report_progress|get_task/, 'the plain prompt, without Binders’ tools')
-      assert.equal(hub.state.cards.find((c) => c.id === job.id)!.stage, 'live', 'finished, the runner reporting for it')
-      assert.equal(hub.state.agents.find((a) => a.id === made.id)!.runnerSeen?.enterpriseMcp, true)
-      assert.equal(lines.filter((l) => /enterprise MCP config/.test(l)).length, 1, 'said once')
-      assert.equal(runner.usesMcp({ tool: 'claude' }), false)
-      assert.equal(runner.usesMcp({ tool: 'codex' }), true, 'only Claude Code is held to it')
+      assert.ok(args.includes('--mcp-config') && args.includes('--allowedTools=mcp__binders_hub'), 'its own Binders server, as Claude Code didn’t refuse it')
+      assert.match(args[args.indexOf('-p') + 1], /get_task/, 'the prompt with Binders’ tools')
+      assert.equal(runner.usesMcp({ tool: 'claude' }), true)
+      assert.equal(hub.state.agents.find((a) => a.id === made.id)!.runnerSeen?.enterpriseMcp, undefined)
     } finally {
       claude.done()
       await close()
@@ -884,6 +879,33 @@ console.log('</binders-actions>')
     assert.equal(waiting.stage, 'blocked')
     assert.match(waiting.needsYou ?? '', /Lambda beside EKS/)
     await close()
+  })
+
+  it('sends a card’s work without Binders’ tools as Binders would: committed on its branch with the card named, and pushed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'binders-ship-'))
+    const origin = join(root, 'origin.git')
+    const repo = join(root, 'repo')
+    const g = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim()
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin])
+    execFileSync('git', ['clone', '-q', origin, repo])
+    g(repo, 'remote', 'set-url', 'origin', origin)
+    await writeFile(join(repo, 'README.md'), 'hi\n')
+    g(repo, 'add', '-A'); g(repo, '-c', 'user.name=T', '-c', 'user.email=t@binders.invalid', 'commit', '-q', '-m', 'first'); g(repo, 'push', '-q', 'origin', 'main')
+    g(repo, 'remote', 'set-head', 'origin', 'main')
+    const tree = join(root, 'tree')
+    g(repo, 'worktree', 'add', '-q', '-b', 'binders/c1', tree)
+    const runner = new Runner({ hubUrl: 'http://hub.test', token: 'bnd_x', workspace: repo, log: () => {} }) as unknown as { ship: (card: object, dir: string, env: Record<string, string>, summary: string) => Promise<{ url?: string; failed?: string }> }
+    const env = { GIT_AUTHOR_NAME: 'Agent', GIT_AUTHOR_EMAIL: 'agent@binders.invalid', GIT_COMMITTER_NAME: 'Agent', GIT_COMMITTER_EMAIL: 'agent@binders.invalid' }
+    const card = { id: 'c1', title: 'Add the Terraform' }
+    assert.deepEqual(await runner.ship(card, tree, env, ''), {}, 'nothing changed: nothing to send')
+    await writeFile(join(tree, 'main.tf'), 'terraform {}\n')
+    // A repo whose origin isn't on GitHub has no pull request to open: what matters here is the commit and the push.
+    const sent = await runner.ship(card, tree, env, 'Wrote the Terraform.')
+    assert.deepEqual(sent, {}, 'no GitHub repo for it to open a pull request in')
+    assert.match(g(tree, 'log', '-1', '--format=%B'), /Add the Terraform[\s\S]*binders-card: c1/)
+    assert.equal(g(tree, 'status', '--porcelain'), '')
+    assert.equal(execFileSync('git', ['--git-dir', origin, 'rev-parse', 'binders/c1'], { encoding: 'utf8' }).trim(), g(tree, 'rev-parse', 'HEAD'), 'pushed to its branch')
+    assert.deepEqual(await runner.ship(card, repo, env, ''), {}, 'never in the person’s own checkout')
   })
 
   it('takes the Binders actions at the end of a reply, and leaves a reply without them as it is', () => {

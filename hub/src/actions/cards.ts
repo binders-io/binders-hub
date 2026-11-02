@@ -21,6 +21,7 @@ export abstract class CardService extends ActionsBase {
     if (!fields.title.trim()) throw new Refused('A card needs a title.')
     const at = this.now()
     const by = actor.kind === 'user' ? actor.login : actor.kind === 'agent' ? actor.id : 'hub'
+    const waitsFor = this.waitsForIn(fields.binderId, fields.waitsFor ?? [])
     const card: Card = {
       id: `card-${randomUUID().slice(0, 8)}`,
       binderId: fields.binderId,
@@ -36,7 +37,7 @@ export abstract class CardService extends ActionsBase {
       noteId: fields.noteId,
       quote: fields.quote,
       meantFor: fields.meantFor,
-      waitsFor: fields.waitsFor ?? [],
+      waitsFor,
       ...(fields.scheduleId ? { scheduleId: fields.scheduleId } : {}),
       activity: [{ at, by, kind: 'created', text: fields.scheduleId ? 'Put it on the board: a scheduled run of its note' : actor.kind === 'agent' ? 'Suggested it' : 'Put it on the board' }],
     }
@@ -121,6 +122,22 @@ export abstract class CardService extends ActionsBase {
     })
     await this.hub.record(actor, { type: 'schedule.update', id, fields: { lastRun: at, lastCardId: card.id, lastSkipped: undefined } })
     return card
+  }
+
+  /**
+   * The cards a new card waits for, as ids: named by id, by issue number (#226) or by title, in its binder. One that
+   * names no card is refused, rather than kept as a wait that nothing can ever end.
+   */
+  private waitsForIn(binderId: string, named: string[]) {
+    const cards = this.hub.state.cards
+    const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
+    return [...new Set(named.map((name) => {
+      const found = cards.find((c) => c.id === name.trim())
+        ?? cards.find((c) => c.binderId === binderId && c.issue && `#${c.issue.number}` === name.trim().replace(/^issue\s*/i, ''))
+        ?? cards.find((c) => c.binderId === binderId && same(c.title, name))
+      if (!found) throw new Refused(`It waits for “${name.slice(0, 80)}”, which isn’t a card on this board: name each card it waits for by its id, its issue (#226) or its exact title.`)
+      return found.id
+    }))]
   }
 
   /** A proposal from Distill, accepted: it becomes a card, and its note marks the words it came from. */
