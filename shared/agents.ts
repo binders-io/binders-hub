@@ -18,6 +18,8 @@ export interface ToolInfo {
   access: Access[]
   /** Its command line was tried against the tool itself; the others follow their makers' documentation. */
   tried: boolean
+  /** Why it can't be opened in a terminal, when it can't. */
+  noTerminal?: string
   /** Models it takes, when they're fixed names; otherwise the runner lists them on the machine. */
   models?: string[]
 }
@@ -26,7 +28,7 @@ export const tools: ToolInfo[] = [
   { id: 'claude', name: 'Claude Code', by: 'Anthropic', command: 'claude', mcp: true, access: ['full', 'auto', 'edits'], tried: true, models: ['opus', 'sonnet', 'haiku'] },
   { id: 'codex', name: 'Codex', by: 'OpenAI', command: 'codex', mcp: true, access: ['full', 'edits'], tried: true },
   { id: 'opencode', name: 'OpenCode', by: 'SST', command: 'opencode', mcp: true, access: ['full', 'edits'], tried: true },
-  { id: 'dsh', name: 'DeepSeek Harness', by: 'DeepSeek', command: 'dsh', mcp: true, access: ['full'], tried: true },
+  { id: 'dsh', name: 'DeepSeek Harness', by: 'DeepSeek', command: 'dsh', mcp: true, access: ['full'], tried: true, noTerminal: 'DeepSeek Harness has no terminal app to open: its releases come with a headless mode, which takes this agent’s cards, and a web app (dsh web).' },
   { id: 'copilot', name: 'Copilot CLI', by: 'GitHub', command: 'copilot', mcp: true, access: ['full', 'edits'], tried: true },
   { id: 'pi', name: 'Pi', by: 'pi.dev', command: 'pi', mcp: false, access: ['full'], tried: true },
   { id: 'gemini', name: 'Gemini CLI', by: 'Google', command: 'gemini', mcp: false, access: ['full', 'edits'], tried: false },
@@ -41,7 +43,7 @@ export const tools: ToolInfo[] = [
 export const toolInfo = (id: AgentTool | undefined) => tools.find((t) => t.id === id) ?? tools[0]
 
 /** The runner the hub hands out; one older than this lacks things the app offers (several cards at once, chats). */
-export const runnerVersion = '0.8.13'
+export const runnerVersion = '0.8.14'
 
 /** The first runner that restarts when asked from the Agents page. */
 export const restartSince = '0.8.1'

@@ -19,7 +19,7 @@ import { Sealer } from '../../hub/src/secrets.ts'
 import { buildServer } from '../../hub/src/server.ts'
 import { Spaces } from '../../hub/src/spaces.ts'
 import { Webhooks } from '../../hub/src/webhooks.ts'
-import { Runner, actionsFromReply, agentFile, dshPatch, allBindersAmong, bindersAmong, bypassTurnedOff, carryClaudeSettings, noteFromReply, parseMcpList, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
+import { Runner, actionsFromReply, agentFile, dshPatch, dshTooOld, allBindersAmong, bindersAmong, bypassTurnedOff, carryClaudeSettings, noteFromReply, parseMcpList, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
 
 // The runner's own files (~/.binders/run) in a home of the tests' own, not this machine's.
 process.env.BINDERS_HOME ??= mkdtempSync(join(tmpdir(), 'binders-home-'))
@@ -922,6 +922,28 @@ console.log('</binders-actions>')
     const after = hub.state.cards.find((c) => c.id === job.id)!
     assert.equal(after.stage, 'live', JSON.stringify(after.activity.slice(-2)))
     await close()
+  })
+
+  it('says when DeepSeek Harness is too old for a run', async () => {
+    assert.ok(dshTooOld('0.1.5-rc.2') && dshTooOld('0.2.0'))
+    assert.ok(!dshTooOld('0.2.1-rc.5') && !dshTooOld('0.2.2-alpha.2') && !dshTooOld('1.0.0') && !dshTooOld(''))
+
+    const { hub, actions, url, dir, card, issued, close } = await setUp()
+    const bin = join(dir, 'bin')
+    execFileSync('mkdir', ['-p', bin])
+    await writeFile(join(bin, 'dsh'), '#!/bin/sh\necho 0.1.5-rc.2\n', { mode: 0o755 })
+    const path = process.env.PATH
+    process.env.PATH = `${bin}:${path}`
+    try {
+      const made = await actions.putAgent('you', { name: 'Harness', runner: { tool: 'dsh', access: 'full', timeoutMinutes: 1, worktrees: false } })
+      const job = await card('Too old for this', made.id)
+      await new Runner({ hubUrl: url, token: await issued(made.id), workspace: dir, log: () => {}, waitSeconds: 1 }).start(true)
+      const after = hub.state.cards.find((c) => c.id === job.id)!
+      assert.match(JSON.stringify(after.activity), /0\.1\.5-rc\.2 on this machine is too old: Binders needs 0\.2\.1 or newer/)
+    } finally {
+      process.env.PATH = path
+      await close()
+    }
   })
 
   it('runs DeepSeek Harness headless, its model and Binders’ server in a patch with no token in it and its uploads off', async () => {

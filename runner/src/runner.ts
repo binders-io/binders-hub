@@ -73,6 +73,18 @@ export async function carryClaudeSettings(fromDirs: string[], to: string) {
   return false
 }
 
+/** The oldest DeepSeek Harness whose headless mode has the flags a run uses: older ones refuse them. */
+const dshOldest = '0.2.1'
+
+export function dshTooOld(version: string) {
+  const parts = (text: string) => /(\d+)\.(\d+)\.(\d+)/.exec(text)?.slice(1).map(Number)
+  const have = parts(version)
+  const need = parts(dshOldest)!
+  if (!have) return false
+  const differs = have.findIndex((n, i) => n !== need[i])
+  return differs >= 0 && have[differs] < need[differs]
+}
+
 /**
  * What a DeepSeek Harness run adds to its headless profile, as a --patch overlay: Binders' MCP server (its token read
  * from the run's environment, so it's never in the file), the model when one's named as provider/model (Harness has no
@@ -1373,6 +1385,10 @@ export class Runner {
         const found = await whereIs(command)
         if (!found) throw new Error(`${toolInfo(settings.tool).name} isn’t installed on this machine (no “${command}” on the PATH or in the usual places). Install it, or pick another tool in the agent’s settings.`)
         command = found
+        if (settings.tool === 'dsh') {
+          const version = await run(found, ['--version'], { timeout: 60_000 }).then((r) => r.stdout.trim(), () => '')
+          if (dshTooOld(version)) throw new Error(`DeepSeek Harness ${version} on this machine is too old: Binders needs ${dshOldest} or newer. Update it with: npm install -g @deepseek-ai/dsh@latest`)
+        }
       }
       exit = await new Promise((done) => {
         // In a process group of its own, so stopping it stops what it started too (a shell's command, a tool's helpers).
@@ -1855,6 +1871,7 @@ export class Runner {
   private async terminal(sid: string, by: string): Promise<Started> {
     const settings = await this.settings()
     const tool = toolInfo(settings.tool)
+    if (tool.noTerminal) throw new Error(tool.noTerminal)
     const dir = await this.directoryFor({ id: sid, title: `${tool.name} for ${by}` } as CardJSON, settings)
     const config = await this.mcpConfig(settings)
     const built = this.interactiveFor(settings, dir, config.path, config.quiet)
@@ -1915,9 +1932,6 @@ export class Runner {
       }
       case 'opencode':
         return plain('opencode', [...(model ? ['-m', model] : [])])
-      case 'dsh':
-        // Binders' server and the model are in its --patch overlay.
-        return plain('dsh', ['--profile', 'tui', ...(mcp ? ['--patch', mcp] : [])])
       case 'copilot':
         return plain('copilot', [full ? '--allow-all' : '--allow-all-tools', ...(mcp ? ['--additional-mcp-config', `@${mcp}`] : []), ...(model ? ['--model', model] : [])])
       case 'pi':

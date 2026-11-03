@@ -165,7 +165,7 @@ function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent
         </div>
       )}
       <footer>
-        {state.me?.user.login.toLowerCase() === agent.owner.toLowerCase() && (runner?.tool ?? 'claude') !== 'custom' && (
+        {state.me?.user.login.toLowerCase() === agent.owner.toLowerCase() && (runner?.tool ?? 'claude') !== 'custom' && !toolInfo(runner?.tool ?? 'claude').noTerminal && (
           <a className="button" href={href({ screen: 'terminal', id: agent.id })} title={`${toolInfo(runner?.tool ?? 'claude').name} in a terminal on its machine, as you’d use it there`}><SquareTerminal size={14} /> Terminal</a>
         )}
         <button className="button" onClick={onEdit}>Edit</button>
