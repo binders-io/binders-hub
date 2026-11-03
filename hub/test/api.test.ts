@@ -1000,7 +1000,7 @@ describe('agents over MCP', () => {
     // Revoked: its token stops working at once.
     await you('DELETE', `/api/agents/${second.body.agent.id}`)
     const revoked = await fetch(`${url}/mcp`, { method: 'POST', headers: { authorization: `Bearer ${second.body.token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) })
-    assert.equal(revoked.status, 401)
+    assert.equal(revoked.status, 403)
 
     await builder.client.close()
     await other.client.close()

@@ -208,7 +208,7 @@ describe('OAuth for MCP', () => {
 
       // Stopping it here stops it on MCP.
       await api(set.url, cookie)('DELETE', `/api/tokens/${made.body.id}`)
-      assert.equal((await mcpStatus(set.url, made.body.token)).status, 401)
+      assert.equal((await mcpStatus(set.url, made.body.token)).status, 403)
     } finally {
       await set.close()
     }
@@ -421,13 +421,38 @@ describe('OAuth for MCP, kept to what was allowed', () => {
     }
   })
 
+  it('never sends a token set by hand to sign in, which it would ignore, again and again', async () => {
+    const set = await setUpBinders()
+    try {
+      const cookie = await signIn(set.url)
+      const agent = await api(set.url, cookie)('POST', '/api/agents', { name: 'Reviewer' })
+      const first = await api(set.url, cookie)('POST', `/api/agents/${agent.body.agent.id}/token`)
+      await api(set.url, cookie)('POST', `/api/agents/${agent.body.agent.id}/token`)
+      const made = await api(set.url, cookie)('POST', '/api/tokens', { app: 'A tool' })
+      await api(set.url, cookie)('DELETE', `/api/tokens/${made.body.id}`)
+      for (const dead of [first.body.token, 'bnd_nothingmadethis', made.body.token]) {
+        const answer = await mcpStatus(set.url, dead)
+        assert.equal(answer.status, 403)
+        assert.equal(answer.auth, null, 'nothing points it at the sign-in')
+      }
+      // Signing in is still the way for no token, and for one that ran out or that nothing made by hand.
+      for (const none of [undefined, 'bnp_madeup']) {
+        const answer = await mcpStatus(set.url, none)
+        assert.equal(answer.status, 401)
+        assert.match(answer.auth ?? '', /resource_metadata/)
+      }
+    } finally {
+      await set.close()
+    }
+  })
+
   it('leaves an app’s token on /api: it isn’t a connection, and it makes no tokens', async () => {
     const set = await setUpBinders()
     try {
       const { token } = await set.auth.issuePersonToken({ login: 'you', name: 'You' }, 'An app')
       const bearer = { authorization: `Bearer ${token}` }
       assert.equal((await fetch(`${set.url}/api/me`, { headers: bearer })).status, 200)
-      assert.equal((await mcpStatus(set.url, token)).status, 401)
+      assert.equal((await mcpStatus(set.url, token)).status, 403)
       assert.equal((await fetch(`${set.url}/api/tokens`, { method: 'POST', headers: { ...bearer, 'content-type': 'application/json' }, body: '{}' })).status, 403)
     } finally {
       await set.close()

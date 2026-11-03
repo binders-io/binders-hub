@@ -672,8 +672,14 @@ export class Auth {
     if (raw) {
       const stored = JSON.parse(raw) as StoredPersonToken
       if (stored.refreshHash) await this.kv.del(`oauth-refresh:${stored.refreshHash}`)
+      else await this.kv.set(`person-token-stopped:${found.hash}`, '1')
     }
     await this.kv.set(`person-tokens-of:${login.toLowerCase()}`, JSON.stringify(mine.filter((t) => t.id !== id)))
+  }
+
+  /** Whether this was a token made by hand and stopped since. An OAuth client's that's gone signs in again; this can't. */
+  async stoppedByHand(token: string | undefined) {
+    return !!token?.startsWith('bnp_') && !!(await this.kv.get(`person-token-stopped:${sha(token)}`))
   }
 
   private async personTokenList(login: string) {
