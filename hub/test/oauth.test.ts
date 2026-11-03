@@ -280,7 +280,7 @@ async function setUpBinders(port?: number) {
   await app.listen({ port: port ?? 0, host: '127.0.0.1' })
   const url = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
   const cookie = await signIn(url)
-  return { a, b, c, auth, spaces, url, cookie, close: async () => { await Promise.all(savers.map((s) => s.stop())); await app.close() } }
+  return { a, b, c, auth, kv, spaces, url, cookie, close: async () => { await Promise.all(savers.map((s) => s.stop())); await app.close() } }
 }
 
 const form = (fields: Record<string, string>) => ({ method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(fields).toString() })
@@ -505,24 +505,74 @@ describe('OAuth for MCP, kept to what was allowed', () => {
     }
   })
 
-  it('stops a connection whose old refresh token comes back, unless it’s two renewals at once', async () => {
+  it('gives copies of a client renewing together the same tokens, so none of them has to ask its person again', async () => {
+    const set = await setUpBinders()
+    try {
+      const first = await connect(set.url, set.cookie, 'team-a')
+      // Their hour is up, and they all renew at once, or one after another within the minute.
+      const together = await Promise.all([1, 2, 3].map(() => renew(set.url, first.clientId, first.refresh)))
+      assert.deepEqual(together.map((r) => r.status), [200, 200, 200])
+      const answers = await Promise.all(together.map(json))
+      assert.equal(new Set(answers.map((a) => a.access_token)).size, 1)
+      assert.equal(new Set(answers.map((a) => a.refresh_token)).size, 1)
+      const newest = await later(30_000, () => renew(set.url, first.clientId, first.refresh)).then(json)
+      assert.equal(newest.refresh_token, answers[0].refresh_token)
+      assert.equal((await mcpStatus(set.url, newest.access_token)).status, 200)
+
+      // One connection on the account page, as ever.
+      const me = await api(set.url, set.cookie)('GET', '/api/tokens')
+      assert.equal((me.body as { tokens: { kind?: string }[] }).tokens.filter((t) => t.kind === 'mcp').length, 1)
+
+      // Its next renewal carries on from there.
+      const next = await renew(set.url, first.clientId, newest.refresh_token).then(json)
+      assert.equal((await mcpStatus(set.url, next.access_token)).status, 200)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('refuses a refresh token long used, and the connection stands', async () => {
     const set = await setUpBinders()
     try {
       const first = await connect(set.url, set.cookie, 'team-a')
       const newest = await renew(set.url, first.clientId, first.refresh).then(json)
-      // Straight away: two terminals renewing together. The later one is refused, and the connection stands.
-      assert.equal((await renew(set.url, first.clientId, first.refresh)).status, 400)
+      const stale = await later(61_000, () => renew(set.url, first.clientId, first.refresh))
+      assert.equal(stale.status, 400)
+      assert.equal((await json(stale)).error, 'invalid_grant')
       assert.equal((await mcpStatus(set.url, newest.access_token)).status, 200)
-      // Later: it was copied. Neither side keeps the connection.
-      assert.equal((await later(60_000, () => renew(set.url, first.clientId, first.refresh))).status, 400)
-      assert.equal((await mcpStatus(set.url, newest.access_token)).status, 401)
-      assert.equal((await renew(set.url, first.clientId, newest.refresh_token)).status, 400)
+      assert.equal((await renew(set.url, first.clientId, newest.refresh_token)).status, 200)
+    } finally {
+      await set.close()
+    }
+  })
 
-      // Another client presenting it: the same.
-      const other = await connect(set.url, set.cookie, 'team-a')
+  it('never gives a renewal to another client, and stops the connection if one tries', async () => {
+    const set = await setUpBinders()
+    try {
       const stranger = await register(set.url, { redirect_uris: ['http://localhost:9999/cb'] }).then(json)
-      assert.equal((await renew(set.url, stranger.client_id, other.refresh)).status, 400)
-      assert.equal((await mcpStatus(set.url, other.access)).status, 401)
+      const unused = await connect(set.url, set.cookie, 'team-a')
+      assert.equal((await renew(set.url, stranger.client_id, unused.refresh)).status, 400)
+      assert.equal((await mcpStatus(set.url, unused.access)).status, 401)
+
+      // Nor the answer kept for the minute after a renewal.
+      const first = await connect(set.url, set.cookie, 'team-a')
+      const newest = await renew(set.url, first.clientId, first.refresh).then(json)
+      assert.equal((await renew(set.url, stranger.client_id, first.refresh)).status, 400)
+      assert.equal((await mcpStatus(set.url, newest.access_token)).status, 401)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('keeps the tokens it holds on to for that minute sealed', async () => {
+    const set = await setUpBinders()
+    try {
+      const first = await connect(set.url, set.cookie, 'team-a')
+      const newest = await renew(set.url, first.clientId, first.refresh).then(json)
+      const held = [...(set.kv as unknown as { values: Map<string, { value: string }> }).values.entries()].filter(([key]) => key.startsWith('oauth-renewed:'))
+      assert.equal(held.length, 1)
+      assert.equal(held[0][1].value.includes(newest.access_token), false)
+      assert.equal(held[0][1].value.includes(newest.refresh_token), false)
     } finally {
       await set.close()
     }
@@ -538,7 +588,8 @@ describe('OAuth for MCP, kept to what was allowed', () => {
 
       const first = await connect(set.url, set.cookie, 'team-a')
       const renewals = await Promise.all([renew(set.url, first.clientId, first.refresh), renew(set.url, first.clientId, first.refresh)])
-      assert.deepEqual(renewals.map((r) => r.status).sort(), [200, 400])
+      const answers = await Promise.all(renewals.map(json))
+      assert.equal(answers[0].refresh_token, answers[1].refresh_token, 'one renewal, whoever asked')
     } finally {
       await set.close()
     }
