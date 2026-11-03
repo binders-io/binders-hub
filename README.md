@@ -283,6 +283,29 @@ Desktop or any MCP client. The agent then calls `whoami`, `wait_for_work`, `clai
 
 To try it without a real agent: `cd hub && HUB_URL=http://localhost:5173 BINDERS_TOKEN=bnd_… npm run stand-in`.
 
+## Connect your terminal, as yourself
+
+An agent's token is for a runner, which has no browser. A person's terminal (Claude Code, Cursor or another MCP client)
+connects as the person instead, through OAuth, so there's no one-time pad to copy and replacing an agent's token doesn't
+break it. In a binder's **Settings → Agents**, copy the MCP address for you (`https://your-hub/<binder>/mcp`), then:
+
+```sh
+claude mcp add --transport http binders https://your-hub/<binder>/mcp
+```
+
+The client opens a browser; sign in with GitHub and allow it. It gets a person token that runs out and renews itself,
+and the connection shows under **Your account → MCP connections**, where it can be stopped. A client that can’t sign in
+with OAuth can be given a person token there too (**Create a token**), to put in its config as a Bearer token; it lasts
+until it’s stopped. Either way the token is for that one binder and for MCP only: another binder needs a connection of
+its own, it stops working if you leave the binder, and it isn’t accepted on `/api`. It can read and write that
+binder's notes, make and comment on cards, assign them, and read change sets, debriefs and Challenges; taking work and
+finishing it stays with agents.
+
+The hub is the OAuth server for this: MCP clients discover it from a 401, register themselves, and exchange a code with
+PKCE (`/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke`, and the `.well-known` metadata). GitHub is
+only the identity provider, through the hub's OAuth App or a binder's GitHub App. `/mcp` still takes an agent's `bnd_…`
+token for runners; a person's `bnp_…` token is accepted there and at its own `/<binder>/mcp`.
+
 ## Tests
 
 `cd hub && npm test`: the log on memory and on a throwaway Redis (port 6391), the hub, notes in Git, sign-in with a

@@ -506,38 +506,134 @@ export class Auth {
     await this.kv.del(`agent-token-of:${agentId}`)
   }
 
-  // People's tokens, for apps (the Mac) that can't keep the session cookie ------------------------------------------
+  // People's tokens, for apps (the Mac) that can't keep the session cookie, and for MCP clients that sign in through
+  // OAuth. An app's lasts until it's revoked; an MCP client's runs out, and its refresh token renews it.
 
-  /** A token for an app to act as this person on /api, with their GitHub token as their session has it. Shown once. */
-  async issuePersonToken(user: User, app: string, githubToken?: string, space?: string) {
+  /**
+   * A token for an app (or an MCP client that can't sign in with OAuth) to act as this person, with their GitHub token
+   * as their session has it. Shown once. An app's lasts until it's revoked; an MCP client's too, when it's made here.
+   */
+  async issuePersonToken(user: User, app: string, githubToken?: string, space?: string, kind: 'app' | 'mcp' = 'app') {
     const token = `bnp_${randomBytes(32).toString('base64url')}`
     const hash = sha(token)
     const id = randomBytes(9).toString('base64url')
     const at = new Date().toISOString()
-    const stored: StoredPersonToken = { id, user, app, space, token: githubToken ? this.seal(githubToken) : undefined, at }
+    const stored: StoredPersonToken = { id, user, app, space, token: githubToken ? this.seal(githubToken) : undefined, at, kind }
     await this.kv.set(`person-token:${hash}`, JSON.stringify(stored))
     const mine = await this.personTokenList(user.login)
-    await this.kv.set(`person-tokens-of:${user.login.toLowerCase()}`, JSON.stringify([...mine, { id, hash, app, at }]))
+    await this.kv.set(`person-tokens-of:${user.login.toLowerCase()}`, JSON.stringify([...mine, { id, hash, app, at, kind }]))
     return { token, id }
   }
 
-  async personFor(token: string | undefined): Promise<{ user: User; token?: string; space?: string; id: string } | undefined> {
+  /** The hub's own keys, for the OAuth server's clients and codes. */
+  get store(): KV {
+    return this.kv
+  }
+
+  /**
+   * A person token for an MCP client that signed in through OAuth: an access token that runs out, and a refresh token
+   * that renews it (once: the client gets a new one each time). Only its hashes are kept, as for an agent's.
+   */
+  async issueOAuthPersonToken(user: User, app: string, clientId: string, space: string, scope: string, renewing?: { id: string; at: string }) {
+    const token = `bnp_${randomBytes(32).toString('base64url')}`
+    const refresh = `bnr_${randomBytes(32).toString('base64url')}`
+    const hash = sha(token)
+    const refreshHash = sha(refresh)
+    // A renewal is the same connection: its id and when it was made stay, so the account page can still stop it.
+    const id = renewing?.id ?? randomBytes(9).toString('base64url')
+    const at = renewing?.at ?? new Date().toISOString()
+    const expiresAt = new Date(Date.now() + oauthAccessSeconds * 1000).toISOString()
+    const stored: StoredPersonToken = { id, user, app, space, at, kind: 'mcp', clientId, scope, expiresAt, refreshHash }
+    await this.kv.set(`person-token:${hash}`, JSON.stringify(stored))
+    const kept: StoredRefresh = { id, user, app, space, clientId, scope, accessHash: hash, at, expiresAt: new Date(Date.now() + oauthRefreshSeconds * 1000).toISOString() }
+    await this.kv.set(`oauth-refresh:${refreshHash}`, JSON.stringify(kept), oauthRefreshSeconds)
+    const mine = await this.personTokenList(user.login)
+    await this.kv.set(`person-tokens-of:${user.login.toLowerCase()}`, JSON.stringify([...mine, { id, hash, app, at, kind: 'mcp' }]))
+    return { token, refresh, id, expiresIn: oauthAccessSeconds }
+  }
+
+  /**
+   * A refresh token for a new access token, rotating both: the old access token stops working. A refresh token used
+   * twice was copied, so the connection stops: whoever holds the newest one, it may be the one who copied it. Only
+   * after a moment, as two terminals on one connection can both renew at once; the later one is just refused.
+   */
+  async refreshOAuthPersonToken(refresh: string, clientId: string) {
+    const hash = sha(refresh)
+    const raw = await this.kv.take(`oauth-refresh:${hash}`)
+    if (!raw) {
+      const used = await this.kv.get(`oauth-refresh-used:${hash}`)
+      if (used) {
+        const { login, id, at } = JSON.parse(used) as { login: string; id: string; at: number }
+        if (Date.now() - at > oauthRenewLeewayMs) await this.stopConnection(login, id)
+      }
+      throw new Refusal('That refresh token is unknown, or was used already.')
+    }
+    const kept = JSON.parse(raw) as StoredRefresh
+    if (kept.clientId !== clientId) {
+      await this.stopConnection(kept.user.login, kept.id)
+      throw new Refusal('That refresh token is for another client.')
+    }
+    if (Date.parse(kept.expiresAt) <= Date.now()) {
+      await this.stopConnection(kept.user.login, kept.id)
+      throw new Refusal('That refresh token has run out: connect again.')
+    }
+    await this.kv.set(`oauth-refresh-used:${hash}`, JSON.stringify({ login: kept.user.login, id: kept.id, at: Date.now() }), oauthRefreshSeconds)
+    await this.kv.del(`person-token:${kept.accessHash}`)
+    const mine = await this.personTokenList(kept.user.login)
+    await this.kv.set(`person-tokens-of:${kept.user.login.toLowerCase()}`, JSON.stringify(mine.filter((t) => t.id !== kept.id)))
+    return this.issueOAuthPersonToken(kept.user, kept.app, kept.clientId, kept.space, kept.scope, { id: kept.id, at: kept.at })
+  }
+
+  /** Stops a connection that may already be gone. */
+  private async stopConnection(login: string, id: string) {
+    await this.revokePersonToken(login, id).catch((error) => {
+      if (!(error instanceof Refusal)) throw error
+    })
+  }
+
+  /** Stops an access or refresh token at once: the access token, its refresh token, and its place in the list. */
+  async revokeOAuthToken(token: string | undefined) {
+    if (!token) return
+    if (token.startsWith('bnr_')) {
+      const hash = sha(token)
+      const raw = await this.kv.get(`oauth-refresh:${hash}`)
+      if (!raw) return
+      const kept = JSON.parse(raw) as StoredRefresh
+      await this.kv.del(`oauth-refresh:${hash}`)
+      await this.kv.del(`person-token:${kept.accessHash}`)
+      const mine = await this.personTokenList(kept.user.login)
+      await this.kv.set(`person-tokens-of:${kept.user.login.toLowerCase()}`, JSON.stringify(mine.filter((t) => t.id !== kept.id)))
+      return
+    }
+    if (!token.startsWith('bnp_')) return
+    const hash = sha(token)
+    const raw = await this.kv.get(`person-token:${hash}`)
+    if (!raw) return
+    const stored = JSON.parse(raw) as StoredPersonToken
+    await this.kv.del(`person-token:${hash}`)
+    if (stored.refreshHash) await this.kv.del(`oauth-refresh:${stored.refreshHash}`)
+    const mine = await this.personTokenList(stored.user.login)
+    await this.kv.set(`person-tokens-of:${stored.user.login.toLowerCase()}`, JSON.stringify(mine.filter((t) => t.id !== stored.id)))
+  }
+
+  async personFor(token: string | undefined): Promise<{ user: User; token?: string; space?: string; id: string; kind: 'app' | 'mcp' } | undefined> {
     if (!token?.startsWith('bnp_')) return undefined
     const raw = await this.kv.get(`person-token:${sha(token)}`)
     if (!raw) return undefined
     const stored = JSON.parse(raw) as StoredPersonToken
+    if (stored.expiresAt && Date.parse(stored.expiresAt) <= Date.now()) return undefined
     let githubToken: string | undefined
     try {
       githubToken = stored.token ? this.open(stored.token) : undefined
     } catch {
       // Sealed with another secret: the token stands, its GitHub token doesn't.
     }
-    return { user: stored.user, token: githubToken, space: stored.space, id: stored.id }
+    return { user: stored.user, token: githubToken, space: stored.space, id: stored.id, kind: stored.kind ?? 'app' }
   }
 
   /**
    * A person's tokens, without the tokens themselves: which app, since when, and the Binder whose GitHub App it signed
-   * in through (space).
+   * in through (space). kind says whether it's an app signed in through the browser or an MCP client through OAuth.
    */
   async personTokens(login: string) {
     const mine = await this.personTokenList(login)
@@ -546,34 +642,71 @@ export class Auth {
       const raw = await this.kv.get(`person-token:${t.hash}`)
       if (!raw) return undefined
       const stored = JSON.parse(raw) as StoredPersonToken
-      return { id: t.id, app: t.app, at: t.at, space: stored.space }
+      // An MCP access token that has run out is still a live connection while its refresh token renews it.
+      if (stored.expiresAt && Date.parse(stored.expiresAt) <= Date.now()) {
+        if (!stored.refreshHash || !(await this.kv.get(`oauth-refresh:${stored.refreshHash}`))) return undefined
+      }
+      return { id: t.id, app: t.app, at: t.at, space: stored.space, kind: stored.kind ?? 'app', expiresAt: stored.expiresAt, clientId: stored.clientId }
     }))
     return live.filter((t) => !!t)
   }
 
-  /** Stops one of a person's tokens at once. Only their own: someone else's id is refused like an unknown one. */
+  /** Stops one of a person's tokens at once, and its refresh token. Only their own: someone else's id is refused like an unknown one. */
   async revokePersonToken(login: string, id: string) {
     const mine = await this.personTokenList(login)
     const found = mine.find((t) => t.id === id)
     if (!found) throw new Refusal('No such token.')
+    const raw = await this.kv.get(`person-token:${found.hash}`)
     await this.kv.del(`person-token:${found.hash}`)
+    if (raw) {
+      const stored = JSON.parse(raw) as StoredPersonToken
+      if (stored.refreshHash) await this.kv.del(`oauth-refresh:${stored.refreshHash}`)
+    }
     await this.kv.set(`person-tokens-of:${login.toLowerCase()}`, JSON.stringify(mine.filter((t) => t.id !== id)))
   }
 
   private async personTokenList(login: string) {
     const raw = await this.kv.get(`person-tokens-of:${login.toLowerCase()}`)
-    return raw ? (JSON.parse(raw) as { id: string; hash: string; app: string; at: string }[]) : []
+    return raw ? (JSON.parse(raw) as { id: string; hash: string; app: string; at: string; kind?: 'app' | 'mcp' }[]) : []
   }
+}
+
+/** How long an MCP client's access token lasts, and how long its refresh token may renew it. */
+const oauthAccessSeconds = 60 * 60
+const oauthRefreshSeconds = 30 * 24 * 60 * 60
+/** How long after a renewal its old refresh token may be seen again without stopping the connection. */
+const oauthRenewLeewayMs = 10_000
+
+interface StoredRefresh {
+  id: string
+  user: User
+  app: string
+  space: string
+  clientId: string
+  scope: string
+  /** The hash of the access token it was issued with, so revoking it stops that too. */
+  accessHash: string
+  at: string
+  expiresAt: string
 }
 
 interface StoredPersonToken {
   id: string
   user: User
-  /** The app it was given to, as it named itself: "Binders for Mac on Ana’s MacBook". */
+  /** The app it was given to, as it named itself: "Binders for Mac on Ana’s MacBook", or an MCP client's name. */
   app: string
   /** The GitHub token, encrypted with the hub's secret. */
   token?: string
   /** The Binder whose GitHub App that token is for. */
   space?: string
   at: string
+  /** What it was given to: an app signed in through the browser, or an MCP client signed in through OAuth. */
+  kind?: 'app' | 'mcp'
+  /** When it stops working: set for MCP clients; an app's lasts until it's revoked. */
+  expiresAt?: string
+  /** The OAuth client it was issued to. */
+  clientId?: string
+  scope?: string
+  /** Its refresh token's hash, if it has one. */
+  refreshHash?: string
 }

@@ -5,6 +5,8 @@ export interface KV {
   get(key: string): Promise<string | undefined>
   set(key: string, value: string, ttlSeconds?: number): Promise<void>
   del(key: string): Promise<void>
+  /** Reads a key and removes it as one step: of two takers at once, only one gets it. */
+  take(key: string): Promise<string | undefined>
 }
 
 export class MemoryKV implements KV {
@@ -26,6 +28,12 @@ export class MemoryKV implements KV {
 
   async del(key: string) {
     this.values.delete(key)
+  }
+
+  async take(key: string) {
+    const value = await this.get(key)
+    this.values.delete(key)
+    return value
   }
 }
 
@@ -49,5 +57,13 @@ export class RedisKV implements KV {
 
   async del(key: string) {
     await this.redis.del(this.prefix + key)
+  }
+
+  // MULTI, so it doesn't need a Redis new enough for GETDEL.
+  async take(key: string) {
+    const name = this.prefix + key
+    const [read] = (await this.redis.multi().get(name).del(name).exec()) ?? []
+    if (read?.[0]) throw read[0]
+    return typeof read?.[1] === 'string' ? read[1] : undefined
   }
 }

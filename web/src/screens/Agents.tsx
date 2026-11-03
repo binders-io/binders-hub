@@ -39,7 +39,7 @@ export function Agents() {
       <header className="screen-head">
         <div>
           <h2>Agents</h2>
-          <p>Each agent connects to the hub over MCP with a token of its own. It finds cards it can do, takes them, says what it’s doing, and hands them back with a pull request.</p>
+          <p>Each agent connects to the hub over MCP with a token of its own. It finds cards it can do, takes them, says what it’s doing, and hands them back with a pull request. Your own terminal connects as you, through OAuth: Settings → Agents has its address.</p>
         </div>
         <button className="button primary" onClick={() => setAdding(true)}><Plus size={14} /> Set up an agent</button>
       </header>

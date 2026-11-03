@@ -50,7 +50,7 @@ export interface Space {
 }
 
 /** Names a Binder's address can't take: the hub's own paths. */
-const reserved = new Set(['api', 'auth', 'setup', 'mcp', 'webhooks', 'runner', 'health', 'ready', 'assets', 'static', 'admin', 'new', 'hub', 'install', 'icons'])
+const reserved = new Set(['api', 'auth', 'oauth', 'setup', 'mcp', 'webhooks', 'runner', 'health', 'ready', 'assets', 'static', 'admin', 'new', 'hub', 'install', 'icons'])
 export const spaceIdPattern = /^[a-z][a-z0-9-]{1,38}[a-z0-9]$/
 /** A person's own Binder is at /~login. */
 export const personalId = (login: string) => `~${login.toLowerCase()}`

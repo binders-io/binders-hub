@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AppWindow, LogOut } from 'lucide-react'
+import { AppWindow, Check, Copy, LogOut, SquareTerminal } from 'lucide-react'
 import { call } from '../data/api'
 import { useStore } from '../data/store'
 import { PersonAvatar, ago } from '../components/bits'
@@ -33,30 +33,38 @@ export function Account() {
         </div>
         <YourGitHub />
         <Apps />
+        <McpConnections />
       </div>
     </div>
   )
 }
 
 /** binder: the one it's registered to, whose GitHub App it signed in through; none when it signed in without one. */
-interface AppToken { id: string; app: string; at: string; binder?: { id: string; name: string; personal: boolean } }
+interface AppToken { id: string; app: string; at: string; binder?: { id: string; name: string; personal: boolean }; kind?: 'app' | 'mcp'; expiresAt?: string; clientId?: string }
+
+/** The tokens of each kind: an app signed in through the browser, or an MCP client signed in through OAuth. */
+function useTokens() {
+  const [tokens, setTokens] = useState<AppToken[]>()
+  const refresh = () => void call<{ tokens: AppToken[] }>('GET', '/api/tokens').then((r) => setTokens(r.tokens)).catch(() => {})
+  useEffect(refresh, [])
+  const revoke = (id: string) => void attempt(() => call('DELETE', `/api/tokens/${id}`)).then(refresh)
+  return { tokens, revoke, refresh }
+}
 
 /**
  * Apps signed in as you (Binders for Mac), each with a token of its own: stopping one signs that app out. Each names
  * the binder it's registered to: it opens every binder you're in, but acts on GitHub through that binder's app.
  */
 function Apps() {
-  const [tokens, setTokens] = useState<AppToken[]>()
-  const refresh = () => void call<{ tokens: AppToken[] }>('GET', '/api/tokens').then((r) => setTokens(r.tokens)).catch(() => {})
-  useEffect(refresh, [])
-  const revoke = (id: string) => void attempt(() => call('DELETE', `/api/tokens/${id}`)).then(refresh)
+  const { tokens, revoke } = useTokens()
   if (!tokens) return null
+  const apps = tokens.filter((t) => t.kind !== 'mcp')
   return (
     <section className="app-tokens">
       <h3>Apps signed in as you</h3>
-      {tokens.length ? (
+      {apps.length ? (
         <ul className="status-list">
-          {tokens.map((t) => (
+          {apps.map((t) => (
             <li key={t.id} className="ok">
               <span className="status-icon"><AppWindow size={12} /></span>
               <div>
@@ -71,5 +79,70 @@ function Apps() {
         <p className="faint">None. Binders for Mac signs in to this hub from its Settings, through this browser.</p>
       )}
     </section>
+  )
+}
+
+/**
+ * MCP clients connected as you (a terminal, an editor), each signed in through OAuth in the browser: no token to copy,
+ * and an agent's token being replaced doesn't touch them. Stopping one makes the client sign in again next time.
+ */
+function McpConnections() {
+  const { tokens, revoke, refresh } = useTokens()
+  const [made, setMade] = useState<string>()
+  const me = useStore().state.me
+  const here = me?.spaces.find((s) => s.id === me.space)
+  if (!tokens) return null
+  const mcp = tokens.filter((t) => t.kind === 'mcp')
+  // A client that can't sign in with OAuth gets a token of its own, shown once, as a person's: not an agent's pad.
+  const create = () => void attempt(() => call<{ token: string }>('POST', '/api/tokens', { app: 'A terminal' })).then((r) => {
+    if (!r) return
+    setMade(r.token)
+    refresh()
+  })
+  return (
+    <section className="app-tokens">
+      <h3>MCP connections</h3>
+      {mcp.length ? (
+        <ul className="status-list">
+          {mcp.map((t) => (
+            <li key={t.id} className="ok">
+              <span className="status-icon"><SquareTerminal size={12} /></span>
+              <div>
+                <span className="row-title"><b>{t.app}</b>{t.binder && <BinderTag name={t.binder.name} />}</span>
+                <span>Connected {ago(t.at)} ago{t.binder ? `, to ${t.binder.name}` : ''}{t.expiresAt ? '. Its token renews itself until you stop it here' : ''}.</span>
+              </div>
+              <button className="button" onClick={() => revoke(t.id)}>Disconnect</button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="faint">None. A binder’s Settings → Agents has the address to add to Claude Code or another MCP client; it opens a browser to sign in with GitHub.</p>
+      )}
+      <div className="mcp-create">
+        <button className="button" onClick={create} disabled={!here}>Create a token</button>
+        <span className="faint">For a client that can’t sign in with OAuth: put it in the MCP config as a Bearer token. {here ? `It’s for ${here.name} only, and lasts` : 'It lasts'} until you stop it here.</span>
+      </div>
+      {made && <TokenShown token={made} />}
+    </section>
+  )
+}
+
+/** A token made here, shown once: copied into an MCP config that can't sign in through the browser. */
+function TokenShown({ token }: { token: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    await navigator.clipboard.writeText(token).catch(() => {})
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1600)
+  }
+  return (
+    <div className="copy-row">
+      <span className="field-label">Its token, shown once</span>
+      <div className="token-value mono">
+        <span>{token}</span>
+        <button className="icon-button" onClick={() => void copy()} aria-label="Copy the token">{copied ? <Check size={15} /> : <Copy size={15} />}</button>
+      </div>
+      <span className="field-hint">In the MCP config, as Authorization: Bearer … . The connection shows above, and stopping it stops this token.</span>
+    </div>
   )
 }

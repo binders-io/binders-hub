@@ -207,9 +207,13 @@ function AgentsPart() {
   const me = useStore().state.me
   if (!me) return null
   const runner = `${window.location.origin}/runner/binders-runner.mjs`
+  // The binder's own address, for a person's terminal: OAuth signs them in as themselves, and an agent's token being
+  // replaced doesn't touch it.
+  const mine = me.space ? new URL(`/${me.space}/mcp`, window.location.origin).toString() : me.mcpUrl
   return (
     <div className="copy-rows">
-      <CopyRow label="MCP address" value={me.mcpUrl} hint="For connecting a tool by hand, with an agent’s token." />
+      <CopyRow label="MCP for you, in this binder" value={mine} hint={`Add it in Claude Code with: claude mcp add --transport http binders ${mine}. It opens a browser to sign in with GitHub: no token to copy, and an agent’s token being replaced doesn’t touch it.`} />
+      <CopyRow label="MCP address for agents" value={me.mcpUrl} hint="With an agent’s token, from its Agents page." />
       <CopyRow label="The runner" value={runner} hint="Keeps an agent taking cards. Start the runner on an agent’s card shows the whole command." />
     </div>
   )

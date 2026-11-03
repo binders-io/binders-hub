@@ -1,6 +1,8 @@
 import { after, before, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { Hub, Refused } from '../src/hub.ts'
+import { Redis } from 'ioredis'
+import { RedisKV } from '../src/kv.ts'
 import { MemoryLog, RedisLog, type ChangeLog } from '../src/log.ts'
 import { Actions } from '../src/actions.ts'
 import { nextFor, type Card } from '../../shared/work.ts'
@@ -15,6 +17,23 @@ const logs: [string, (space: string) => ChangeLog | undefined][] = [
   ['memory', () => new MemoryLog()],
   ['redis', (space) => (redis ? new RedisLog(redis.url, space) : undefined)],
 ]
+
+describe('the hub’s keys, on Redis', () => {
+  it('gives a key to one taker, and honours what it keeps', async (t) => {
+    if (!redis) return t.skip('no redis-server here')
+    const client = new Redis(redis.url)
+    try {
+      const kv = new RedisKV(client, 'take-test')
+      await kv.set('code', 'one')
+      const taken = await Promise.all([kv.take('code'), kv.take('code'), kv.take('code')])
+      assert.deepEqual(taken.filter(Boolean), ['one'])
+      assert.equal(await kv.get('code'), undefined)
+      assert.equal(await kv.take('never-there'), undefined)
+    } finally {
+      client.disconnect()
+    }
+  })
+})
 
 describe('a change that can’t be applied', () => {
   const folder = (id: string) => ({ type: 'folder.put', folder: { id, binderId: 'b1', name: id } }) as Change

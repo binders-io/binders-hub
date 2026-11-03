@@ -11,6 +11,7 @@ import { binderRoutes } from './routes/binders.ts'
 import { makeContext } from './routes/context.ts'
 import { githubRoutes } from './routes/github.ts'
 import { machineRoutes } from './routes/machines.ts'
+import { oauthRoutes } from './routes/oauth.ts'
 import { personalRoutes } from './routes/personal.ts'
 import { signInRoutes } from './routes/signIn.ts'
 import { stateRoutes } from './routes/state.ts'
@@ -67,6 +68,14 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
   const app = Fastify({ ...(options.logger ? { loggerInstance: options.logger } : { logger: false }), logController: new LogController({ disableRequestLogging: !options.logRequests }), bodyLimit: 4 * 1024 * 1024, trustProxy: trustedProxies() })
   await app.register(websocket)
   await app.register(cookie)
+  // OAuth's token, registration and revocation requests are form-encoded, as the spec says.
+  app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_request, body, done) => {
+    try {
+      done(null, Object.fromEntries(new URLSearchParams(body as string)))
+    } catch (error) {
+      done(error as Error)
+    }
+  })
   await app.register(helmet, {
     // Off unless the hub is on https: told once, a browser wouldn't reach it on plain http again.
     strictTransportSecurity: secure ? undefined : false,
@@ -112,6 +121,8 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
     if (bearer) {
       const person = await auth.personFor(bearer)
       if (!person) return reply.code(401).header('www-authenticate', 'Bearer realm="binders"').send({ error: 'This hub doesn’t know that token. Sign in again.' })
+      // An MCP client's token is for its binder's MCP tools, not for everything the person can do.
+      if (person.kind === 'mcp') return reply.code(403).send({ error: 'That token is for MCP only.' })
       request.user = person.user
       signedThrough = { space: person.space, token: person.token }
       request.personToken = person.id
@@ -160,6 +171,7 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
   await githubRoutes(app, context)
   await personalRoutes(app, context)
   await machineRoutes(app, context)
+  await oauthRoutes(app, context)
   await webRoutes(app, context)
 
   return app

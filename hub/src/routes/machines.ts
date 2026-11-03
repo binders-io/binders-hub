@@ -1,14 +1,15 @@
 import { readFile } from 'node:fs/promises'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { mcpServer } from '../mcp.ts'
+import { personServer } from '../mcpPerson.ts'
 import { verify } from '../webhooks.ts'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { Context } from './context.ts'
 
-// What machines reach: the runner and its installer, agents over MCP, and GitHub's webhooks.
+// What machines reach: the runner and its installer, agents and people over MCP, and GitHub's webhooks.
 
 export async function machineRoutes(app: FastifyInstance, context: Context) {
-  const { spaces, auth, options, backFor } = context
+  const { spaces, auth, options, backFor, isAdmin } = context
   // The runner, as one file to download: code, no secrets, so no sign-in needed.
   app.get('/runner/binders-runner.mjs', async (_request, reply) => {
     try {
@@ -23,18 +24,20 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
   // sets an agent up in the background: curl -fsSL <hub>/install | sh -s -- add --token bnd_… --workspace ~/code/app
   app.get('/install', async (_request, reply) => reply.type('text/plain; charset=utf-8').header('cache-control', 'no-cache').send(installer(options.publicUrl)))
 
-  // MCP for agents ---------------------------------------------------------------------------------------------------
+  // MCP for agents and people ----------------------------------------------------------------------------------------
 
-  const mcp = async (request: FastifyRequest, reply: FastifyReply) => {
-    const token = /^Bearer\s+(.+)$/i.exec(request.headers.authorization ?? '')?.[1]
-    const agent = await auth.agentFor(token)
-    // A token made before the hub held several Binders is the first's.
-    const space = agent && spaces.get(agent.space ?? spaces.list()[0]?.id ?? '')
-    const agentId = agent?.id
-    if (!agentId || !space || !space.hub.state.agents.some((a) => a.id === agentId && !a.revoked)) {
-      return reply.code(401).header('www-authenticate', 'Bearer realm="binders"').send({ jsonrpc: '2.0', error: { code: -32001, message: 'This hub doesn’t know that token. Set the agent up in Binders’ Agents page and use the token it shows.' }, id: null })
-    }
-    const server = mcpServer(space.hub, space.actions, agentId, { issueToken: (id) => auth.issueAgentToken(id, space.id), publicUrl: options.publicUrl })
+  /** The binder a request names, for /<binder>/mcp: the one its path says, or none for the hub's /mcp. */
+  const namedSpace = (request: FastifyRequest) => (request.params as { space?: string }).space
+
+  /** A 401 that tells an MCP client where to sign in: the hub's OAuth server, for a person token. */
+  const unauthorized = (reply: FastifyReply, request: FastifyRequest) => {
+    const named = namedSpace(request)
+    const metadata = new URL(`/.well-known/oauth-protected-resource${named ? `/${named}/mcp` : ''}`, options.publicUrl).toString()
+    return reply.code(401).header('www-authenticate', `Bearer realm="binders", resource_metadata="${metadata}"`).send({ jsonrpc: '2.0', error: { code: -32001, message: 'This hub doesn’t know that token. An agent uses the token from its Agents page; a person connects with OAuth, through the browser.' }, id: null })
+  }
+
+  /** Runs one MCP server for this request: stateless, a server per call. */
+  const serve = async (request: FastifyRequest, reply: FastifyReply, server: ReturnType<typeof mcpServer>) => {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
     reply.hijack()
     reply.raw.on('close', () => {
@@ -44,9 +47,48 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
     await server.connect(transport)
     await transport.handleRequest(request.raw, reply.raw, request.body)
   }
+
+  const mcp = async (request: FastifyRequest, reply: FastifyReply) => {
+    const token = /^Bearer\s+(.+)$/i.exec(request.headers.authorization ?? '')?.[1]
+    const named = namedSpace(request)
+    // An agent's token: the runner's, for work it takes. A token made before the hub held several Binders is the first's.
+    const agent = await auth.agentFor(token)
+    if (agent) {
+      const space = spaces.get(agent.space ?? spaces.list()[0]?.id ?? '')
+      if (!space || (named && named !== space.id) || !space.hub.state.agents.some((a) => a.id === agent.id && !a.revoked)) return unauthorized(reply, request)
+      return serve(request, reply, mcpServer(space.hub, space.actions, agent.id, { issueToken: (id) => auth.issueAgentToken(id, space.id), publicUrl: options.publicUrl }))
+    }
+    // A person's token: signed in through OAuth, acting as themselves in the binder the connection is for.
+    const person = await auth.personFor(token)
+    // An app's token is for /api: only a token made for MCP is a connection to a binder.
+    if (!person || person.kind !== 'mcp') return unauthorized(reply, request)
+    const mine = spaces.forPerson(person.user.login, isAdmin(person.user.login))
+    // A connection is for the one binder the person allowed. It never moves to another, as every binder's log calls its
+    // binder the same: a client that was removed from this one would write in the next one without knowing.
+    const refused = (message: string) => reply.code(403).send({ jsonrpc: '2.0', error: { code: -32002, message }, id: null })
+    if (named && named !== person.space) return refused(`This connection is for another binder. To use ${named}, connect to its address and allow it.`)
+    const target = mine.find((s) => s.info.id === person.space)
+    if (!target) return refused(`@${person.user.login} isn’t in the binder this connection is for.`)
+    const space = spaces.get(target.info.id)
+    if (!space) return unauthorized(reply, request)
+    // The binder as its log has it: a space's one binder is "main" (or "notes" for a personal one), whatever its address.
+    // A person's connection is for this binder, so the tools go by its id and name, as the board does.
+    const binder = space.hub.state.binders[0]
+    return serve(request, reply, personServer(space.hub, space.actions, {
+      binder: { id: binder?.id ?? target.info.id, name: binder?.name ?? target.info.name },
+      binders: [{ id: binder?.id ?? target.info.id, name: binder?.name ?? target.info.name, role: target.role }],
+      login: person.user.login,
+      name: person.user.name,
+    }))
+  }
+  // The hub's own, for an agent's token and a person's; and a binder's, for a person connecting to one binder.
   app.post('/mcp', mcp)
-  app.get('/mcp', async (_request, reply) => reply.code(405).header('allow', 'POST').send({ error: 'This MCP server answers POST.' }))
-  app.delete('/mcp', async (_request, reply) => reply.code(405).header('allow', 'POST').send({ error: 'No sessions to end.' }))
+  app.post('/:space/mcp', mcp)
+  const notHere = async (_request: FastifyRequest, reply: FastifyReply) => reply.code(405).header('allow', 'POST').send({ error: 'This MCP server answers POST.' })
+  app.get('/mcp', notHere)
+  app.delete('/mcp', notHere)
+  app.get('/:space/mcp', notHere)
+  app.delete('/:space/mcp', notHere)
 
   // GitHub's webhooks, with the raw body for the signature -------------------------------------------------------------
 

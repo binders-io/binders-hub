@@ -163,6 +163,17 @@ export async function signInRoutes(app: FastifyInstance, context: Context) {
       if (via === 'app') await spaces.get(space)?.github.claimMaker(user.login)
       const session = await auth.startSession(user, token, space, identity)
       setCookie(reply, sessionCookie, session.id, session.maxAge, secure)
+      // An MCP client's sign-in: back to the authorize page it came from, to allow it.
+      const back = request.cookies.binders_oauth_return
+      if (back) {
+        setCookie(reply, 'binders_oauth_return', '', 0, secure)
+        try {
+          const here = new URL(Buffer.from(back, 'base64url').toString('utf8'))
+          if (here.pathname === '/oauth/authorize') return reply.redirect(here.toString())
+        } catch {
+          // Not a link this hub made: the Binder it came from, below.
+        }
+      }
       // Started by an app: back to it with a token of its own.
       const pending = readPendingApp(request.cookies[appCookie])
       if (pending) {
@@ -209,6 +220,18 @@ export async function signInRoutes(app: FastifyInstance, context: Context) {
       }),
     }
   })
+  // A token for a tool that can't sign in with OAuth (an MCP client without it, say): shown once, and it lasts until
+  // it's stopped here. A person's, not an agent's: replacing an agent's token doesn't touch it. It's for the Binder the
+  // request names, and only a person in a browser makes one: a token can't make itself a longer-lasting one.
+  app.post('/api/tokens', async (request, reply) => {
+    if (request.personToken) return reply.code(403).send({ error: 'Make this token in the web app, signed in.' })
+    if (!request.space) return reply.code(403).send({ error: 'You’re not in a Binder on this hub yet.' })
+    const body = request.body as { app?: string } | undefined
+    const app = (body?.app ?? '').trim().slice(0, 100) || 'A tool'
+    const { token, id } = await auth.issuePersonToken(request.user!, app, undefined, request.space.id, 'mcp')
+    return { token, id }
+  })
+
   app.delete('/api/tokens/:id', async (request, reply) => {
     try {
       await auth.revokePersonToken(request.user!.login, (request.params as { id: string }).id)

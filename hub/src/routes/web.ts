@@ -17,7 +17,7 @@ export async function webRoutes(app: FastifyInstance, context: Context) {
     app.setNotFoundHandler(async (request, reply) => {
       let path = ''
       try { path = decodeURIComponent(request.url.split('?')[0]) } catch { /* not a path */ }
-      if ((request.method !== 'GET' && request.method !== 'HEAD') || /^\/(api|auth|setup|mcp|webhooks|runner)(\/|$)/.test(path)) return reply.code(404).send({ error: 'Not found.' })
+      if ((request.method !== 'GET' && request.method !== 'HEAD') || /^\/(api|auth|oauth|setup|mcp|webhooks|runner|\.well-known)(\/|$)/.test(path)) return reply.code(404).send({ error: 'Not found.' })
       const file = resolve(root, `.${path}`)
       // Vite names what's in assets/ by its contents, so those never change; everything else is checked each time.
       if (file.startsWith(root + sep) && await isFile(file)) return reply.header('cache-control', path.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache').sendFile(file.slice(root.length + 1))
