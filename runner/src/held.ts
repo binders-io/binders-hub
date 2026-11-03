@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { connect, type Socket } from 'node:net'
 import { uptime } from 'node:os'
 import { join } from 'node:path'
@@ -407,6 +407,20 @@ export class Held {
   /** Its last words on stderr. */
   async errors(length = 2000) {
     return (await readFile(join(this.home, 'err'), 'utf8').catch(() => '')).slice(-length)
+  }
+
+  /** The end of what it has written: in a pty, its errors too, as it has no stderr of its own. */
+  async tail(length = 4000) {
+    const file = await open(join(this.home, 'out')).catch(() => undefined)
+    if (!file) return ''
+    try {
+      const { size } = await file.stat()
+      const from = Math.max(0, size - length)
+      const { buffer, bytesRead } = await file.read(Buffer.alloc(size - from), 0, size - from, from)
+      return buffer.subarray(0, bytesRead).toString('utf8')
+    } finally {
+      await file.close()
+    }
   }
 
   /** How far the output had been read and passed on, for the next runner. */

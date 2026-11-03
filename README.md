@@ -225,7 +225,7 @@ Where an organization manages Claude Code's MCP servers (a `managed-mcp.json` in
 on a Mac, `/etc/claude-code/` on Linux, `C:\ProgramData\ClaudeCode\` on Windows), Claude Code refuses any other server,
 the one the runner adds for each run included. The runner sees the file (or Claude Code saying so) and works without
 Binders' MCP tools: Claude Code gets the plain prompts, the runner reports its steps and answers, and the Agents page says
-so. To give it Binders' tools back, an admin adds the hub to the managed config:
+so. (A live terminal goes through the `binders` command instead, which needs no MCP server.) To give it Binders' tools back, an admin adds the hub to the managed config:
 
 ```json
 { "mcpServers": { "binders_hub": { "type": "http", "url": "https://hub.example.com/mcp", "headers": { "Authorization": "Bearer ${BINDERS_TOKEN}" } } } }

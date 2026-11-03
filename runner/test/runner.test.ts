@@ -1540,6 +1540,81 @@ if (mode === 'taken-over') {
     await set.close()
   })
 
+  it('opens a person’s terminal without Binders’ server when the agent uses the binders command, or a managed config would refuse it', async () => {
+    const set = await setUp()
+    process.env.BINDERS_HOME = await mkdtemp(join(tmpdir(), 'bl-'))
+    const bin = join(set.dir, 'bin')
+    execFileSync('mkdir', ['-p', bin])
+    await writeFile(join(bin, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    const managed = join(set.dir, 'managed-mcp.json')
+    const path = process.env.PATH
+    process.env.PATH = `${bin}:${path}`
+    try {
+      const opened = async (name: string, extra: object, managedMcp: string) => {
+        const made = await set.actions.putAgent('you', { name, runner: { tool: 'claude', access: 'full', timeoutMinutes: 1, worktrees: false, ...extra } })
+        const runner = new Runner({ hubUrl: set.url, token: await set.issued(made.id), workspace: set.dir, log: () => {}, waitSeconds: 1, managedMcp })
+        await runner.connect()
+        const started = await (runner as unknown as { terminal(sid: string, by: string): Promise<{ args: string[]; done(): Promise<void> }> }).terminal(`t${name}`, 'you')
+        await started.done()
+        return started.args
+      }
+      const none = join(set.dir, 'none.json')
+      assert.ok((await opened('plain', {}, none)).includes('--mcp-config'))
+      assert.ok(!(await opened('command', { cli: true }, none)).includes('--mcp-config'))
+      await writeFile(managed, '{"mcpServers":{}}')
+      assert.ok(!(await opened('managed', {}, managed)).includes('--mcp-config'))
+    } finally {
+      process.env.PATH = path
+      await set.close()
+    }
+  })
+
+  // Claude Code under an enterprise MCP config, in a terminal: its refusal on the screen, and no stderr to find it in.
+  for (const after of ['exits', 'stays open']) {
+    it(`starts a live run again through the binders command when Claude Code refuses Binders’ server and ${after}`, async () => {
+      const set = await setUp()
+      process.env.BINDERS_HOME = await mkdtemp(join(tmpdir(), 'bl-'))
+      const bin = join(set.dir, 'bin')
+      execFileSync('mkdir', ['-p', bin])
+      const seen = join(set.dir, 'claude-runs')
+      await writeFile(join(bin, 'claude'), `#!/usr/bin/env node
+const { appendFileSync } = require('node:fs')
+const { execFileSync } = require('node:child_process')
+const args = process.argv.slice(2)
+if (!args.includes('--settings')) process.exit(0)
+appendFileSync(${JSON.stringify(seen)}, JSON.stringify({ args, tty: !!process.stdin.isTTY, stderr: !!process.stderr.isTTY }) + '\\n')
+if (args.includes('--mcp-config')) {
+  console.error('Error: You cannot dynamically configure MCP servers when an enterprise MCP config is present')
+  if (${JSON.stringify(after)} === 'exits') process.exit(1)
+  setTimeout(() => process.exit(0), 30000)
+} else {
+  execFileSync('binders', ['done', 'Done through the binders command.'])
+}
+`, { mode: 0o755 })
+      const path = process.env.PATH
+      process.env.PATH = `${bin}:${path}`
+      try {
+        const made = await set.actions.putAgent('you', { name: 'Refused live', runner: { tool: 'claude', access: 'full', timeoutMinutes: 1, worktrees: false, held: true, live: true } })
+        const job = await set.card('Add a health check', made.id)
+        await new Runner({ hubUrl: set.url, token: await set.issued(made.id), workspace: set.dir, log: () => {}, waitSeconds: 1, managedMcp: join(set.dir, 'none.json') }).start(true)
+        const runs = (await readFile(seen, 'utf8')).trim().split('\n').map((l) => JSON.parse(l) as { args: string[]; tty: boolean; stderr: boolean })
+        assert.equal(runs.length, 2)
+        assert.ok(runs[0].stderr, 'its error went to the terminal')
+        assert.ok(runs[0].args.includes('--mcp-config'))
+        assert.ok(!runs[1].args.includes('--mcp-config'))
+        assert.ok(runs[1].args.includes('--allowedTools=Bash(binders:*)'))
+        assert.ok(runs[1].tty, 'still a live terminal')
+        assert.equal(set.hub.state.agents.find((a) => a.id === made.id)!.runnerSeen?.enterpriseMcp, true)
+        const done = set.hub.state.cards.find((c) => c.id === job.id)!
+        assert.equal(done.stage, 'live')
+        assert.ok(!done.activity.some((a) => a.kind === 'released'))
+      } finally {
+        process.env.PATH = path
+        await set.close()
+      }
+    })
+  }
+
   it('reminds a live run that stops with its card unfinished, then ends it and puts the card back', async () => {
     const set = await setUpAgent('quit-live', { live: true })
     await set.newRunner().start(true)

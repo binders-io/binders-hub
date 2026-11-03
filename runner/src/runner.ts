@@ -15,7 +15,7 @@ import { blastRadius, blastSummary } from './blast.ts'
 import { behindBy, briefCheckout, briefDue, briefPrompt, briefSection, changesSince, type BriefJSON, type BriefRead } from './briefs.ts'
 import type { BlastRadius, Effort } from '../../shared/changeSet.ts'
 import { runnerVersion, toolInfo, tools } from '../../shared/agents.ts'
-import { Terminals, type Started } from './terminal.ts'
+import { plainText, Terminals, type Started } from './terminal.ts'
 import { briefMost, defaultRunner, type RunnerSettings } from '../../shared/work.ts'
 
 // The Binders runner: stays connected to the hub as one agent, so work reaches it within a second, and for each card
@@ -1081,6 +1081,8 @@ export class Runner {
   }
 
   private async workIn(card: CardJSON, settings: RunnerSettings, tool: ReturnType<typeof toolInfo>, dir: string, githubEnv: Record<string, string>, how: { adopt?: Held; github?: string } = {}): Promise<'left' | void> {
+    // A live terminal under an enterprise MCP config that refuses Binders' server: the binders command needs no server.
+    if (this.enterpriseMcp && settings.live && settings.held && settings.tool === 'claude' && canHold()) settings = { ...settings, cli: true }
     // With Binders' tools, or (a tool without MCP, or an enterprise MCP config here) with the runner reporting for it.
     const mcp = tool.mcp && this.usesMcp(settings)
     // What the team knows about its repo, unless it's carrying on in a session that has it already.
@@ -1637,6 +1639,7 @@ export class Runner {
     let lost = false
     let output = ''
     let errors = ''
+    let refusedOnScreen = false
     let timedOut = false
     // An agent that says nothing for a long while is stuck (a model it can't reach, a prompt waiting in its own app):
     // stopped, so its card, debrief or Challenge says so rather than sitting at working for its whole time limit.
@@ -1694,7 +1697,18 @@ export class Runner {
             timedOut = true
             stop(`It ran past its ${minutes}-minute limit: stopping it.`)
           }, Math.max(1000, startedAt + minutes * 60_000 - Date.now()))
+          // In a terminal, Claude Code refusing Binders' MCP server is on the screen, with no stderr to find it in. It says
+          // so as it starts, before any hook: looked for only then, so an agent quoting it later isn't taken for it.
+          let hooked = false
+          const refused = async () => {
+            if (refusedOnScreen || hooked || !config.path || settings.tool !== 'claude' || Date.now() - startedAt > 60_000) return false
+            refusedOnScreen = refusedByManagedMcp(plainText(await watched.tail()).replace(/\s+/g, ' '))
+            return refusedOnScreen
+          }
           const every = setInterval(() => {
+            void refused().then((now) => {
+              if (now) stop('Claude Code refused Binders’ MCP server for an enterprise MCP config: stopping its run.')
+            })
             // A person at its terminal isn't timed out on: they may be reading, or typing.
             if (!idle && Date.now() - heard > idleMinutes * 60_000 && !terminals.personAt(sid)) {
               idle = true
@@ -1711,7 +1725,7 @@ export class Runner {
             this.liveRuns.delete(key)
             done(result)
           }
-          this.liveRuns.set(key, { reader, sid, heard: () => { heard = Date.now() }, end: () => stop(`“${key}”: its turn is over, and so is its run.`) })
+          this.liveRuns.set(key, { reader, sid, heard: () => { heard = Date.now(); hooked = true }, end: () => stop(`“${key}”: its turn is over, and so is its run.`) })
           this.held.set(key, watched)
           this.leaveRuns.set(key, () => {
             left = true
@@ -1722,6 +1736,7 @@ export class Runner {
             void (async () => {
               const ended = await watched.exit()
               errors = await watched.errors()
+              await refused()
               if (!ended) {
                 lost = true
                 await watched.stopOrphan()
@@ -1895,7 +1910,7 @@ export class Runner {
       if (this.client) await this.call('update_profile', { runner: this.profile(this.parallel) }).catch(() => undefined)
     }
     // Only what Claude Code itself says went wrong: never the agent's own words, which may quote that error.
-    const managedMcp = settings.tool === 'claude' && !!config.path && !!exit.code && refusedByManagedMcp(`${errors}\n${reader.summary.error ?? ''}`)
+    const managedMcp = refusedOnScreen || settings.tool === 'claude' && !!config.path && !!exit.code && refusedByManagedMcp(`${errors}\n${reader.summary.error ?? ''}`)
     if (managedMcp) await this.enterpriseMcpFound('Claude Code refused Binders’ MCP server for an enterprise MCP config')
     return { reader, exit, errors, output, timedOut, idle, idleMinutes, cutOff: undefined as string | undefined, managedMcp, left, lost }
   }
@@ -2338,7 +2353,10 @@ export class Runner {
     const tool = toolInfo(settings.tool)
     if (tool.noTerminal) throw new Error(tool.noTerminal)
     const dir = await this.directoryFor({ id: sid, title: `${tool.name} for ${by}` } as CardJSON, settings)
-    const config = await this.mcpConfig(settings)
+    // Without Binders' server when the agent goes through the binders command, or where an enterprise MCP config that
+    // doesn't list it is here: Claude Code would refuse it and end, and a terminal with no way to run it again is no use.
+    const refused = settings.tool === 'claude' && !this.managedAllowed && existsSync(this.options.managedMcp ?? managedMcpPath())
+    const config: Awaited<ReturnType<Runner['mcpConfig']>> = settings.cli || refused ? { env: {} } : await this.mcpConfig(settings)
     const built = this.interactiveFor(settings, dir, config.path, config.quiet)
     const command = await whereIs(built.command)
     if (!command) throw new Error(`${tool.name} isn’t installed on this machine (no “${built.command}” on the PATH or in the usual places).`)
