@@ -34,6 +34,21 @@ export interface RunnerSettings {
   commitAs?: 'owner' | 'app'
   /** For a custom tool: the command, with {prompt}, {dir} and {mcp} filled in. */
   command?: string
+  /**
+   * An experiment: its cards run in holders of their own, so they carry on while its runner stops, updates or crashes,
+   * and pick up in the same conversation if the machine restarts. Needs python3 on the machine, as terminals do.
+   */
+  held?: boolean
+  /**
+   * An experiment: it works its cards through a binders command on its PATH instead of MCP, with no config and no
+   * token in its environment, and hears what people write without being stopped.
+   */
+  cli?: boolean
+  /**
+   * An experiment, with held runs: each card runs as a live terminal its owner can watch and take over, the tool in its
+   * own interface, with what it does reaching the card through the tool's hooks.
+   */
+  live?: boolean
   /** Where the code is on the machine the runner runs on, used when it isn't given --workspace. */
   workspace?: string
   /** How many cards it works on at once, each in a worktree of its own (one, without worktrees). */
@@ -141,6 +156,8 @@ export interface Card {
   /** The agent it's meant for, before anyone holds it. */
   meantFor?: string
   waitsFor: string[]
+  /** The card this is a part of, when it was split from one for a swarm of agents. */
+  parent?: string
   /** Its GitHub issue, once the binder's repo has one for it. */
   issue?: { repo: string; number: number; url: string }
   prId?: string
@@ -619,12 +636,26 @@ export function resumeFor(state: WorkState, agent: Agent, busy: string[] = []): 
  * The next card an agent could take, waiting on nothing unfinished: one a person meant for it, wherever it is, or one open
  * to anyone in its binders and repos.
  */
+/**
+ * What moving a card by hand changes, or undefined for a move the board doesn't allow: only an agent starts work, and
+ * only a blocked card it holds goes back to working. Blocked, working, review and done keep its agent; anywhere else
+ * takes it back.
+ */
+export function handMove(card: Pick<Card, 'stage' | 'agentId'>, stage: Stage): Partial<Card> | undefined {
+  if (card.stage === stage) return undefined
+  if (stage === 'working' && !(card.stage === 'blocked' && card.agentId)) return undefined
+  const keep = stage === 'review' || stage === 'live' || stage === 'blocked' || stage === 'working'
+  return { stage, needsYou: undefined, doing: undefined, ...(keep ? {} : { agentId: undefined, progress: undefined }) }
+}
+
 export function nextFor(state: WorkState & { binders: { id: string; repo?: string }[] }, agent: Agent, busy: string[] = []): Card | undefined {
   const done = new Set(state.cards.filter((c) => c.stage === 'review' || c.stage === 'live').map((c) => c.id))
   // A wait for a card that isn't on the board (deleted, or never a card's id) holds nothing up.
   const there = new Set(state.cards.map((c) => c.id))
+  // A card split into parts isn't offered whole, however far along the parts are: it follows them.
+  const split = new Set(state.cards.flatMap((c) => (c.parent ? [c.parent] : [])))
   return state.cards
-    .filter((c) => c.stage === 'ready' && !c.agentId && !busy.includes(c.id))
+    .filter((c) => c.stage === 'ready' && !c.agentId && !busy.includes(c.id) && !split.has(c.id))
     .filter((c) => mayTake(state, agent, c))
     .filter((c) => c.waitsFor.every((w) => done.has(w) || !there.has(w)))
     .sort((a, b) => Number(b.meantFor === agent.id) - Number(a.meantFor === agent.id) || a.createdAt.localeCompare(b.createdAt))[0]

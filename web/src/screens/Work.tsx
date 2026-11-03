@@ -141,6 +141,23 @@ export function Work({ id }: { id: string }) {
             {pull ? <RepoTag repo={pull.repo} title={`Its pull request is in ${pull.repo}`} /> : !card.issue && binder?.repo && <RepoTag repo={binder.repo} />}
             <span className={`stage-pill ${stageTone[card.stage]}`}><i />{stages.find((s) => s.id === card.stage)?.title}</span>
             <span className="size-tag">{card.size}</span>
+            {card.agentId && (state.terminals?.[card.agentId]?.sessions ?? []).filter((s) => s.card === card.id).map((s) => (
+              <a key={s.sid} className="faint" href={href({ screen: 'terminal', id: card.agentId!, sid: s.sid })} title={s.dir}>{s.run ? 'Watch or take over its terminal' : `Its terminal: ${s.name ?? s.tool}`}</a>
+            ))}
+            {(() => {
+              const parts = state.cards.filter((c) => c.parent === card.id)
+              const parent = card.parent ? state.cards.find((c) => c.id === card.parent) : undefined
+              return (
+                <>
+                  {parts.length > 0 && (
+                    <span className="faint" title={parts.map((p) => `${p.title} — ${p.stage}`).join('\n')}>
+                      Swarm of {parts.length} part{parts.length === 1 ? '' : 's'}
+                    </span>
+                  )}
+                  {parent && <span className="faint">Part of <a href={href({ screen: 'work', id: parent.id })}>{parent.title}</a></span>}
+                </>
+              )
+            })()}
           </div>
           <h1>{card.title}</h1>
         </div>

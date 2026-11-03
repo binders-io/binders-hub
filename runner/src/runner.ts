@@ -2,11 +2,14 @@ import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir, hostname } from 'node:os'
-import { basename, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { randomBytes } from 'node:crypto'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { Desk, framed, writeShim, type HookReply } from './desk.ts'
+import { canHold, Held, heldIn, type HeldMeta } from './held.ts'
 import { mcpServer, StreamReader } from './stream.ts'
 import { blastRadius, blastSummary } from './blast.ts'
 import { behindBy, briefCheckout, briefDue, briefPrompt, briefSection, changesSince, type BriefJSON, type BriefRead } from './briefs.ts'
@@ -21,6 +24,17 @@ import { briefMost, defaultRunner, type RunnerSettings } from '../../shared/work
 // too long puts it back with why. An agent that asks a person and stops is started again on that card with the answer.
 
 const run = promisify(execFile)
+
+/** Claude Code's hooks for a run: what people write reaches it after each tool call, and at the end of its turn. */
+function hearingHooks(binders: string, live = false) {
+  const command = (which: string) => ({ type: 'command', command: `'${binders.replace(/'/g, `'\\''`)}' hook ${which}` })
+  return JSON.stringify({ hooks: {
+    PostToolUse: [{ matcher: '*', hooks: [command('post-tool')] }],
+    Stop: [{ hooks: [command('stop')] }],
+    // With no stream to read, these are how a live run says who it is and what it's waiting on.
+    ...(live ? { SessionStart: [{ hooks: [command('session-start')] }], Notification: [{ matcher: 'permission_prompt', hooks: [command('notification')] }] } : {}),
+  } })
+}
 
 // The runner's files are never in the system's temp folder, which hardened machines lock down and agents' own sandboxes
 // may not reach. What the runner alone (or the agent's tool) reads goes in ~/.binders (BINDERS_HOME); what the agent
@@ -276,6 +290,8 @@ export interface RunnerOptions {
   log?: (line: string) => void
   /** How long each wait for work lasts, in seconds (at most 50). */
   waitSeconds?: number
+  /** How long an agent that hears people while it works has to take what they wrote, before it's stopped and told. */
+  hearWithinMs?: number
   /** Whether --workspace was given; if not, the agent's runner settings may name it. */
   workspaceGiven?: boolean
   /** Where cards' worktrees go (~/.binders/worktrees). */
@@ -498,6 +514,149 @@ export class Runner {
   private children = new Map<string, ChildProcess>()
   /** The agent's session for each card and chat, to carry on with it after a person answers. */
   private sessions = new Map<string, string>()
+  /** Cards running in holders of their own, which can outlast this runner. */
+  private held = new Map<string, Held>()
+  /** How each stops being watched while its program carries on. */
+  private leaveRuns = new Map<string, () => void>()
+  /** Stopping, and leaving what's held running for the next runner. */
+  private leaving = false
+  private heldRoot() {
+    return join(runnerHome(), 'held', (this.agentId ?? 'agent').replace(/[^\w-]/g, '').slice(0, 12))
+  }
+  /** The agent's binders command, and what it asks: about the run's own card, and nothing else. */
+  private desk?: Desk
+  private inboxes = new Map<string, { by: string; text: string }[]>()
+  private agentBin = ''
+  private async openDesk() {
+    if (!this.desk) this.desk = new Desk(join(runnerHome(), 'held', `${(this.agentId ?? 'agent').replace(/[^\w-]/g, '').slice(0, 12)}.desk`), (run, verb, args) => this.deskAsked(run.card, verb, args))
+    await this.desk.listen()
+    const self = fileURLToPath(import.meta.url)
+    this.agentBin = dirname(await writeShim(join(runnerHome(), 'agent-bin'), process.execPath, basename(self) === 'runner.ts' ? join(dirname(self), 'main.ts') : self))
+    return this.desk
+  }
+  private async deskAsked(card: string, verb: string, args: Record<string, unknown>) {
+    const text = String(args.text ?? '').trim()
+    const words = (what: string) => {
+      if (!text) throw new Error(`What ${what}? Give it after the command.`)
+      return text
+    }
+    const waiting = () => this.inboxes.get(card)?.length || undefined
+    const result = await (async (): Promise<unknown> => {
+      switch (verb) {
+        case 'card': return this.call('get_task', { id: card })
+        case 'inbox': return this.takeInbox(card)
+        case 'progress': {
+          const of = Number(args.of)
+          return this.call('report_progress', { id: card, doing: words('are you doing'), ...(of >= 0 && of <= 1 ? { progress: of } : {}) }).then(() => 'Noted.')
+        }
+        case 'comment': return this.call('comment_task', { id: card, text: words('do you want to say') }).then(() => 'Said.')
+        case 'ask': return this.call('ask', { id: card, question: words('do you want to ask') }).then(() => 'Asked. Stop now: you’ll be started again with the answer.')
+        case 'done': return this.call('complete_task', { id: card, summary: words('did you do'), ...(args.pr ? { pull_request: String(args.pr) } : {}) }).then(() => 'Done.')
+        case 'release': return this.call('release_task', { id: card, reason: words('is the reason') }).then(() => 'Given back.')
+        case 'note': return this.call('get_note', { id: String(args.id ?? '') })
+        case 'note-append': return this.call('append_to_note', { id: String(args.id ?? ''), text: words('should it add') }).then(() => 'Added.')
+        case 'lesson': return this.call<CardJSON>('get_task', { id: card }).then((now) => this.call('add_repo_lesson', { repo: now.repo ?? '', lesson: words('is the lesson') })).then(() => 'Kept.')
+        case 'hook': return this.heardHook(card, String(args.which ?? ''), args.payload as Record<string, unknown> | undefined)
+        case 'term-new': return this.newAgentTerminal(card, args)
+        case 'term-ls': return (await this.agentTerminals()).forCard(card).map((t) => ({ name: t.name, dir: t.dir, startedAt: t.startedAt }))
+        case 'term-read': return (await this.agentTerminals()).readFor(card, String(args.name ?? ''), Number(args.lines) || 100)
+        case 'term-send': await (await this.agentTerminals()).typeFor(card, String(args.name ?? ''), words('should it type')); return 'Typed.'
+        case 'term-kill': await (await this.agentTerminals()).killFor(card, String(args.name ?? '')); return 'Stopped.'
+        case 'term-wait': return (await this.agentTerminals()).waitFor(card, String(args.name ?? ''), args.output ? String(args.output) : undefined, Math.min(600, Number(args.seconds) || 180))
+        default: throw new Error(`binders has no ${verb.replace(/^term-/, 'term ')}: see binders help.`)
+      }
+    })()
+    return { result, waiting: verb === 'inbox' || verb === 'hook' ? undefined : waiting() }
+  }
+  /** Each live run's stream of what it did, as the hooks tell it, and how to end it. */
+  private liveRuns = new Map<string, { reader: StreamReader; heard: () => void; end: () => void; sid: string; nudged?: boolean }>()
+  /** A tool's hook: what it did goes on the card, and what people wrote goes back to it. */
+  private async heardHook(card: string, which: string, payload?: Record<string, unknown>): Promise<HookReply> {
+    const live = this.liveRuns.get(card)
+    live?.heard()
+    if (live && which === 'session-start' && typeof payload?.session_id === 'string') live.reader.line(JSON.stringify({ type: 'system', subtype: 'init', session_id: payload.session_id }))
+    if (live && which === 'post-tool' && typeof payload?.tool_name === 'string') {
+      const id = randomBytes(6).toString('hex')
+      const result = payload.tool_response
+      live.reader.line(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: payload.tool_name, input: payload.tool_input ?? {} }] } }))
+      live.reader.line(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: typeof result === 'string' ? result : JSON.stringify(result ?? '').slice(0, 2000) }] } }))
+    }
+    // Waiting on a permission in its own terminal, with nobody there: the card says where to go.
+    if (live && which === 'notification' && payload?.notification_type === 'permission_prompt') {
+      void this.call('report_progress', { id: card, doing: 'Waiting for permission, in its terminal: open it from the card' }).catch(() => {})
+    }
+    const messages = which === 'post-tool' || which === 'stop' ? this.takeInbox(card) : []
+    if (which === 'post-tool') return messages.length ? { context: framed(messages) } : {}
+    if (which !== 'stop') return {}
+    if (messages.length) return { block: framed(messages) }
+    if (!live) return {}
+    // Its turn is over. A card finished, or waiting on a person, ends the run; one that isn't gets one reminder.
+    const now = await this.call<CardJSON>('get_task', { id: card }).catch(() => undefined)
+    if (this.terminals?.personAt(live.sid)) return {}
+    if (!now || now.stage !== 'working' || now.needs_you || live.nudged) {
+      setTimeout(live.end, 200).unref()
+      return {}
+    }
+    live.nudged = true
+    return { block: 'Your Binders card isn’t finished. If it’s done, say so with `binders done` (or complete_task); if you need a person, `binders ask` (or ask); if you can’t do it, `binders release` (or release_task).' }
+  }
+  /** Terminals, for an agent's own: there in any runner, linked to the hub only in one that's staying. */
+  private async agentTerminals() {
+    if (!this.terminals) {
+      this.terminals = new Terminals({ hubUrl: this.options.hubUrl, token: this.options.token, version: runnerVersion, log: (line) => this.log(line), start: (sid, by) => this.terminal(sid, by), heldRoot: () => this.heldRoot(), finished: (meta) => this.terminalFinished(meta) })
+      await this.terminals.start()
+    }
+    return this.terminals
+  }
+  /** The environment a card's run has, for the terminals its agent opens: without the runner's token. */
+  private runEnv = new Map<string, NodeJS.ProcessEnv>()
+  private runDir = new Map<string, string>()
+  private async newAgentTerminal(card: string, args: Record<string, unknown>) {
+    const terminals = await this.agentTerminals()
+    if (terminals.forCard(card).length >= 8) throw new Error('Eight terminals are the most a card can have: binders term kill one first.')
+    const dir = this.runDir.get(card)
+    if (!dir) throw new Error('That card isn’t running here.')
+    // Where it may work: its own folder, or the folders the runner works from. Its tool may reach further; what's on
+    // the card for its team to open stays in the work.
+    const wanted = args.cwd ? resolve(dir, String(args.cwd)) : dir
+    const where = await realpath(wanted).catch(() => { throw new Error(`There’s no folder ${wanted}.`) })
+    const allowed = await Promise.all([dir, this.options.workspace, this.worktreesRoot()].map((path) => realpath(path).catch(() => path)))
+    if (!allowed.some((root) => where === root || where.startsWith(`${root}/`))) throw new Error(`${where} is outside this card’s work: a terminal can open in ${allowed.join(' or ')}.`)
+    const name = String(args.name ?? '').replace(/\s+/g, '-').slice(0, 40) || `t${randomBytes(2).toString('hex')}`
+    if (terminals.forCard(card).some((t) => t.name === name)) throw new Error(`There’s a terminal called ${name} already.`)
+    const command = String(args.command ?? '').trim()
+    const shell = process.env.SHELL || '/bin/sh'
+    const info = await terminals.openFor(card, { sid: `agent-${randomBytes(6).toString('hex')}`, name, tool: command.split(/\s+/)[0] || 'Shell', by: this.name, argv: command ? ['/bin/sh', '-c', command] : [shell], cwd: where, env: { ...(this.runEnv.get(card) ?? process.env), TERM: 'xterm-256color', COLORTERM: 'truecolor' } })
+    return { name: info.name, dir: info.dir }
+  }
+  /** Hands over what people wrote: it's the agent's now, and the card says it got there. */
+  private takeInbox(card: string) {
+    const messages = this.inboxes.get(card) ?? []
+    this.inboxes.delete(card)
+    if (messages.length) {
+      // Told to its holder, so the next runner doesn't hand them over again.
+      const holder = this.held.get(card)
+      if (holder) {
+        holder.meta = { ...holder.meta, before: (holder.meta.before ?? 0) + messages.length }
+        void holder.saveMeta().catch(() => {})
+      }
+      void this.call('report_progress', { id: card, said: `Got ${messages.length === 1 ? 'what you wrote' : `your ${messages.length} messages`}, without stopping.` }).catch(() => {})
+    }
+    return messages
+  }
+  private async loadSessions() {
+    const saved = await readFile(join(this.heldRoot(), 'sessions.json'), 'utf8').catch(() => undefined)
+    if (!saved) return
+    try {
+      for (const [key, session] of Object.entries(JSON.parse(saved) as Record<string, string>)) if (!this.sessions.has(key)) this.sessions.set(key, session)
+    } catch {
+      // Not ours.
+    }
+  }
+  private async saveSessions() {
+    await mkdir(this.heldRoot(), { recursive: true, mode: 0o700 })
+    await writeFile(join(this.heldRoot(), 'sessions.json'), JSON.stringify(Object.fromEntries(this.sessions)), { mode: 0o600 })
+  }
   /** The tool whose models were last told to the hub. */
   private modelsFor?: string
   private log: (line: string) => void
@@ -659,10 +818,20 @@ export class Runner {
     if (!this.client) await this.connect()
     // Terminals its owner opens from the web app, beside the work.
     if (!once && !this.terminals) {
-      this.terminals = new Terminals({ hubUrl: this.options.hubUrl, token: this.options.token, version: runnerVersion, log: (line) => this.log(line), start: (sid, by) => this.terminal(sid, by) })
-      this.terminals.start()
+      this.terminals = new Terminals({ hubUrl: this.options.hubUrl, token: this.options.token, version: runnerVersion, log: (line) => this.log(line), start: (sid, by) => this.terminal(sid, by), heldRoot: () => this.heldRoot(), finished: (meta) => this.terminalFinished(meta) })
+      await this.terminals.start()
     }
     const cards = new Map<string, Promise<void>>()
+    // Cards a runner before this one left running: it carries on watching them.
+    await this.loadSessions()
+    const left = await heldIn(this.heldRoot())
+    if (left.some((holder) => holder.meta.desk)) await this.openDesk()
+    for (const [key, task] of await this.adoptHeld()) cards.set(key, task.finally(() => { cards.delete(key) }))
+    if (once && cards.size) {
+      await Promise.allSettled(cards.values())
+      this.terminals?.stop(true)
+      return
+    }
     const chats = new Map<string, Promise<void>>()
     // Keyed debrief:<card id>, so a debrief of a card this agent is also working isn't taken for the card.
     const debriefs = new Map<string, Promise<void>>()
@@ -678,7 +847,8 @@ export class Runner {
       try {
         const settings = await this.settings()
         // Idle, and the hub hands out a newer runner: this one replaces itself and is started again on it.
-        if ([cards, chats, debriefs, challenges, replying, briefing].every((m) => m.size === 0) && await this.updateIfNewer()) break
+        // Cards in holders don't wait for it: they carry on, and the new runner picks them up.
+        if ([chats, debriefs, challenges, replying, briefing].every((m) => m.size === 0) && [...cards.keys()].every((key) => this.held.has(key)) && await this.updateIfNewer()) break
         // Asked to restart from the Agents page: whatever it's doing.
         if (this.restartWanted) {
           const by = this.restartWanted
@@ -728,10 +898,16 @@ export class Runner {
       into.set(key, task)
       if (once && into === cards) {
         await task
+        this.terminals?.stop(true)
         return
       }
     }
     await Promise.allSettled([...cards.values(), ...chats.values(), ...debriefs.values(), ...challenges.values(), ...replying.values(), ...briefing.values()])
+  }
+
+  /** The terminals on this runner, for what's asked of them directly. */
+  get openTerminals() {
+    return this.terminals
   }
 
   /**
@@ -744,7 +920,7 @@ export class Runner {
     if (!(await this.download(this.latest))) return false
     this.log(`Updating from runner ${runnerVersion} to ${this.latest}: starting again on it.`)
     this.updated = true
-    this.stopped = true
+    this.stop(true)
     return true
   }
 
@@ -782,7 +958,7 @@ export class Runner {
     if (this.latest && this.latest !== runnerVersion) await this.download(this.latest)
     this.stopWhy = `Its runner was restarted by ${by}, so this went back on the board.`
     this.updated = true
-    this.stop()
+    this.stop(true)
     return true
   }
 
@@ -793,10 +969,48 @@ export class Runner {
   /** Why its runs stopped, when it stopped them itself: said on what they were doing. */
   private stopWhy?: string
 
-  stop() {
+  /** Stops it. Told to leave what's held, those carry on for the next runner; otherwise they stop too. */
+  stop(leaveHeld = false) {
     this.stopped = true
-    this.terminals?.stop()
+    this.leaving = this.leaving || leaveHeld
+    this.terminals?.stop(leaveHeld)
+    this.desk?.close()
     for (const child of this.children.values()) stopTree(child, 'SIGTERM')
+    if (leaveHeld) for (const leave of [...this.leaveRuns.values()]) leave()
+    else for (const holder of this.held.values()) void holder.signal('SIGTERM')
+  }
+
+  /** The cards a runner before this one left in holders, watched again: its own, that is, and still in hand. */
+  private async adoptHeld() {
+    const tasks = new Map<string, Promise<void>>()
+    for (const holder of await heldIn(this.heldRoot())) {
+      if (holder.meta.kind !== 'card' || this.held.has(holder.meta.key)) continue
+      const card = await this.call<CardJSON>('get_task', { id: holder.meta.key }).catch(() => undefined)
+      if (!card || (card.stage !== 'working' && card.stage !== 'blocked') || !this.holds(card)) {
+        this.log(`A run left for “${card?.title ?? holder.meta.key}” isn’t needed any more: stopping it.`)
+        await holder.stopAndWait()
+        if (holder.meta.github) await rm(holder.meta.github, { recursive: true, force: true })
+        if (holder.meta.config) await rm(holder.meta.config, { force: true })
+        await holder.remove()
+        continue
+      }
+      this.log(`Carrying on watching “${card.title}”: its run outlasted the runner before this one.`)
+      tasks.set(card.id, this.adopt(card, holder).catch((error) => this.log(`Something went wrong with ${card.id}: ${(error as Error).message}`)))
+    }
+    return tasks
+  }
+
+  private async adopt(card: CardJSON, holder: Held) {
+    const settings = await this.settings()
+    this.running++
+    let left = false
+    const github = await this.repoAccess(card.id, card.title, holder.meta.dir, holder.meta.github)
+    try {
+      left = (await this.workIn(card, settings, toolInfo(settings.tool), holder.meta.dir, github.env, { adopt: holder, github: github.folder })) === 'left'
+    } finally {
+      this.running--
+      await (left ? github.leave() : github.done())
+    }
   }
 
   /** The runner the hub hands out now, as whoami last said. */
@@ -857,19 +1071,23 @@ export class Runner {
       return
     }
     const github = await this.repoAccess(card.id, card.title, dir)
+    let left = false
     try {
-      await this.workIn(card, settings, tool, dir, github.env)
+      left = (await this.workIn(card, settings, tool, dir, github.env, { github: github.folder })) === 'left'
     } finally {
-      await github.done()
+      // Left running for the next runner, its GitHub token stays where it is, for that runner to go on renewing.
+      await (left ? github.leave() : github.done())
     }
   }
 
-  private async workIn(card: CardJSON, settings: RunnerSettings, tool: ReturnType<typeof toolInfo>, dir: string, githubEnv: Record<string, string>): Promise<void> {
+  private async workIn(card: CardJSON, settings: RunnerSettings, tool: ReturnType<typeof toolInfo>, dir: string, githubEnv: Record<string, string>, how: { adopt?: Held; github?: string } = {}): Promise<'left' | void> {
     // With Binders' tools, or (a tool without MCP, or an enterprise MCP config here) with the runner reporting for it.
     const mcp = tool.mcp && this.usesMcp(settings)
     // What the team knows about its repo, unless it's carrying on in a session that has it already.
     const brief = card.resume && mcp && this.sessions.has(card.id) ? '' : await this.briefFor(card.repo ?? await repoOf(dir), mcp)
-    const prompt = mcp ? this.prompt(card, dir, brief) : await this.plainPrompt(card, dir, brief)
+    // With the binders command it reports for itself as an agent with Binders' tools does, whatever MCP is up to here.
+    const reports = mcp || !!settings.cli
+    const prompt = settings.cli ? this.cliPrompt(card, dir, brief) : mcp ? this.prompt(card, dir, brief) : await this.plainPrompt(card, dir, brief)
     // A person writing on the card while it runs steers it, as Esc and a message would in the tool: the run stops,
     // and the same session carries on with what they wrote.
     let next = prompt
@@ -877,12 +1095,20 @@ export class Runner {
     // In a worktree of its own, what the card changes so far goes to the hub now and then, for its Change Set.
     const own = dir !== this.options.workspace
     let diffSent = Date.now()
+    let adopt = how.adopt
+    // Started again once after its machine restarted under it, not for ever.
+    let revived = false
     for (;;) {
       // What people have written so far; anything after this steers. Counted, so the hub's clock and this one needn't agree.
       const people = (c: { kind: string; by: string; from_agent?: boolean }) => (c.kind === 'comment' || c.kind === 'answer') && (c.from_agent === undefined ? c.by.toLowerCase() !== this.name.toLowerCase() : !c.from_agent)
-      const before = ((await this.call<CardJSON>('get_task', { id: card.id }).catch(() => card)).conversation ?? []).filter(people).length
+      // A run picked up again counts from when it started, so what people wrote with no runner watching is still heard.
+      const before = adopt?.meta.before ?? ((await this.call<CardJSON>('get_task', { id: card.id }).catch(() => card)).conversation ?? []).filter(people).length
       let steer: string | undefined
       let ticks = 0
+      let passedOn = 0
+      let waitingSince: number | undefined
+      // Hears people while it works: with the binders command, or Claude Code's hooks, in a run that has them.
+      const hears = !!settings.cli || (!!settings.held && (settings.tool === 'claude' || !!settings.live) && canHold())
       let ran: Awaited<ReturnType<Runner['run']>>
       try {
         ran = await this.run(settings, card.id, next, dir, { ...githubEnv, BINDERS_CARD: card.id, BINDERS_RESUME: resume ? '1' : '' }, settings.timeoutMinutes,
@@ -898,39 +1124,66 @@ export class Runner {
             if (now.stage !== 'working' && now.stage !== 'blocked') return stop(`“${card.title}” was taken back: stopping its run.`)
             if (!this.holds(now)) return stop(`“${card.title}” was taken back: stopping its run.`)
             const all = (now.conversation ?? []).filter(people)
-            const said = all.slice(before)
-            if (said.length && !steer) {
+            const said = all.slice(before + passedOn)
+            // An agent that can hear it while it works isn't stopped for it: it gets it at its next step. One that
+            // hasn't taken it in a while, deep in a long command, say, is stopped and told, as any other agent is.
+            if (hears && said.length && !steer) {
+              const box = this.inboxes.get(card.id) ?? []
+              this.inboxes.set(card.id, [...box, ...said.map((c) => ({ by: c.by, text: c.text }))])
+              passedOn += said.length
+              waitingSince ??= Date.now()
+            } else if (said.length && !steer) {
               steer = said.map((c) => `${c.by}: ${c.text}`).join('\n')
               stop(`A person wrote on “${card.title}”: carrying on with it.`)
             }
+            if (!this.inboxes.get(card.id)?.length) waitingSince = undefined
+            else if (waitingSince && Date.now() - waitingSince > (this.options.hearWithinMs ?? 90_000) && !steer) {
+              steer = this.takeInbox(card.id).map((m) => `${m.by}: ${m.text}`).join('\n')
+              stop(`“${card.title}” hasn’t taken what a person wrote: stopping it to tell it.`)
+            }
           }).catch(() => {})
-        })
+        }, { held: !!settings.held, adopt, before, github: how.github, card: card.id, cli: !!settings.cli, hooks: hears && settings.tool === 'claude', live: !!settings.live && !!settings.held && reports && canHold() && (settings.tool === 'claude' || settings.tool === 'custom') })
       } catch (error) {
         // It couldn't start (the tool isn't there, say): the card goes back on the board with why.
         await this.call('release_task', { id: card.id, reason: (error as Error).message }).catch(() => {})
         this.log(`Put “${card.title}” back: ${(error as Error).message}`)
         return
       }
+      adopt = undefined
+      // This runner is going and the run isn't: the next one takes it from here.
+      if (ran.left) return 'left'
       // Claude Code refused Binders' MCP server for an enterprise MCP config: the runner works without it from now on,
       // so the card runs again at once, on the plain prompt, rather than going back on the board (where the hub would
       // keep it from this agent for a while, as it does any card given back).
       if (ran.managedMcp && !this.stopped) {
         this.log(`“${card.title}”: running it again without Binders’ MCP tools.`)
         this.sessions.delete(card.id)
-        return this.workIn(card, settings, tool, dir, githubEnv)
+        return this.workIn(card, settings, tool, dir, githubEnv, { github: how.github })
       }
       await this.relay(card.id, ran.reader, true)
       // What Claude Code refused it, on the card for its people (without Binders' tools, settle blocks it on them).
       const refused = ran.reader.summary.denied ?? []
-      if (refused.length && this.usesMcp(settings)) await this.call('report_progress', { id: card.id, said: `Claude Code wasn’t allowed to ${refused.join('; ')}. Allow what it needs in the agent’s settings on the Agents page (Commands it may run).` }).catch(() => {})
+      if (refused.length && reports) await this.call('report_progress', { id: card.id, said: `Claude Code wasn’t allowed to ${refused.join('; ')}. Allow what it needs in the agent’s settings on the Agents page (Commands it may run).` }).catch(() => {})
       if (own) await this.sendDiff(card.id, dir)
+      // Its holder went with no word of how it ended: the machine restarted, say. It carries on in the same conversation.
+      if (ran.lost && !revived && !steer && !this.stopped) {
+        revived = true
+        resume = true
+        const onCard = await this.call<CardJSON>('get_task', { id: card.id }).catch(() => undefined)
+        if (onCard?.stage === 'working' && this.holds(onCard)) {
+          this.log(`“${card.title}”: its run was cut off, carrying on with it.`)
+          const cutShort = 'This run was cut off when the machine it was on stopped. Check what you had finished in the worktree, and carry on with the card.'
+          next = reports && this.sessions.has(card.id) ? cutShort : `${await this.plainPrompt({ ...card, resume: false }, dir, brief)}\n\n${cutShort}`
+          continue
+        }
+      }
       if (!steer || this.stopped) {
         await this.settle(card, ran, settings, dir, githubEnv)
         return
       }
       resume = true
-      next = mcp && this.sessions.has(card.id)
-        ? `A person wrote on Binders card ${card.id} while you were working on it:\n${steer}\n\nTake it into account and carry on with the card (get_task has the whole conversation).`
+      next = reports && this.sessions.has(card.id)
+        ? `A person wrote on Binders card ${card.id} while you were working on it:\n${steer}\n\nTake it into account and carry on with the card (${settings.cli ? 'binders card' : 'get_task'} has the whole conversation).`
         : `${await this.plainPrompt({ ...card, resume: false }, dir, brief)}\n\nWhile you were working on it, a person wrote:\n${steer}\nTake it into account.`
     }
   }
@@ -1306,8 +1559,8 @@ export class Runner {
    * addresses of that GitHub go over HTTPS, so they use it too), gh through GH_TOKEN; this machine's own GitHub login
    * isn't used. A hub that hands out no such token leaves the machine's login in place, and the log says so.
    */
-  private async repoAccess(cardId: string, title: string, dir: string): Promise<{ env: Record<string, string>; done: () => Promise<void> }> {
-    const none = { env: {}, done: async () => {} }
+  private async repoAccess(cardId: string, title: string, dir: string, folder?: string): Promise<{ env: Record<string, string>; done: () => Promise<void>; leave: () => Promise<void>; folder?: string }> {
+    const none = { env: {}, done: async () => {}, leave: async () => {} }
     // The token is for the repo it works in: the folder's origin. A folder of repos, or one not on GitHub, keeps the
     // machine's login, as one token can't cover them.
     const repo = await repoOf(dir)
@@ -1324,7 +1577,8 @@ export class Runner {
     }
     if (!first?.token) return none
     await mkdir(join(runnerHome(), 'run'), { recursive: true, mode: 0o700 })
-    const keep = await mkdtemp(join(runnerHome(), 'run', 'github-'))
+    // A run left by the runner before this one reads its token from the same place: renewed there, it reaches that run.
+    const keep = folder && existsSync(folder) ? folder : await mkdtemp(join(runnerHome(), 'run', 'github-'))
     const file = join(keep, 'token')
     await writeFile(file, first.token, { mode: 0o600 })
     const web = (first.github || 'https://github.com').replace(/\/$/, '')
@@ -1347,7 +1601,7 @@ export class Runner {
         .catch((error) => this.log(`Couldn’t renew “${title}”’s GitHub token: ${(error as Error).message}`))
     }, 45 * 60_000)
     this.log(`“${title}” works in ${first.repo}${first.as === 'owner' ? ', pushing as its owner' : ' with a token for that repo alone'}${first.author ? `, committing as ${first.author.name}` : ''}.`)
-    return { env, done: async () => { clearInterval(renew); await rm(keep, { recursive: true, force: true }) } }
+    return { env, folder: keep, leave: async () => clearInterval(renew), done: async () => { clearInterval(renew); await rm(keep, { recursive: true, force: true }) } }
   }
 
   /**
@@ -1365,9 +1619,22 @@ export class Runner {
     return again
   }
 
-  private async run(settings: RunnerSettings, key: string, prompt: string, dir: string, env: Record<string, string>, minutes: number, tick: (reader: StreamReader, stop: (why: string) => void) => void) {
+  private async run(settings: RunnerSettings, key: string, prompt: string, dir: string, env: Record<string, string>, minutes: number, tick: (reader: StreamReader, stop: (why: string) => void) => void, how: { held?: boolean; adopt?: Held; before?: number; github?: string; card?: string; cli?: boolean; hooks?: boolean; live?: boolean } = {}) {
     const reader = new StreamReader()
-    const config = await this.mcpConfig(settings)
+    const config = how.adopt || how.cli ? { path: how.adopt?.meta.config, env: {} as Record<string, string>, quiet: undefined } : await this.mcpConfig(settings)
+    // The agent's binders command, in a run that has it, and its secret for the card it's on.
+    const live = how.live || !!how.adopt?.meta.live
+    const wantsDesk = !!how.card && (!!how.cli || !!how.hooks || live || !!how.adopt?.meta.desk)
+    const deskSecret = how.adopt?.meta.desk ?? (wantsDesk ? randomBytes(24).toString('base64url') : undefined)
+    let deskEnv: Record<string, string> = {}
+    if (wantsDesk && deskSecret) {
+      const desk = await this.openDesk()
+      desk.add(deskSecret, { card: how.card!, dir })
+      deskEnv = { BINDERS_DESK: desk.path, BINDERS_RUN: deskSecret, PATH: `${this.agentBin}:${process.env.PATH ?? ''}` }
+    }
+    // This runner went and left it running, or its holder went with no word of how it ended.
+    let left = false
+    let lost = false
     let output = ''
     let errors = ''
     let timedOut = false
@@ -1378,10 +1645,13 @@ export class Runner {
     let idle = false
     let exit: { code: number | null; signal: NodeJS.Signals | null } = { code: null, signal: null }
     try {
-      const built = this.commandFor(settings, key, dir, config.path, prompt, config.quiet)
-      const { args, shell, env: extra } = built
-      let command = built.command
-      if (!shell) {
+      const hooks = how.hooks || live ? join(this.agentBin, 'binders') : undefined
+      const built = how.adopt ? undefined : live && settings.tool === 'claude'
+        ? this.liveCommand(settings, key, dir, config.path, prompt, config.quiet, hooks!, how.cli)
+        : this.commandFor(settings, key, dir, config.path, prompt, config.quiet, { hooks, cli: how.cli })
+      const { args, shell, env: extra } = built ?? { args: [] as string[], shell: false, env: {} as Record<string, string> }
+      let command = built?.command ?? ''
+      if (built && !shell) {
         const found = await whereIs(command)
         if (!found) throw new Error(`${toolInfo(settings.tool).name} isn’t installed on this machine (no “${command}” on the PATH or in the usual places). Install it, or pick another tool in the agent’s settings.`)
         command = found
@@ -1390,9 +1660,169 @@ export class Runner {
           if (dshTooOld(version)) throw new Error(`DeepSeek Harness ${version} on this machine is too old: Binders needs ${dshOldest} or newer. Update it with: npm install -g @deepseek-ai/dsh@latest`)
         }
       }
-      exit = await new Promise((done) => {
+      const childEnv: NodeJS.ProcessEnv = { ...process.env, ...extra, ...config.env, ...env, ...deskEnv, BINDERS_URL: this.options.hubUrl, BINDERS_TOKEN: this.options.token }
+      // Speaking through its runner, it has no need of the token, and nothing it runs can read it.
+      if (how.cli) delete childEnv.BINDERS_TOKEN
+      if (how.card) {
+        const forTerminals = { ...childEnv }
+        delete forTerminals.BINDERS_TOKEN
+        this.runEnv.set(how.card, forTerminals)
+        this.runDir.set(how.card, dir)
+      }
+      let holder = how.adopt
+      if (!holder && how.held && canHold()) {
+        const meta: HeldMeta = { kind: 'card', key, dir, tool: settings.tool, startedAt: new Date().toISOString(), config: config.path, github: how.github, before: how.before, ...(deskSecret ? { desk: deskSecret } : {}), ...(live ? { live: true } : {}) }
+        holder = await Held.start(this.heldRoot(), randomBytes(4).toString('hex'), { argv: shell ? ['/bin/sh', '-c', [command, ...args].join(' ')] : [command, ...args], cwd: dir, env: live ? { ...childEnv, TERM: 'xterm-256color', COLORTERM: 'truecolor' } : childEnv, mode: live ? 'pty' : 'pipe', cols: 120, rows: 40, meta })
+          .catch((error) => {
+            this.log(`Running it without a holder: ${(error as Error).message}`)
+            return undefined
+          })
+      }
+      if (holder && live) {
+        // Its output is a screen, for people: what it does comes from its hooks, into the same reader as ever.
+        const watched = holder
+        const terminals = await this.agentTerminals()
+        const startedAt = Date.parse(watched.meta.startedAt) || Date.now()
+        const sid = `run-${basename(watched.home)}`
+        exit = await new Promise((done) => {
+          const stop = (why: string) => {
+            this.log(why)
+            void watched.signal('SIGTERM')
+            setTimeout(() => void watched.signal('SIGKILL'), 10_000).unref()
+          }
+          const limit = setTimeout(() => {
+            timedOut = true
+            stop(`It ran past its ${minutes}-minute limit: stopping it.`)
+          }, Math.max(1000, startedAt + minutes * 60_000 - Date.now()))
+          const every = setInterval(() => {
+            // A person at its terminal isn't timed out on: they may be reading, or typing.
+            if (!idle && Date.now() - heard > idleMinutes * 60_000 && !terminals.personAt(sid)) {
+              idle = true
+              timedOut = true
+              stop(`${toolInfo(settings.tool).name} did nothing for ${idleMinutes} minutes: stopping it as stuck.`)
+              return
+            }
+            tick(reader, stop)
+          }, 2000)
+          const finish = (result: { code: number | null; signal: NodeJS.Signals | null }) => {
+            clearTimeout(limit)
+            clearInterval(every)
+            this.leaveRuns.delete(key)
+            this.liveRuns.delete(key)
+            done(result)
+          }
+          this.liveRuns.set(key, { reader, sid, heard: () => { heard = Date.now() }, end: () => stop(`“${key}”: its turn is over, and so is its run.`) })
+          this.held.set(key, watched)
+          this.leaveRuns.set(key, () => {
+            left = true
+            terminals.untrack(sid)
+            finish({ code: null, signal: null })
+          })
+          void terminals.track(watched, { sid, tool: settings.tool === 'custom' ? 'Agent' : toolInfo(settings.tool).name, by: this.name, startedAt: watched.meta.startedAt, dir, name: `Card ${key}`.slice(0, 40), card: key, run: true }, () => {
+            void (async () => {
+              const ended = await watched.exit()
+              errors = await watched.errors()
+              if (!ended) {
+                lost = true
+                await watched.stopOrphan()
+              }
+              finish({ code: ended?.code ?? null, signal: ended?.signal ? 'SIGTERM' : null })
+            })()
+          })
+        })
+        if (!left) {
+          this.held.delete(key)
+          await watched.remove()
+        }
+      } else if (holder) {
+        const watched = holder
+        const cursor = await watched.cursor()
+        const startedAt = Date.parse(watched.meta.startedAt) || Date.now()
+        exit = await new Promise((done) => {
+          const stop = (why: string) => {
+            this.log(why)
+            void watched.signal('SIGTERM')
+            setTimeout(() => void watched.signal('SIGKILL'), 10_000).unref()
+          }
+          let buffer = ''
+          let fed = 0
+          const line = (text: string) => {
+            reader.line(text)
+            if (!text.trimStart().startsWith('{')) output = (output + text + '\n').slice(-20_000)
+          }
+          const feed = (chunk: Buffer) => {
+            heard = Date.now()
+            buffer += chunk.toString('utf8')
+            fed += chunk.length
+            let at
+            while ((at = buffer.indexOf('\n')) >= 0) {
+              line(buffer.slice(0, at))
+              buffer = buffer.slice(at + 1)
+            }
+          }
+          // What the card was told before this runner: read again, for what the run has said overall, and not sent twice.
+          let told = cursor === 0
+          const data = (chunk: Buffer) => {
+            if (told) return feed(chunk)
+            const room = cursor - fed
+            if (chunk.length < room) return feed(chunk)
+            feed(chunk.subarray(0, room))
+            reader.take()
+            told = true
+            if (chunk.length > room) feed(chunk.subarray(room))
+          }
+          const limit = setTimeout(() => {
+            timedOut = true
+            stop(`It ran past its ${minutes}-minute limit: stopping it.`)
+          }, Math.max(1000, startedAt + minutes * 60_000 - Date.now()))
+          let quietErrors = 0
+          const every = setInterval(() => {
+            if (!idle && Date.now() - heard > idleMinutes * 60_000) {
+              idle = true
+              timedOut = true
+              stop(`${toolInfo(settings.tool).name} said nothing for ${idleMinutes} minutes: stopping it as stuck.`)
+              return
+            }
+            tick(reader, stop)
+            if (told) void watched.saveCursor(fed)
+            // Its stderr counts as a word from it, as it does without a holder.
+            void watched.errors(200).then((tail) => {
+              if (tail.length !== quietErrors) heard = Date.now()
+              quietErrors = tail.length
+            })
+          }, 2000)
+          const finish = (result: { code: number | null; signal: NodeJS.Signals | null }) => {
+            clearTimeout(limit)
+            clearInterval(every)
+            this.leaveRuns.delete(key)
+            done(result)
+          }
+          this.held.set(key, watched)
+          this.leaveRuns.set(key, () => {
+            left = true
+            watched.leave()
+            finish({ code: null, signal: null })
+          })
+          void watched.read(0, data, async () => {
+            if (buffer.trim()) line(buffer)
+            buffer = ''
+            const ended = await watched.exit()
+            errors = await watched.errors()
+            if (errors.trim() && ended?.code) this.log(errors.trim().split('\n').slice(-3).join('\n'))
+            if (!ended) {
+              lost = true
+              await watched.stopOrphan()
+            }
+            finish({ code: ended?.code ?? null, signal: ended?.signal ? 'SIGTERM' : null })
+          })
+        })
+        if (!left) {
+          this.held.delete(key)
+          await watched.remove()
+        }
+      } else exit = await new Promise((done) => {
         // In a process group of its own, so stopping it stops what it started too (a shell's command, a tool's helpers).
-        const child = spawn(command, args, { cwd: dir, shell, detached: process.platform !== 'win32', env: { ...process.env, ...extra, ...config.env, ...env, BINDERS_URL: this.options.hubUrl, BINDERS_TOKEN: this.options.token }, stdio: ['ignore', 'pipe', 'pipe'] })
+        const child = spawn(command, args, { cwd: dir, shell, detached: process.platform !== 'win32', env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] })
         this.children.set(key, child)
         const stop = (why: string) => {
           this.log(why)
@@ -1442,9 +1872,18 @@ export class Runner {
       })
     } finally {
       this.children.delete(key)
-      if (config.path) await rm(config.path, { force: true })
+      if (config.path && !left) await rm(config.path, { force: true })
+      if (deskSecret && !left) this.desk?.remove(deskSecret)
+      if (!left && how.card) {
+        this.inboxes.delete(how.card)
+        this.runEnv.delete(how.card)
+        this.runDir.delete(how.card)
+        // The terminals its agent opened go with the card, unless a person is at one, whose it is now.
+        await this.terminals?.endFor(how.card).catch(() => {})
+      }
     }
     if (reader.summary.sessionId) this.sessions.set(key, reader.summary.sessionId)
+    if (how.held || how.adopt) await this.saveSessions().catch(() => {})
     // Claude Code refusing Binders' MCP server for an enterprise MCP config the runner didn't find by its file: from now
     // on its runs go without it, and this one stops saying why.
     // Full access asked for, and Claude Code started in another mode: a policy turned it off without the runner seeing
@@ -1458,7 +1897,7 @@ export class Runner {
     // Only what Claude Code itself says went wrong: never the agent's own words, which may quote that error.
     const managedMcp = settings.tool === 'claude' && !!config.path && !!exit.code && refusedByManagedMcp(`${errors}\n${reader.summary.error ?? ''}`)
     if (managedMcp) await this.enterpriseMcpFound('Claude Code refused Binders’ MCP server for an enterprise MCP config')
-    return { reader, exit, errors, output, timedOut, idle, idleMinutes, cutOff: undefined as string | undefined, managedMcp }
+    return { reader, exit, errors, output, timedOut, idle, idleMinutes, cutOff: undefined as string | undefined, managedMcp, left, lost }
   }
 
   /** Why a run was stopped as stuck, and where to look. */
@@ -1545,7 +1984,7 @@ export class Runner {
       return
     }
     const last = ran.reader.summary.last
-    if (!this.usesMcp(settings) && !ran.timedOut && ran.exit.code === 0) {
+    if (!this.usesMcp(settings) && !settings.cli && !ran.timedOut && ran.exit.code === 0) {
       // The Binders actions it asked for, taken for it; what came of them goes on the card with its summary.
       const asked = actionsFromReply(ran.reader.summary.reply ?? ran.output)
       const done: string[] = []
@@ -1755,6 +2194,32 @@ export class Runner {
     ].join('\n')
   }
 
+  /** Claude Code in its own interface, for a live run: what it does comes back through its hooks. */
+  private liveCommand(settings: RunnerSettings, key: string, dir: string, mcp: string | undefined, prompt: string, quiet: string[] | undefined, binders: string, cli?: boolean) {
+    const built = this.interactiveFor(settings, dir, mcp, quiet)
+    const session = this.sessions.get(key)
+    return { command: built.command, args: [...built.args, ...(cli ? ['--allowedTools=Bash(binders:*)'] : []), '--settings', hearingHooks(binders, true), ...(session ? ['--resume', session] : []), prompt], shell: false, env: {} as Record<string, string> }
+  }
+
+  /** For an agent working through the binders command. */
+  cliPrompt(card: CardJSON, dir: string, brief = '') {
+    const answer = card.resume ? [...(card.conversation ?? [])].reverse().find((c) => c.kind === 'answer' || c.kind === 'comment') : undefined
+    return [
+      card.resume
+        ? `A person wrote on Binders card ${card.id} (“${card.title}”): “${answer?.text ?? ''}”. Carry on with the card.`
+        : `You're ${this.name}, one of this team's agents, and you've taken Binders card ${card.id}: “${card.title}”.`,
+      '',
+      ...(brief ? [brief] : []),
+      'Binders is a command on your PATH: `binders help` lists what it does.',
+      `1. Read the card with \`binders card\`${card.note ? `, and its note with \`binders note ${card.note.id}\`` : ''}.`,
+      `2. Do what it asks, in ${dir}.`,
+      '3. Say what you are doing with `binders progress`. Your tool steps reach the card by themselves.',
+      '4. If you need a person, use `binders ask`, then stop: you will be started again with their answer.',
+      '5. People may write to you while you work. If a command says so, read it with `binders inbox` and take it into account.',
+      `6. When it's done, \`binders done\` with a summary, and --pr with the pull request if you opened one: against the default branch (main), never another card's branch.`,
+    ].join('\n')
+  }
+
   /** For an agent without Binders' tools: the card and its note written out, and what to print when done. */
   async plainPrompt(card: CardJSON, dir: string, brief = '') {
     const full = await this.call<CardJSON>('get_task', { id: card.id }).catch(() => card)
@@ -1880,11 +2345,19 @@ export class Runner {
     return {
       command, args: built.args, cwd: dir, tool: tool.name,
       env: { ...config.env, BINDERS_URL: this.options.hubUrl, BINDERS_TOKEN: this.options.token },
+      held: !!settings.held,
+      config: config.path,
       done: async () => {
         if (config.path) await rm(config.path, { force: true })
         await this.tidyWorktree(dir, sid)
       },
     }
+  }
+
+  /** A terminal the runner before this one left, ended under this one: tidied as its own would be. */
+  private async terminalFinished(meta: HeldMeta) {
+    if (meta.config) await rm(meta.config, { force: true })
+    await this.tidyWorktree(meta.dir, meta.key)
   }
 
   /** A terminal's worktree, gone once it ends if nothing was changed or committed in it; kept otherwise. */
@@ -1954,7 +2427,7 @@ export class Runner {
   }
 
   /** The command line for the agent's tool, with its access, model and session, or the custom one filled in. */
-  commandFor(settings: RunnerSettings, key: string, dir: string, mcp: string | undefined, prompt: string, quiet: string[] = []): { command: string; args: string[]; shell: boolean; env: Record<string, string> } {
+  commandFor(settings: RunnerSettings, key: string, dir: string, mcp: string | undefined, prompt: string, quiet: string[] = [], live: { hooks?: string; cli?: boolean } = {}): { command: string; args: string[]; shell: boolean; env: Record<string, string> } {
     const full = settings.access === 'full'
     const model = settings.model
     const session = this.sessions.get(key)
@@ -1965,7 +2438,7 @@ export class Runner {
         const access = full && !this.bypassOff ? 'bypassPermissions' : settings.access === 'auto' ? 'auto' : 'acceptEdits'
         // Binders' tools allowed up front: run headless, a tool that needs asking is refused, and with Edits or Auto
         // access an MCP tool does.
-        return plain('claude', ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcp ? mcpServer : this.managedServer ?? mcpServer}`] : []), ...(!mcp && !this.managedAllowed ? [plainEdits] : []), ...(mcp && this.otherBinders.length ? [`--disallowedTools=${this.otherBinders.map((n) => `mcp__${n}`).join(',')}`] : []), ...this.claudeRules(settings, dir), '--permission-mode', access, ...(model ? ['--model', model] : []), ...(session ? ['--resume', session] : [])],
+        return plain('claude', ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...(mcp ? ['--mcp-config', mcp] : []), ...(mcp || this.managedAllowed ? [`--allowedTools=mcp__${mcp ? mcpServer : this.managedServer ?? mcpServer}`] : []), ...(!mcp && !this.managedAllowed ? [plainEdits] : []), ...(mcp && this.otherBinders.length ? [`--disallowedTools=${this.otherBinders.map((n) => `mcp__${n}`).join(',')}`] : []), ...this.claudeRules(settings, dir), ...(live.cli ? ['--allowedTools=Bash(binders:*)'] : []), ...(live.hooks ? ['--settings', hearingHooks(live.hooks)] : []), '--permission-mode', access, ...(model ? ['--model', model] : []), ...(session ? ['--resume', session] : [])],
           // The reasoning asked for, as how much it may think before each answer.
           effort ? { MAX_THINKING_TOKENS: String(thinkingTokens[effort]) } : {})
       }

@@ -301,6 +301,29 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
               ))}
             </div>
           </Field>
+          <Field label="Keep cards running through restarts" group hint="An experiment. Its cards carry on while its runner stops or updates, and a restarted machine picks them up in the same conversation. Needs python3 on the machine.">
+            <div className="segmented" role="radiogroup" id="runner-held">
+              {([[false, 'Off'], [true, 'On']] as const).map(([value, label]) => (
+                <button key={label} type="button" role="radio" aria-checked={!!runner.held === value} className={!!runner.held === value ? 'on' : ''} onClick={() => setRun({ held: value || undefined })}>{label}</button>
+              ))}
+            </div>
+          </Field>
+          {runner.held && (runner.tool ?? 'claude') === 'claude' && (
+            <Field label="Runs as" group hint="An experiment. As a live terminal, you can open a card’s run, watch it, type to it and take over, in Claude Code’s own interface. Try it on a test card first: a first-run prompt would wait for you there.">
+              <div className="segmented" role="radiogroup" id="runner-live">
+                {([[false, 'A background process'], [true, 'A live terminal']] as const).map(([value, label]) => (
+                  <button key={label} type="button" role="radio" aria-checked={!!runner.live === value} className={!!runner.live === value ? 'on' : ''} onClick={() => setRun({ live: value || undefined })}>{label}</button>
+                ))}
+              </div>
+            </Field>
+          )}
+          <Field label="Talks to Binders through" group hint="An experiment. The binders command needs no config and leaves no token in the agent’s environment, and the agent hears what people write on its card without being stopped.">
+            <div className="segmented" role="radiogroup" id="runner-cli">
+              {([[false, 'MCP'], [true, 'The binders command']] as const).map(([value, label]) => (
+                <button key={label} type="button" role="radio" aria-checked={!!runner.cli === value} className={!!runner.cli === value ? 'on' : ''} onClick={() => setRun({ cli: value || undefined })}>{label}</button>
+              ))}
+            </div>
+          </Field>
           <Field label="Commits and pull requests by" group hint={commitsFixed ? `Set by the hub’s admins: ${commitsFixed === 'owner' ? 'each agent’s owner, with their GitHub sign-in' : 'the hub’s GitHub App and its bot'}.` : commitsBy === 'owner' ? 'You: it pushes with your GitHub sign-in to the hub, and commits carry your name and private GitHub email.' : 'The hub’s GitHub App: commits and pull requests show as its bot.'}>
             <div className="segmented" role="radiogroup" id="runner-commit-as" aria-disabled={commitsFixed ? true : undefined}>
               {([['owner', 'You'], ['app', 'The Binders app']] as const).map(([value, label]) => (

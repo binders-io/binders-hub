@@ -276,13 +276,14 @@ function cardFacts(state: State, card: Card) {
 
 const CardView = memo(function CardView({ card, stage }: { card: Card; stage: Stage }) {
   const store = useActions()
-  const { openItem } = useUI()
+  const { openItem, splitCard } = useUI()
+  const split = splitCard ? () => splitCard(card.id) : undefined
   const select = useCallback((state: State) => cardFacts(state, card), [card])
   const { agent, pull, set, binder, noteTitle, untakeable } = useHub(select, sameValues)
 
   return (
     // The whole card opens it for a pointer, and its title's button for a keyboard or a screen reader: a button can't hold the card's others.
-    <motion.article layout layoutId={card.id} className={`card ${stage}${card.needsYou ? ' asks' : ''}`} onClick={() => openItem(card.id)} onContextMenu={(e) => openMenu(e, cardMenuItems(card, store, openItem))} transition={spring} initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }}>
+    <motion.article layout layoutId={card.id} className={`card ${stage}${card.needsYou ? ' asks' : ''}`} onClick={() => openItem(card.id)} onContextMenu={(e) => openMenu(e, cardMenuItems(card, store, openItem, split))} transition={spring} initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }}>
       <div className="card-top">
         <span className="mono faint" title={card.issue ? `Its issue: #${card.issue.number} in ${card.issue.repo}` : undefined}>{card.issue ? `#${card.issue.number}` : binder?.name}</span>
         {(() => {
@@ -290,7 +291,7 @@ const CardView = memo(function CardView({ card, stage }: { card: Card; stage: St
           return code ? <RepoTag repo={code} title={pull ? `Its pull request is in ${code}` : `The binder’s repo: ${code}`} /> : null
         })()}
         {set && <span className="set-tag">CS-{set.number}</span>}
-        <CardMenu card={card} open={openItem} />
+        <CardMenu card={card} open={openItem} split={split} />
       </div>
       <h3><button type="button" className="card-open">{card.title}</button></h3>
       {card.needsYou && <p className="card-asks">Asks: {card.needsYou}</p>}

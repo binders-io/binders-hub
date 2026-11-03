@@ -3,11 +3,13 @@ import { startingSeed } from '../../shared/seed.ts'
 import { Actions } from './actions.ts'
 import { Auth } from './auth.ts'
 import { GitHubConnection } from './githubConnection.ts'
+import { JiraConnection } from './jira.ts'
 import { Hub } from './hub.ts'
 import { MemoryKV, RedisKV, type KV } from './kv.ts'
 import { MemoryLog, RedisLog, type ChangeLog } from './log.ts'
 import { GitNotesSaver } from './savers/gitNotes.ts'
 import { IssuesSaver } from './savers/issues.ts'
+import { JiraSaver } from './savers/jira.ts'
 import { ReviewsSaver } from './savers/reviews.ts'
 import { Scheduler } from './scheduler.ts'
 import { hubSecret, Sealer } from './secrets.ts'
@@ -132,11 +134,20 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   actions.mergeMethod = () => options.get().mergeMethod
   actions.agentCommits = () => options.get().agentCommits
   actions.watchTrains()
+  actions.watchSwarm()
   void actions.moveBriefsToNotes().catch(() => {})
   // Links back to the board; the first Binder's stay at the hub's address, as they were written in its issues.
   const boardUrl = first ? publicUrl : `${publicUrl}/${id}`
   const issues = new IssuesSaver(hub, github, { publicUrl: boardUrl })
   issues.start()
+  // Jira, this binder's own: the saver mirrors cards into it, its webhook brings what happened there back. Its secret
+  // and the token it acts as live in the hub's store, sealed, the saver's issue ids beside them.
+  const jiraKv = log instanceof RedisLog ? new RedisKV(log.redis, id) : new MemoryKV()
+  const jira = new JiraConnection(jiraKv, sealer, id)
+  await jira.load().catch(() => undefined)
+  const jiraIssues = new JiraSaver(hub, () => jira, jiraKv, id)
+  void jiraIssues.load().catch(() => undefined)
+  jiraIssues.start()
   // A Challenge's findings as a review on the card's pull request, in binders that turn it on.
   const reviews = new ReviewsSaver(hub, github, { publicUrl: boardUrl })
   reviews.start()
@@ -166,12 +177,13 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   const scheduler = new Scheduler(hub, actions)
   scheduler.start()
   const running: Space = {
-    id, hub, actions, webhooks, github, notes, poller, issues, filesDir: join(notesDir, 'files'),
+    id, hub, actions, webhooks, github, notes, poller, issues, jira, jiraIssues, filesDir: join(notesDir, 'files'),
     stop: async () => {
       scheduler.stop()
       poller.stop()
       await notes.stop()
       await issues.stop()
+      await jiraIssues?.stop()
       await reviews.stop()
       await log.close()
     },

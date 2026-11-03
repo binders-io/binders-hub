@@ -3,7 +3,7 @@ import type { Change } from '../../../shared/state.ts'
 import { titleOf } from '../../../shared/notes.ts'
 import { checkTimeZone, describeCron, parseCron, type Schedule } from '../../../shared/schedule.ts'
 import { parseDiff } from '../../../shared/changeSet.ts'
-import { worksIn, type Agent, type Card, type PlanStep, type Stage, type PullRequest } from '../../../shared/work.ts'
+import { agentNamed, worksIn, type Agent, type Card, type PlanStep, type Stage, type PullRequest } from '../../../shared/work.ts'
 import { parsePullRef } from '../github.ts'
 import { Refused, type Actor } from '../hub.ts'
 import { ActionsBase, checkedRunner } from './base.ts'
@@ -178,6 +178,7 @@ export abstract class CardService extends ActionsBase {
     const agent = this.agent(agentId)
     const before = this.card(cardId)
     if (before.agentId === agent.id && before.stage === 'working') return before
+    if (!before.agentId && this.hub.state.cards.some((c) => c.parent === cardId)) throw new Refused('That card is split into parts: take one of them.')
     if (before.stage === 'ready' && !before.agentId) await this.mayWorkOn(agent, before)
     await this.hub.record({ kind: 'agent', id: agent.id }, { type: 'card.claim', id: cardId, agentId: agent.id, at: this.now() })
     const after = this.card(cardId)
@@ -319,5 +320,72 @@ export abstract class CardService extends ActionsBase {
     if (!agent.models) delete agent.models
     await this.hub.record(by, { type: 'agent.put', agent })
     return agent
+  }
+
+  /**
+   * Splits a card into parts, for a swarm of agents: each part a card of its own, meant for the agent it names, and
+   * the card waiting for every part: no agent is offered the whole while it has parts, and when the last part is live
+   * the card is too (watchSwarm). Each part carries the card's brief, its note, and whatever the card was waiting for.
+   */
+  async splitCard(login: string, id: string, parts: { title: string; brief?: string; agent?: string }[]) {
+    const card = this.hub.state.cards.find((c) => c.id === id)
+    if (!card) throw new Refused(`No card ${id}.`)
+    if (card.parent) throw new Refused('A part of a swarm can’t be split again: split the card it came from.')
+    if (this.hub.state.cards.some((c) => c.parent === id)) throw new Refused('It has parts already.')
+    // A card held, in review or not yet accepted has someone answering for the whole: parts would race them, and the
+    // card would have no way of finishing when they did.
+    if (card.stage !== 'ready' || card.agentId) throw new Refused('Only a card that’s ready, and that no agent holds, can be split.')
+    const clean = parts.map((p) => ({ title: (p.title ?? '').trim(), brief: p.brief?.trim(), agent: p.agent?.trim() })).filter((p) => p.title)
+    if (clean.length < 2) throw new Refused('A swarm is at least two parts, each with a title.')
+    if (clean.length > 12) throw new Refused('Twelve parts at most: split one of them again instead.')
+    for (const part of clean) if (part.agent && !agentNamed(this.hub.state.agents, part.agent)) throw new Refused(`No agent ${part.agent}.`)
+    const at = this.now()
+    const whole = [card.brief, card.doneWhen && `Done when, for all of it: ${card.doneWhen}`].filter(Boolean).join('\n\n')
+    const made = clean.map((part, index) => {
+      const meant = part.agent ? agentNamed(this.hub.state.agents, part.agent)?.id : undefined
+      return {
+        id: `card-${randomUUID().slice(0, 8)}`,
+        binderId: card.binderId,
+        title: part.title.slice(0, 200),
+        brief: [part.brief, `This is part of “${card.title}”.`, whole].filter(Boolean).join('\n\n'),
+        doneWhen: '',
+        size: card.size,
+        stage: 'ready' as const,
+        createdAt: at,
+        createdBy: login,
+        updatedAt: at,
+        meantFor: meant,
+        parent: card.id,
+        noteId: card.noteId,
+        quote: card.quote,
+        waitsFor: [...card.waitsFor],
+        activity: [{ at, by: login, kind: 'created' as const, text: `Part ${index + 1} of ${clean.length}, split from “${card.title}”` }],
+      } satisfies Card
+    })
+    await this.hub.recordAll({ kind: 'user', login }, [
+      ...made.map((part): Change => ({ type: 'card.put', card: part })),
+      { type: 'card.update', id: card.id, fields: { waitsFor: [...card.waitsFor, ...made.map((p) => p.id)] }, activity: { at, by: login, kind: 'moved', text: `Split into ${made.length} parts` } },
+    ])
+    return made
+  }
+
+  /** Follows swarms: when the last part of a card is live, or the last that wasn't is deleted, and nobody holds the card, it's live too. */
+  watchSwarm() {
+    const finishing = new Set<string>()
+    this.hub.on('entries', (entries) => {
+      if (!entries.some(({ change }) => change.type === 'card.delete' || (change.type === 'card.update' && 'stage' in change.fields))) return
+      const cards = this.hub.state.cards
+      for (const parentId of new Set(cards.flatMap((c) => (c.parent ? [c.parent] : [])))) {
+        const parent = cards.find((c) => c.id === parentId)
+        if (!parent || parent.stage !== 'ready' || parent.agentId || finishing.has(parentId)) continue
+        const parts = cards.filter((c) => c.parent === parentId)
+        if (!parts.every((p) => p.stage === 'live')) continue
+        finishing.add(parentId)
+        void this.hub.record({ kind: 'hub' }, {
+          type: 'card.update', id: parent.id, fields: { stage: 'live' },
+          activity: { at: this.now(), by: 'hub', kind: 'moved', text: `Every part is live: ${parts.length} parts` },
+        }).catch(() => undefined).finally(() => finishing.delete(parentId))
+      }
+    })
   }
 }

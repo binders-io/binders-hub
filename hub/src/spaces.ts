@@ -1,10 +1,12 @@
 import type { Actions } from './actions.ts'
 import type { GitHubConnection } from './githubConnection.ts'
+import type { JiraConnection } from './jira.ts'
 import { Refused, type Hub } from './hub.ts'
 import type { KV } from './kv.ts'
 import type { GitHubPoller } from './poller.ts'
 import type { GitNotesSaver } from './savers/gitNotes.ts'
 import type { IssuesSaver } from './savers/issues.ts'
+import type { JiraSaver } from './savers/jira.ts'
 import type { Webhooks } from './webhooks.ts'
 
 // One hub, several Binders: each its own team, with its own change log, projects, notes, cards and agents, and its own
@@ -44,6 +46,9 @@ export interface Space {
   notes?: GitNotesSaver
   poller?: GitHubPoller
   issues?: IssuesSaver
+  /** The binder's own Jira: its saver writes cards there, its webhook brings what happened back. */
+  jira?: JiraConnection
+  jiraIssues?: JiraSaver
   /** Where pictures put in its notes are kept. */
   filesDir?: string
   stop?: () => Promise<void>

@@ -10,6 +10,7 @@ import { agentRoutes } from './routes/agents.ts'
 import { binderRoutes } from './routes/binders.ts'
 import { makeContext } from './routes/context.ts'
 import { githubRoutes } from './routes/github.ts'
+import { jiraRoutes } from './routes/jira.ts'
 import { machineRoutes } from './routes/machines.ts'
 import { oauthRoutes } from './routes/oauth.ts'
 import { personalRoutes } from './routes/personal.ts'
@@ -171,6 +172,7 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
   await githubRoutes(app, context)
   await personalRoutes(app, context)
   await machineRoutes(app, context)
+  await jiraRoutes(app, context)
   await oauthRoutes(app, context)
   await webRoutes(app, context)
 

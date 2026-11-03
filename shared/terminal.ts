@@ -16,6 +16,10 @@ export interface TerminalInfo {
   dir: string
   /** What its owner called it, its tab's name. */
   name?: string
+  /** The card it's for: an agent's run in a live terminal, or one an agent opened as it works. */
+  card?: string
+  /** It's the agent working the card, which a person can watch and take over. */
+  run?: boolean
 }
 
 /** The hub to a runner. */

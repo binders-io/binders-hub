@@ -3,6 +3,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { mcpServer } from '../mcp.ts'
 import { personServer } from '../mcpPerson.ts'
 import { verify } from '../webhooks.ts'
+import { handleWebhook } from '../jira.ts'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { Context } from './context.ts'
 
@@ -89,6 +90,22 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
   app.delete('/mcp', notHere)
   app.get('/:space/mcp', notHere)
   app.delete('/:space/mcp', notHere)
+
+  // Jira's webhook, for this binder: its secret in the query string, which the hub's log leaves out.
+  app.post('/webhooks/jira/:space', async (request, reply) => {
+    const { space } = request.params as { space: string }
+    const { secret } = request.query as { secret?: unknown }
+    const binder = spaces.get(space)
+    const jira = binder?.jira
+    if (!binder || !jira || !binder.jiraIssues || typeof secret !== 'string' || !(await jira.knowsSecret(secret))) return reply.code(404).send({ error: 'No such Jira webhook.' })
+    const body = request.body as Record<string, unknown> | undefined
+    if (!body || typeof body !== 'object') return reply.code(400).send({ error: 'A Jira webhook posts JSON.' })
+    try {
+      return { ok: true, result: await handleWebhook(binder.hub, jira, binder.jiraIssues, body) }
+    } catch (error) {
+      return reply.code(500).send({ error: (error as Error).message })
+    }
+  })
 
   // GitHub's webhooks, with the raw body for the signature -------------------------------------------------------------
 
