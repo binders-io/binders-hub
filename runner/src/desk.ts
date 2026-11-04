@@ -138,6 +138,8 @@ export const agentHelp = `binders: your line to Binders, for the card you're wor
   binders release WHY          give the card back, so another agent or a person can take it
   binders note ID              read a note
   binders note-append ID TEXT  add to the end of a note
+  binders note-propose ID TEXT --why REASON  for a locked note: the whole note as it should read, for a person to review
+  binders context              this binder's guide and where to look
   binders lesson TEXT          one line the team should know about this repo
 
 Terminals of your own, which last beyond a command and which your team can open and watch on the card:
@@ -248,8 +250,8 @@ export async function agentCommand(argv: string[], env: NodeJS.ProcessEnv = proc
   }
   const { words, named } = flags(rest)
   const text = words.join(' ').trim()
-  const args: Record<string, unknown> = verb === 'note' || verb === 'note-append'
-    ? { id: words[0], text: words.slice(1).join(' ') }
+  const args: Record<string, unknown> = verb === 'note' || verb === 'note-append' || verb === 'note-propose'
+    ? { id: words[0], text: words.slice(1).join(' '), ...named }
     : verb === 'message' ? { to: words[0], text: words.slice(1).join(' ') }
     : { text, ...named }
   const answer = await askPatiently(path, secret, verb, args, Number(env.BINDERS_DESK_PATIENCE) || 120_000).catch((error: Error) => ({ ok: false as const, error: `Its runner didn’t answer: ${error.message}` }))

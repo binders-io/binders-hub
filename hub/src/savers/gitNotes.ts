@@ -159,6 +159,7 @@ export class GitNotesSaver {
         case 'note.link':
         case 'note.move':
         case 'note.delete':
+        case 'note.lock':
           this.later(change.id)
           break
         case 'folder.put':
@@ -194,6 +195,15 @@ export class GitNotesSaver {
       this.waitingSince.delete(noteId)
       this.queue = this.queue.then(async () => { await this.commit([noteId]) }).catch((err) => log.error({ err, note: noteId }, 'Saving a note to Git failed'))
     }, wait))
+  }
+
+  /** A note's version now, named: nothing waits for typing to pause. */
+  async version(noteId: string, subject: string) {
+    clearTimeout(this.timers.get(noteId))
+    this.timers.delete(noteId)
+    this.waitingSince.delete(noteId)
+    this.queue = this.queue.then(async () => { await this.commit([noteId], subject) }).catch((err) => log.error({ err, note: noteId }, 'Saving a note failed'))
+    await this.queue
   }
 
   /** Writes these notes' files as the hub has them now, and commits if anything changed. */

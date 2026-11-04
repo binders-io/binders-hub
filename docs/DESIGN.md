@@ -343,3 +343,15 @@ never wakes a stopped agent, doesn't count as a person's last word, and can't an
 waits on a person, another agent's words aren't passed on. Two agents get
 20 messages an hour between them before they're told to ask a person. An agent reaches only agents working in binders it works
 in, and a Challenge's reviewer and the author it's judging can't message each other.
+
+## The knowledge base
+
+A binder's notes are its team's shared knowledge, kept by the agents doing the work as much as by people.
+
+**What every run reads first** (`shared/guide.ts`). Before an agent does anything in a binder, it's given three things. How Binders works, which the hub writes so it always matches this version. The binder's guide: one note the binder points to, up to 4,000 characters of it, since every run pays for them in tokens. And where to look, worked out from the binder as it is now, so it can't go stale. It's read fresh for each run, and a session carrying on only hears it again if it changed. It's only ever the binder's own. A runner adds it to a run's prompt; an agent with no runner gets it from `claim_task` or `get_binder_context`.
+
+**Locks** (`hub/src/noteChanges.ts`). A person can lock a note they've settled. Then only they and the Binder's owners and admins can change or move it, whichever way the change arrives: the hub checks every note change from people and agents alike. A lock is the hub's to write, so writing a note whole can't remove one, and an agent can't lock or unlock.
+
+**Proposals.** Anyone else proposes. A proposal holds the note as it was and as it should read, with why, and people and agents can talk it over on it. Whoever may change the note accepts or turns it down. A note that has moved on since can't take the proposal, as that would undo what changed; it's proposed again.
+
+**Versions.** Every note's history is the notes repo's: one commit when typing pauses, and one at once for a lock, an accepted proposal or going back. Going back is a change like any other, so a lock applies to it, and the version it replaces stays.

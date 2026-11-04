@@ -2,6 +2,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { runnerVersion, tools } from '../../shared/agents.ts'
 import { linkedNotes, titleOf, isBlank } from '../../shared/notes.ts'
+import { binderContext } from '../../shared/guide.ts'
+import { commentOn, propose } from './noteChanges.ts'
 import { briefText, docsFolderName, docsGiven, repoDocs } from '../../shared/briefs.ts'
 import { byWorst, challengeSet, confidences, setOfCard, replyVerdicts, doneWhenPoints, findingKinds, marks, numberedDiff, severities, type BlastRadius, type Confidence, type FindingKind, type Mark, type ReplyVerdict, type Severity } from '../../shared/changeSet.ts'
 import { agentNamed, goesBy, briefId, briefJobFor, briefMost, briefOf, challengeFor, chatFor, debriefFor, defaultRunner, nextFor, worksIn, repliesFor, resumeFor, setChallengeFor, setDebriefFor, type Card, type ChangeSet, type Chat, type Provider, type RepoBrief, pinned, unreadWorkOf } from '../../shared/work.ts'
@@ -14,7 +16,9 @@ import { askOfAgent, commentAskOfAgent, type JiraConnection } from './jira.ts'
 // back with its pull request. One server per request (the transport is stateless), bound to the agent its token names.
 
 const instructions = `Binders is where this team's work lives: notes in binders, and cards on each binder's board that
-come from them. You are one of the team's agents.
+come from them. You are one of the team's agents. Before working in a binder, read get_binder_context: its guide, its
+rules and where to look. Its notes are the team's knowledge base, and you help keep them: edit what you learn into them,
+and where a note is locked, propose_note_change.
 
 How to work:
 1. wait_for_work (or list_tasks) finds a card meant for you or open to anyone you can do. claim_task takes it; only one
@@ -221,12 +225,54 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
     return text(hub.state.notes.filter((n) => mayUse(n.binderId) && (!only || n.binderId === only.id)).map((n) => ({ id: n.id, title: titleOf(n.text), binder: hub.state.binders.find((b) => b.id === n.binderId)?.name, folder: hub.state.folders.find((f) => f.id === n.folderId)?.name, edited: n.editedAt })))
   }))
 
+  const openProposals = (noteId: string) => hub.state.noteProposals.filter((p) => p.noteId === noteId && p.state === 'open').map((p) => ({ id: p.id, by: hub.state.agents.find((x) => x.id === p.by)?.name ?? p.by, why: p.why, comments: p.comments.length }))
+
+  server.registerTool('get_binder_context', {
+    description: 'What to read before working in a binder: how Binders works, the binder’s guide, and where to look. of: a binder, card, change set or note (id or name).',
+    inputSchema: { of: z.string() },
+  }, run(async ({ of }: { of: string }) => {
+    const card = hub.state.cards.find((c) => c.id === of)
+    const set = hub.state.changeSets.find((c) => c.id === of)
+    const noteOf = hub.state.notes.find((n) => n.id === of)
+    const binderId = card?.binderId ?? set?.binderId ?? noteOf?.binderId ?? hub.state.binders.find((b) => b.id === of || b.name.toLowerCase() === of.trim().toLowerCase())?.id
+    if (!binderId || !mayUse(binderId)) throw new Refused(`Nothing called ${of} you may read.`)
+    return text(binderContext(hub.state, binderId, card?.noteId ?? noteOf?.id))
+  }))
+
+  server.registerTool('propose_note_change', {
+    description: 'Proposes a change to a locked note, for a person to review, when you can’t edit it yourself: find and replace one exact passage (find must appear once), or text for the whole note. why: what’s wrong or out of date.',
+    inputSchema: { id: z.string(), why: z.string(), find: z.string().optional(), replace: z.string().optional(), text: z.string().optional() },
+  }, run(async ({ id, why, find, replace, text: whole }: { id: string; why: string; find?: string; replace?: string; text?: string }) => {
+    const note = findNote(id)
+    if (!note || !mayUse(note.binderId)) throw new Refused(`No note ${id} you may read.`)
+    let next: string
+    if (find !== undefined) {
+      const at = note.text.indexOf(find)
+      if (at < 0) throw new Refused('That passage isn’t in the note (it may have changed): get_note and try again.')
+      if (note.text.indexOf(find, at + 1) >= 0) throw new Refused('That passage is in the note more than once: give more of it.')
+      next = note.text.slice(0, at) + (replace ?? '') + note.text.slice(at + find.length)
+    } else if (whole !== undefined) next = whole
+    else throw new Refused('Give find and replace, or the whole text.')
+    const proposal = await propose(hub, { kind: 'agent', id: agentId }, agentId, note.id, next, why)
+    return text({ id: proposal.id, state: 'open', note: 'A person reviews it. Carry on without it.' })
+  }))
+
+  server.registerTool('reply_to_note_proposal', {
+    description: 'Says something on a proposed change to a locked note, to talk it over with who’s reviewing it. id: the proposal’s, from get_note’s open_proposals.',
+    inputSchema: { id: z.string(), text: z.string() },
+  }, run(async ({ id, text: said }: { id: string; text: string }) => {
+    const proposal = hub.state.noteProposals.find((p) => p.id === id)
+    if (!proposal || !mayUse(proposal.binderId)) throw new Refused(`No proposal ${id}.`)
+    await commentOn(hub, { kind: 'agent', id: agentId }, agentId, id, said)
+    return text('Said.')
+  }))
+
   server.registerTool('get_note', { description: 'A note’s Markdown, by id or title, with the cards that came from it and, in full, the notes it links to. Words a work item quotes come from the note itself.', inputSchema: { id: z.string() } }, run(async ({ id }: { id: string }) => {
     const note = findNote(id)
     if (!note || !mayUse(note.binderId)) throw new Refused(`No note ${id} you may read.`)
     const cards = (note.work ?? []).map((w) => hub.state.cards.find((c) => c.id === w.itemId)).filter((c): c is Card => !!c).map(summary)
     const { linked, left } = linkedNotes(hub.state.notes, note)
-    return text({ id: note.id, title: titleOf(note.text), text: note.text, cards, ...(linked.length ? { linked: linked.map((n) => ({ id: n.id, title: titleOf(n.text), text: n.text })) } : {}), ...(left.length ? { linked_too_long: left } : {}) })
+    return text({ id: note.id, title: titleOf(note.text), text: note.text, cards, ...(linked.length ? { linked: linked.map((n) => ({ id: n.id, title: titleOf(n.text), text: n.text })) } : {}), ...(left.length ? { linked_too_long: left } : {}), ...(note.locked ? { locked: { by: note.locked.by, note: 'Propose changes to this note with propose_note_change.' } } : {}), ...(openProposals(note.id).length ? { open_proposals: openProposals(note.id) } : {}) })
   }))
 
   server.registerTool('create_note', { description: 'Makes a note in a binder from Markdown.', inputSchema: { binder: z.string(), text: z.string() } }, run(async ({ binder, text: body }: { binder: string; text: string }) => {
@@ -516,7 +562,10 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
     return text({ repo: brief.repo, lessons: brief.lessons?.length ?? 0 })
   }))
 
-  server.registerTool('claim_task', { description: 'Takes a ready card. Only one agent gets it: if another took it first, this says so.', inputSchema: { id: z.string() } }, run(async ({ id }: { id: string }) => text(full(await actions.claim(agentId, id)))))
+  server.registerTool('claim_task', { description: 'Takes a ready card. Only one agent gets it: if another took it first, this says so.', inputSchema: { id: z.string() } }, run(async ({ id }: { id: string }) => {
+    const card = await actions.claim(agentId, id)
+    return text({ ...full(card), binder_context: binderContext(hub.state, card.binderId, card.noteId) })
+  }))
 
   server.registerTool('repo_token', {
     description: 'A GitHub token for a card you hold, for your run: for the repo you work in (repo: owner/name, the card’s project’s or one of yours; the project’s if not named) only, to read and push its code and open pull requests, for an hour (ask again for a fresh one). Given only while the person who set you up can push there. Use it in place of any other GitHub login: GH_TOKEN for gh, and as the password (user x-access-token) for git over HTTPS.',

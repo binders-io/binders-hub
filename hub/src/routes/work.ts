@@ -1,6 +1,8 @@
 import { Refusal } from '../auth.ts'
 import { save } from '../../../shared/noteDoc.ts'
 import { Refused } from '../hub.ts'
+import { commentOn, decide, propose, setLock } from '../noteChanges.ts'
+import { fromMarkdown, lockStops, titleOf } from '../../../shared/notes.ts'
 import { bodies } from '../schemas.ts'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { Context } from './context.ts'
@@ -117,6 +119,55 @@ export async function workRoutes(app: FastifyInstance, context: Context) {
     const markdown = await notes.at(param(request, 'id'), param(request, 'sha')).catch(() => undefined)
     return markdown === undefined ? reply.code(404).send({ error: 'No such version' }) : reply.type('text/markdown; charset=utf-8').send(markdown)
   })
+
+  const manager = (request: FastifyRequest) => spaces.mayManage(sp(request).id, login(request), isAdmin(login(request)))
+  const nameOf = (request: FastifyRequest, id: string) => sp(request).hub.state.agents.find((a) => a.id === id)?.name ?? `@${id}`
+  // Whether this person may change this note, and decide what's proposed for it.
+  app.get('/api/notes/:id/access', act(async (request) => {
+    const note = sp(request).hub.state.notes.find((n) => n.id === param(request, 'id'))
+    if (!note) throw new Refused('No such note.')
+    return { mayChange: !lockStops(note, { login: login(request), manager: manager(request) }) }
+  }))
+  app.post('/api/notes/:id/lock', act(async (request) => {
+    const { hub, notes } = sp(request)
+    const locked = (request.body as { locked?: unknown } | undefined)?.locked === true
+    const id = param(request, 'id')
+    await setLock(hub, login(request), manager(request), id, locked)
+    await notes?.version(id, `${locked ? 'Locked' : 'Unlocked'} by @${login(request)}`)
+    return { ok: true }
+  }))
+  app.post('/api/notes/:id/proposals', act(async (request) => {
+    const body = (request.body ?? {}) as { text?: unknown; why?: unknown }
+    if (typeof body.text !== 'string' || typeof body.why !== 'string') throw new Refused('A proposal needs its words and why.')
+    return propose(sp(request).hub, { kind: 'user', login: login(request) }, login(request), param(request, 'id'), body.text, body.why)
+  }))
+  app.post('/api/note-proposals/:id/comments', act(async (request) => {
+    const text = (request.body as { text?: unknown } | undefined)?.text
+    if (typeof text !== 'string') throw new Refused('Say something.')
+    await commentOn(sp(request).hub, { kind: 'user', login: login(request) }, login(request), param(request, 'id'), text)
+    return { ok: true }
+  }))
+  app.post('/api/note-proposals/:id/decide', act(async (request) => {
+    const { hub, notes } = sp(request)
+    const accept = (request.body as { accept?: unknown } | undefined)?.accept === true
+    const { proposal, accepted } = await decide(hub, login(request), manager(request), param(request, 'id'), accept)
+    if (accepted) await notes?.version(proposal.noteId, `Accepted from ${nameOf(request, proposal.by)}, by @${login(request)}: ${proposal.why.split('\n')[0].slice(0, 120)}`)
+    return { ok: true }
+  }))
+  // Back to a version: a change like any other, so a lock stops it for whoever it stops, and the version it replaces stays.
+  app.post('/api/notes/:id/restore', act(async (request) => {
+    const { hub, notes } = sp(request)
+    if (!notes) throw new Refused('This hub keeps no versions.')
+    const sha = (request.body as { sha?: unknown } | undefined)?.sha
+    if (typeof sha !== 'string') throw new Refused('Which version?')
+    const id = param(request, 'id')
+    const file = await notes.at(id, sha).catch(() => undefined)
+    if (file === undefined) throw new Refused('No such version.')
+    const text = fromMarkdown(file)
+    await hub.record({ kind: 'user', login: login(request) }, { type: 'note.edit', id, text, title: titleOf(text), by: login(request), at: new Date().toISOString() })
+    await notes.version(id, `Restored ${sha.slice(0, 7)} by @${login(request)}`)
+    return { ok: true }
+  }))
 
   // Each binder's cards as issues: how many are on GitHub, and what last went wrong.
   app.get('/api/issues', async (request) => {

@@ -1,7 +1,7 @@
 import { space } from '../data/space'
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { ArrowUpRight, CalendarClock, Check, GitCommitHorizontal, GitPullRequest, LoaderCircle, ChevronsLeft, ChevronsRight, ExternalLink, Maximize2, MessageSquare, Minimize2, PanelLeft, PanelRight, Sparkles, Trash2, X } from 'lucide-react'
+import { ArrowUpRight, CalendarClock, Check, GitCommitHorizontal, GitPullRequest, LoaderCircle, Lock, ChevronsLeft, ChevronsRight, ExternalLink, Maximize2, MessageSquare, Minimize2, PanelLeft, PanelRight, Sparkles, Trash2, X } from 'lucide-react'
 import { stages } from '../data/model'
 import { isOnline, nameFor, sameFields, sameValues, useActions, useClock, useHub, useLiveNote, usePresence, type State } from '../data/store'
 import { cardPrompt } from '../data/prompts'
@@ -9,6 +9,7 @@ import type { Card, Note } from '../data/model'
 import { ago, usePhone } from '../components/bits'
 import { attempt, toast } from '../components/Toast'
 import { call } from '../data/api'
+import { NoteControls, useMayChange } from '../components/NoteControls'
 import { AgentAvatar, Who, stageTone } from '../components/bits'
 import { NoteTree } from '../components/NoteTree'
 import { NoteChat } from '../components/NoteChat'
@@ -156,6 +157,7 @@ function NoteScreen({ noteId }: { noteId: string }) {
     }
   }
 
+  const mayChange = useMayChange(note ?? { id: noteId })
   if (!note) return null
 
   const binder = binders.find((b) => b.id === note.binderId)
@@ -181,6 +183,7 @@ function NoteScreen({ noteId }: { noteId: string }) {
         {showTree && !phone && <div className="resize-handle" onPointerDown={drag('tree')} role="separator" aria-orientation="vertical" aria-label="Resize the notes list" />}
         <NoteMeta noteId={note.id} trail={[binder?.name, ...trail].join(' / ')}>
           <span className="view-buttons">
+            <NoteControls note={note} mayChange={mayChange} />
             {focus === 'none' && phone && <button type="button" className="icon-button" onClick={() => setListFor(listOpen ? undefined : note.id)} title="Notes" aria-label={listOpen ? 'Hide the notes list' : 'Show the notes list'} aria-expanded={listOpen}><PanelLeft size={15} /></button>}
             {focus === 'none' && !phone && <button type="button" className="icon-button" onClick={() => change({ treeOpen: !layout.treeOpen })} title={layout.treeOpen ? 'Hide the notes list' : 'Show the notes list'} aria-label={layout.treeOpen ? 'Hide the notes list' : 'Show the notes list'}><PanelLeft size={15} /></button>}
             {focus === 'none' && !phone && <button type="button" className="icon-button" onClick={() => change({ sideOpen: !layout.sideOpen })} title={layout.sideOpen ? 'Hide the chat and Distill' : 'Show the chat and Distill'} aria-label={layout.sideOpen ? 'Hide the side panel' : 'Show the side panel'}><PanelRight size={15} /></button>}
@@ -198,8 +201,9 @@ function NoteScreen({ noteId }: { noteId: string }) {
           }} />
         </NoteMeta>
         <div className="note-path mono" title="Where the hub keeps this note">{space || 'notes'}/{path}</div>
-        <Toolbar editor={editor} raw={raw} onRaw={showRaw} />
-        <NoteEditor key={note.id} noteId={note.id} binderId={note.binderId} folderId={note.folderId} editor={editor} raw={raw} />
+        {note.locked && !mayChange && <p className="note-locked"><Lock size={13} /> Locked by @{note.locked.by}. Use the versions button to propose a change for review.</p>}
+        {mayChange && <Toolbar editor={editor} raw={raw} onRaw={showRaw} />}
+        <NoteEditor key={`${note.id}:${mayChange ? 'edit' : 'read'}`} noteId={note.id} binderId={note.binderId} folderId={note.folderId} editor={editor} raw={raw} readOnly={!mayChange} />
         <Backlinks noteId={note.id} title={note.title} />
       </article>}
 
@@ -339,10 +343,11 @@ interface EditorProps {
   folderId?: string
   editor: RefObject<EditorHandle | null>
   raw: boolean
+  readOnly?: boolean
 }
 
 /** The note itself. Once its document is here the editor keeps its own text, so a keystroke goes no further than this. */
-const NoteEditor = memo(function NoteEditor({ noteId, binderId, folderId, editor, raw }: EditorProps) {
+const NoteEditor = memo(function NoteEditor({ noteId, binderId, folderId, editor, raw, readOnly }: EditorProps) {
   const store = useActions()
   const { openItem } = useUI()
   const live = useLiveNote(noteId)
@@ -365,7 +370,7 @@ const NoteEditor = memo(function NoteEditor({ noteId, binderId, folderId, editor
       go({ screen: 'notes', id: found ? found.id : store.addNote(binderId, folderId, `# ${title}\n\n`) })
     },
   }), [store, binderId, folderId])
-  return <MarkdownEditor ref={editor} noteId={noteId} text={text} live={live} onChange={(next, changes) => store.editNote(noteId, next, changes)} links={links} marks={marks} raw={raw} />
+  return <MarkdownEditor ref={editor} noteId={noteId} text={text} live={live} onChange={(next, changes) => store.editNote(noteId, next, changes)} links={links} marks={marks} raw={raw} readOnly={readOnly} />
 })
 
 /** A note's [[links]], in lower case, worked out once for each version of it: this looks through every note on every change. */
