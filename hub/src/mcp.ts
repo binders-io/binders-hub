@@ -1,10 +1,10 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { runnerVersion, tools } from '../../shared/agents.ts'
-import { titleOf, isBlank } from '../../shared/notes.ts'
+import { linkedNotes, titleOf, isBlank } from '../../shared/notes.ts'
 import { briefText, docsFolderName, docsGiven, repoDocs } from '../../shared/briefs.ts'
 import { byWorst, challengeSet, confidences, setOfCard, replyVerdicts, doneWhenPoints, findingKinds, marks, numberedDiff, severities, type BlastRadius, type Confidence, type FindingKind, type Mark, type ReplyVerdict, type Severity } from '../../shared/changeSet.ts'
-import { agentNamed, briefId, briefJobFor, briefMost, briefOf, challengeFor, chatFor, debriefFor, defaultRunner, nextFor, worksIn, repliesFor, resumeFor, setChallengeFor, setDebriefFor, type Card, type ChangeSet, type Chat, type Provider, type RepoBrief, pinned, unreadWorkOf } from '../../shared/work.ts'
+import { agentNamed, goesBy, briefId, briefJobFor, briefMost, briefOf, challengeFor, chatFor, debriefFor, defaultRunner, nextFor, worksIn, repliesFor, resumeFor, setChallengeFor, setDebriefFor, type Card, type ChangeSet, type Chat, type Provider, type RepoBrief, pinned, unreadWorkOf } from '../../shared/work.ts'
 import type { Actions } from './actions.ts'
 import type { SentTest } from './actions/debriefs.ts'
 import { Refused, type Hub } from './hub.ts'
@@ -139,7 +139,7 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
   const summary = (card: Card) => ({
     id: card.id, title: card.title, binder: hub.state.binders.find((b) => b.id === card.binderId)?.name, repo: actions.repoOf(card), stage: stageFor(card.stage), size: card.size,
     holder: hub.state.agents.find((a) => a.id === card.agentId)?.name, holder_id: card.agentId, meant_for: hub.state.agents.find((a) => a.id === card.meantFor)?.name,
-    issue: card.issue?.url, waits_for: card.waitsFor, needs_you: reviewing(card) ? undefined : card.needsYou, permission: card.permission,
+    issue: card.issue?.url, jira: card.jira?.key, waits_for: card.waitsFor, needs_you: reviewing(card) ? undefined : card.needsYou, permission: card.permission,
   })
   const full = (card: Card) => reviewing(card) ? {
     ...summary(card),
@@ -217,11 +217,12 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
     return text(hub.state.notes.filter((n) => mayUse(n.binderId) && (!only || n.binderId === only.id)).map((n) => ({ id: n.id, title: titleOf(n.text), binder: hub.state.binders.find((b) => b.id === n.binderId)?.name, folder: hub.state.folders.find((f) => f.id === n.folderId)?.name, edited: n.editedAt })))
   }))
 
-  server.registerTool('get_note', { description: 'A note’s Markdown, by id or title, with the cards that came from it.', inputSchema: { id: z.string() } }, run(async ({ id }: { id: string }) => {
+  server.registerTool('get_note', { description: 'A note’s Markdown, by id or title, with the cards that came from it and, in full, the notes it links to. Words a work item quotes come from the note itself.', inputSchema: { id: z.string() } }, run(async ({ id }: { id: string }) => {
     const note = findNote(id)
     if (!note || !mayUse(note.binderId)) throw new Refused(`No note ${id} you may read.`)
     const cards = (note.work ?? []).map((w) => hub.state.cards.find((c) => c.id === w.itemId)).filter((c): c is Card => !!c).map(summary)
-    return text({ id: note.id, title: titleOf(note.text), text: note.text, cards })
+    const { linked, left } = linkedNotes(hub.state.notes, note)
+    return text({ id: note.id, title: titleOf(note.text), text: note.text, cards, ...(linked.length ? { linked: linked.map((n) => ({ id: n.id, title: titleOf(n.text), text: n.text })) } : {}), ...(left.length ? { linked_too_long: left } : {}) })
   }))
 
   server.registerTool('create_note', { description: 'Makes a note in a binder from Markdown.', inputSchema: { binder: z.string(), text: z.string() } }, run(async ({ binder, text: body }: { binder: string; text: string }) => {
@@ -398,7 +399,7 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
     description: 'Gives a card to an agent (this one or another, by name or id) so its runner takes it next, as a person giving it on the board would; or to any agent, with agent "any". For a card that’s ready or proposed and nobody holds; a proposed one that comes of work nobody has read yet waits for a person. Use it when a person asks you to hand work to an agent; claim_task is for taking a card to work on now.',
     inputSchema: { id: z.string(), agent: z.string().describe('the agent’s name or id, or "any"') },
   }, run(async ({ id, agent: ref }: { id: string; agent: string }) => {
-    const card = hub.state.cards.find((c) => c.id === id || (c.issue && `#${c.issue.number}` === id.trim()))
+    const card = hub.state.cards.find((c) => c.id === id || goesBy(c, id))
     if (!card || !mayUse(card.binderId)) throw new Refused(`No card ${id} you may see.`)
     const any = ref.trim().toLowerCase() === 'any'
     const to = any ? undefined : hub.state.agents.find((a) => !a.revoked && a.id === ref) ?? agentNamed(hub.state.agents, ref)

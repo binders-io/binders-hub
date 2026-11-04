@@ -23,6 +23,8 @@ const card = z.looseObject({ id: text, binderId: text, title: text, brief: text,
 const cardFields = z.looseObject({
   id: z.never().optional(),
   activity: z.never().optional(),
+  // Only the hub says what its Jira issue is: it's a link people follow.
+  jira: z.never().optional(),
   binderId: text.optional(),
   title: text.optional(),
   brief: text.optional(),

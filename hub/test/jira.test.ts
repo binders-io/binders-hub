@@ -27,6 +27,7 @@ const account = 'service-account'
 
 interface FakeIssue {
   key: string
+  comments?: { body: unknown; created: string; author: { displayName: string; accountId: string } }[]
   summary?: string
   description?: unknown
   labels?: string[]
@@ -37,7 +38,7 @@ interface FakeIssue {
   [field: string]: unknown
 }
 
-async function fakeJira(options: { refuseWrites?: () => boolean; refuseSearch?: () => boolean; refuseParent?: () => boolean; epicName?: boolean } = {}) {
+async function fakeJira(options: { refuseWrites?: () => boolean; refuseSearch?: () => boolean; refuseParent?: () => boolean; epicName?: boolean; workflow?: Record<string, string[]>; refuseMoveTo?: string; refusePoints?: boolean } = {}) {
   const calls: { method: string; path: string; body?: unknown }[] = []
   const issues = new Map<string, FakeIssue>()
   const statuses = ['To Do', 'In Progress', 'Done']
@@ -61,6 +62,7 @@ async function fakeJira(options: { refuseWrites?: () => boolean; refuseSearch?: 
     const one = issues.get((request.params as { id: string }).id)
     if (!one) return reply.code(404).send({})
     if ((request.body as { fields: { parent?: unknown } }).fields.parent && options.refuseParent?.()) return reply.code(400).send({ errors: { parent: 'Not under that.' } })
+    if (options.refusePoints && (request.body as { fields: object }).fields && 'customfield_10016' in (request.body as { fields: object }).fields) return reply.code(400).send({ errors: { customfield_10016: 'Not on the screen.' } })
     Object.assign(one, (request.body as { fields: object }).fields)
     return {}
   })
@@ -70,17 +72,33 @@ async function fakeJira(options: { refuseWrites?: () => boolean; refuseSearch?: 
     if (!one) return reply.code(404).send({})
     return { id, key: one.key, fields: { summary: one.summary, description: one.description, status: { name: one.status } } }
   })
-  app.get('/rest/api/3/issue/:id/transitions', async () => ({ transitions: statuses.map((name, i) => ({ id: String(i + 1), name, to: { name } })) }))
-  app.post('/rest/api/3/issue/:id/transitions', async (request) => {
+  const every = () => options.workflow ? Object.keys(options.workflow) : statuses
+  const categoryOf = (name: string) => (/done|won/i.test(name) ? 'done' : /to do|backlog|selected/i.test(name) ? 'new' : 'indeterminate')
+  app.get('/rest/api/3/issue/:id/transitions', async (request) => {
+    const one = issues.get((request.params as { id: string }).id)
+    const ways = options.workflow ? options.workflow[one?.status ?? ''] ?? [] : statuses
+    return { transitions: ways.map((name) => ({ id: String(every().indexOf(name) + 1), name, to: { name, statusCategory: { key: categoryOf(name) } } })) }
+  })
+  app.post('/rest/api/3/issue/:id/transitions', async (request, reply) => {
     const body = request.body as { transition: { id: string } }
     const one = issues.get((request.params as { id: string }).id)
-    if (one) one.status = statuses[Number(body.transition.id) - 1]
+    const to = every()[Number(body.transition.id) - 1]
+    if (to === options.refuseMoveTo) return reply.code(400).send({ errors: { resolution: 'A resolution is required.' } })
+    if (one) one.status = to
     return {}
   })
+  app.post('/rest/api/3/issue/:id/comment', async (request) => {
+    const one = issues.get((request.params as { id: string }).id)!
+    ;(one.comments ??= []).push({ body: (request.body as { body: unknown }).body, created: new Date().toISOString(), author: { displayName: 'Binders Saver', accountId: account } })
+    return { id: '1' }
+  })
+  app.get('/rest/api/3/field', async () => [{ id: 'customfield_10016', name: 'Story Points' }, { id: 'summary', name: 'Summary' }])
   app.get('/rest/api/3/search', async (_request, reply) => reply.code(410).send({ errorMessages: ['This API has been removed.'] }))
   app.get('/rest/api/3/search/jql', async (request, reply) => {
     if (options.refuseSearch?.()) return reply.code(503).send({})
     const { jql } = request.query as { jql: string }
+    // A look at what's changed.
+    if (/labels = "binders"/.test(jql)) return { issues: [...issues.entries()].filter(([, one]) => one.labels?.includes('binders')).map(([id, one]) => ({ id, key: one.key, fields: { status: { name: one.status }, comment: { comments: one.comments ?? [] } } })) }
     const label = /labels = "([^"]+)"/.exec(jql)?.[1] ?? ''
     const project = /project = "([^"]+)"/.exec(jql)?.[1]
     return { issues: [...issues.entries()].filter(([, one]) => one.labels?.includes(label) && one.project === project).map(([id, one]) => ({ id, key: one.key })) }
@@ -312,7 +330,7 @@ describe('Jira talking back', () => {
     }
   })
 
-  it('knows its own transitions by who made them', async () => {
+  it('knows its own transitions by where they went', async () => {
     const set = await setUp()
     try {
       await set.card('card-echo')
@@ -378,6 +396,169 @@ describe('Jira talking back', () => {
       assert.equal(odd, 'ignored')
     } finally {
       await set.close()
+    }
+  })
+
+  it('hears a person using the service account’s own login', async () => {
+    const set = await setUp()
+    try {
+      await set.card('card-mine')
+      await mirrored(set)
+      await settled()
+      assert.equal(await set.statusChange('101', 'Done', { accountId: account }), 'moved')
+      assert.equal(set.stored('card-mine')?.stage, 'live')
+      const said = await handleWebhook(set.hub, set.jira, set.saver, { webhookEvent: 'comment_created', issue: { id: '101' }, comment: { body: 'Looks good.', created: '2026-01-01T10:00:00.000Z', author: { displayName: 'Me', accountId: account } } })
+      assert.equal(said, 'comment')
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('goes through the statuses between when its workflow has no direct way', async () => {
+    const workflow = { 'To Do': ['Selected', 'Won’t Do'], Selected: ['Building', 'To Do'], Building: ['Done', 'Selected'], Done: ['To Do'], 'Won’t Do': [] }
+    const set = await setUp({ workflow }, { ready: 'To Do', working: 'Building', live: 'Done' })
+    try {
+      await set.card('card-far')
+      await mirrored(set)
+      await settled()
+      await set.edit('card-far', { stage: 'live' })
+      await until(() => set.fake.issues.get('101')!.status === 'Done', 4000)
+      await settled()
+      assert.ok(!set.stored('card-far')?.activity.some((a) => a.by === 'Jira'), 'it got there, so there’s nothing to say')
+      assert.equal(set.stored('card-far')?.stage, 'live')
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('says when Jira won’t take an issue where its card went, once, and tries again at the next stage', async () => {
+    const workflow = { 'To Do': ['Building'], Building: [], Done: ['To Do'] }
+    const set = await setUp({ workflow }, { ready: 'To Do', working: 'Building', review: 'Done', live: 'Done' })
+    try {
+      await set.card('card-stuck')
+      await mirrored(set)
+      await settled()
+      await set.edit('card-stuck', { stage: 'review' })
+      await until(() => !!set.stored('card-stuck')?.activity.some((a) => a.by === 'Jira'), 4000)
+      const said = set.stored('card-stuck')!.activity.filter((a) => a.by === 'Jira')
+      assert.equal(said.length, 1)
+      assert.match(said[0].text, /wouldn’t take BIND-101 to Done from To Do: it got as far as Building/)
+      assert.equal(set.stored('card-stuck')?.stage, 'review', 'the board keeps its stage')
+      const asks = set.fake.calls.length
+      await set.edit('card-stuck', { title: 'A new title' })
+      await settled()
+      assert.equal(set.stored('card-stuck')!.activity.filter((a) => a.by === 'Jira').length, 1)
+      assert.ok(!set.fake.calls.slice(asks).some((c) => c.path.endsWith('/transitions')), 'it isn’t asked again for the same stage')
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('says when a move needs what Jira requires', async () => {
+    const set = await setUp({ refuseMoveTo: 'Done' }, { ready: 'To Do', live: 'Done' })
+    try {
+      await set.card('card-needs')
+      await mirrored(set)
+      await settled()
+      await set.edit('card-needs', { stage: 'live' })
+      await until(() => !!set.stored('card-needs')?.activity.some((a) => a.by === 'Jira'), 4000)
+      assert.match(set.stored('card-needs')!.activity.find((a) => a.by === 'Jira')!.text, /wouldn’t move BIND-101 to Done: Jira said 400.*resolution/)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('takes what’s said on a card to its issue, and doesn’t hear it back', async () => {
+    const set = await setUp()
+    try {
+      await set.card('card-said')
+      await mirrored(set)
+      await settled()
+      const at = () => new Date().toISOString()
+      await set.hub.record(actor, { type: 'card.activity', id: 'card-said', activity: { at: at(), by: 'sam', kind: 'comment', text: 'Please check the logs.' } })
+      await until(() => set.fake.issues.get('101')!.comments?.length === 1, 4000)
+      assert.match(JSON.stringify(set.fake.issues.get('101')!.comments![0].body), /sam, in Binders:.*Please check the logs\./)
+      await set.hub.record(actor, { type: 'card.activity', id: 'card-said', activity: { at: at(), by: 'Someone on Jira', kind: 'comment', text: 'From there.' } })
+      await set.hub.record(actor, { type: 'card.activity', id: 'card-said', activity: { at: at(), by: 'Jira', kind: 'said', text: 'A word from the hub.' } })
+      await settled()
+      assert.equal(set.fake.issues.get('101')!.comments?.length, 1, 'only what was said here goes there')
+
+      await set.saver.poll()
+      assert.equal(set.stored('card-said')!.activity.filter((a) => a.text.includes('Please check')).length, 1)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('hears what people did in Jira with no webhook, once, when it asks', async () => {
+    const set = await setUp()
+    try {
+      await set.card('card-asked')
+      await mirrored(set)
+      await settled()
+      const issue = set.fake.issues.get('101')!
+      issue.status = 'Done'
+      issue.comments = [{ body: 'Done on our side.', created: '2026-01-01T10:00:00.000Z', author: { displayName: 'Pat', accountId: 'a-person' } }]
+      await set.saver.poll()
+      assert.equal(set.stored('card-asked')?.stage, 'live')
+      assert.equal(set.stored('card-asked')!.activity.filter((a) => a.by === 'Pat on Jira').length, 1)
+      await set.saver.poll()
+      assert.equal(set.stored('card-asked')!.activity.filter((a) => a.by === 'Pat on Jira').length, 1)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('doesn’t take a move still on its way for a person’s', async () => {
+    const set = await setUp()
+    try {
+      await set.card('card-going')
+      await mirrored(set)
+      await settled()
+      await set.hub.record(actor, { type: 'card.update', id: 'card-going', fields: { stage: 'live' } })
+      await set.saver.poll()
+      assert.equal(set.stored('card-going')?.stage, 'live')
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('takes up an issue left behind by a move that was taken for done', async () => {
+    const workflow = { 'To Do': ['Building'], Building: ['Done'], Done: [] }
+    const set = await setUp({ workflow }, { ready: 'To Do', working: 'Building', live: 'Done' })
+    try {
+      await set.card('card-old', 'live')
+      await set.kv.set('jira:test:issues', JSON.stringify({ 'card-old': { id: '500', key: 'BIND-500', hash: 'x', stage: 'live' } }))
+      set.fake.issues.set('500', { key: 'BIND-500', status: 'To Do', labels: ['binders'], project: 'BIND' })
+      await set.saver.load()
+      await set.saver.poll()
+      await until(() => set.fake.issues.get('500')!.status === 'Done', 4000)
+      assert.equal(set.stored('card-old')?.stage, 'live')
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('writes a card’s size as points, and says if the project won’t have them', async () => {
+    const set = await setUp()
+    try {
+      await set.jira.configure({ ...set.jira.settings, pointsField: 'customfield_10016', points: { S: 1, M: 3, L: 8 } })
+      await set.card('card-sized')
+      await until(() => (set.fake.issues.get('101') as Record<string, unknown> | undefined)?.customfield_10016 === 3, 4000)
+      await set.edit('card-sized', { size: 'L' })
+      await until(() => (set.fake.issues.get('101') as unknown as Record<string, unknown>).customfield_10016 === 8, 4000)
+    } finally {
+      await set.close()
+    }
+    const refused = await setUp({ refusePoints: true })
+    try {
+      await refused.jira.configure({ ...refused.jira.settings, pointsField: 'customfield_10016' })
+      await refused.card('card-sized')
+      await until(() => !!refused.stored('card-sized')?.activity.some((a) => a.by === 'Jira'), 4000)
+      assert.match(refused.stored('card-sized')!.activity.find((a) => a.by === 'Jira')!.text, /wouldn’t take the points for BIND-101/)
+      assert.equal(refused.made(), 1, 'the issue is there all the same')
+    } finally {
+      await refused.close()
     }
   })
 
@@ -482,6 +663,8 @@ describe('a binder’s Jira settings', () => {
       const story = project.types.find((t: { name: string }) => t.name === 'Story')
       assert.deepEqual(story.suggested.statuses, { ready: 'Backlog', working: 'Building', blocked: 'On Hold', review: 'Peer Review', live: 'Shipped' })
       assert.deepEqual(story.suggested.inbound, { Selected: 'ready' })
+      assert.equal(story.suggested.pointsField, 'customfield_10016')
+      assert.deepEqual(project.pointFields, [{ id: 'customfield_10016', name: 'Story Points' }])
       assert.equal(JSON.stringify(set.jira.settings), before)
       assert.ok(!JSON.stringify(project).includes('tok-ab'))
 
@@ -531,6 +714,91 @@ describe('a binder’s Jira settings', () => {
       await set.hub.record(actor, { type: 'card.update', id: 'card-three', fields: { noteId: 'n1' } })
       await mirrored(set, count + 1)
       assert.equal([...set.fake.issues.values()].filter((i) => i.type === 'Epic').length, 0, 'a deleted Epic isn’t made again')
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('reads the notes a note links to into its Epic, each once, and follows them', async () => {
+    const set = await setUp()
+    try {
+      await set.jira.configure({ ...set.jira.settings, issueType: 'Story', noteIssueType: 'Epic' })
+      await set.note('Near', '# Near\n\nNear words, and on to [[Far]] and back to [[The plan|the plan]].')
+      await set.note('Far', '# Far\n\nFar words.')
+      await set.note('Elsewhere', '# Elsewhere\n\nAnother binder’s words.')
+      await set.hub.record(actor, { type: 'binder.put', binder: { id: 'b2', name: 'Other' } as never })
+      await set.hub.record(actor, { type: 'note.put', note: { ...set.hub.state.notes.find((n) => n.id === 'Elsewhere')!, binderId: 'b2' } })
+      await set.note('The plan', '# The plan\n\nSee [[Near#Part|the near one]], [[Elsewhere]] and [[Not written yet]].')
+      await set.card('card-one')
+      await set.hub.record(actor, { type: 'card.update', id: 'card-one', fields: { noteId: 'The plan' } })
+      await until(() => [...set.fake.issues.values()].some((i) => i.type === 'Epic'), 4000)
+      const epic = [...set.fake.issues.values()].find((i) => i.type === 'Epic')!
+      const said = words(epic)
+      assert.match(said, /See the near one, Elsewhere and Not written yet\./)
+      assert.match(said, /Linked note: Near/)
+      assert.match(said, /Near words, and on to Far and back to the plan\./)
+      assert.match(said, /Far words/)
+      assert.doesNotMatch(said, /Another binder’s words/)
+      assert.doesNotMatch(said, /\[\[/)
+      assert.equal(said.match(/"type":"heading"/g)?.length, 3, 'the note’s title and one for each linked note')
+
+      await set.hub.record(actor, { type: 'note.edit', id: 'Far', text: '# Far\n\nFarther words.', title: 'Far', by: 'you', at: new Date().toISOString() })
+      await until(() => /Farther words/.test(words(epic)), 4000)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('names the linked notes that don’t fit in an Epic rather than cutting them off', async () => {
+    const set = await setUp()
+    try {
+      await set.jira.configure({ ...set.jira.settings, issueType: 'Story', noteIssueType: 'Epic' })
+      await set.note('Huge', `# Huge\n\n${'x'.repeat(31_000)}`)
+      await set.note('Small', '# Small\n\nSmall words.')
+      await set.note('n1', '# The plan\n\n[[Huge]] and [[Small]].')
+      await set.card('card-one')
+      await set.hub.record(actor, { type: 'card.update', id: 'card-one', fields: { noteId: 'n1' } })
+      await until(() => [...set.fake.issues.values()].some((i) => i.type === 'Epic'), 4000)
+      const said = words([...set.fake.issues.values()].find((i) => i.type === 'Epic'))
+      assert.match(said, /Small words/)
+      assert.doesNotMatch(said, /xxx/)
+      assert.match(said, /too long to fit here, in Binders: Huge/)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('shows a card’s Jira key once it has one, and stops when it doesn’t', async () => {
+    const set = await setUp()
+    try {
+      await set.card('card-one')
+      await until(() => !!set.stored('card-one')?.jira, 4000)
+      const [id, issue] = [...set.fake.issues.entries()][0]
+      assert.equal(set.stored('card-one')?.jira?.key, issue.key)
+      assert.equal(set.stored('card-one')?.jira?.url, `${set.jira.settings.baseUrl}/browse/${issue.key}`)
+      await settled()
+      assert.equal(set.made(), 1, 'showing the key writes nothing more')
+
+      await handleWebhook(set.hub, set.jira, set.saver, { webhookEvent: 'jira:issue_deleted', issue: { id } })
+      await until(() => !set.stored('card-one')?.jira, 4000)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('gives a card already mirrored its key when the hub starts, and takes it off when the project changes', async () => {
+    const set = await setUp()
+    try {
+      await set.card('card-one')
+      await until(() => !!set.stored('card-one')?.jira, 4000)
+      const key = set.stored('card-one')!.jira!.key
+      await set.hub.record(actor, { type: 'card.update', id: 'card-one', fields: { jira: undefined } })
+      assert.equal(set.stored('card-one')?.jira, undefined)
+      await set.saver.load()
+      assert.equal(set.stored('card-one')?.jira?.key, key)
+
+      await set.saver.forget()
+      assert.equal(set.stored('card-one')?.jira, undefined)
     } finally {
       await set.close()
     }

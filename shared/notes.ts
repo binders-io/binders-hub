@@ -140,6 +140,36 @@ export function linksIn(text: string) {
   return [...text.matchAll(/\[\[([^\]|#^]+)(?:[#^][^\]|]*)?(?:\|[^\]]*)?\]\]/g)].map((m) => m[1].trim())
 }
 
+/** [[Links]] as words, for somewhere they don't link: what they show, or the note they name. */
+export const linksAsWords = (text: string) => text.replace(/\[\[([^\]|#^]+)(?:[#^][^\]|]*)?(?:\|([^\]]*))?\]\]/g, (_, title: string, shown?: string) => (shown?.trim() || title).trim())
+
+/**
+ * The notes a note links to and those they link to, nearest first and each once. Only its own binder's: a link doesn't
+ * carry one binder's words into another's. What doesn't fit in `room` is named instead, whole notes being kept whole.
+ */
+export function linkedNotes(notes: Note[], note: Note, room = 30_000) {
+  const seen = new Set([note.id])
+  const queue = [note]
+  const linked: Note[] = []
+  const left: string[] = []
+  for (let at = queue.shift(); at; at = queue.shift()) {
+    for (const title of linksIn(at.text)) {
+      const found = notes.find((n) => n.binderId === note.binderId && !seen.has(n.id) && n.title.toLowerCase() === title.toLowerCase())
+      if (!found) continue
+      seen.add(found.id)
+      queue.push(found)
+      // A little over its length, for what introduces it.
+      const size = found.text.length + 200
+      if (size > room) left.push(found.title)
+      else {
+        room -= size
+        linked.push(found)
+      }
+    }
+  }
+  return { linked, left }
+}
+
 export const slug = (text: string) => text.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'untitled'
 
 /** Where a note lives in the notes repo: its binder, its folders, its title. */

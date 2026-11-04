@@ -4,6 +4,7 @@ import { Bot, CircleUser, CornerDownLeft, FileText, GitPullRequestArrow, Rocket,
 import { useStore } from '../data/store'
 import { useUI } from '../ui'
 import { go } from '../route'
+import { cardNumber } from '../../../shared/work.ts'
 import { useModal } from './useModal'
 
 interface Command {
@@ -45,7 +46,7 @@ export function Palette({ onClose }: { onClose: () => void }) {
       { id: 'account', label: 'Your account', group: 'Go to', icon: CircleUser, run: () => go({ screen: 'account' }) },
     )
     for (const note of state.notes) list.push({ id: `n-${note.id}`, label: note.title, group: 'Notes', icon: FileText, hint: state.binders.find((b) => b.id === note.binderId)?.name, run: () => go({ screen: 'notes', id: note.id }) })
-    for (const card of state.cards) list.push({ id: `c-${card.id}`, label: card.title, group: 'Cards', icon: SquareCheck, hint: card.issue ? `#${card.issue.number}` : undefined, run: () => openItem(card.id) })
+    for (const card of state.cards) list.push({ id: `c-${card.id}`, label: card.title, group: 'Cards', icon: SquareCheck, hint: cardNumber(card), run: () => openItem(card.id) })
     return list
   }, [state, store, openItem])
 

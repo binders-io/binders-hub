@@ -221,7 +221,10 @@ function AgentsPart() {
   )
 }
 
-type JiraStatus = { on?: boolean; mayManage?: boolean; baseUrl?: string; email?: string; tokenSet?: boolean; hint?: string; noteIssueType?: string; inbound?: Record<string, string>; project?: string; issueType?: string; statuses?: Record<string, string>; stages?: string[]; webhook?: { url: string } }
+type JiraPoints = { S: number; M: number; L: number }
+const usualPoints: JiraPoints = { S: 1, M: 3, L: 5 }
+
+type JiraStatus = { on?: boolean; mayManage?: boolean; baseUrl?: string; email?: string; tokenSet?: boolean; hint?: string; noteIssueType?: string; inbound?: Record<string, string>; pointsField?: string; points?: JiraPoints; project?: string; issueType?: string; statuses?: Record<string, string>; stages?: string[]; webhook?: { url: string } }
 
 function JiraPart() {
   const [jira, setJira] = useState<JiraStatus>()
@@ -233,6 +236,8 @@ function JiraPart() {
   const [noteIssueType, setNoteIssueType] = useState('')
   const [statuses, setStatuses] = useState<Record<string, string>>({})
   const [inbound, setInbound] = useState<Record<string, string>>({})
+  const [pointsField, setPointsField] = useState('')
+  const [points, setPoints] = useState<JiraPoints>(usualPoints)
   const [found, setFound] = useState<JiraFound>()
   const [filled, setFilled] = useState(false)
 
@@ -240,6 +245,7 @@ function JiraPart() {
   const fillStages = (type: JiraFoundType | undefined) => {
     setStatuses(type?.suggested.statuses ?? {})
     setInbound(type?.suggested.inbound ?? {})
+    setPointsField(type?.suggested.pointsField ?? '')
   }
   const fill = (next: NonNullable<JiraFound['project']>) => {
     const cards = next.suggested.issueType ?? next.types[0]?.name ?? ''
@@ -267,6 +273,8 @@ function JiraPart() {
     setNoteIssueType(next.noteIssueType ?? '')
     setStatuses(next.statuses ?? {})
     setInbound(next.inbound ?? {})
+    setPointsField(next.pointsField ?? '')
+    setPoints(next.points ?? usualPoints)
     // Connected before: what Jira has now, for the lists, leaving what's saved as it is.
     if (next.mayManage && next.baseUrl && next.tokenSet) void read(next.project ?? '', '', false, next.baseUrl, next.email ?? '').catch(() => undefined)
   })
@@ -274,7 +282,7 @@ function JiraPart() {
   if (!jira) return null
 
   const save = () => void attempt(() => call('PUT', '/api/jira', {
-    baseUrl, email, ...(token.trim() ? { token } : {}), project, issueType, noteIssueType, statuses, inbound,
+    baseUrl, email, ...(token.trim() ? { token } : {}), project, issueType, noteIssueType, statuses, inbound, pointsField, points,
   })).then((next) => {
     if (!next) return
     setToken('')
@@ -312,6 +320,7 @@ function JiraPart() {
   const workflow = types.find((t) => t.name === issueType)?.statuses ?? []
   const unmatched = stages.filter((stage) => !statuses[stage])
   const counted = Object.entries(inbound)
+  const pointFields = found?.project?.pointFields ?? []
   const canConnect = !!baseUrl.trim() && !!email.trim() && (!!token.trim() || !!jira.tokenSet)
 
   return (
@@ -319,7 +328,7 @@ function JiraPart() {
       <form className="form" onSubmit={(e) => { e.preventDefault(); save() }}>
         <p className="faint">
           Connect a service account and the hub reads your project from Jira and fills in the rest. Cards still going are
-          mirrored once you save; ones already done stay out. What comes back is a status someone changes, and comments. Only
+          mirrored once you save; ones already done stay out. Stages, points and comments go to Jira; a status someone changes and comments come back, within a minute. Only
           an agent starts work, so moving an issue to In Progress in Jira doesn’t move its card.
         </p>
         <label className="field">
@@ -387,6 +396,22 @@ function JiraPart() {
               {filled && <span className="field-hint">Filled in from your Jira: check it reads right, then save.{unmatched.length ? ` Nothing in this workflow looks like ${unmatched.join(' or ')}.` : ''}</span>}
               {counted.length > 0 && <span className="field-hint">When someone moves an issue in Jira, these count too: {counted.map(([name, stage]) => `${name} as ${stage}`).join(', ')}.</span>}
             </fieldset>
+            <fieldset className="field">
+              <legend className="field-label">Story points, from a card’s size</legend>
+              <div className="form-row" style={{ flexWrap: 'wrap', gap: '.5rem' }}>
+                <label className="field"><span className="field-label">Field</span>
+                  <select id="jira-points-field" value={pointsField} onChange={(e) => setPointsField(e.target.value)}>
+                    <option value="">Don’t set points</option>
+                    {withSaved(pointFields.map((f) => ({ value: f.id, label: f.name })), pointsField).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </label>
+                {pointsField && (['S', 'M', 'L'] as const).map((size) => (
+                  <label key={size} className="field"><span className="field-label">{size}</span>
+                    <input id={`jira-points-${size}`} type="number" min={0} max={1000} step="any" value={points[size]} onChange={(e) => setPoints((was) => ({ ...was, [size]: Number(e.target.value) }))} />
+                  </label>
+                ))}
+              </div>
+            </fieldset>
             <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
               <button className="button primary" disabled={!canConnect || !project.trim()}>Save</button>
               {found?.project && <button type="button" className="button" onClick={() => fill(found.project!)}>Fill in from Jira again</button>}
@@ -397,9 +422,9 @@ function JiraPart() {
       </form>
       {jira.on && jira.webhook && (
         <div className="copy-row" style={{ marginTop: '.75rem' }}>
-          <span className="field-label">Jira’s webhook, to this hub</span>
+          <span className="field-label">Jira’s webhook, to this hub (optional)</span>
           <div className="token-value mono"><span>{jira.webhook.url}</span><CopyWebhook url={jira.webhook.url} /></div>
-          <span className="field-hint">In Jira: Settings → System → WebHooks → Create. Use this address, with the events Issue updated, Issue deleted and Comment created, limited to this project. The address holds a secret: keep it like a password.</span>
+          <span className="field-hint">The hub asks Jira every minute without one. For news as it happens, in Jira: Settings → System → WebHooks → Create. Use this address, with the events Issue updated, Issue deleted and Comment created, limited to this project. The address holds a secret: keep it like a password.</span>
         </div>
       )}
     </div>
@@ -410,13 +435,13 @@ interface JiraFoundType {
   name: string
   level: number
   statuses: { name: string; category?: string }[]
-  suggested: { statuses: Record<string, string>; inbound: Record<string, string>; unmatched: string[] }
+  suggested: { statuses: Record<string, string>; inbound: Record<string, string>; unmatched: string[]; pointsField?: string }
 }
 
 interface JiraFound {
   who?: string
   projects: { key: string; name: string }[]
-  project?: { key: string; name: string; types: JiraFoundType[]; suggested: { noteIssueType?: string; issueType?: string } }
+  project?: { key: string; name: string; pointFields?: { id: string; name: string }[]; types: JiraFoundType[]; suggested: { noteIssueType?: string; issueType?: string } }
 }
 
 /** A list from Jira, with what's saved kept on it even if Jira no longer has it, so opening the page never changes a setting. */

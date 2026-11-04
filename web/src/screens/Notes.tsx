@@ -17,7 +17,7 @@ import { MarkdownEditor, type EditorHandle } from '../editor/MarkdownEditor'
 import { Toolbar } from '../editor/Toolbar'
 import type { Marks, WorkMark } from '../editor/workMarks'
 import { linksIn, slug } from '../../../shared/notes.ts'
-import { changeSetOf } from '../../../shared/work.ts'
+import { cardNumber, changeSetOf } from '../../../shared/work.ts'
 import { go, href } from '../route'
 import { useUI } from '../ui'
 import { openMenu } from '../components/ContextMenu'
@@ -324,7 +324,7 @@ function workOf(state: State, noteId: string): WorkMark[] {
   return [
     ...(note?.work ?? []).map((w) => {
       const card = state.cards.find((c) => c.id === w.itemId)
-      return { quote: w.quote, kind: 'card' as const, label: card?.issue ? `#${card.issue.number}` : (card?.title.slice(0, 18) ?? 'card'), tone: card ? stageTone[card.stage] : 'faint', stage: card ? stages.find((s) => s.id === card.stage)?.title : undefined, itemId: card?.id }
+      return { quote: w.quote, kind: 'card' as const, label: (card && cardNumber(card)) ?? card?.title.slice(0, 18) ?? 'card', tone: card ? stageTone[card.stage] : 'faint', stage: card ? stages.find((s) => s.id === card.stage)?.title : undefined, itemId: card?.id }
     }),
     ...state.proposals.filter((p) => p.noteId === noteId && p.state === 'new').map((p) => ({ quote: p.quote, kind: 'proposed' as const, label: 'Proposed' })),
   ]

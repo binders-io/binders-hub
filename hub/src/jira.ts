@@ -8,8 +8,9 @@ import { log } from './logger.ts'
 // Jira Cloud, as one binder's own tracker: its address, a service account, and the project its issues are made in. Once
 // it's connected, Jira says what that project has and most of the mapping fills itself in (discoverJira). A note becomes
 // an Epic and the cards distilled from it the Stories under it, when the binder says so. Cards go out (savers/jira.ts); what people do to those issues comes back (the webhook, at the end): a status they
-// change moves the card by the board's own rules, a comment lands on it. Only issues the saver made count, and its own
-// writes are known by who made them. The hub is the one copy of the words: Jira's description is written, never read
+// change moves the card by the board's own rules, a comment lands on it. The hub also asks every minute (savers/jira.ts),
+// so this works with no webhook set up. Only issues the saver made count, and its own moves are known by where they went,
+// not who made them: the account may well be a person's own. The hub is the one copy of the words: Jira's description is written, never read
 // back.
 
 export type StageStatuses = Partial<Record<Stage, string>>
@@ -29,8 +30,13 @@ export interface JiraSettings {
   statuses?: StageStatuses
   /** The stage each other status of the workflow counts as when someone moves an issue there: an issue only goes to `statuses`. */
   inbound?: Record<string, Stage>
+  /** The field an issue's points go in, as Jira names it (customfield_10016), and what each size of card is worth. Unset: points are left alone. */
+  pointsField?: string
+  points?: Record<Card['size'], number>
   on?: boolean
 }
+
+export const usualPoints: Record<Card['size'], number> = { S: 1, M: 3, L: 5 }
 
 /** The stages a Jira issue can stand for: a proposed card has no issue yet. */
 export const stages: Stage[] = ['ready', 'working', 'blocked', 'review', 'live']
@@ -133,6 +139,8 @@ export class JiraConnection {
       noteIssueType: fields.noteIssueType?.trim() || undefined,
       statuses: tidyStatuses(fields.statuses),
       inbound: fields.inbound && Object.keys(fields.inbound).length ? fields.inbound : undefined,
+      pointsField: fields.pointsField?.trim() || undefined,
+      points: fields.pointsField?.trim() ? fields.points ?? usualPoints : undefined,
       on: fields.on !== false && !!baseUrl && !!email && !!token && !!project,
     }
     await this.kv.set(`${this.key}:settings`, JSON.stringify({ ...this.settings, token: undefined, sealed: token ? this.sealer.seal(token) : undefined }))
@@ -204,19 +212,30 @@ export class JiraConnection {
     return (await this.self) === user.accountId
   }
 
-  /** Text as Jira's document format: a paragraph per blank line, bold as the words have it, nothing cleverer. */
+  /** Text as Jira's document format: a heading per heading line, a paragraph per blank line, bold as the words have it, nothing cleverer. */
   adf(text: string) {
-    return {
-      type: 'doc',
-      version: 1,
-      content: text.split(/\n{2,}/).filter((p) => p.trim()).map((paragraph) => ({
-        type: 'paragraph',
-        content: paragraph.split('\n').flatMap((line, index) => {
-          const parts = line.split('**').map((part, i) => (part ? { type: 'text', text: part, ...(i % 2 ? { marks: [{ type: 'strong' }] } : {}) } : undefined)).filter(Boolean) as { type: string; text: string }[]
-          return index ? [{ type: 'hardBreak' }, ...parts] : parts
-        }),
-      })),
+    const inline = (line: string) => line.split('**').map((part, i) => (part ? { type: 'text', text: part, ...(i % 2 ? { marks: [{ type: 'strong' }] } : {}) } : undefined)).filter(Boolean) as { type: string; text: string }[]
+    const content: object[] = []
+    let lines: string[] = []
+    const paragraph = () => {
+      if (lines.length) content.push({ type: 'paragraph', content: lines.flatMap((line, index) => (index ? [{ type: 'hardBreak' }, ...inline(line)] : inline(line))) })
+      lines = []
     }
+    for (const line of text.split('\n')) {
+      const heading = /^(#{1,6})\s+(\S.*?)\s*#*\s*$/.exec(line)
+      if (heading) {
+        paragraph()
+        content.push({ type: 'heading', attrs: { level: heading[1].length }, content: inline(heading[2]) })
+      } else if (line.trim()) lines.push(line)
+      else paragraph()
+    }
+    paragraph()
+    return { type: 'doc', version: 1, content }
+  }
+
+  /** Where a person reads an issue. */
+  browse(key: string) {
+    return `${this.settings.baseUrl}/browse/${encodeURIComponent(key)}`
   }
 
   /** A comment's body as plain text: Jira's webhooks send a string, its API a document, however deeply it nests. */
@@ -229,7 +248,7 @@ export class JiraConnection {
       if (at.type === 'text') return at.text ?? ''
       if (at.type === 'hardBreak') return '\n'
       const inner = walk(at.content)
-      return at.type === 'paragraph' ? `${inner}\n\n` : inner
+      return at.type === 'paragraph' || at.type === 'heading' ? `${inner}\n\n` : inner
     }
     return walk(body).replace(/\n{3,}/g, '\n\n').trim()
   }
@@ -277,14 +296,63 @@ export class JiraConnection {
     await this.call(`/issue/${encodeURIComponent(id)}`, { method: 'PUT', body: { fields: { summary: oneLine(fields.summary), description: this.adf(fields.description) } } })
   }
 
-  /** Moves an issue to a status, if its workflow goes there from where it is. False when it doesn't. */
-  async transitionTo(id: string, statusName: string): Promise<boolean> {
+  /** The points an issue of this size is worth, when the binder has a field for them. */
+  pointsOf(size: Card['size']) {
+    return this.settings.pointsField ? (this.settings.points ?? usualPoints)[size] : undefined
+  }
+
+  async setPoints(id: string, points: number) {
+    await this.call(`/issue/${encodeURIComponent(id)}`, { method: 'PUT', body: { fields: { [this.settings.pointsField!]: points } } })
+  }
+
+  async addComment(id: string, text: string) {
+    await this.call(`/issue/${encodeURIComponent(id)}/comment`, { method: 'POST', body: { body: this.adf(text.slice(0, 30_000)) } })
+  }
+
+  /** Whether this project's workflow for cards has a status of this name: going through others to one it doesn't would only wander. */
+  private async hasStatus(statusName: string) {
+    const byType = await this.call<{ name: string; statuses?: { name: string }[] }[]>(`/project/${encodeURIComponent(this.settings.project ?? '')}/statuses`)
+    const own = byType.filter((t) => sameName(t.name, this.settings.issueType))
+    return (own.length ? own : byType).some((t) => t.statuses?.some((s) => sameName(s.name, statusName)))
+  }
+
+  /**
+   * Moves an issue to a status. With `through`, where the workflow has no direct way it goes through the statuses
+   * between, as far as it can, never through one that ends the work. `reached` says whether it got there; `status` is
+   * where it is now, and `from` where it was.
+   */
+  async moveTo(id: string, statusName: string, through?: { backwards: boolean }): Promise<{ reached: boolean; status?: string; from?: string }> {
     const path = `/issue/${encodeURIComponent(id)}/transitions`
-    const { transitions } = await this.call<{ transitions?: { id: string; name?: string; to?: { name?: string } }[] }>(path)
-    const wanted = (transitions ?? []).find((t) => sameName(t.to?.name, statusName) || sameName(t.name, statusName))
-    if (!wanted) return false
-    await this.call(path, { method: 'POST', body: { transition: { id: wanted.id } } })
-    return true
+    const from = (await this.issue(id)).status
+    let at = from
+    if (sameName(at, statusName)) return { reached: true, status: at, from }
+    const been = new Set(at ? [named(at)] : [])
+    for (let step = 0; step < 8; step++) {
+      const { transitions = [] } = await this.call<{ transitions?: JiraTransition[] }>(path)
+      const direct = transitions.find((t) => sameName(t.to?.name, statusName) || sameName(t.name, statusName))
+      if (!direct && (!through || (step === 0 && !(await this.hasStatus(statusName))))) return { reached: false, status: at, from }
+      const next = direct ?? onward(transitions, been, through!.backwards)
+      if (!next) return { reached: false, status: at, from }
+      await this.call(path, { method: 'POST', body: { transition: { id: next.id } } })
+      at = next.to?.name ?? statusName
+      been.add(named(at))
+      if (direct) return { reached: true, status: at, from }
+    }
+    return { reached: false, status: at, from }
+  }
+
+  /** The issues the hub made, those changed in the last while or all of them, with their status and comments. */
+  async recent(minutes?: number): Promise<JiraPolled[]> {
+    const jql = encodeURIComponent(`project = "${this.settings.project}" AND labels = "binders"${minutes ? ` AND updated >= -${minutes}m` : ''} ORDER BY updated DESC`)
+    const found: JiraPolled[] = []
+    let next: string | undefined
+    for (let page = 0; page < 20; page++) {
+      const one = await this.call<{ issues?: { id: string; fields?: { status?: { name?: string }; comment?: { comments?: JiraComment[] } } }[]; nextPageToken?: string }>(`/search/jql?maxResults=100&fields=status,comment&jql=${jql}${next ? `&nextPageToken=${encodeURIComponent(next)}` : ''}`)
+      found.push(...(one.issues ?? []).map((i) => ({ id: i.id, status: i.fields?.status?.name, comments: i.fields?.comment?.comments ?? [] })))
+      next = one.nextPageToken
+      if (!next) break
+    }
+    return found
   }
 
   async issue(id: string): Promise<JiraIssue> {
@@ -309,6 +377,31 @@ export class JiraConnection {
     const key = issue?.key ?? issue?.fields?.key
     return issue ? { id: issue.id, key: key ?? issue.id } : undefined
   }
+}
+
+interface JiraTransition {
+  id: string
+  name?: string
+  to?: { name?: string; statusCategory?: { key?: string } }
+}
+
+export interface JiraComment {
+  body?: unknown
+  author?: { displayName?: string; accountId?: string }
+  created?: string
+}
+
+export interface JiraPolled {
+  id: string
+  status?: string
+  comments: JiraComment[]
+}
+
+/** The next status on the way, where there's no direct one: the work's own statuses, not one that ends it, nor one it's been to. */
+function onward(transitions: JiraTransition[], been: Set<string>, backwards: boolean) {
+  const open = transitions.filter((t) => t.to?.name && !been.has(named(t.to.name)) && t.to.statusCategory?.key !== 'done' && !looksShelved.test(t.to.name))
+  const worth = (t: JiraTransition) => (looksStuck.test(t.to!.name!) ? 2 : (t.to?.statusCategory?.key === 'new') === backwards ? 0 : 1)
+  return open.sort((a, b) => worth(a) - worth(b))[0]
 }
 
 // A summary is one line of at most 255 characters, or Jira refuses the whole write.
@@ -336,8 +429,11 @@ export function stageOf(status: string | undefined, statuses: StageStatuses | un
   return stage && stage !== card?.stage ? stage : undefined
 }
 
-/** The status a stage goes to in Jira: the binder's map, or what a stock workflow calls it. */
-export const statusFor = (stage: Stage, statuses: StageStatuses | undefined) => statuses?.[stage] ?? usualStatus(stage)
+/**
+ * The status a stage goes to in Jira: the binder's map, or with no map, what a stock workflow calls it. A stage left
+ * out of a map goes nowhere: Settings calls that leaving the issue where it is.
+ */
+export const statusFor = (stage: Stage, statuses: StageStatuses | undefined) => (statuses && Object.keys(statuses).length ? statuses[stage] : usualStatus(stage))
 
 const usualStatus = (stage: Stage) => ({ proposed: 'To Do', ready: 'To Do', working: 'In Progress', blocked: 'Blocked', review: 'In Review', live: 'Done' })[stage]
 
@@ -418,17 +514,29 @@ export async function discoverJira(who: JiraCredentials, wanted?: string) {
   const chosen = asked ? projects.find((p) => p.key === asked) : projects.length === 1 ? projects[0] : undefined
   if (!chosen) return found
   const key = encodeURIComponent(chosen.key)
-  const [detail, byType] = await Promise.all([
-    jiraCall<{ issueTypes?: { name: string; subtask?: boolean; hierarchyLevel?: number }[] }>(who, `/project/${key}`),
+  const [detail, byType, fields] = await Promise.all([
+    jiraCall<{ issueTypes?: { id?: string; name: string; subtask?: boolean; hierarchyLevel?: number }[] }>(who, `/project/${key}`),
     jiraCall<{ name: string; subtask?: boolean; statuses?: { name: string; statusCategory?: { key?: string } }[] }[]>(who, `/project/${key}/statuses`),
+    // Only points need these: a Jira that won't say leaves them to be set by hand.
+    jiraCall<{ id: string; name: string }[]>(who, '/field').catch(() => []),
   ])
+  const pointFields = fields.filter((f) => /^story points?( estimate)?$/i.test(f.name)).map(({ id, name }) => ({ id, name }))
   const levelOf = (name: string, level?: number) => level ?? (/^(epic|feature)$/i.test(name) ? 1 : 0)
-  const types = (detail.issueTypes ?? []).filter((t) => !t.subtask && levelOf(t.name, t.hierarchyLevel) >= 0).map((t): JiraTypeInfo => ({
+  const listed = (detail.issueTypes ?? []).filter((t) => !t.subtask && levelOf(t.name, t.hierarchyLevel) >= 0)
+  const types = listed.map((t): JiraTypeInfo => ({
     name: t.name,
     level: levelOf(t.name, t.hierarchyLevel),
     statuses: (byType.find((b) => b.name === t.name)?.statuses ?? []).map((s) => ({ name: s.name, category: s.statusCategory?.key })),
   }))
-  return { ...found, project: { ...chosen, types: types.map((t) => ({ ...t, suggested: suggestStatuses(t.statuses) })), suggested: suggestTypes(types) } }
+  // A project usually has one of them. Where it has both, the one on the type's screen is the one its board adds up.
+  const pointsOfType = async (type: { id?: string; hierarchyLevel?: number; name: string }) => {
+    if (pointFields.length < 2 || !type.id || levelOf(type.name, type.hierarchyLevel) !== 0) return pointFields[0]?.id
+    const screen = await jiraCall<{ fields?: { fieldId?: string }[]; values?: { fieldId?: string }[] }>(who, `/issue/createmeta/${key}/issuetypes/${encodeURIComponent(type.id)}?maxResults=200`).catch(() => undefined)
+    const on = [...(screen?.fields ?? []), ...(screen?.values ?? [])].map((f) => f.fieldId)
+    return (pointFields.find((f) => on.includes(f.id)) ?? pointFields[0]).id
+  }
+  const points = await Promise.all(listed.map(pointsOfType))
+  return { ...found, project: { ...chosen, pointFields, types: types.map((t, i) => ({ ...t, suggested: { ...suggestStatuses(t.statuses), pointsField: points[i] } })), suggested: suggestTypes(types) } }
 }
 
 export function tidyStatuses(statuses: StageStatuses | undefined): StageStatuses {
@@ -444,6 +552,8 @@ export function tidyStatuses(statuses: StageStatuses | undefined): StageStatuses
 export interface JiraMirror {
   cardOfIssue(issueId: string): string | undefined
   heard(cardId: string, stage: Stage): void
+  /** Jira's status for an issue: whether it's news, the hub's own moves being known by where they went. */
+  statusNews(cardId: string, status: string | undefined): boolean
   lost(cardId: string): void
   /** A note's Epic was deleted: it isn't made again. */
   lostEpic?(issueId: string): void
@@ -452,15 +562,40 @@ export interface JiraMirror {
 interface JiraEvent {
   webhookEvent?: unknown
   issue?: { id?: unknown; key?: unknown }
-  user?: { accountId?: string }
   changelog?: { items?: { field?: string }[] }
-  comment?: { body?: unknown; author?: { displayName?: string; accountId?: string }; created?: string }
+  comment?: JiraComment
+}
+
+/** A comment the hub wrote on someone's behalf says so, and it's only that when the service account wrote it: a person using that account is still a person. */
+const saidInBinders = /^[*_]*[^\n]{1,200}, in Binders:/
+export const inBinders = (who: string, text: string) => `**${who}, in Binders:** ${text}`
+
+/** A comment from Jira lands on its card, once. */
+export async function heardComment(hub: Hub, jira: JiraConnection, card: Card, comment: JiraComment | undefined, at: string): Promise<'comment' | 'echo' | 'ignored'> {
+  const text = jira.textOf(comment?.body).slice(0, 2000)
+  if (!text || (saidInBinders.test(text) && (await jira.isMe(comment?.author)))) return 'ignored'
+  const activity = commentFrom(comment?.author?.displayName, text, comment?.created ?? at)
+  // Jira sends again when it isn't sure: the same words at the same moment are that, and the same words later are said again.
+  if (card.activity.some((a) => a.kind === 'comment' && a.at === activity.at && a.by === activity.by && a.text === text)) return 'echo'
+  await hub.record({ kind: 'hub' }, { type: 'card.activity', id: card.id, activity })
+  return 'comment'
+}
+
+/** A status someone moved an issue to moves its card, by the board's own rules. */
+export async function heardStatus(hub: Hub, jira: JiraConnection, mirror: JiraMirror, card: Card, status: string | undefined, at: string): Promise<'moved' | 'echo' | 'ignored'> {
+  if (!mirror.statusNews(card.id, status)) return 'echo'
+  const stage = stageOf(status, jira.settings.statuses, card, jira.settings.inbound)
+  const fields = stage && handMove(card, stage)
+  if (!stage || !fields) return 'ignored'
+  mirror.heard(card.id, stage)
+  await hub.record({ kind: 'hub' }, { type: 'card.update', id: card.id, fields, activity: { at, by: 'Jira', kind: 'moved', text: `Jira moved it to ${status}` } })
+  return 'moved'
 }
 
 /** Jira telling the hub what people did to an issue the saver made. Any other issue is someone else's. */
 export async function handleWebhook(hub: Hub, jira: JiraConnection, mirror: JiraMirror, payload: Record<string, unknown>): Promise<string> {
   if (!jira.on()) return 'off'
-  const { webhookEvent, issue, user, changelog, comment } = payload as JiraEvent
+  const { webhookEvent, issue, changelog, comment } = payload as JiraEvent
   const issueId = String(issue?.id ?? '')
   if (!/^\d+$/.test(issueId)) return 'ignored'
   const cardId = mirror.cardOfIssue(issueId)
@@ -477,19 +612,10 @@ export async function handleWebhook(hub: Hub, jira: JiraConnection, mirror: Jira
     return 'deleted'
   }
 
-  if (webhookEvent === 'comment_created') {
-    const text = jira.textOf(comment?.body).slice(0, 2000)
-    if (!text || (await jira.isMe(comment?.author))) return 'ignored'
-    const activity = commentFrom(comment?.author?.displayName, text, comment?.created ?? at)
-    // Jira sends again when it isn't sure: the same words at the same moment are that, and the same words later are said again.
-    if (card.activity.some((a) => a.kind === 'comment' && a.at === activity.at && a.by === activity.by && a.text === text)) return 'echo'
-    await hub.record({ kind: 'hub' }, { type: 'card.activity', id: card.id, activity })
-    return 'comment'
-  }
+  if (webhookEvent === 'comment_created') return heardComment(hub, jira, card, comment, at)
 
   // Issue events also fire for edits and comments: only a status someone changed says anything about the stage.
   if (webhookEvent !== 'jira:issue_updated' || !changelog?.items?.some((item) => item.field === 'status')) return 'ignored'
-  if (await jira.isMe(user)) return 'echo'
   let now: JiraIssue
   try {
     now = await jira.issue(issueId)
@@ -497,12 +623,7 @@ export async function handleWebhook(hub: Hub, jira: JiraConnection, mirror: Jira
     log.warn({ binder: jira.settings.project, why: (error as Error).message }, 'Couldn’t read a Jira issue back')
     return 'failed'
   }
-  const stage = stageOf(now.status, jira.settings.statuses, card, jira.settings.inbound)
-  const fields = stage && handMove(card, stage)
-  if (!stage || !fields) return 'ignored'
-  mirror.heard(card.id, stage)
-  await hub.record({ kind: 'hub' }, { type: 'card.update', id: card.id, fields, activity: { at, by: 'Jira', kind: 'moved', text: `Jira moved it to ${now.status}` } })
-  return 'moved'
+  return heardStatus(hub, jira, mirror, card, now.status, at)
 }
 
 /** Named as from Jira: its display names are anyone's to pick, and mustn't pass for someone in the binder. */

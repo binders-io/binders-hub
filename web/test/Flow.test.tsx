@@ -46,6 +46,18 @@ describe('the board', () => {
     expect(within(column('Agents working')).getByText('Nothing here')).toBeTruthy()
   })
 
+  it('shows a card’s Jira key in place of its change set’s number', async () => {
+    standInHub(() => hubState({
+      changeSets: [{ id: 'cs1', number: 7, title: 'A set', state: 'open', binderId: 'b1', prIds: ['p1', 'p2'] }] as never,
+      pulls: [{ id: 'p1', repo: 'o/r', number: 1, checks: [] }, { id: 'p2', repo: 'o/r', number: 2, checks: [] }] as never,
+      cards: [card('In Jira', 'review', { prId: 'p1', jira: { key: 'PROJ-12', url: 'https://acme.atlassian.net/browse/PROJ-12' } }), card('Not in Jira', 'review', { prId: 'p2' })],
+    }))
+    await mount(<UIContext.Provider value={ui('b1')}><Flow /></UIContext.Provider>)
+    expect(screen.getByText('PROJ-12')).toBeTruthy()
+    expect(screen.getAllByText('CS-7')).toHaveLength(1)
+    expect(within(screen.getByText('In Jira').closest('.card')! as HTMLElement).queryByText('CS-7')).toBeNull()
+  })
+
   it('moves a card dropped on another column, and takes it from its agent', async () => {
     await mount(<UIContext.Provider value={ui()}><Flow /></UIContext.Provider>)
     fireEvent.dragStart(cardNamed('Paused'), { dataTransfer })

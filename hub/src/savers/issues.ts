@@ -76,13 +76,13 @@ export class IssuesSaver {
     for (const { change } of entries) {
       if (change.type === 'card.put') this.later(change.card.id)
       // A card.update that only records its issue is this saver's own (but its debrief may be waiting for it); one that
-      // only brings its worktree's diff or its Challenge isn't in the issue; one that only brings its debrief is, when it's
+      // only brings its worktree's diff, its Challenge or its Jira key isn't in the issue; one that only brings its debrief is, when it's
       // newly written.
       else if (change.type === 'card.update' && 'debrief' in change.fields && Object.keys(change.fields).length === 1) {
         if (debriefToComment(change.fields.debrief)) this.later(change.id)
       } else if (change.type === 'card.update' && 'issue' in change.fields && Object.keys(change.fields).length === 1) {
         if (debriefToComment(this.hub.state.cards.find((c) => c.id === change.id)?.debrief)) this.later(change.id)
-      } else if (change.type === 'card.update' && !(Object.keys(change.fields).length === 1 && ('worktree' in change.fields || 'challenge' in change.fields))) this.later(change.id)
+      } else if (change.type === 'card.update' && !(Object.keys(change.fields).length === 1 && ('worktree' in change.fields || 'challenge' in change.fields || 'jira' in change.fields))) this.later(change.id)
       else if (change.type === 'card.claim' || change.type === 'card.release') this.later(change.id)
       else if (change.type === 'binder.put') for (const card of this.hub.state.cards) if (card.binderId === change.binder.id && !card.issue && change.binder.repo) this.later(card.id)
     }
