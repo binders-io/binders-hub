@@ -1061,14 +1061,17 @@ describe('agents over MCP', () => {
     assert.equal(hub.state.changeSets.find((s) => s.id === set.id)!.state, 'shipped')
 
     // Deleted, though shipped: gone from the hub and its environments, with its card kept and nothing asked of GitHub.
-    const askedGitHub = github.calls.length
+    // The card's issue carries on being saved in the background, whatever happens to its set.
+    const asked = () => github.calls.filter((c) => !c.path.includes('/issues')).length
+    const askedGitHub = asked()
     const deleted = await you('DELETE', `/api/sets/${set.id}`)
     assert.equal(deleted.status, 200, JSON.stringify(deleted.body))
     assert.ok(!hub.state.changeSets.some((s) => s.id === set.id))
     assert.ok(hub.state.environments.every((e) => !e.changeSetIds.includes(set.id)))
     assert.equal(hub.state.cards.find((c) => c.id === cardId)!.stage, 'live')
     assert.equal(hub.state.pulls.find((p) => p.id === pull.id)!.state, 'merged')
-    assert.equal(github.calls.length, askedGitHub)
+    await new Promise((done) => setTimeout(done, 100))
+    assert.equal(asked(), askedGitHub)
     assert.equal((await you('DELETE', `/api/sets/${set.id}`)).status, 422, 'it’s gone')
 
     // Revoked: its token stops working at once.
