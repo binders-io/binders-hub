@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { Runner } from './runner.ts'
 import { daemonCommand, subcommands, usage } from './daemon.ts'
+import { agentCommand } from './desk.ts'
 
 // binders-runner: keeps one agent working on what Binders gives it.
 //
@@ -12,6 +13,9 @@ import { daemonCommand, subcommands, usage } from './daemon.ts'
 //
 // The token is the agent's, from Binders' Agents page; it's read from BINDERS_TOKEN so it isn't in the shell's history.
 // Which tool runs, how much access it has, its model and time limit are the agent's runner settings, on the Agents page.
+
+// An agent's own binders command, from the small script its run has on its PATH (desk.ts).
+if (process.argv[2] === 'agent') process.exit(await agentCommand(process.argv.slice(3)))
 
 // binders add / list / logs / start / stop / restart / remove: agents in the background (daemon.ts).
 const sub = process.argv[2]
@@ -21,7 +25,7 @@ if (sub && (subcommands.has(sub) || sub === 'help')) {
     process.exit(0)
   }
   try {
-    process.exit(await daemonCommand(process.argv.slice(2), (hub, token) => new Runner({ hubUrl: hub, token, workspace: process.cwd(), log: () => {} }).identity()))
+    process.exit(await daemonCommand(process.argv.slice(2), (hub, token) => new Runner({ hubUrl: hub, token, workspace: process.cwd(), log: () => {} }).identity(), (hub, token, cards, why) => new Runner({ hubUrl: hub, token, workspace: process.cwd(), log: () => {} }).handBack(cards, why)))
   } catch (error) {
     console.error((error as Error).message)
     process.exit(1)
@@ -80,8 +84,8 @@ if (file && !process.env.BINDERS_RUNNER_WORKER) {
   for (;;) {
     const code = await new Promise<number>((done) => {
       const child = spawn(process.execPath, [file, ...process.argv.slice(2)], { stdio: 'inherit', env: { ...process.env, BINDERS_RUNNER_WORKER: '1', BINDERS_RUNNER_ID: id } })
-      // Ctrl-C reaches the child too (one process group): it puts its cards back and stops. Another signal is passed on.
-      const onInt = () => { stopping = true }
+      // Ctrl-C reaches the child too, in one process group, and binders remove signals this process alone: passed on either way.
+      const onInt = () => { stopping = true; child.kill('SIGINT') }
       const onTerm = () => { stopping = true; child.kill('SIGTERM') }
       process.on('SIGINT', onInt)
       process.on('SIGTERM', onTerm)
@@ -97,17 +101,20 @@ if (file && !process.env.BINDERS_RUNNER_WORKER) {
 }
 
 const runner = new Runner({ hubUrl: values.hub!, token, workspace: values.workspace ?? process.cwd(), workspaceGiven: !!values.workspace, machine: values.machine, selfUpdate: file, idleMinutes: values['idle-minutes'] ? Math.max(1, Number(values['idle-minutes'])) || undefined : undefined })
-const stop = () => {
-  console.log('Stopping: the card in hand is put back if it isn’t finished.')
-  runner.stop()
+// A person ending it (Ctrl-C, binders remove): its cards go back. Its service stopping or restarting: a card kept running
+// through restarts carries on, for the next runner to pick up.
+const stop = (leave: boolean) => () => {
+  console.log(leave ? 'Stopping: cards kept running through restarts carry on, and any other card in hand is put back.' : 'Stopping: the card in hand is put back if it isn’t finished.')
+  runner.stop(leave)
 }
-process.on('SIGINT', stop)
-process.on('SIGTERM', stop)
+process.on('SIGINT', stop(false))
+process.on('SIGTERM', stop(true))
 
 try {
   await runner.start(values.once)
   // Replaced by a newer runner: the supervisor starts it again.
   if (runner.updated) process.exit(restart)
+  await runner.goodbye()
 } catch (error) {
   console.error((error as Error).message)
   process.exit(1)

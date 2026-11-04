@@ -8,6 +8,7 @@ import { AgentAvatar, Progress, Who, ago } from '../components/bits'
 import { Terminal } from '../components/Terminal'
 import { AgentActivity } from '../components/AgentActivity'
 import { toolInfo } from '../../../shared/agents.ts'
+import { asksOf } from '../../../shared/work.ts'
 import { useUI } from '../ui'
 import { runnerState } from '../components/runnerState'
 import { go, href } from '../route'
@@ -31,7 +32,7 @@ export function Home() {
   const cards = useMemo(() => allCards.filter((c) => binder === 'all' || c.binderId === binder), [allCards, binder])
   const agents = useMemo(() => allAgents.filter((a) => !a.revoked), [allAgents])
   const working = cards.filter((c) => c.stage === 'working')
-  const asks = cards.filter((c) => c.needsYou)
+  const asks = cards.filter((c) => asksOf(c))
   const proposals = allProposals.filter((p) => p.state === 'new' && here(p.binderId))
   const sets = changeSets.filter((s) => s.state === 'review' && here(s.binderId))
   const ready = cards.filter((c) => c.stage === 'ready')
@@ -73,7 +74,7 @@ export function Home() {
               <h2>Waiting on you</h2>
               <ul className="waiting">
                 {asks.map((c) => (
-                  <li key={c.id}><button onClick={() => openItem(c.id)}><MessageCircleQuestion size={14} className="amber" /><span><b>{c.title}</b><em>{nameFor({ agents: allAgents }, c.agentId ?? '')} asks: {c.needsYou}</em></span></button></li>
+                  <li key={c.id}><button onClick={() => openItem(c.id)}><MessageCircleQuestion size={14} className="amber" /><span><b>{c.title}</b><em>{nameFor({ agents: allAgents }, c.agentId ?? '')} asks: {asksOf(c)}</em></span></button></li>
                 ))}
                 {sets.map((s) => (
                   <li key={s.id}><button onClick={() => go({ screen: 'changes', id: s.id })}><GitPullRequest size={14} /><span><b>Change set #{s.number}</b><em>{s.prIds.length} pull request{s.prIds.length === 1 ? '' : 's'} to approve</em></span></button></li>

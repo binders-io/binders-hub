@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { motion } from 'motion/react'
-import { ArrowLeft, ArrowUpRight, Check, ChevronDown, FilePen, FileSearch, FileText, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, Globe, ListChecks, MessageCircleQuestion, Quote, Rocket, Send, ShieldCheck, Sparkles, SquareTerminal, Trash2, Workflow } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, Check, ChevronDown, FilePen, FileSearch, FileText, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, Globe, ListChecks, MessageCircleQuestion, Quote, ShieldQuestionMark, Rocket, Send, ShieldCheck, Sparkles, SquareTerminal, Trash2, Workflow } from 'lucide-react'
 import { stages, type Card, type Environment, type HubState, type PullRequest } from '../data/model'
 import { nameFor, useStore } from '../data/store'
 import { CheckGlyph, Progress, RepoTag, Who, ago, checksSummary, foldRepeats, onTouch, stageTone } from '../components/bits'
@@ -141,6 +141,23 @@ export function Work({ id }: { id: string }) {
             {pull ? <RepoTag repo={pull.repo} title={`Its pull request is in ${pull.repo}`} /> : !card.issue && binder?.repo && <RepoTag repo={binder.repo} />}
             <span className={`stage-pill ${stageTone[card.stage]}`}><i />{stages.find((s) => s.id === card.stage)?.title}</span>
             <span className="size-tag">{card.size}</span>
+            {card.agentId && (state.terminals?.[card.agentId]?.sessions ?? []).filter((s) => s.card === card.id).map((s) => (
+              <a key={s.sid} className="faint" href={href({ screen: 'terminal', id: card.agentId!, sid: s.sid })} title={s.dir}>{s.run ? 'Watch or take over its terminal' : `Its terminal: ${s.name ?? s.tool}`}</a>
+            ))}
+            {(() => {
+              const parts = state.cards.filter((c) => c.parent === card.id)
+              const parent = card.parent ? state.cards.find((c) => c.id === card.parent) : undefined
+              return (
+                <>
+                  {parts.length > 0 && (
+                    <span className="faint" title={parts.map((p) => `${p.title} — ${p.stage}`).join('\n')}>
+                      Swarm of {parts.length} part{parts.length === 1 ? '' : 's'}
+                    </span>
+                  )}
+                  {parent && <span className="faint">Part of <a href={href({ screen: 'work', id: parent.id })}>{parent.title}</a></span>}
+                </>
+              )
+            })()}
           </div>
           <h1>{card.title}</h1>
         </div>
@@ -166,6 +183,21 @@ export function Work({ id }: { id: string }) {
 
       <div className="work-body">
         <div className="work-main">
+          {card.permission && !card.permission.answer && (
+            <section className="now-card asks permission-card">
+              <span className="now-label"><ShieldQuestionMark size={12} /> Asks permission</span>
+              <div className="permission-body">
+                <b>{card.permission.tool}</b>
+                <pre className="mono">{card.permission.what}</pre>
+                {holder && holder.owner.toLowerCase() === state.me?.user.login.toLowerCase() ? (
+                  <div className="permission-actions">
+                    <button className="button primary" onClick={() => void attempt(() => store.answerPermission(card.id, card.permission!.request, true))}>Allow</button>
+                    <button className="button" onClick={() => void attempt(() => store.answerPermission(card.id, card.permission!.request, false))}>Deny</button>
+                  </div>
+                ) : <p className="faint small">Only {holder?.name ?? 'its agent'}’s owner{holder ? `, @${holder.owner},` : ''} can answer this.</p>}
+              </div>
+            </section>
+          )}
           {card.needsYou && lastQuestion >= 0 ? null : card.needsYou ? (
             <section className="now-card asks">
               <span className="now-label"><MessageCircleQuestion size={12} /> Asks you</span>

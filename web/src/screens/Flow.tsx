@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type Dispatch,
 import { LayoutGroup, motion, AnimatePresence } from 'motion/react'
 import { ArrowRight, Check, Eye, EyeOff, GitPullRequest, MessageCircleQuestion, Plus, Sparkles } from 'lucide-react'
 import { stages, type Agent, type Card, type Proposal, type Stage } from '../data/model'
-import { mayTake, meantForNow } from '../../../shared/work.ts'
+import { asksOf, mayTake, meantForNow } from '../../../shared/work.ts'
 import { nameFor, sameValues, useActions, useClock, useHub, type State } from '../data/store'
 import { AgentAvatar, CheckDots, Progress, RepoTag, Who, ago, checksSummary, codeRepo, stageTone } from '../components/bits'
 import { NewCardDialog } from '../components/NewCardDialog'
@@ -47,7 +47,7 @@ export function Flow() {
   const columns = useMemo(() => stages.map((stage) => ({ stage, cards: cards.filter((c) => c.stage === stage.id).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) })), [cards])
   const review = useMemo(() => changeSets.find((c) => (c.state === 'review' || c.state === 'assembling') && (binder === 'all' || c.binderId === binder) && c.prIds.length), [changeSets, binder])
   const reviewGreen = useMemo(() => review && review.prIds.every((id) => pulls.find((p) => p.id === id)?.checks.every((c) => c.state === 'passed')), [review, pulls])
-  const waitingOnYou = useMemo(() => cards.filter((c) => c.needsYou), [cards])
+  const waitingOnYou = useMemo(() => cards.filter((c) => asksOf(c)), [cards])
   const production = environments[environments.length - 1]
   const before = environments[environments.length - 2]
   const board = useRef<HTMLDivElement>(null)
@@ -60,7 +60,7 @@ export function Flow() {
           <div className="attention">
             {waitingOnYou.length > 0 && (
               // Questions are one line each here; the whole question and the answer box are on the card.
-              <button className="attention-card ready asks" onClick={() => go({ screen: 'work', id: waitingOnYou[0].id })} title={waitingOnYou.map((c) => `${c.title}: ${c.needsYou}`).join('\n\n')}>
+              <button className="attention-card ready asks" onClick={() => go({ screen: 'work', id: waitingOnYou[0].id })} title={waitingOnYou.map((c) => `${c.title}: ${asksOf(c)}`).join('\n\n')}>
                 <MessageCircleQuestion size={15} />
                 <span>
                   <b>{waitingOnYou.length === 1 ? `${nameFor({ agents }, waitingOnYou[0].agentId ?? '')} asks you` : `${waitingOnYou.length} questions for you`}</b>
@@ -276,13 +276,14 @@ function cardFacts(state: State, card: Card) {
 
 const CardView = memo(function CardView({ card, stage }: { card: Card; stage: Stage }) {
   const store = useActions()
-  const { openItem } = useUI()
+  const { openItem, splitCard } = useUI()
+  const split = splitCard ? () => splitCard(card.id) : undefined
   const select = useCallback((state: State) => cardFacts(state, card), [card])
   const { agent, pull, set, binder, noteTitle, untakeable } = useHub(select, sameValues)
 
   return (
     // The whole card opens it for a pointer, and its title's button for a keyboard or a screen reader: a button can't hold the card's others.
-    <motion.article layout layoutId={card.id} className={`card ${stage}${card.needsYou ? ' asks' : ''}`} onClick={() => openItem(card.id)} onContextMenu={(e) => openMenu(e, cardMenuItems(card, store, openItem))} transition={spring} initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }}>
+    <motion.article layout layoutId={card.id} className={`card ${stage}${asksOf(card) ? ' asks' : ''}`} onClick={() => openItem(card.id)} onContextMenu={(e) => openMenu(e, cardMenuItems(card, store, openItem, split))} transition={spring} initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }}>
       <div className="card-top">
         <span className="mono faint" title={card.issue ? `Its issue: #${card.issue.number} in ${card.issue.repo}` : undefined}>{card.issue ? `#${card.issue.number}` : binder?.name}</span>
         {(() => {
@@ -290,10 +291,10 @@ const CardView = memo(function CardView({ card, stage }: { card: Card; stage: St
           return code ? <RepoTag repo={code} title={pull ? `Its pull request is in ${code}` : `The binder’s repo: ${code}`} /> : null
         })()}
         {set && <span className="set-tag">CS-{set.number}</span>}
-        <CardMenu card={card} open={openItem} />
+        <CardMenu card={card} open={openItem} split={split} />
       </div>
       <h3><button type="button" className="card-open">{card.title}</button></h3>
-      {card.needsYou && <p className="card-asks">Asks: {card.needsYou}</p>}
+      {asksOf(card) && <p className="card-asks">Asks: {asksOf(card)}</p>}
       {stage === 'working' && card.progress !== undefined && (
         <div className="card-work">
           <Progress value={card.progress} />

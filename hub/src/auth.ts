@@ -553,35 +553,46 @@ export class Auth {
   }
 
   /**
-   * A refresh token for a new access token, rotating both: the old access token stops working. A refresh token used
-   * twice was copied, so the connection stops: whoever holds the newest one, it may be the one who copied it. Only
-   * after a moment, as two terminals on one connection can both renew at once; the later one is just refused.
+   * A refresh token for a new access token, rotating both: the old access token stops working. Copies of a client on one
+   * machine share a connection, and when its hour is up they all renew at once. So for a minute a used refresh token
+   * gets the same answer again, and they all end up with the same tokens; refused, a client throws its login away and
+   * asks its person to allow it again, every hour. After that it's refused, and the connection stands: a client asleep
+   * through the renewal shouldn't cost everyone else theirs.
    */
-  async refreshOAuthPersonToken(refresh: string, clientId: string) {
+  async refreshOAuthPersonToken(refresh: string, clientId: string): Promise<OAuthIssued> {
     const hash = sha(refresh)
+    const running = this.oauthRenewals.get(hash)
+    const renewal = running ?? this.renewOAuth(hash).finally(() => this.oauthRenewals.delete(hash))
+    if (!running) this.oauthRenewals.set(hash, renewal)
+    const done = await renewal
+    if (done.clientId !== clientId) {
+      await this.stopConnection(done.login, done.issued.id)
+      throw new Refusal('That refresh token is for another client.')
+    }
+    return done.issued
+  }
+
+  private oauthRenewals = new Map<string, Promise<OAuthRenewal>>()
+
+  private async renewOAuth(hash: string): Promise<OAuthRenewal> {
     const raw = await this.kv.take(`oauth-refresh:${hash}`)
     if (!raw) {
-      const used = await this.kv.get(`oauth-refresh-used:${hash}`)
-      if (used) {
-        const { login, id, at } = JSON.parse(used) as { login: string; id: string; at: number }
-        if (Date.now() - at > oauthRenewLeewayMs) await this.stopConnection(login, id)
-      }
+      const sealed = await this.kv.get(`oauth-renewed:${hash}`)
+      if (sealed) return JSON.parse(this.sealer.open(sealed)) as OAuthRenewal
       throw new Refusal('That refresh token is unknown, or was used already.')
     }
     const kept = JSON.parse(raw) as StoredRefresh
-    if (kept.clientId !== clientId) {
-      await this.stopConnection(kept.user.login, kept.id)
-      throw new Refusal('That refresh token is for another client.')
-    }
     if (Date.parse(kept.expiresAt) <= Date.now()) {
       await this.stopConnection(kept.user.login, kept.id)
       throw new Refusal('That refresh token has run out: connect again.')
     }
-    await this.kv.set(`oauth-refresh-used:${hash}`, JSON.stringify({ login: kept.user.login, id: kept.id, at: Date.now() }), oauthRefreshSeconds)
     await this.kv.del(`person-token:${kept.accessHash}`)
     const mine = await this.personTokenList(kept.user.login)
     await this.kv.set(`person-tokens-of:${kept.user.login.toLowerCase()}`, JSON.stringify(mine.filter((t) => t.id !== kept.id)))
-    return this.issueOAuthPersonToken(kept.user, kept.app, kept.clientId, kept.space, kept.scope, { id: kept.id, at: kept.at })
+    const issued = await this.issueOAuthPersonToken(kept.user, kept.app, kept.clientId, kept.space, kept.scope, { id: kept.id, at: kept.at })
+    const renewal: OAuthRenewal = { clientId: kept.clientId, login: kept.user.login, issued }
+    await this.kv.set(`oauth-renewed:${hash}`, this.sealer.seal(JSON.stringify(renewal)), oauthRenewGraceSeconds)
+    return renewal
   }
 
   /** Stops a connection that may already be gone. */
@@ -661,8 +672,14 @@ export class Auth {
     if (raw) {
       const stored = JSON.parse(raw) as StoredPersonToken
       if (stored.refreshHash) await this.kv.del(`oauth-refresh:${stored.refreshHash}`)
+      else await this.kv.set(`person-token-stopped:${found.hash}`, '1')
     }
     await this.kv.set(`person-tokens-of:${login.toLowerCase()}`, JSON.stringify(mine.filter((t) => t.id !== id)))
+  }
+
+  /** Whether this was a token made by hand and stopped since. An OAuth client's that's gone signs in again; this can't. */
+  async stoppedByHand(token: string | undefined) {
+    return !!token?.startsWith('bnp_') && !!(await this.kv.get(`person-token-stopped:${sha(token)}`))
   }
 
   private async personTokenList(login: string) {
@@ -675,7 +692,21 @@ export class Auth {
 const oauthAccessSeconds = 60 * 60
 const oauthRefreshSeconds = 30 * 24 * 60 * 60
 /** How long after a renewal its old refresh token may be seen again without stopping the connection. */
-const oauthRenewLeewayMs = 10_000
+const oauthRenewGraceSeconds = 60
+
+/** What a renewal gave, in its own right and for a moment after: refresh tokens are one use, and clients share them. */
+interface OAuthIssued {
+  token: string
+  refresh: string
+  id: string
+  expiresIn: number
+}
+
+interface OAuthRenewal {
+  clientId: string
+  login: string
+  issued: OAuthIssued
+}
 
 interface StoredRefresh {
   id: string

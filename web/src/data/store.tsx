@@ -3,7 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { emptyState, type Change, type HubState } from '../../../shared/state.ts'
 import { isBlank, titleOf } from '../../../shared/notes.ts'
 import type { Agent, Card, Me, Note, Provider } from './model'
-import type { Presence, RunnerSettings } from '../../../shared/work.ts'
+import { handMove, type Presence, type RunnerSettings } from '../../../shared/work.ts'
 import type { TestOutcome } from '../../../shared/changeSet.ts'
 import { call } from './api'
 import { askedReasoning } from '../components/Reasoning'
@@ -99,6 +99,9 @@ export interface Actions {
   /** Gives a card to an agent (or opens it to any): one held by another agent goes back on the board for it. */
   giveCard: (id: string, agentId: string) => void
   comment: (cardId: string, text: string) => Promise<void>
+  answerPermission: (cardId: string, request: string, allow: boolean) => Promise<void>
+  /** Splits a card into parts for a swarm of agents; each part a card, the card waiting for them. */
+  splitCard: (id: string, parts: { title: string; brief?: string; agent?: string }[]) => Promise<void>
   /** Asks an agent for the card's debrief: the one named, or one the hub picks. */
   debrief: (cardId: string, agentId?: string) => Promise<void>
   /** Asks an agent that didn't write the card's work to challenge it: the one named, or one the hub picks. */
@@ -385,15 +388,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       moveCard: (id, stage) => {
         const state = now()
         const card = state.cards.find((c) => c.id === id)
-        if (!card || card.stage === stage) return
+        const fields = card && handMove(card, stage)
+        if (!card || !fields) return
         const held = (card.stage === 'working' || card.stage === 'blocked') && !!card.agentId
-        // Only a card an agent holds, blocked, goes back to working: its agent carries on.
-        if (stage === 'working' && !(card.stage === 'blocked' && card.agentId)) return
-        // Blocked, working (again), review and done keep its agent; anywhere else takes it back.
-        const keep = stage === 'review' || stage === 'live' || stage === 'blocked' || stage === 'working'
+        const keep = 'agentId' in fields === false
         const names: Record<Card['stage'], string> = { proposed: 'Proposed', ready: 'Ready', working: 'Agents working', blocked: 'Blocked', review: 'In review', live: 'Done' }
         const holder = state.agents.find((a) => a.id === card.agentId)?.name ?? 'the agent'
-        change({ type: 'card.update', id, fields: { stage, needsYou: undefined, doing: undefined, ...(keep ? {} : { agentId: undefined, progress: undefined }) }, activity: { at: new Date().toISOString(), by: login(), kind: 'moved', text: held && !keep ? `Took it back from ${holder}: ${names[stage]}` : `Moved it to ${names[stage]}` } })
+        change({ type: 'card.update', id, fields, activity: { at: new Date().toISOString(), by: login(), kind: 'moved', text: held && !keep ? `Took it back from ${holder}: ${names[stage]}` : `Moved it to ${names[stage]}` } })
       },
       giveCard: (id, agentId) => {
         const state = now()
@@ -410,6 +411,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
       },
       comment: (cardId, text) => call('POST', `/api/cards/${cardId}/comment`, { text }),
+      answerPermission: (cardId, request, allow) => call('POST', `/api/cards/${cardId}/permission`, { request, allow }),
+      splitCard: (id, parts) => call('POST', `/api/cards/${id}/split`, { parts }).then(() => undefined),
       debrief: (cardId, agentId) => call('POST', `/api/cards/${cardId}/debrief`, { ...(agentId ? { agentId } : {}), ...askedReasoning() }),
       challenge: (cardId, agentId) => call('POST', `/api/cards/${cardId}/challenge`, { ...(agentId ? { agentId } : {}), ...askedReasoning() }),
       replyToFindings: (cardId) => call('POST', `/api/cards/${cardId}/challenge/replies`),
@@ -556,6 +559,7 @@ export const isListening = (agent: Agent) => !!presenceNow[agent.id]?.listening
 
 /** How many runners the hub heard from lately for this agent: more than one take the same work. */
 export const runnersOf = (agent: Agent) => presenceNow[agent.id]?.runners ?? 0
+export const runnerPlaces = (agent: Agent) => presenceNow[agent.id]?.runnersOn ?? []
 
 /** Online: listening, or heard from in the last two minutes. */
 export const isOnline = (agent: Agent) => {

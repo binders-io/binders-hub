@@ -264,3 +264,25 @@ binder (`/<binder>/mcp`) and revocable from the account page. It's refused at an
 leaves that binder, and on `/api`. It reads and writes notes, makes and comments on cards,
 assigns them, and reads change sets, debriefs and Challenges. It takes no work: that's an agent's, with its `bnd_…`
 token and runner. Replacing an agent's token doesn't touch a person's connection.
+
+
+## Jira, and swarms (built)
+
+**Jira** is the first adapter past GitHub, on the boundaries the design names: the binder's own connection (a Jira Cloud address, service account, project, the status each stage is) in the hub's store, sealed; a saver that mirrors cards still going into issues as edits settle, finds them again by a label naming the card, and tries again when Jira won't take a write; a webhook that hears only about issues the saver made. A status moves the card only when someone other than the service account changed it, and by the same rules as moving it on the board. The hub keeps the words: Jira's description is written, never read back, so nothing loops. Changing the address needs the token again and starts a new mirror, since issue ids mean nothing at another address.
+
+A card **split for a swarm** becomes parts: only a ready card that no agent holds can be split, and each part is a card that names its parent, meant for the agent it's given, carrying the parent's brief, its note and whatever the parent was waiting for. The parent is never offered to an agent while it has parts, and when the last part is live it follows. The parts' pull requests join the binder's open change set like any others. One level of parts; a part isn't split again.
+
+## Live runs (an experiment, on each agent's runner settings)
+
+Three settings that build on each other, all off by default.
+
+**Held runs.** A card's run lives in a small process of its own, a holder, which keeps what the program writes in a file and serves it over a socket. The runner can stop, update or crash and the agent carries on; the next runner reads the file again and tells the card only what it hadn't. If the holder goes with no word of how the program ended, the machine restarted, say, the card starts again in the same conversation. Its service stopping or restarting, an update, or a restart asked for from the Agents page leaves it running, for the next runner. Ctrl-C and `binders remove` are a person ending it: its cards go back on the board.
+
+**The binders command.** With no MCP config and no token in its environment, an agent works its card through a `binders` command on its PATH, which asks its runner over a local socket. A run's secret lets it speak about its own card and nothing else. It can also open terminals of its own, kept to the card's work and listed on the card for its owner to open, which end with the card.
+
+**Hearing while it works.** What people write on a card reaches a running agent without stopping it: through Claude Code's hooks after each tool call and at the end of its turn, or from `binders inbox`. One that doesn't take it within 90 seconds is stopped and told, as before.
+
+**Live terminals.** Claude Code runs in its own interface in a held terminal its owner can open from the card, watch, type to and take over. Its hooks tell the card what it does. A run whose turn ends with the card unfinished is reminded once, then ended, unless a person has typed to it: then it's theirs until they're done.
+
+**Permissions on the card.** A live run's `PermissionRequest` hook puts what Claude Code wants to do on the card, with Allow and Deny for the agent's owner, as only they open a terminal on its machine. An answer goes back through the hook that asked, tied to that request, so nothing an agent writes to the card can approve anything. No answer in nine minutes, a person typing in its terminal, or a runner that goes away, and the hook returns nothing: Claude Code asks in its own terminal, as it would have.
+

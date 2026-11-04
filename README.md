@@ -225,7 +225,7 @@ Where an organization manages Claude Code's MCP servers (a `managed-mcp.json` in
 on a Mac, `/etc/claude-code/` on Linux, `C:\ProgramData\ClaudeCode\` on Windows), Claude Code refuses any other server,
 the one the runner adds for each run included. The runner sees the file (or Claude Code saying so) and works without
 Binders' MCP tools: Claude Code gets the plain prompts, the runner reports its steps and answers, and the Agents page says
-so. To give it Binders' tools back, an admin adds the hub to the managed config:
+so. (A live terminal goes through the `binders` command instead, which needs no MCP server.) To give it Binders' tools back, an admin adds the hub to the managed config:
 
 ```json
 { "mcpServers": { "binders_hub": { "type": "http", "url": "https://hub.example.com/mcp", "headers": { "Authorization": "Bearer ${BINDERS_TOKEN}" } } } }
@@ -274,6 +274,10 @@ permission rules of its own (`Bash(git:*)`, `WebFetch(domain:github.com)`; "Add 
 common ones). Where a machine's policy turns full access off, which the runner sees in Claude Code's managed settings or
 in the mode Claude Code starts in, runs accept edits instead, and the commands they run follow the policy's rules. What
 Claude Code refused a run is listed on the card; a card that needed it, or whose agent asked a person, waits in Blocked.
+
+## Jira
+
+A binder can mirror its cards into one Jira Cloud project: **Settings → Jira** names the address, a service account and token, the project and issue type, and the status each stage stands for. Saving brings in the cards still going; ones already done stay out. A card becomes an issue with its brief and done-when as the description, and its stage becomes the issue's status where the project's workflow allows it. A Jira webhook (the address Settings shows) brings back what people do there: a status they change moves the card by the board's own rules, so only an agent starts work, and a comment lands on the card. The hub keeps the words: a description edited in Jira isn't read back.
 
 ## Connect an agent
 

@@ -2,8 +2,8 @@ import { useState, type FormEvent } from 'react'
 import { AnimatePresence } from 'motion/react'
 import { Check, ChevronDown, Copy, KeyRound, Play, Plus, RotateCw, SquareTerminal, Trash2 } from 'lucide-react'
 import type { Agent, Provider } from '../data/model'
-import { isListening, isOnline, useStore, runnersOf } from '../data/store'
-import { usualRules, defaultRunner, runnerShown, toolForProvider, type RunnerSettings } from '../../../shared/work.ts'
+import { isListening, isOnline, useStore, runnerPlaces, runnersOf } from '../data/store'
+import { asksOf, usualRules, defaultRunner, runnerShown, toolForProvider, type RunnerSettings } from '../../../shared/work.ts'
 import { accessNames, atLeast, restartSince, toolInfo, tools, type Access, type AgentTool } from '../../../shared/agents.ts'
 import { call } from '../data/api'
 import { ToolIcon } from '../components/ToolIcon'
@@ -88,7 +88,7 @@ export function Agents() {
 function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent; onEdit: () => void; onToken: () => void; onRevoke: () => void; onStart: () => void }) {
   const { state } = useStore()
   const holding = state.cards.filter((c) => c.agentId === agent.id && c.stage === 'working')
-  const asks = holding.filter((c) => c.needsYou)
+  const asks = holding.filter((c) => asksOf(c))
   const done = state.cards.filter((c) => c.agentId === agent.id && (c.stage === 'review' || c.stage === 'live')).length
   const online = isOnline(agent)
   const listening = isListening(agent)
@@ -130,13 +130,13 @@ function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent
       </header>
       {agent.runnerSeen?.enterpriseMcp && (runner?.tool ?? 'claude') === 'claude' && <p className="agent-note" role="status">Enterprise MCP config on this machine: working without Binders’ MCP tools, its runner reporting for it.</p>}
       {agent.runnerSeen?.bypassOff && (runner?.tool ?? 'claude') === 'claude' && runner?.access === 'full' && <p className="agent-note" role="status">This machine’s Claude Code policy turns full access off: it edits files without asking, and the commands it runs follow the policy’s rules.</p>}
-      {runnersOf(agent) > 1 && <p className="agent-warning" role="status">{runnersOf(agent)} runners are running as {agent.name}. They take the same work, each in its own folder: stop all but one.</p>}
+      {runnersOf(agent) > 1 && <p className="agent-warning" role="status">{runnersOf(agent)} runners are running as {agent.name}{runnerPlaces(agent).length ? `, on ${runnerPlaces(agent).join(' and ')}` : ''}. They take the same work, each in its own folder: stop all but one.</p>}
 
       <div className={`agent-doing${holding.length ? ' busy' : ''}${asks.length ? ' asks' : ''}`}>
         {holding.length ? holding.map((c) => (
           <a key={c.id} href={href({ screen: 'work', id: c.id })}>
-            <b>{c.needsYou ? 'Asks you' : 'Working on'}</b>
-            <span>{c.needsYou ?? c.doing ?? c.title}</span>
+            <b>{asksOf(c) ? 'Asks you' : 'Working on'}</b>
+            <span>{asksOf(c) ?? c.doing ?? c.title}</span>
           </a>
         )) : <span className="faint">Waiting for work{done ? ` · ${done} finished` : ''}</span>}
       </div>
@@ -298,6 +298,29 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
             <div className="segmented" role="radiogroup" id="runner-parallel">
               {[1, 2, 3, 4, 6, 8].map((n) => (
                 <button key={n} type="button" role="radio" aria-checked={(runner.parallel ?? 3) === n} className={(runner.parallel ?? 3) === n ? 'on' : ''} onClick={() => setRun({ parallel: n })}>{n}</button>
+              ))}
+            </div>
+          </Field>
+          <Field label="Keep cards running through restarts" group hint="An experiment. Its cards carry on while its runner stops or updates, and a restarted machine picks them up in the same conversation. Needs python3 on the machine.">
+            <div className="segmented" role="radiogroup" id="runner-held">
+              {([[false, 'Off'], [true, 'On']] as const).map(([value, label]) => (
+                <button key={label} type="button" role="radio" aria-checked={!!runner.held === value} className={!!runner.held === value ? 'on' : ''} onClick={() => setRun({ held: value || undefined })}>{label}</button>
+              ))}
+            </div>
+          </Field>
+          {runner.held && (runner.tool ?? 'claude') === 'claude' && (
+            <Field label="Runs as" group hint="An experiment. As a live terminal, you can open a card’s run, watch it, type to it and take over, in Claude Code’s own interface. Try it on a test card first: a first-run prompt would wait for you there.">
+              <div className="segmented" role="radiogroup" id="runner-live">
+                {([[false, 'A background process'], [true, 'A live terminal']] as const).map(([value, label]) => (
+                  <button key={label} type="button" role="radio" aria-checked={!!runner.live === value} className={!!runner.live === value ? 'on' : ''} onClick={() => setRun({ live: value || undefined })}>{label}</button>
+                ))}
+              </div>
+            </Field>
+          )}
+          <Field label="Talks to Binders through" group hint="An experiment. The binders command needs no config and leaves no token in the agent’s environment, and the agent hears what people write on its card without being stopped.">
+            <div className="segmented" role="radiogroup" id="runner-cli">
+              {([[false, 'MCP'], [true, 'The binders command']] as const).map(([value, label]) => (
+                <button key={label} type="button" role="radio" aria-checked={!!runner.cli === value} className={!!runner.cli === value ? 'on' : ''} onClick={() => setRun({ cli: value || undefined })}>{label}</button>
               ))}
             </div>
           </Field>

@@ -33,6 +33,20 @@ export async function workRoutes(app: FastifyInstance, context: Context) {
     return sp(request).actions.actOnFinding(login(request), param(request, 'id'), param(request, 'finding'), action)
   }))
   app.post('/api/cards/:id/comment', act(async (request) => sp(request).actions.comment(login(request), param(request, 'id'), bodyOf(bodies.comment, request).text ?? '')))
+  // Splits a card into parts for a swarm of agents; each part a card of its own, the card waiting for them.
+  app.post('/api/cards/:id/permission', act(async (request) => {
+    const { request: asked, allow } = bodyOf(bodies.permission, request)
+    return sp(request).actions.answerPermission(login(request), param(request, 'id'), asked, allow)
+  }))
+  app.post('/api/cards/:id/split', act(async (request) => {
+    const body = request.body as { parts?: { title?: unknown; brief?: unknown; agent?: unknown }[] } | undefined
+    const parts = Array.isArray(body?.parts) ? body!.parts : []
+    return sp(request).actions.splitCard(login(request), param(request, 'id'), parts.map((part) => ({
+      title: String(part?.title ?? ''),
+      ...(part?.brief == null ? {} : { brief: String(part.brief) }),
+      ...(part?.agent == null ? {} : { agent: String(part.agent) }),
+    })))
+  }))
   app.post('/api/notes/:id/chat', act(async (request) => {
     const body = bodyOf(bodies.chat, request)
     return sp(request).actions.say(login(request), param(request, 'id'), body.agentId ?? '', body.text ?? '')

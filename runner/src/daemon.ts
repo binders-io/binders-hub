@@ -3,6 +3,7 @@ import { chmod, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/pr
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
+import { heldIn } from './held.ts'
 
 // Agents in the background: `binders add` sets an agent up on this machine and keeps its runner going as a service of
 // the user's (a LaunchAgent on a Mac, a systemd --user unit on Linux), which starts at login, starts again after a
@@ -25,7 +26,7 @@ const unitOf = (name: string) => join(homedir(), '.config', 'systemd', 'user', u
 const logOf = (name: string) => join(logsDir(), `${name}.log`)
 const tokenOf = (name: string) => join(agentsDir(), `${name}.token`)
 
-interface Saved {
+export interface Saved {
   name: string
   /** The agent's name on the hub, and its id there. */
   agent: string
@@ -33,6 +34,15 @@ interface Saved {
   hub: string
   workspace: string
   addedAt: string
+}
+
+/**
+ * Why not to do this as root: a service of root's, made through sudo, leaves files only root can write and never reaches
+ * its person's login. Someone who signs in as root on Linux has a service manager of their own, and stays welcome.
+ */
+export function refusedAsRoot(uid: number | undefined, os: NodeJS.Platform = process.platform, sudoUser = process.env.SUDO_USER) {
+  if (uid !== 0 || (os !== 'darwin' && !sudoUser)) return undefined
+  return `Run this as yourself, without sudo: an agent's service runs as the account that sets it up.${sudoUser ? ` If sudo left files behind: sudo chown -R "${sudoUser}" ~/.binders` : ''}`
 }
 
 type Platform = 'mac' | 'linux' | 'other'
@@ -104,6 +114,36 @@ function command(s: Saved) {
 /** The PATH the agent's tools are found on: this shell's, which has them, and the usual places. */
 const path = () => [...new Set([...(process.env.PATH ?? '').split(':'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', join(homedir(), '.local/bin')].filter(Boolean))].join(':')
 
+/**
+ * Its systemd unit. KillMode=process: stopping it signals the runner alone, which stops what it should. By default
+ * systemd also kills everything else it started, and a card's holder is there to outlive the runner.
+ */
+export function unitFor(s: Saved) {
+  const quote = (a: string) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `"${a.replace(/(["\\$`])/g, '\\$1')}"`)
+  return `[Unit]
+Description=Binders runner: ${s.agent}
+
+[Service]
+ExecStart=${command(s).map(quote).join(' ')}
+WorkingDirectory=${s.workspace}
+Environment=PATH=${path()}
+Restart=always
+RestartSec=10
+KillMode=process
+StandardOutput=append:${logOf(s.name)}
+StandardError=append:${logOf(s.name)}
+
+[Install]
+WantedBy=default.target
+`
+}
+
+async function writeUnit(s: Saved) {
+  await mkdir(join(homedir(), '.config', 'systemd', 'user'), { recursive: true })
+  await writeFile(unitOf(s.name), unitFor(s))
+  await run('systemctl', ['--user', 'daemon-reload'])
+}
+
 async function install(s: Saved) {
   await mkdir(logsDir(), { recursive: true })
   if (platform === 'mac') {
@@ -139,25 +179,7 @@ ${args}
     return
   }
   if (platform === 'linux') {
-    const quote = (a: string) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `"${a.replace(/(["\\$`])/g, '\\$1')}"`)
-    const unit = `[Unit]
-Description=Binders runner: ${s.agent}
-
-[Service]
-ExecStart=${command(s).map(quote).join(' ')}
-WorkingDirectory=${s.workspace}
-Environment=PATH=${path()}
-Restart=always
-RestartSec=10
-StandardOutput=append:${logOf(s.name)}
-StandardError=append:${logOf(s.name)}
-
-[Install]
-WantedBy=default.target
-`
-    await mkdir(join(homedir(), '.config', 'systemd', 'user'), { recursive: true })
-    await writeFile(unitOf(s.name), unit)
-    await run('systemctl', ['--user', 'daemon-reload'])
+    await writeUnit(s)
     await run('systemctl', ['--user', 'enable', '--now', unitName(s.name)])
     return
   }
@@ -192,19 +214,64 @@ async function start(s: Saved) {
 async function stop(s: Saved) {
   // Taken out of launchd altogether: kept alive, a stopped one would only be started again.
   if (platform === 'mac') await bootout(s.name)
-  else if (platform === 'linux') await run('systemctl', ['--user', 'stop', unitName(s.name)]).catch(() => undefined)
+  else if (platform === 'linux') {
+    // A unit set up before KillMode=process would take the cards a stop now leaves running.
+    await writeUnit(s).catch(() => undefined)
+    await run('systemctl', ['--user', 'stop', unitName(s.name)]).catch(() => undefined)
+  }
 }
 
 async function restart(s: Saved) {
   if (platform === 'mac') {
     const domain = await loadedIn(s.name)
     if (!domain) return install(s)
-    await run('launchctl', ['kickstart', '-k', `${domain}/${label(s.name)}`])
-  } else if (platform === 'linux') await run('systemctl', ['--user', 'restart', unitName(s.name)])
+    // Asked to go, so it can leave what it should and say so (kickstart -k doesn't ask): launchd keeps it alive.
+    await run('launchctl', ['kill', 'SIGTERM', `${domain}/${label(s.name)}`]).catch(() => undefined)
+    await run('launchctl', ['kickstart', `${domain}/${label(s.name)}`]).catch(() => undefined)
+  } else if (platform === 'linux') {
+    // A unit set up before KillMode=process would take its cards with it.
+    await writeUnit(s)
+    await run('systemctl', ['--user', 'restart', unitName(s.name)])
+  }
 }
 
-async function remove(s: Saved) {
+/** Asks its runner to end what it's running for good: its cards go back on the board, as with Ctrl-C. */
+async function endRunner(s: Saved) {
+  const { running, pid } = await status(s)
+  if (!running || !pid) return
+  process.kill(pid, 'SIGINT')
+  const until = Date.now() + 10_000
+  const alive = () => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  while (Date.now() < until && alive()) await new Promise((done) => setTimeout(done, 100))
+}
+
+/** Whatever is still in a holder, with no runner to come back to it, stopped and its cards given back. */
+async function endHeld(s: Saved, handBack: HandBack) {
+  if (!s.agentId) return
+  const left = await heldIn(join(base(), 'held', s.agentId.replace(/[^\w-]/g, '').slice(0, 12)))
+  const cards = left.filter((held) => held.meta.kind === 'card').map((held) => held.meta.key)
+  for (const held of left) {
+    await held.stopAndWait()
+    if (held.meta.github) await rm(held.meta.github, { recursive: true, force: true })
+    if (held.meta.config) await rm(held.meta.config, { force: true })
+    await held.remove()
+  }
+  if (!cards.length) return
+  const token = await readFile(tokenOf(s.name), 'utf8').then((text) => text.trim(), () => '')
+  if (token) await handBack(s.hub, token, cards, 'Its runner was removed from this machine.').catch(() => undefined)
+}
+
+async function remove(s: Saved, handBack: HandBack) {
+  await endRunner(s)
   await stop(s)
+  await endHeld(s, handBack)
   if (platform === 'mac') await rm(plistOf(s.name), { force: true })
   if (platform === 'linux') {
     await run('systemctl', ['--user', 'disable', unitName(s.name)]).catch(() => undefined)
@@ -238,9 +305,12 @@ const ago = (ms: number) => {
 
 /** Who a token is, as the hub says: the agent's name and id. */
 type WhoAmI = (hub: string, token: string) => Promise<{ name: string; id?: string }>
+type HandBack = (hub: string, token: string, cards: string[], why: string) => Promise<unknown>
 
-export async function daemonCommand(argv: string[], whoami: WhoAmI): Promise<number> {
+export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: HandBack = async () => undefined): Promise<number> {
   const [sub, ...args] = argv
+  const root = ['add', 'start', 'restart'].includes(sub) ? refusedAsRoot(process.getuid?.()) : undefined
+  if (root) throw new Error(root)
   const { flags: f, rest } = flags(args)
   const all = f.all === true
   switch (sub) {
@@ -300,7 +370,7 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI): Promise<num
         if (sub === 'start') await start(s)
         else if (sub === 'stop') await stop(s)
         else if (sub === 'restart') await restart(s)
-        else await remove(s)
+        else await remove(s, handBack)
         console.log(`✓ ${s.name}: ${{ start: 'started', stop: 'stopped (binders start brings it back)', restart: 'restarted', remove: 'removed', rm: 'removed' }[sub]}`)
       }
       return 0
@@ -309,7 +379,7 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI): Promise<num
   return 1
 }
 
-export const usage = `binders: Binders agents on this machine.
+export const usage = `binders: Binders agents on this machine. Cards kept running through restarts carry on through stop and restart; remove ends them.
 
   binders add --token bnd_… [--workspace DIR] [--hub URL] [--name NAME]
                          set an agent up and keep it running in the background (at login, after a crash)

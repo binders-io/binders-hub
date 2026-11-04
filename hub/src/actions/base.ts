@@ -82,7 +82,7 @@ export function checkedRunner(runner: Partial<RunnerSettings>): RunnerSettings {
   if (allow.length > 60) throw new Refused('Up to 60 commands it may run.')
   const odd = allow.find((r) => !allowRule.test(r))
   if (odd) throw new Refused(`“${odd.slice(0, 80)}” isn’t a Claude Code permission rule: a tool, and what it covers in brackets, like Bash(git:*).`)
-  return { tool, access, timeoutMinutes, ...(idle !== undefined ? { idleMinutes: idle } : {}), parallel, worktrees: true, model: runner.model?.trim() || undefined, command: tool === 'custom' ? runner.command!.trim() : undefined, workspace: runner.workspace?.trim() || undefined, ...(runner.commitAs === 'app' ? { commitAs: 'app' as const } : {}), ...(allow.length ? { allow } : {}) }
+  return { tool, access, timeoutMinutes, ...(runner.held ? { held: true } : {}), ...(runner.cli ? { cli: true } : {}), ...(runner.live ? { live: true } : {}), ...(idle !== undefined ? { idleMinutes: idle } : {}), parallel, worktrees: true, model: runner.model?.trim() || undefined, command: tool === 'custom' ? runner.command!.trim() : undefined, workspace: runner.workspace?.trim() || undefined, ...(runner.commitAs === 'app' ? { commitAs: 'app' as const } : {}), ...(allow.length ? { allow } : {}) }
 }
 
 /** 0.1.0 → 0.2.0: what a recorded deploy calls the next version. */

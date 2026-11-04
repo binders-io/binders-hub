@@ -34,6 +34,21 @@ export interface RunnerSettings {
   commitAs?: 'owner' | 'app'
   /** For a custom tool: the command, with {prompt}, {dir} and {mcp} filled in. */
   command?: string
+  /**
+   * An experiment: its cards run in holders of their own, so they carry on while its runner stops, updates or crashes,
+   * and pick up in the same conversation if the machine restarts. Needs python3 on the machine, as terminals do.
+   */
+  held?: boolean
+  /**
+   * An experiment: it works its cards through a binders command on its PATH instead of MCP, with no config and no
+   * token in its environment, and hears what people write without being stopped.
+   */
+  cli?: boolean
+  /**
+   * An experiment, with held runs: each card runs as a live terminal its owner can watch and take over, the tool in its
+   * own interface, with what it does reaching the card through the tool's hooks.
+   */
+  live?: boolean
   /** Where the code is on the machine the runner runs on, used when it isn't given --workspace. */
   workspace?: string
   /** How many cards it works on at once, each in a worktree of its own (one, without worktrees). */
@@ -98,9 +113,11 @@ export interface Presence {
   listening: boolean
   /** Runners heard from lately for this agent: more than one take the same work. */
   runners?: number
+  /** Where they run, as each says. */
+  runnersOn?: string[]
 }
 
-export type ActivityKind = 'created' | 'claimed' | 'released' | 'progress' | 'step' | 'said' | 'comment' | 'question' | 'answer' | 'pr' | 'completed' | 'moved' | 'merged' | 'deployed' | 'ran' | 'debrief' | 'challenge'
+export type ActivityKind = 'created' | 'claimed' | 'released' | 'progress' | 'step' | 'said' | 'comment' | 'question' | 'answer' | 'pr' | 'completed' | 'moved' | 'merged' | 'deployed' | 'ran' | 'permission' | 'debrief' | 'challenge'
 
 export interface Activity {
   at: string
@@ -141,6 +158,8 @@ export interface Card {
   /** The agent it's meant for, before anyone holds it. */
   meantFor?: string
   waitsFor: string[]
+  /** The card this is a part of, when it was split from one for a swarm of agents. */
+  parent?: string
   /** Its GitHub issue, once the binder's repo has one for it. */
   issue?: { repo: string; number: number; url: string }
   prId?: string
@@ -155,6 +174,8 @@ export interface Card {
   plan?: PlanStep[]
   /** A question waiting for a person. */
   needsYou?: string
+  /** A live run waiting on a permission: what it wants to do, until its agent's owner answers or the run moves on. */
+  permission?: { request: string; agent: string; tool: string; what: string; at: string; answer?: 'allow' | 'deny'; by?: string }
   activity: Activity[]
   cost?: number
   /** Tokens its runs used, all told. */
@@ -463,7 +484,7 @@ export function applyWork<S extends WorkState>(state: S, change: WorkChange): S 
         ...state,
         agents: patch(state.agents, change.id, { revoked: true }),
         // What it held goes back on the board.
-        cards: state.cards.map((c) => (c.agentId === change.id && c.stage === 'working' ? { ...c, agentId: undefined, stage: 'ready', doing: undefined, progress: undefined } : c)),
+        cards: state.cards.map((c) => (c.agentId === change.id && c.stage === 'working' ? { ...c, permission: undefined, agentId: undefined, stage: 'ready', doing: undefined, progress: undefined } : c)),
       }
     case 'card.put':
       return { ...state, cards: upsert(state.cards, { ...change.card, stage: current(change.card.stage) }) }
@@ -474,6 +495,8 @@ export function applyWork<S extends WorkState>(state: S, change: WorkChange): S 
           if (c.id !== change.id) return c
           const fields = change.fields.stage ? { ...change.fields, stage: current(change.fields.stage) } : change.fields
           const next = { ...merge(c, fields), updatedAt: change.activity?.at ?? c.updatedAt }
+          // A permission belongs to the run that asked: given to another agent, nobody is waiting on it any more.
+          if ('agentId' in fields && (fields.agentId ?? undefined) !== c.agentId) delete next.permission
           return change.activity ? withActivity(next, change.activity) : next
         }),
       }
@@ -495,7 +518,7 @@ export function applyWork<S extends WorkState>(state: S, change: WorkChange): S 
       return {
         ...state,
         cards: state.cards.map((c) => (c.id === change.id && c.agentId === change.agentId
-          ? withActivity({ ...c, agentId: undefined, stage: 'ready', doing: undefined, progress: undefined }, { at: change.at, by: change.agentId, kind: 'released', text: change.why })
+          ? withActivity({ ...c, agentId: undefined, stage: 'ready', doing: undefined, progress: undefined, permission: undefined }, { at: change.at, by: change.agentId, kind: 'released', text: change.why })
           : c)),
       }
     case 'card.activity':
@@ -619,12 +642,30 @@ export function resumeFor(state: WorkState, agent: Agent, busy: string[] = []): 
  * The next card an agent could take, waiting on nothing unfinished: one a person meant for it, wherever it is, or one open
  * to anyone in its binders and repos.
  */
+/**
+ * What moving a card by hand changes, or undefined for a move the board doesn't allow: only an agent starts work, and
+ * only a blocked card it holds goes back to working. Blocked, working, review and done keep its agent; anywhere else
+ * takes it back.
+ */
+export function handMove(card: Pick<Card, 'stage' | 'agentId'>, stage: Stage): Partial<Card> | undefined {
+  if (card.stage === stage) return undefined
+  if (stage === 'working' && !(card.stage === 'blocked' && card.agentId)) return undefined
+  const keep = stage === 'review' || stage === 'live' || stage === 'blocked' || stage === 'working'
+  return { stage, needsYou: undefined, permission: undefined, doing: undefined, ...(keep ? {} : { agentId: undefined, progress: undefined }) }
+}
+
+/** What a card is waiting on from a person, in a line: an agent's question, or a permission nobody has answered yet. */
+export const asksOf = (card: Pick<Card, 'needsYou' | 'permission'>) =>
+  card.needsYou ?? (card.permission && !card.permission.answer ? `Allow ${card.permission.tool}: ${card.permission.what}` : undefined)
+
 export function nextFor(state: WorkState & { binders: { id: string; repo?: string }[] }, agent: Agent, busy: string[] = []): Card | undefined {
   const done = new Set(state.cards.filter((c) => c.stage === 'review' || c.stage === 'live').map((c) => c.id))
   // A wait for a card that isn't on the board (deleted, or never a card's id) holds nothing up.
   const there = new Set(state.cards.map((c) => c.id))
+  // A card split into parts isn't offered whole, however far along the parts are: it follows them.
+  const split = new Set(state.cards.flatMap((c) => (c.parent ? [c.parent] : [])))
   return state.cards
-    .filter((c) => c.stage === 'ready' && !c.agentId && !busy.includes(c.id))
+    .filter((c) => c.stage === 'ready' && !c.agentId && !busy.includes(c.id) && !split.has(c.id))
     .filter((c) => mayTake(state, agent, c))
     .filter((c) => c.waitsFor.every((w) => done.has(w) || !there.has(w)))
     .sort((a, b) => Number(b.meantFor === agent.id) - Number(a.meantFor === agent.id) || a.createdAt.localeCompare(b.createdAt))[0]

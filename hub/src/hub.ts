@@ -161,6 +161,9 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
     if (!fromPeople.has(change.type)) throw new Refused(`That can’t be sent from the web app (${change.type}).`)
     const wrong = whatsWrong(change)
     if (wrong) throw new Refused(`That change can’t be used (${change.type}): ${wrong}.`)
+    // A permission runs something on an agent's machine: answered through answerPermission, by its owner, never written.
+    if (change.type === 'card.update' && change.fields.permission) throw new Refused('A permission is answered on its card, by its agent’s owner.')
+    if (change.type === 'card.put' && change.card.permission && JSON.stringify(change.card.permission) !== JSON.stringify(this.state.cards.find((c) => c.id === change.card.id)?.permission)) throw new Refused('A permission is answered on its card, by its agent’s owner.')
     if (change.type === 'test.result') {
       // A result is the person's own, on a test the debrief has.
       if (change.result && change.result.by.toLowerCase() !== login.toLowerCase()) throw new Refused('A test’s result is recorded by whoever ran it.')
@@ -193,6 +196,11 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
     if (fresh) this.emit('presence', this.presence())
   }
 
+  /** A runner of an agent has stopped: the next one to start isn't a second one. */
+  runnerGone(agentId: string, runner: string) {
+    if (this.runners.get(agentId)?.delete(runner)) this.emit('presence', this.presence())
+  }
+
   /** The agent's other runners heard from in the last two minutes: they take the same work as this one. */
   otherRunners(agentId: string, runner: string) {
     const since = Date.now() - 2 * 60_000
@@ -202,8 +210,9 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
   presence(): Record<string, Presence> {
     const since = Date.now() - 2 * 60_000
     return Object.fromEntries([...this.seen.entries()].map(([id, p]) => {
-      const runners = [...(this.runners.get(id)?.values() ?? [])].filter((r) => r.at > since).length
-      return [id, { at: new Date(p.at).toISOString(), listening: p.waiting > 0, ...(runners ? { runners } : {}) }]
+      const lately = [...(this.runners.get(id)?.values() ?? [])].filter((r) => r.at > since)
+      const places = [...new Set(lately.flatMap((r) => (r.on ? [r.on] : [])))]
+      return [id, { at: new Date(p.at).toISOString(), listening: p.waiting > 0, ...(lately.length ? { runners: lately.length } : {}), ...(places.length ? { runnersOn: places } : {}) }]
     }))
   }
 

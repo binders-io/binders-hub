@@ -16,6 +16,7 @@ import { SignIn } from './screens/SignIn'
 import { go, href, useRoute, type Route } from './route'
 import { ContextMenuHost } from './components/ContextMenu'
 import { useModal } from './components/useModal'
+import { SwarmDialog } from './components/SwarmDialog'
 
 /** The binder you're in, remembered in this browser; one that's gone falls back to the first. */
 function useBinder(ids: string[]) {
@@ -129,13 +130,14 @@ export default function App() {
   const content = useRef<HTMLDivElement>(null)
   usePageTitle(route, signedOut)
   const [binder, setBinder] = useBinder(useMemo(() => binders.map((b) => b.id), [binders]))
+  const [splitting, setSplitting] = useState<string>()
   // An agent going quiet changes the count with nothing else changing.
   useClock()
   const counts = useHub((state) => countsIn(state, binder), sameValues)
   const agents = useMemo(() => allAgents.filter((a) => !a.revoked), [allAgents])
 
   // A card opens full screen, with its whole way from the note to production.
-  const ui = useMemo<UI>(() => ({ openItem: (id: string) => go({ screen: 'work', id }), openPalette: () => setPalette(true), binder, setBinder }), [binder, setBinder])
+  const ui = useMemo<UI>(() => ({ openItem: (id: string) => go({ screen: 'work', id }), openPalette: () => setPalette(true), binder, setBinder, splitCard: (id: string) => setSplitting(id) }), [binder, setBinder])
 
   // A new note in the binder you're looking at, opened.
   const newNote = useCallback(() => {
@@ -291,6 +293,7 @@ export default function App() {
         </nav>
 
         <AnimatePresence>{palette && <Palette key="palette" onClose={() => setPalette(false)} />}</AnimatePresence>
+        {splitting && <SwarmDialog key={splitting} cardId={splitting} onClose={() => setSplitting(undefined)} />}
         <Toast />
         <ContextMenuHost />
       </div>

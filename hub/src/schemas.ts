@@ -89,6 +89,7 @@ export const bodies = {
   ask: z.looseObject({ agentId: maybe, effort: maybe }),
   finding: z.looseObject({ action: maybe }),
   comment: z.looseObject({ text: maybe }),
+  permission: z.looseObject({ request: z.string().max(64), allow: z.boolean() }),
   chat: z.looseObject({ agentId: maybe, text: maybe }),
   newSchedule: z.looseObject({ noteId: maybe, agentId: maybe, cron: maybe, tz: maybe, enabled: flag }),
   changeSchedule: z.looseObject({ agentId: optional, cron: maybe, tz: maybe, enabled: flag }),

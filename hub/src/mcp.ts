@@ -136,7 +136,7 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
   const summary = (card: Card) => ({
     id: card.id, title: card.title, binder: hub.state.binders.find((b) => b.id === card.binderId)?.name, repo: actions.repoOf(card), stage: stageFor(card.stage), size: card.size,
     holder: hub.state.agents.find((a) => a.id === card.agentId)?.name, holder_id: card.agentId, meant_for: hub.state.agents.find((a) => a.id === card.meantFor)?.name,
-    issue: card.issue?.url, waits_for: card.waitsFor, needs_you: reviewing(card) ? undefined : card.needsYou,
+    issue: card.issue?.url, waits_for: card.waitsFor, needs_you: reviewing(card) ? undefined : card.needsYou, permission: card.permission,
   })
   const full = (card: Card) => reviewing(card) ? {
     ...summary(card),
@@ -180,13 +180,17 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
 
   server.registerTool('update_profile', {
     description: 'Says what this agent can do and where it runs, so work meant for it finds it: skills, repos, where it runs (a runner says its machine and folder here).',
-    inputSchema: { skills: z.array(z.string()).optional(), repos: z.array(z.string()).optional(), runs_on: z.string().optional(), provider: z.enum(['claude', 'openai', 'copilot', 'opencode', 'dsh', 'cursor', 'gemini', 'pi', 'amp', 'goose', 'aider', 'qwen', 'other']).optional(), models: z.array(z.string()).max(400).optional(), tool_models: z.record(z.string(), z.array(z.string()).max(400)).optional(), runner: z.object({ version: z.string().max(20), parallel: z.number().int().min(1).max(16), id: z.string().max(64).optional(), enterprise_mcp: z.boolean().optional(), bypass_off: z.boolean().optional() }).optional() },
-  }, run(async (args: { skills?: string[]; repos?: string[]; runs_on?: string; provider?: Provider; models?: string[]; tool_models?: Record<string, string[]>; runner?: { version: string; parallel: number; id?: string; enterprise_mcp?: boolean; bypass_off?: boolean } }) => {
+    inputSchema: { skills: z.array(z.string()).optional(), repos: z.array(z.string()).optional(), runs_on: z.string().optional(), provider: z.enum(['claude', 'openai', 'copilot', 'opencode', 'dsh', 'cursor', 'gemini', 'pi', 'amp', 'goose', 'aider', 'qwen', 'other']).optional(), models: z.array(z.string()).max(400).optional(), tool_models: z.record(z.string(), z.array(z.string()).max(400)).optional(), runner: z.object({ version: z.string().max(20), parallel: z.number().int().min(1).max(16), id: z.string().max(64).optional(), enterprise_mcp: z.boolean().optional(), bypass_off: z.boolean().optional(), gone: z.boolean().optional() }).optional() },
+  }, run(async (args: { skills?: string[]; repos?: string[]; runs_on?: string; provider?: Provider; models?: string[]; tool_models?: Record<string, string[]>; runner?: { version: string; parallel: number; id?: string; enterprise_mcp?: boolean; bypass_off?: boolean; gone?: boolean } }) => {
     const agent = me()
     const updated = await actions.putAgent(agent.owner, { name: agent.name, skills: args.skills ?? agent.skills, repos: args.repos ?? agent.repos, runsOn: args.runs_on ?? agent.runsOn, provider: args.provider ?? agent.provider }, agent.id)
     // The models its runner found, so the Agents page offers them by name.
     if (args.runner) await hub.record({ kind: 'agent', id: agentId }, { type: 'agent.put', agent: { ...hub.state.agents.find((a) => a.id === agentId)!, runnerSeen: { version: args.runner.version, parallel: args.runner.parallel, at: new Date().toISOString(), ...(args.runner.enterprise_mcp ? { enterpriseMcp: true } : {}), ...(args.runner.bypass_off ? { bypassOff: true } : {}) } } })
     // A runner saying who it is hears of the agent's others: two runners for one agent take the same work.
+    if (args.runner?.id && args.runner.gone) {
+      hub.runnerGone(agentId, args.runner.id)
+      return text(updated)
+    }
     if (args.runner?.id) {
       hub.runnerSeen(agentId, args.runner.id, hub.state.agents.find((a) => a.id === agentId)?.runsOn)
       const others = hub.otherRunners(agentId, args.runner.id)
@@ -759,6 +763,17 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
   server.registerTool('ask', { description: 'Asks a person something about a card you hold. Their answer shows in get_task’s conversation.', inputSchema: { id: z.string(), question: z.string() } }, run(async ({ id, question }: { id: string; question: string }) => {
     await actions.ask(agentId, id, question)
     return text('Asked. Check get_task for the answer.')
+  }))
+
+  // The runner's, for a live run: what it asks here reaches the tool only through the hook that asked.
+  server.registerTool('ask_permission', { description: 'For the runner: puts a permission its live run is waiting on on the card.', inputSchema: { id: z.string(), request: z.string(), tool: z.string(), what: z.string() } }, run(async ({ id, request, tool, what }: { id: string; request: string; tool: string; what: string }) => {
+    await actions.askPermission(agentId, id, request, tool, what)
+    return text('Asked.')
+  }))
+
+  server.registerTool('end_permission', { description: 'For the runner: its live run has moved on from a permission.', inputSchema: { id: z.string(), request: z.string().optional() } }, run(async ({ id, request }: { id: string; request?: string }) => {
+    await actions.endPermission(agentId, id, request)
+    return text('Ended.')
   }))
 
   server.registerTool('comment_task', { description: 'Leaves a comment on a card.', inputSchema: { id: z.string(), text: z.string() } }, run(async ({ id, text: body }: { id: string; text: string }) => {

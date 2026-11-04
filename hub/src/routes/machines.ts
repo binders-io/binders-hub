@@ -3,6 +3,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { mcpServer } from '../mcp.ts'
 import { personServer } from '../mcpPerson.ts'
 import { verify } from '../webhooks.ts'
+import { handleWebhook } from '../jira.ts'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { Context } from './context.ts'
 
@@ -36,6 +37,13 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
     return reply.code(401).header('www-authenticate', `Bearer realm="binders", resource_metadata="${metadata}"`).send({ jsonrpc: '2.0', error: { code: -32001, message: 'This hub doesn’t know that token. An agent uses the token from its Agents page; a person connects with OAuth, through the browser.' }, id: null })
   }
 
+  /**
+   * A token set by hand in a client's settings that can't work here. A 403, never a 401: mcp-remote sends its --header
+   * over whatever token signing in gets it, so a 401 has it ask its person to allow it again and again, and get nowhere.
+   */
+  const setByHand = (reply: FastifyReply, message: string) => reply.code(403).send({ jsonrpc: '2.0', error: { code: -32001, message }, id: null })
+  const agentStale = 'This agent’s token was replaced or revoked. Copy a new one from the Agents page into this client’s settings.'
+
   /** Runs one MCP server for this request: stateless, a server per call. */
   const serve = async (request: FastifyRequest, reply: FastifyReply, server: ReturnType<typeof mcpServer>) => {
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
@@ -55,13 +63,17 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
     const agent = await auth.agentFor(token)
     if (agent) {
       const space = spaces.get(agent.space ?? spaces.list()[0]?.id ?? '')
-      if (!space || (named && named !== space.id) || !space.hub.state.agents.some((a) => a.id === agent.id && !a.revoked)) return unauthorized(reply, request)
+      if (space && named && named !== space.id) return setByHand(reply, 'This agent’s token is for another binder.')
+      if (!space || !space.hub.state.agents.some((a) => a.id === agent.id && !a.revoked)) return setByHand(reply, agentStale)
       return serve(request, reply, mcpServer(space.hub, space.actions, agent.id, { issueToken: (id) => auth.issueAgentToken(id, space.id), publicUrl: options.publicUrl }))
     }
+    if (token?.startsWith('bnd_')) return setByHand(reply, agentStale)
     // A person's token: signed in through OAuth, acting as themselves in the binder the connection is for.
     const person = await auth.personFor(token)
     // An app's token is for /api: only a token made for MCP is a connection to a binder.
-    if (!person || person.kind !== 'mcp') return unauthorized(reply, request)
+    if (person && person.kind !== 'mcp') return setByHand(reply, 'This token is an app’s, for the API. Take it out of this client’s settings to connect through the browser.')
+    if (!person && (await auth.stoppedByHand(token))) return setByHand(reply, 'This token was stopped. Take it out of this client’s settings to connect through the browser, or make a new one.')
+    if (!person) return unauthorized(reply, request)
     const mine = spaces.forPerson(person.user.login, isAdmin(person.user.login))
     // A connection is for the one binder the person allowed. It never moves to another, as every binder's log calls its
     // binder the same: a client that was removed from this one would write in the next one without knowing.
@@ -89,6 +101,22 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
   app.delete('/mcp', notHere)
   app.get('/:space/mcp', notHere)
   app.delete('/:space/mcp', notHere)
+
+  // Jira's webhook, for this binder: its secret in the query string, which the hub's log leaves out.
+  app.post('/webhooks/jira/:space', async (request, reply) => {
+    const { space } = request.params as { space: string }
+    const { secret } = request.query as { secret?: unknown }
+    const binder = spaces.get(space)
+    const jira = binder?.jira
+    if (!binder || !jira || !binder.jiraIssues || typeof secret !== 'string' || !(await jira.knowsSecret(secret))) return reply.code(404).send({ error: 'No such Jira webhook.' })
+    const body = request.body as Record<string, unknown> | undefined
+    if (!body || typeof body !== 'object') return reply.code(400).send({ error: 'A Jira webhook posts JSON.' })
+    try {
+      return { ok: true, result: await handleWebhook(binder.hub, jira, binder.jiraIssues, body) }
+    } catch (error) {
+      return reply.code(500).send({ error: (error as Error).message })
+    }
+  })
 
   // GitHub's webhooks, with the raw body for the signature -------------------------------------------------------------
 

@@ -1,7 +1,8 @@
+import './tidy.ts'
 import { mkdtempSync } from 'node:fs'
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { writeFile, mkdtemp, readFile, readdir, realpath, stat } from 'node:fs/promises'
+import { rm, writeFile, mkdtemp, readFile, readdir, realpath, stat } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { parseDiff } from '../../shared/changeSet.ts'
 import { tmpdir } from 'node:os'
@@ -1053,5 +1054,692 @@ console.log('</binders-actions>')
     assert.equal(runner.usesMcp({ tool: 'claude' }), true)
     const { args } = runner.commandFor({ tool: 'claude', access: 'full', timeoutMinutes: 1, worktrees: false }, 'c1', dir, undefined, 'Do it.')
     assert.ok(args.includes('--allowedTools=mcp__binders_hub') && !args.includes('--mcp-config'))
+  })
+})
+
+// Cards in holders: the runner can go, and the agent doesn't.
+describe('a card in a holder', () => {
+  const heldStandIn = `
+import { appendFileSync, existsSync, writeFileSync } from 'node:fs'
+import { Client } from '${join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js')}'
+import { StreamableHTTPClientTransport } from '${join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js')}'
+const [flag, log] = process.argv.slice(2)
+appendFileSync(log, JSON.stringify({ pid: process.pid, resume: process.env.BINDERS_RESUME }) + '\\n')
+const say = (event) => console.log(JSON.stringify(event))
+say({ type: 'system', subtype: 'init', session_id: 'held-session' })
+say({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: 'first.ts' } }] } })
+say({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'first' }] } })
+writeFileSync(log + '.started', '')
+while (!existsSync(flag)) await new Promise((done) => setTimeout(done, 20))
+say({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't2', name: 'Read', input: { file_path: 'second.ts' } }] } })
+say({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't2', content: 'second' }] } })
+const client = new Client({ name: 'stand-in', version: '1' })
+await client.connect(new StreamableHTTPClientTransport(new URL(process.env.BINDERS_URL + '/mcp'), { requestInit: { headers: { authorization: 'Bearer ' + process.env.BINDERS_TOKEN } } }))
+await client.callTool({ name: 'complete_task', arguments: { id: process.env.BINDERS_CARD, summary: 'Done, in a holder.' } })
+say({ type: 'result', total_cost_usd: 0.1, duration_ms: 1000, result: 'Done.' })
+await client.close()
+`
+  async function heldSetUp(title: string) {
+    const set = await setUp()
+    const home = await mkdtemp(join(tmpdir(), 'bh-'))
+    process.env.BINDERS_HOME = home
+    const script = join(set.dir, 'held-stand-in.mjs')
+    await writeFile(script, heldStandIn)
+    const flag = join(set.dir, 'go')
+    const log = join(set.dir, 'runs')
+    const made = await set.actions.putAgent('you', { name: `Held ${title}`, runner: { tool: 'custom', access: 'full', timeoutMinutes: 1, worktrees: false, held: true, command: `node ${script} ${flag} ${log}` } })
+    const token = await set.issued(made.id)
+    const card = await set.card(title, made.id)
+    const runs = async () => (await readFile(log, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as { pid: number; resume: string })
+    const started = async (count = 1) => {
+      for (let i = 0; i < 500 && (await runs()).length < count; i++) await new Promise((done) => setTimeout(done, 20))
+      for (let i = 0; i < 500 && !(await readFile(log + '.started').then(() => true, () => false)); i++) await new Promise((done) => setTimeout(done, 20))
+    }
+    const newRunner = () => new Runner({ hubUrl: set.url, token, workspace: set.dir, log: () => {}, waitSeconds: 1 })
+    const stored = () => set.hub.state.cards.find((c) => c.id === card.id)!
+    const room = async () => join(home, 'held', (await readdir(join(home, 'held')))[0])
+    return { ...set, home, flag, log, runs, started, newRunner, stored, card, room }
+  }
+  const steps = (card: { activity: { kind: string; text: string }[] }) => card.activity.filter((a) => a.kind === 'step').map((a) => a.text)
+
+  it('carries on while its runner goes, and the next runner sees it through without saying anything twice', async () => {
+    const set = await heldSetUp('Survives')
+    const first = set.newRunner()
+    const running = first.start(true)
+    await set.started()
+    // Long enough for the first relay.
+    for (let i = 0; i < 300 && !steps(set.stored()).length; i++) await new Promise((done) => setTimeout(done, 20))
+    assert.deepEqual(steps(set.stored()), ['first.ts'])
+    const { pid } = (await set.runs())[0]
+
+    first.stop(true)
+    await running
+    assert.equal(process.kill(pid, 0), true, 'the agent is still running')
+    assert.equal(set.stored().stage, 'working', 'its card stays with it')
+
+    await writeFile(set.flag, '')
+    await set.newRunner().start(true)
+    assert.equal(set.stored().stage, 'live')
+    assert.deepEqual(steps(set.stored()), ['first.ts', 'second.ts'])
+    assert.equal((await set.runs()).length, 1, 'never started twice')
+    assert.deepEqual(await readdir(await set.room()).then((n) => n.filter((f) => f !== 'sessions.json')), [], 'and tidied up')
+    await set.close()
+  })
+
+  it('finds a run that finished with no runner watching', async () => {
+    const set = await heldSetUp('Finished alone')
+    const first = set.newRunner()
+    const running = first.start(true)
+    await set.started()
+    first.stop(true)
+    await running
+    await writeFile(set.flag, '')
+    for (let i = 0; i < 500 && set.stored().stage !== 'live'; i++) await new Promise((done) => setTimeout(done, 20))
+    assert.equal(set.stored().stage, 'live')
+    // And tidies it up: its card is done, so there's nothing to watch.
+    const next = set.newRunner()
+    const going = next.start(false)
+    const room = await set.room()
+    for (let i = 0; i < 300 && (await readdir(room).catch(() => [] as string[])).some((n) => n !== 'sessions.json'); i++) await new Promise((done) => setTimeout(done, 20))
+    assert.deepEqual((await readdir(room).catch(() => [] as string[])).filter((n) => n !== 'sessions.json'), [])
+    next.stop()
+    await going
+    await set.close()
+  })
+
+  it('starts again in the same conversation when its machine stops under it', async () => {
+    const set = await heldSetUp('Machine stops')
+    const first = set.newRunner()
+    const running = first.start(true)
+    await set.started()
+    first.stop(true)
+    await running
+    const agentDir = await set.room()
+    const room = (await readdir(agentDir)).find((n) => n !== 'sessions.json')!
+    const pids = JSON.parse(await readFile(join(agentDir, room, 'pid'), 'utf8')) as { holder: number; program: number }
+    // Its holder goes and the agent doesn't: the worst case. It's stopped, so two aren't working on the card.
+    process.kill(pids.holder, 'SIGKILL')
+    await new Promise((done) => setTimeout(done, 100))
+    await rm(set.log + '.started', { force: true })
+
+    const next = set.newRunner().start(true)
+    await set.started(2)
+    await writeFile(set.flag, '')
+    await next
+    const runs = await set.runs()
+    assert.equal(runs.length, 2)
+    assert.equal(runs[1].resume, '1', 'carrying on, not starting over')
+    assert.throws(() => process.kill(runs[0].pid, 0), 'the first one is gone')
+    assert.equal(set.stored().stage, 'live')
+    await set.close()
+  })
+
+  it('stops with its runner when it’s told to stop, rather than leave', async () => {
+    const set = await heldSetUp('Stopped')
+    const first = set.newRunner()
+    const running = first.start(true)
+    await set.started()
+    const { pid } = (await set.runs())[0]
+    first.stop()
+    await running
+    for (let i = 0; i < 300; i++) {
+      try { process.kill(pid, 0) } catch { break }
+      await new Promise((done) => setTimeout(done, 20))
+    }
+    assert.throws(() => process.kill(pid, 0))
+    assert.equal(set.stored().stage, 'ready', 'and its card goes back')
+    await set.close()
+  })
+
+  it('stops a run left for a card that was taken back while no runner watched', async () => {
+    const set = await heldSetUp('Taken back')
+    const first = set.newRunner()
+    const running = first.start(true)
+    await set.started()
+    const { pid } = (await set.runs())[0]
+    first.stop(true)
+    await running
+    await set.hub.record({ kind: 'user', login: 'you' }, { type: 'card.update', id: set.card.id, fields: { stage: 'ready', agentId: undefined } })
+    const next = set.newRunner()
+    const going = next.start(false)
+    for (let i = 0; i < 300; i++) {
+      try { process.kill(pid, 0) } catch { break }
+      await new Promise((done) => setTimeout(done, 20))
+    }
+    assert.throws(() => process.kill(pid, 0))
+    next.stop()
+    await going
+    await set.close()
+  })
+})
+
+describe('a terminal in a holder', () => {
+  it('is still there, with what it wrote, for the runner after the one that opened it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'bt-'))
+    const flag = join(root, 'go')
+    const listeners: { send: (text: string) => void; messages: Record<string, unknown>[] }[] = []
+    // @ts-expect-error The hub's dependency, with no types from here.
+    const { WebSocketServer } = await import('../../hub/node_modules/ws/wrapper.mjs') as { WebSocketServer: new (options: object) => { on: (event: string, listener: (socket: { send: (text: string) => void; on: (event: string, listener: (raw: unknown) => void) => void }) => void) => void; address: () => unknown; close: () => void } }
+    const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' })
+    await new Promise((done) => wss.on('listening', done))
+    wss.on('connection', (socket) => {
+      const link = { send: (text: string) => socket.send(text), messages: [] as Record<string, unknown>[] }
+      socket.on('message', (raw) => link.messages.push(JSON.parse(String(raw))))
+      listeners.push(link)
+    })
+    const port = (wss.address() as { port: number }).port
+    const { Terminals } = await import('../src/terminal.ts')
+    const until = async (check: () => boolean) => { for (let i = 0; i < 500 && !check(); i++) await new Promise((done) => setTimeout(done, 20)); assert.ok(check()) }
+    const make = () => new Terminals({ hubUrl: `http://127.0.0.1:${port}`, token: 't', version: '1', log: () => {}, heldRoot: () => join(root, 'held'), finished: async () => {}, start: async () => ({ command: '/bin/sh', args: ['-c', `echo hello from the agent; read line; echo "typed $line"`], cwd: root, env: {}, tool: 'Stand-in', held: true }) })
+    const first = make()
+    await first.start()
+    await until(() => listeners.length === 1)
+    listeners[0].send(JSON.stringify({ type: 'open', sid: 'term-one', by: 'you', cols: 80, rows: 24, viewer: 'v' }))
+    await until(() => listeners[0].messages.some((m) => m.type === 'output' && String(m.data).includes('hello from the agent')))
+    first.stop(true)
+
+    const second = make()
+    await second.start()
+    await until(() => listeners.length === 2)
+    await until(() => listeners[1].messages.some((m) => m.type === 'sessions' && (m.sessions as { sid: string }[]).some((s) => s.sid === 'term-one')))
+    listeners[1].send(JSON.stringify({ type: 'attach', sid: 'term-one', viewer: 'w' }))
+    await until(() => listeners[1].messages.some((m) => m.type === 'replay' && String(m.data).includes('hello from the agent')))
+    listeners[1].send(JSON.stringify({ type: 'input', sid: 'term-one', data: 'back\n' }))
+    await until(() => listeners[1].messages.some((m) => m.type === 'output' && String(m.data).includes('typed back')))
+    await until(() => listeners[1].messages.some((m) => m.type === 'exit' && m.sid === 'term-one'))
+    second.stop()
+    wss.close()
+    void flag
+  })
+})
+
+// The binders command: the agent talks to its runner, with no MCP, no config and no token.
+describe('an agent with the binders command', () => {
+  const standIn = `
+import { execFileSync } from 'node:child_process'
+import { appendFileSync, existsSync, writeFileSync } from 'node:fs'
+const [mode, log] = process.argv.slice(2)
+const say = (event) => console.log(JSON.stringify(event))
+const binders = (...args) => execFileSync('binders', args, { encoding: 'utf8' })
+const note = (entry) => appendFileSync(log, JSON.stringify(entry) + '\\n')
+const failing = (...args) => { try { binders(...args); return undefined } catch (error) { return String(error.stderr) } }
+say({ type: 'system', subtype: 'init', session_id: 'cli-session' })
+note({ env: { token: process.env.BINDERS_TOKEN ?? null, resume: process.env.BINDERS_RESUME, config: process.argv.includes('--mcp-config') } })
+if (mode === 'finish') {
+  const card = JSON.parse(binders('card'))
+  note({ title: card.title, unknown: failing('nonsense'), empty: failing('done') })
+  binders('progress', 'Reading the code', '--of', '0.5')
+  binders('comment', 'A comment from the command')
+  binders('done', 'Finished through the command.')
+}
+if (mode === 'listen') {
+  writeFileSync(log + '.ready', '')
+  for (;;) {
+    const messages = JSON.parse(binders('inbox'))
+    if (messages.length) {
+      note({ heard: messages })
+      break
+    }
+    await new Promise((done) => setTimeout(done, 50))
+  }
+  binders('done', 'Heard it, and finished.')
+}
+if (mode === 'hooks') {
+  writeFileSync(log + '.ready', '')
+  for (;;) {
+    const quiet = execFileSync('binders', ['hook', 'post-tool'], { encoding: 'utf8' })
+    if (quiet) {
+      note({ hook: JSON.parse(quiet), after: execFileSync('binders', ['hook', 'stop'], { encoding: 'utf8' }) })
+      break
+    }
+    await new Promise((done) => setTimeout(done, 50))
+  }
+  binders('done', 'Heard it through the hook.')
+}
+if (mode === 'deaf') {
+  if (process.env.BINDERS_RESUME === '1') binders('done', 'Told, after being stopped.')
+  else {
+    writeFileSync(log + '.ready', '')
+    await new Promise((done) => setTimeout(done, 30000))
+  }
+}
+if (mode === 'patient') {
+  writeFileSync(log + '.ready', '')
+  while (!existsSync(log + '.go')) await new Promise((done) => setTimeout(done, 20))
+  binders('done', 'Asked while no runner was there.')
+}
+say({ type: 'result', total_cost_usd: 0.1, duration_ms: 1000, result: 'Done.' })
+`
+  async function cliSetUp(mode: string, extra: object = {}, runnerOptions: object = {}) {
+    const set = await setUp()
+    process.env.BINDERS_HOME = await mkdtemp(join(tmpdir(), 'bc-'))
+    const script = join(set.dir, 'cli-stand-in.mjs')
+    await writeFile(script, standIn)
+    const log = join(set.dir, `cli-${mode}`)
+    const made = await set.actions.putAgent('you', { name: `Cli ${mode}`, runner: { tool: 'custom', access: 'full', timeoutMinutes: 1, worktrees: false, cli: true, command: `node ${script} ${mode} ${log}`, ...extra } })
+    const token = await set.issued(made.id)
+    const card = await set.card(`Card ${mode}`, made.id)
+    const notes = async () => (await readFile(log, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, any>)
+    const ready = async () => {
+      for (let i = 0; i < 500 && !(await stat(log + '.ready').then(() => true, () => false)); i++) await new Promise((done) => setTimeout(done, 20))
+    }
+    const newRunner = () => new Runner({ hubUrl: set.url, token, workspace: set.dir, log: () => {}, waitSeconds: 1, ...runnerOptions })
+    return { ...set, log, card, notes, ready, newRunner, stored: () => set.hub.state.cards.find((c) => c.id === card.id)! }
+  }
+
+  it('works a card with no token in its environment and no MCP config', async () => {
+    const set = await cliSetUp('finish')
+    await set.newRunner().start(true)
+    const [first, second] = await set.notes()
+    assert.deepEqual(first.env, { token: null, resume: '', config: false })
+    assert.equal(second.title, 'Card finish')
+    assert.match(second.unknown, /no nonsense/)
+    assert.match(second.empty, /What did you do/)
+    assert.equal(set.stored().stage, 'live')
+    assert.ok(set.stored().activity.some((a) => a.text === 'A comment from the command'))
+    await set.close()
+  })
+
+  it('hears what a person writes without being stopped, and the card says it got there', async () => {
+    const set = await cliSetUp('listen')
+    const running = set.newRunner().start(true)
+    await set.ready()
+    await set.actions.comment('you', set.card.id, 'Use port 8080.')
+    await running
+    const notes = await set.notes()
+    assert.equal(notes.filter((n) => n.env).length, 1, 'never started again')
+    assert.deepEqual(notes.find((n) => n.heard)!.heard, [{ by: 'you', text: 'Use port 8080.' }])
+    assert.ok(set.stored().activity.some((a) => a.text === 'Got what you wrote, without stopping.'))
+    assert.equal(set.stored().stage, 'live')
+    await set.close()
+  })
+
+  it('hands it over through a tool’s hook, once, and the hook is quiet otherwise', async () => {
+    const set = await cliSetUp('hooks')
+    const running = set.newRunner().start(true)
+    await set.ready()
+    await set.actions.comment('you', set.card.id, 'Mind the tests.')
+    await running
+    const heard = (await set.notes()).find((n) => n.hook)!
+    assert.equal(heard.hook.hookSpecificOutput.hookEventName, 'PostToolUse')
+    assert.match(heard.hook.hookSpecificOutput.additionalContext, /you: Mind the tests\./)
+    assert.equal(heard.after, '')
+    await set.close()
+  })
+
+  it('stops and tells an agent that doesn’t take it in time, as any other', async () => {
+    const set = await cliSetUp('deaf', {}, { hearWithinMs: 200 })
+    const running = set.newRunner().start(true)
+    await set.ready()
+    await set.actions.comment('you', set.card.id, 'Are you there?')
+    await running
+    const starts = (await set.notes()).filter((n) => n.env)
+    assert.equal(starts.length, 2)
+    assert.equal(starts[1].env.resume, '1')
+    assert.equal(set.stored().stage, 'live')
+    await set.close()
+  })
+
+  it('waits for its runner when it’s restarting, and gets its answer from the next one', async () => {
+    const set = await cliSetUp('patient', { held: true })
+    const first = set.newRunner()
+    const running = first.start(true)
+    await set.ready()
+    first.stop(true)
+    await running
+    await writeFile(set.log + '.go', '')
+    await new Promise((done) => setTimeout(done, 300))
+    assert.equal(set.stored().stage, 'working', 'it’s asking, with nobody to answer yet')
+    await set.newRunner().start(true)
+    assert.equal(set.stored().stage, 'live')
+    await set.close()
+  })
+
+  it('speaks for its own run alone', async () => {
+    const { Desk, agentCommand } = await import('../src/desk.ts')
+    const home = await mkdtemp(join(tmpdir(), 'bd-'))
+    const asked: unknown[] = []
+    const desk = new Desk(join(home, 'desk'), async (run, verb) => { asked.push([run.card, verb]); return { result: 'yes' } })
+    await desk.listen()
+    desk.add('right', { card: 'card-mine', dir: home })
+    const said: string[] = []
+    const errors: string[] = []
+    const env = (run: string) => ({ BINDERS_DESK: join(home, 'desk'), BINDERS_RUN: run })
+    assert.equal(await agentCommand(['card'], env('wrong'), (l) => said.push(l), (l) => errors.push(l)), 1)
+    assert.match(errors[0], /isn’t a run/)
+    assert.equal(await agentCommand(['card'], env('right'), (l) => said.push(l), (l) => errors.push(l)), 0)
+    assert.deepEqual(asked, [['card-mine', 'card']])
+    assert.equal(await agentCommand(['card'], {}, (l) => said.push(l), (l) => errors.push(l)), 1)
+    desk.close()
+  })
+
+  it('gives Claude Code the hooks and not the MCP config', async () => {
+    const runner = new Runner({ hubUrl: 'http://hub.test', token: 'bnd_x', workspace: '/tmp' })
+    const { args } = runner.commandFor({ tool: 'claude', access: 'full', timeoutMinutes: 10, worktrees: true }, 'k', '/tmp', undefined, 'Go', [], { hooks: '/bin/binders', cli: true })
+    assert.equal(args.includes('--mcp-config'), false)
+    assert.ok(args.includes('--allowedTools=Bash(binders:*)'))
+    const hooks = JSON.parse(args[args.indexOf('--settings') + 1])
+    assert.equal(hooks.hooks.PostToolUse[0].hooks[0].command, "'/bin/binders' hook post-tool")
+    assert.equal(hooks.hooks.Stop[0].hooks[0].command, "'/bin/binders' hook stop")
+  })
+})
+
+// Terminals agents open for themselves, and runs as live terminals.
+describe('an agent’s own terminals, and a run in a live one', () => {
+  const standIn = `
+import { execFileSync } from 'node:child_process'
+import { appendFileSync, existsSync, writeFileSync } from 'node:fs'
+const [mode, log, outside] = process.argv.slice(2)
+const binders = (...args) => execFileSync('binders', args, { encoding: 'utf8' })
+const hook = (which, payload) => execFileSync('binders', ['hook', which], { encoding: 'utf8', input: JSON.stringify(payload) })
+const note = (entry) => appendFileSync(log, JSON.stringify(entry) + '\\n')
+const failing = (...args) => { try { binders(...args); return undefined } catch (error) { return String(error.stderr) } }
+if (mode === 'terminals') {
+  binders('term', 'new', '--name', 'web', "echo starting; sleep 0.2; echo server ready; read line; echo typed-$line; sleep 30")
+  note({ list: JSON.parse(binders('term', 'ls')).map((t) => t.name) })
+  note({ waited: JSON.parse(binders('term', 'wait', 'web', '--output', 'server ready', '--seconds', '5')) })
+  binders('term', 'send', 'web', 'hello')
+  note({ waitedAgain: JSON.parse(binders('term', 'wait', 'web', '--output', 'typed-hello', '--seconds', '5')) })
+  note({ read: binders('term', 'read', 'web') })
+  note({ outside: failing('term', 'new', '--cwd', outside, 'true'), twice: failing('term', 'new', '--name', 'web', 'true'), missing: failing('term', 'read', 'nope') })
+  binders('term', 'new', '--name', 'short', 'echo bye')
+  note({ short: JSON.parse(binders('term', 'wait', 'short', '--seconds', '5')) })
+  writeFileSync(log + '.ready', '')
+  binders('done', 'Finished, with a terminal open.')
+}
+if (mode === 'live') {
+  note({ tty: !!process.stdin.isTTY, token: process.env.BINDERS_TOKEN ?? null, resume: process.env.BINDERS_RESUME })
+  console.log('\\x1b[32mA live agent, drawing its screen\\x1b[0m')
+  hook('session-start', { session_id: 'live-session' })
+  hook('post-tool', { tool_name: 'Read', tool_input: { file_path: 'live.ts' }, tool_response: 'some lines' })
+  writeFileSync(log + '.ready', '')
+  // What a person types at its terminal, then what they write on the card.
+  const typed = await new Promise((done) => process.stdin.once('data', (data) => done(String(data).trim())))
+  note({ typed })
+  for (;;) {
+    const said = hook('post-tool', { tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_response: { stdout: 'ok' } })
+    if (said) { note({ said: JSON.parse(said) }); break }
+    await new Promise((done) => setTimeout(done, 50))
+  }
+  note({ firstStop: hook('stop', {}) })
+  binders('done', 'Done, live.')
+  note({ secondStop: hook('stop', {}) })
+  await new Promise((done) => setTimeout(done, 30000))
+}
+if (mode === 'quit-live') {
+  writeFileSync(log + '.ready', '')
+  note({ firstStop: hook('stop', {}) })
+  note({ secondStop: hook('stop', {}) })
+  await new Promise((done) => setTimeout(done, 30000))
+}
+if (mode === 'taken-over') {
+  writeFileSync(log + '.ready', '')
+  await new Promise((done) => process.stdin.once('data', done))
+  note({ firstStop: hook('stop', {}) })
+  note({ secondStop: hook('stop', {}) })
+  binders('done', 'Done with a person there.')
+}
+if (mode === 'permission') {
+  writeFileSync(log + '.ready', '')
+  note({ allowed: hook('permission', { tool_name: 'Bash', tool_input: { command: 'npm publish' } }) })
+  hook('post-tool', { tool_name: 'Bash', tool_input: { command: 'npm publish' }, tool_response: 'failed' })
+  note({ retried: hook('permission', { tool_name: 'Bash', tool_input: { command: 'npm publish' } }) })
+  note({ denied: hook('permission', { tool_name: 'Write', tool_input: { file_path: 'secret.txt' } }) })
+  binders('done', 'Asked twice.')
+}
+if (mode === 'permission-unanswered') {
+  writeFileSync(log + '.ready', '')
+  note({ unanswered: hook('permission', { tool_name: 'Bash', tool_input: { command: 'npm publish' } }) })
+  binders('done', 'Asked in its terminal.')
+}
+`
+  async function setUpAgent(mode: string, extra: object = {}) {
+    const set = await setUp()
+    process.env.BINDERS_HOME = await mkdtemp(join(tmpdir(), 'bl-'))
+    const script = join(set.dir, 'live-stand-in.mjs')
+    await writeFile(script, standIn)
+    const log = join(set.dir, `live-${mode}`)
+    const outside = await mkdtemp(join(tmpdir(), 'outside-'))
+    const made = await set.actions.putAgent('you', { name: `Live ${mode}`, runner: { tool: 'custom', access: 'full', timeoutMinutes: 1, worktrees: false, cli: true, held: true, command: `node ${script} ${mode} ${log} ${outside}`, ...extra } })
+    const token = await set.issued(made.id)
+    const card = await set.card(`Card ${mode}`, made.id)
+    const notes = async () => (await readFile(log, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, any>)
+    const ready = async () => {
+      for (let i = 0; i < 500 && !(await stat(log + '.ready').then(() => true, () => false)); i++) await new Promise((done) => setTimeout(done, 20))
+    }
+    const newRunner = (extra: object = {}) => new Runner({ hubUrl: set.url, token, workspace: set.dir, log: () => {}, waitSeconds: 1, ...extra })
+    return { ...set, log, card, notes, ready, newRunner, stored: () => set.hub.state.cards.find((c) => c.id === card.id)! }
+  }
+  const inside = (runner: Runner) => runner.openTerminals as unknown as { sessions: Map<string, { info: { sid: string; card?: string; run?: boolean; name?: string } }>; handle: (message: object) => Promise<void> }
+
+  it('opens, reads, types to and waits on terminals of its own, kept to its work, ending with its card', async () => {
+    const set = await setUpAgent('terminals')
+    const runner = set.newRunner()
+    await runner.start(true)
+    const notes = await set.notes()
+    assert.deepEqual(notes[0].list, ['web'])
+    assert.equal(notes[1].waited.state, 'printed')
+    assert.equal(notes[2].waitedAgain.state, 'printed')
+    assert.match(notes[3].read, /server ready/)
+    assert.doesNotMatch(notes[3].read, /\x1b/)
+    assert.match(notes[4].outside, /outside this card’s work/)
+    assert.match(notes[4].twice, /called web already/)
+    assert.match(notes[4].missing, /No terminal called nope/)
+    assert.equal(notes[5].short.state, 'ended')
+    assert.equal(set.stored().stage, 'live')
+    await new Promise((done) => setTimeout(done, 300))
+    assert.equal(inside(runner).sessions.size, 0, 'and they ended with it')
+    await set.close()
+  })
+
+  it('runs in a live terminal: what it does reaches the card, and a person can type to it and write to it', async () => {
+    const set = await setUpAgent('live', { live: true })
+    const runner = set.newRunner()
+    const running = runner.start(true)
+    await set.ready()
+    const terminal = [...inside(runner).sessions.values()].find((s) => s.info.run)!
+    assert.equal(terminal.info.card, set.card.id)
+    await inside(runner).handle({ type: 'input', sid: terminal.info.sid, data: 'typed by a person\r' })
+    for (let i = 0; i < 300 && !(await set.notes()).some((n) => 'typed' in n); i++) await new Promise((done) => setTimeout(done, 20))
+    await set.actions.comment('you', set.card.id, 'Mind the tests.')
+    await running
+    const notes = await set.notes()
+    assert.deepEqual(notes[0], { tty: true, token: null, resume: '' })
+    assert.equal(notes.find((n) => 'typed' in n)!.typed, 'typed by a person')
+    assert.match(notes.find((n) => n.said)!.said.hookSpecificOutput.additionalContext, /you: Mind the tests\./)
+    assert.equal(set.stored().stage, 'live')
+    const steps = set.stored().activity.filter((a) => a.kind === 'step').map((a) => a.text)
+    assert.ok(steps.includes('live.ts'))
+    assert.ok(steps.includes('npm test'))
+    await set.close()
+  })
+
+  it('opens a person’s terminal without Binders’ server when the agent uses the binders command, or a managed config would refuse it', async () => {
+    const set = await setUp()
+    process.env.BINDERS_HOME = await mkdtemp(join(tmpdir(), 'bl-'))
+    const bin = join(set.dir, 'bin')
+    execFileSync('mkdir', ['-p', bin])
+    await writeFile(join(bin, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    const managed = join(set.dir, 'managed-mcp.json')
+    const path = process.env.PATH
+    process.env.PATH = `${bin}:${path}`
+    try {
+      const opened = async (name: string, extra: object, managedMcp: string) => {
+        const made = await set.actions.putAgent('you', { name, runner: { tool: 'claude', access: 'full', timeoutMinutes: 1, worktrees: false, ...extra } })
+        const runner = new Runner({ hubUrl: set.url, token: await set.issued(made.id), workspace: set.dir, log: () => {}, waitSeconds: 1, managedMcp })
+        await runner.connect()
+        const started = await (runner as unknown as { terminal(sid: string, by: string): Promise<{ args: string[]; done(): Promise<void> }> }).terminal(`t${name}`, 'you')
+        await started.done()
+        return started.args
+      }
+      const none = join(set.dir, 'none.json')
+      assert.ok((await opened('plain', {}, none)).includes('--mcp-config'))
+      assert.ok(!(await opened('command', { cli: true }, none)).includes('--mcp-config'))
+      await writeFile(managed, '{"mcpServers":{}}')
+      assert.ok(!(await opened('managed', {}, managed)).includes('--mcp-config'))
+    } finally {
+      process.env.PATH = path
+      await set.close()
+    }
+  })
+
+  // Claude Code under an enterprise MCP config, in a terminal: its refusal on the screen, and no stderr to find it in.
+  for (const after of ['exits', 'stays open']) {
+    it(`starts a live run again through the binders command when Claude Code refuses Binders’ server and ${after}`, async () => {
+      const set = await setUp()
+      process.env.BINDERS_HOME = await mkdtemp(join(tmpdir(), 'bl-'))
+      const bin = join(set.dir, 'bin')
+      execFileSync('mkdir', ['-p', bin])
+      const seen = join(set.dir, 'claude-runs')
+      await writeFile(join(bin, 'claude'), `#!/usr/bin/env node
+const { appendFileSync } = require('node:fs')
+const { execFileSync } = require('node:child_process')
+const args = process.argv.slice(2)
+if (!args.includes('--settings')) process.exit(0)
+appendFileSync(${JSON.stringify(seen)}, JSON.stringify({ args, tty: !!process.stdin.isTTY, stderr: !!process.stderr.isTTY }) + '\\n')
+if (args.includes('--mcp-config')) {
+  console.error('Error: You cannot dynamically configure MCP servers when an enterprise MCP config is present')
+  if (${JSON.stringify(after)} === 'exits') process.exit(1)
+  setTimeout(() => process.exit(0), 30000)
+} else {
+  execFileSync('binders', ['done', 'Done through the binders command.'])
+}
+`, { mode: 0o755 })
+      const path = process.env.PATH
+      process.env.PATH = `${bin}:${path}`
+      try {
+        const made = await set.actions.putAgent('you', { name: 'Refused live', runner: { tool: 'claude', access: 'full', timeoutMinutes: 1, worktrees: false, held: true, live: true } })
+        const job = await set.card('Add a health check', made.id)
+        await new Runner({ hubUrl: set.url, token: await set.issued(made.id), workspace: set.dir, log: () => {}, waitSeconds: 1, managedMcp: join(set.dir, 'none.json') }).start(true)
+        const runs = (await readFile(seen, 'utf8')).trim().split('\n').map((l) => JSON.parse(l) as { args: string[]; tty: boolean; stderr: boolean })
+        assert.equal(runs.length, 2)
+        assert.ok(runs[0].stderr, 'its error went to the terminal')
+        assert.ok(runs[0].args.includes('--mcp-config'))
+        assert.ok(!runs[1].args.includes('--mcp-config'))
+        assert.ok(runs[1].args.includes('--allowedTools=Bash(binders:*)'))
+        assert.ok(runs[1].tty, 'still a live terminal')
+        assert.equal(set.hub.state.agents.find((a) => a.id === made.id)!.runnerSeen?.enterpriseMcp, true)
+        const done = set.hub.state.cards.find((c) => c.id === job.id)!
+        assert.equal(done.stage, 'live')
+        assert.ok(!done.activity.some((a) => a.kind === 'released'))
+      } finally {
+        process.env.PATH = path
+        await set.close()
+      }
+    })
+  }
+
+  it('asks a live run’s permissions on its card, and its owner’s answer reaches the tool', async () => {
+    const set = await setUpAgent('permission', { live: true })
+    // Someone writing while it's held up on a permission doesn't stop it for not hearing them.
+    const running = set.newRunner({ hearWithinMs: 50 }).start(true)
+    const waiting = async (tool: string, not?: string) => {
+      for (let i = 0; i < 500 && (set.stored().permission?.tool !== tool || set.stored().permission?.request === not); i++) await new Promise((done) => setTimeout(done, 20))
+      const asked = set.stored().permission!
+      assert.equal(asked.tool, tool)
+      return asked
+    }
+    const first = await waiting('Bash')
+    assert.equal(first.what, 'npm publish')
+    await set.actions.comment('you', set.card.id, 'Mind the tests.')
+    await new Promise((done) => setTimeout(done, 4500))
+    await assert.rejects(set.actions.answerPermission('someone-else', set.card.id, first.request, true), /owner/)
+    await assert.rejects(set.actions.answerPermission('you', set.card.id, 'old-request', true), /isn’t waiting/)
+    await set.actions.answerPermission('you', set.card.id, first.request, true)
+    // The same command asked again, after it failed: asked again on the card, and not taken for answered.
+    const retried = await waiting('Bash', first.request)
+    await set.actions.answerPermission('you', set.card.id, retried.request, true)
+    const second = await waiting('Write')
+    assert.match(second.what, /secret\.txt/)
+    await set.actions.answerPermission('you', set.card.id, second.request, false)
+    await running
+    const notes = await set.notes()
+    assert.deepEqual(JSON.parse(notes.find((n) => n.allowed)!.allowed).hookSpecificOutput, { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } })
+    assert.equal(JSON.parse(notes.find((n) => n.retried)!.retried).hookSpecificOutput.decision.behavior, 'allow')
+    const denied = JSON.parse(notes.find((n) => n.denied)!.denied).hookSpecificOutput.decision
+    assert.equal(denied.behavior, 'deny')
+    assert.match(denied.message, /you didn’t allow/)
+    assert.equal(set.stored().permission, undefined, 'and it’s off the card')
+    assert.equal(set.stored().stage, 'live')
+    await set.close()
+  })
+
+  it('doesn’t honour an answer to something other than what the tool asked', async () => {
+    const set = await setUpAgent('permission-unanswered', { live: true })
+    const running = set.newRunner().start(true)
+    for (let i = 0; i < 500 && !set.stored().permission; i++) await new Promise((done) => setTimeout(done, 20))
+    const real = set.stored().permission!
+    const agent = set.stored().agentId!
+    // The agent can reach the card too: it can't change what's waiting, only replace it with a story of its own.
+    await assert.rejects(set.actions.askPermission(agent, set.card.id, real.request, 'Bash', 'ls'), /asked already/)
+    await set.actions.endPermission(agent, set.card.id, real.request)
+    await set.actions.askPermission(agent, set.card.id, real.request, 'Bash', 'ls')
+    await set.actions.answerPermission('you', set.card.id, real.request, true)
+    await running
+    assert.equal((await set.notes()).find((n) => 'unanswered' in n)!.unanswered, '', 'it’s asked in its terminal')
+    await set.close()
+  })
+
+  it('leaves a permission nobody answers to the tool’s own terminal, and takes it off the card', async () => {
+    const set = await setUpAgent('permission-unanswered', { live: true })
+    await set.newRunner({ permissionWaitMs: 50 }).start(true)
+    const notes = await set.notes()
+    assert.equal(notes.find((n) => 'unanswered' in n)!.unanswered, '')
+    assert.equal(set.stored().permission, undefined)
+    await set.close()
+  })
+
+  it('reminds a live run that stops with its card unfinished, then ends it and puts the card back', async () => {
+    const set = await setUpAgent('quit-live', { live: true })
+    await set.newRunner().start(true)
+    const notes = await set.notes()
+    assert.match(JSON.parse(notes[0].firstStop).reason, /isn’t finished/)
+    assert.equal(notes[1].secondStop, '')
+    assert.equal(set.stored().stage, 'ready')
+    assert.match(set.stored().activity.find((a) => a.kind === 'released')!.text, /./)
+    await set.close()
+  })
+
+  it('leaves a run alone when a person has taken over', async () => {
+    const set = await setUpAgent('taken-over', { live: true })
+    const runner = set.newRunner()
+    const running = runner.start(true)
+    await set.ready()
+    const terminal = [...inside(runner).sessions.values()].find((s) => s.info.run)!
+    await inside(runner).handle({ type: 'input', sid: terminal.info.sid, data: 'mine now\r' })
+    await running
+    const notes = await set.notes()
+    assert.equal(notes[0].firstStop, '', 'no reminder')
+    assert.equal(notes[1].secondStop, '', 'and no ending')
+    assert.equal(set.stored().stage, 'live')
+    await set.close()
+  })
+
+  it('carries a live run over to the next runner', async () => {
+    const set = await setUpAgent('live', { live: true })
+    const first = set.newRunner()
+    const running = first.start(true)
+    await set.ready()
+    first.stop(true)
+    await running
+    assert.equal(set.stored().stage, 'working')
+    const next = set.newRunner()
+    const going = next.start(true)
+    for (let i = 0; i < 300 && ![...(inside(next)?.sessions?.values() ?? [])].some((s) => s.info.run); i++) await new Promise((done) => setTimeout(done, 20))
+    const terminal = [...inside(next).sessions.values()].find((s) => s.info.run)!
+    assert.equal(terminal.info.card, set.card.id)
+    await inside(next).handle({ type: 'input', sid: terminal.info.sid, data: 'after the restart\r' })
+    for (let i = 0; i < 300 && !(await set.notes()).some((n) => 'typed' in n); i++) await new Promise((done) => setTimeout(done, 20))
+    assert.equal((await set.notes()).find((n) => 'typed' in n)!.typed, 'after the restart')
+    await set.actions.comment('you', set.card.id, 'Finish up.')
+    await going
+    assert.equal(set.stored().stage, 'live')
+    assert.equal((await set.notes()).filter((n) => 'tty' in n).length, 1, 'never started twice')
+    await set.close()
+  })
+
+  it('reads a terminal’s output as plain text', async () => {
+    const { plainText } = await import('../src/terminal.ts')
+    assert.equal(plainText('\x1b[32mgreen\x1b[0m\r\nprogress 1\rprogress 2\r\n\x1b]0;title\x07done'), 'green\nprogress 2\ndone')
   })
 })

@@ -5,6 +5,8 @@ import { createContext, useContext } from 'react'
 export interface UI {
   openItem: (id: string) => void
   openPalette: () => void
+  /** Opens the dialog that splits a card for a swarm of agents. */
+  splitCard?: (id: string) => void
   /** The binder the app shows, or 'all'. */
   binder: string
   setBinder: (id: string) => void

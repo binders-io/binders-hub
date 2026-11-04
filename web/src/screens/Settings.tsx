@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { ArrowUpRight } from 'lucide-react'
 import { call } from '../data/api'
-import { BookOpen, Check, Copy, Plus, RefreshCw, Server, ShieldCheck, Trash2, Bot, Users, X, } from 'lucide-react'
+import { BookOpen, Check, Copy, Plug, Plus, RefreshCw, Server, ShieldCheck, Trash2, Bot, Users, X, } from 'lucide-react'
 import { useStore } from '../data/store'
 import { ago } from '../components/bits'
 import type { Binder } from '../../../shared/notes.ts'
@@ -15,7 +15,7 @@ import { SpacePanel } from '../components/SpacePanel'
 import { PersonalGitHub } from '../components/PersonalGitHub'
 import { isPersonal } from '../components/PersonalRepo'
 
-type Part = 'binder' | 'github' | 'briefs' | 'access' | 'sync' | 'agents' | 'hub'
+type Part = 'binder' | 'github' | 'briefs' | 'access' | 'sync' | 'agents' | 'jira' | 'hub'
 
 const parts: { id: Part; label: string; icon: (props: { size?: number }) => ReactNode; detail: string }[] = [
   { id: 'binder', label: 'Binder', icon: Users, detail: 'This binder: its name, who’s in it, and its GitHub repo. Its cards are kept there as issues and its notes on a branch, and agents’ pull requests there come back to its cards.' },
@@ -24,6 +24,7 @@ const parts: { id: Part; label: string; icon: (props: { size?: number }) => Reac
   { id: 'access', label: 'Access', icon: ShieldCheck, detail: 'Who may sign in, and who may change how the hub works.' },
   { id: 'sync', label: 'Syncing', icon: RefreshCw, detail: 'How the hub follows GitHub, and when your notes are committed.' },
   { id: 'agents', label: 'Agents', icon: Bot, detail: 'Where agents connect. Each agent’s own settings are on the Agents page.' },
+  { id: 'jira', label: 'Jira', icon: Plug, detail: 'Mirrors this binder’s cards into one Jira Cloud project: a card becomes an issue, its stage the issue’s status, and what people do there comes back: a status they change moves the card, a comment lands on it. The hub keeps the words; Jira’s copy is written, never read back.' },
   { id: 'hub', label: 'This hub', icon: Server, detail: 'Where the hub keeps things, and how this browser is connected to it.' },
 ]
 
@@ -77,6 +78,7 @@ export function Settings() {
         {part === 'access' && <HubOptionsPanel part="access" />}
         {part === 'sync' && <HubOptionsPanel part="sync" />}
         {part === 'agents' && <AgentsPart />}
+        {part === 'jira' && <JiraPart />}
         {part === 'hub' && <HubPart />}
       </div>
     </div>
@@ -217,6 +219,122 @@ function AgentsPart() {
       <CopyRow label="The runner" value={runner} hint="Keeps an agent taking cards. Start the runner on an agent’s card shows the whole command." />
     </div>
   )
+}
+
+type JiraStatus = { on?: boolean; mayManage?: boolean; baseUrl?: string; email?: string; tokenSet?: boolean; hint?: string; project?: string; issueType?: string; statuses?: Record<string, string>; stages?: string[]; webhook?: { url: string } }
+
+function JiraPart() {
+  const [jira, setJira] = useState<JiraStatus>()
+  const [baseUrl, setBaseUrl] = useState('')
+  const [email, setEmail] = useState('')
+  const [token, setToken] = useState('')
+  const [project, setProject] = useState('')
+  const [issueType, setIssueType] = useState('Task')
+  const [statuses, setStatuses] = useState<Record<string, string>>({})
+  const [tested, setTested] = useState<{ ok: boolean; who?: string; error?: string }>()
+  const load = () => void call<JiraStatus>('GET', '/api/jira').then((next) => {
+    if (!next) return
+    setJira(next)
+    setBaseUrl(next.baseUrl ?? '')
+    setEmail(next.email ?? '')
+    setProject(next.project ?? '')
+    setIssueType(next.issueType ?? 'Task')
+    setStatuses(next.statuses ?? {})
+  })
+  useEffect(load, [])
+  if (!jira) return null
+
+  const save = () => void attempt(() => call('PUT', '/api/jira', {
+    baseUrl, email, ...(token.trim() ? { token } : {}), project, issueType, statuses,
+  })).then((next) => {
+    if (!next) return
+    setToken('')
+    setTested(undefined)
+    void call<JiraStatus>('GET', '/api/jira').then(setJira)
+  })
+  const test = () => void attempt(() => call<{ ok: boolean; who?: string; error?: string }>('POST', '/api/jira/test', {})).then((r) => r && setTested(r))
+  const disconnect = () => void attempt(() => call('DELETE', '/api/jira')).then((done) => {
+    if (!done) return
+    setToken('')
+    setTested(undefined)
+    load()
+  })
+  const stages = jira.stages ?? []
+
+  if (!jira.mayManage) {
+    return (
+      <div className="settings-card">
+        <p className="faint">{jira.on ? 'This binder’s cards are mirrored into Jira.' : 'This binder isn’t mirrored into Jira.'} Its owners and admins set this up.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="settings-card">
+      <form className="form" onSubmit={(e) => { e.preventDefault(); save() }}>
+        <p className="faint">
+          Cards still going are mirrored into one Jira Cloud project once you save; ones already done stay out. The hub
+          keeps the words: a card’s brief and done-when are the issue’s description, its stage the status named below, and
+          what comes back is a status someone changes, and comments. Only an agent starts work, so moving an issue to In
+          Progress in Jira doesn’t move its card.
+        </p>
+        <label className="field">
+          <span className="field-label">Jira address</span>
+          <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://yourcompany.atlassian.net" inputMode="url" />
+        </label>
+        <div className="form-row">
+          <label className="field"><span className="field-label">Service account</span>
+            <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="its email" autoComplete="off" />
+          </label>
+          <label className="field"><span className="field-label">API token {jira.tokenSet ? `(set, ${jira.hint})` : ''}</span>
+            <input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder={jira.tokenSet ? 'Leave it to keep what’s set, at the same address' : 'The token'} autoComplete="new-password" />
+          </label>
+        </div>
+        <div className="form-row">
+          <label className="field"><span className="field-label">Project key</span>
+            <input value={project} onChange={(e) => setProject(e.target.value)} placeholder="BIND" className="mono" />
+          </label>
+          <label className="field"><span className="field-label">Issue type</span>
+            <input value={issueType} onChange={(e) => setIssueType(e.target.value)} placeholder="Task" />
+          </label>
+        </div>
+        <fieldset className="field">
+          <legend className="field-label">What each stage is in this project’s workflow</legend>
+          <div className="form-row" style={{ flexWrap: 'wrap', gap: '.5rem' }}>
+            {stages.map((stage) => (
+              <label key={stage} className="field">
+                <span className="field-label">{stage}</span>
+                <input value={statuses[stage] ?? ''} onChange={(e) => setStatuses((was) => ({ ...was, [stage]: e.target.value }))} placeholder={({ ready: 'To Do', working: 'In Progress', blocked: 'Blocked', review: 'In Review', live: 'Done' } as Record<string, string>)[stage]} />
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center' }}>
+          <button className="button primary" disabled={!baseUrl.trim() || !email.trim() || (!token.trim() && !jira.tokenSet) || !project.trim()}>Save</button>
+          <button type="button" className="button" disabled={!jira.on} onClick={test}>Try it</button>
+          {jira.baseUrl && <button type="button" className="button" onClick={disconnect}>Disconnect</button>}
+          {tested && <span className={tested.ok ? 'ok faint' : 'faint'}>{tested.ok ? `Jira knows it: ${tested.who}` : tested.error}</span>}
+        </div>
+      </form>
+      {jira.on && jira.webhook && (
+        <div className="copy-row" style={{ marginTop: '.75rem' }}>
+          <span className="field-label">Jira’s webhook, to this hub</span>
+          <div className="token-value mono"><span>{jira.webhook.url}</span><CopyWebhook url={jira.webhook.url} /></div>
+          <span className="field-hint">In Jira: Settings → System → WebHooks → Create. Use this address, with the events Issue updated, Issue deleted and Comment created, limited to this project. The address holds a secret: keep it like a password.</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CopyWebhook({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    await navigator.clipboard.writeText(url).catch(() => {})
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1600)
+  }
+  return <button className="icon-button" onClick={() => void copy()} aria-label="Copy the webhook address">{copied ? <Check size={15} /> : <Copy size={15} />}</button>
 }
 
 function HubPart() {

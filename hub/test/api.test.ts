@@ -882,6 +882,54 @@ describe('agents setting agents up', () => {
 })
 
 describe('an agent’s runners', () => {
+  it('lets only the owner of the agent that asked answer a permission, and nobody write one', async () => {
+    const { url, hub, close } = await setUp()
+    const you = api(url, await signIn(url))
+    const them = api(url, await signIn(url, 'them'))
+    await you('POST', '/api/changes', { client: 'tab-1234', changes: [{ id: 'p0', change: { type: 'binder.put', binder: { id: 'pb', name: 'Perms' } } }] })
+    const mine = await you('POST', '/api/agents', { name: 'Mine' })
+    const theirs = await them('POST', '/api/agents', { name: 'Theirs' })
+    const card = (await you('POST', '/api/cards', { binderId: 'pb', title: 'Publish it' })).body
+    const agent = await agentClient(url, mine.body.token)
+    assert.equal((await agent.call('claim_task', { id: card.id })).error, false)
+    assert.equal((await agent.call('ask_permission', { id: card.id, request: 'r1', tool: 'Bash', what: 'npm publish' })).error, false)
+    const stored = () => hub.state.cards.find((c) => c.id === card.id)!
+    assert.equal(stored().permission?.agent, mine.body.agent.id)
+
+    // Nobody writes an answer straight into the card, not even its owner.
+    const written = { ...stored().permission!, answer: 'allow', by: 'them' }
+    for (const change of [{ type: 'card.update', id: card.id, fields: { permission: written } }, { type: 'card.put', card: { ...stored(), permission: written } }]) {
+      assert.equal((await them('POST', '/api/changes', { client: 'tab-5678', changes: [{ id: `w-${change.type}`, change }] })).status, 422, change.type)
+      assert.equal(stored().permission?.answer, undefined)
+    }
+    assert.equal((await them('POST', `/api/cards/${card.id}/permission`, { request: 'r1', allow: true })).status, 422, 'not their agent')
+    assert.equal((await you('POST', `/api/cards/${card.id}/permission`, { request: 'nope', allow: true })).status, 422, 'not what’s waiting')
+    // The agent can't answer itself, or change what's waiting.
+    assert.equal((await agent.call('ask_permission', { id: card.id, request: 'r1', tool: 'Bash', what: 'ls' })).error, true)
+    assert.equal(stored().permission?.what, 'npm publish')
+    assert.equal((await agent.call('ask_permission', { id: card.id, request: 'long', tool: 'Bash', what: 'x'.repeat(4001) })).error, true)
+
+    // Given to another agent, the question is gone: the new holder's owner can't answer on the first one's machine.
+    assert.equal((await them('POST', '/api/changes', { client: 'tab-5678', changes: [{ id: 'give', change: { type: 'card.update', id: card.id, fields: { agentId: theirs.body.agent.id } } }] })).status, 200)
+    assert.equal(stored().permission, undefined)
+    assert.equal((await them('POST', `/api/cards/${card.id}/permission`, { request: 'r1', allow: true })).status, 422)
+    await you('POST', '/api/changes', { client: 'tab-1234', changes: [{ id: 'back', change: { type: 'card.update', id: card.id, fields: { agentId: mine.body.agent.id } } }] })
+
+    // Answered: on the card's record, and not taken for a person writing to the agent.
+    assert.equal((await agent.call('ask_permission', { id: card.id, request: 'r2', tool: 'Bash', what: 'npm publish' })).error, false)
+    assert.equal((await you('POST', `/api/cards/${card.id}/permission`, { request: 'r2', allow: true })).status, 200)
+    assert.equal(stored().permission?.answer, 'allow')
+    assert.equal(stored().activity.at(-1)?.kind, 'permission')
+    const read = (await agent.call('get_task', { id: card.id })).value as unknown as { conversation: unknown[]; permission: { answer: string } }
+    assert.equal(read.permission.answer, 'allow')
+    assert.equal(read.conversation.length, 0)
+    // And gone once the run has moved on, even where nothing clears a field but the log.
+    assert.equal((await agent.call('end_permission', { id: card.id, request: 'r2' })).error, false)
+    assert.equal(stored().permission, undefined)
+    await agent.client.close()
+    await close()
+  })
+
   it('tells a runner that starts beside another for the same agent, and counts them', async () => {
     const { url, hub, close } = await setUp()
     const you = api(url, await signIn(url))
@@ -893,6 +941,10 @@ describe('an agent’s runners', () => {
     const told = await second.call('update_profile', { runner: { version: '0.6.3', parallel: 1, id: 'bbb' } })
     assert.equal((told.value.other_runners as unknown[]).length, 1, 'the second hears of the first')
     assert.equal(hub.presence()[made.body.agent.id]?.runners, 2)
+    // One saying it's gone isn't counted, so the runner that replaces it isn't taken for a second.
+    await first.call('update_profile', { runner: { version: '0.6.3', parallel: 1, id: 'aaa', gone: true } })
+    assert.equal(hub.presence()[made.body.agent.id]?.runners, 1)
+    assert.equal((await first.call('update_profile', { runs_on: 'mac · ~/code', runner: { version: '0.6.3', parallel: 1, id: 'ccc' } })).value.other_runners && hub.presence()[made.body.agent.id]?.runnersOn?.includes('mac · ~/code'), true, 'and it says where they run')
     for (const c of [first, second]) await c.client.close()
     await close()
   })
@@ -1000,7 +1052,7 @@ describe('agents over MCP', () => {
     // Revoked: its token stops working at once.
     await you('DELETE', `/api/agents/${second.body.agent.id}`)
     const revoked = await fetch(`${url}/mcp`, { method: 'POST', headers: { authorization: `Bearer ${second.body.token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) })
-    assert.equal(revoked.status, 401)
+    assert.equal(revoked.status, 403)
 
     await builder.client.close()
     await other.client.close()
