@@ -131,6 +131,9 @@ export function dshPatch(hubUrl: string, model?: string) {
   ].join('\n')
 }
 
+/** A terminal's agent, told about its binder as it starts. Only Claude Code takes this: the others read it with get_binder_context, as their tools' instructions say. */
+export const withBinderContext = (tool: string, args: string[], context: string) => (tool === 'claude' && context ? [...args, '--append-system-prompt', context] : args)
+
 /** Finished, and asked to make its last changes in Jira as the person it works for: its run has a moment left for it. */
 export const finishingInJira = (card: { jira?: string | { finishing?: boolean } }) => typeof card.jira === 'object' && !!card.jira.finishing
 
@@ -574,6 +577,15 @@ export class Runner {
         case 'run-note': return this.call('write_run_note', { id: card, text: words('did it find') })
         case 'note': return this.call('get_note', { id: String(args.id ?? '') })
         case 'context': return this.contextFor(card)
+        case 'propose': {
+          let items: unknown
+          try {
+            items = JSON.parse(words('should it propose'))
+          } catch {
+            throw new Error('Give the items as a JSON list, in one argument: [{"title": "…", "quote": "the note’s exact words", "brief": "…", "done_when": "…", "size": "S"}]')
+          }
+          return this.call('propose_work_items', { note: String(args.id ?? ''), items })
+        }
         case 'note-propose': return this.call('propose_note_change', { id: String(args.id ?? ''), text: words('should the whole note say'), why: String(args.why ?? '') })
         case 'note-append': return this.call('append_to_note', { id: String(args.id ?? ''), text: words('should it add') }).then(() => 'Added.')
         case 'lesson': return this.call<CardJSON>('get_task', { id: card }).then((now) => this.call('add_repo_lesson', { repo: now.repo ?? '', lesson: words('is the lesson') })).then(() => 'Kept.')
@@ -2381,8 +2393,8 @@ export class Runner {
    * next agent there gets it.
    */
   /** What to read before working in a binder, fresh for each run. A hub from before this has none to give. */
-  async contextFor(of: string) {
-    const context = await this.call<string>('get_binder_context', { of }).catch(() => undefined)
+  async contextFor(of?: string) {
+    const context = await this.call<string>('get_binder_context', of ? { of } : {}).catch(() => undefined)
     return typeof context === 'string' ? context : ''
   }
 
@@ -2494,7 +2506,9 @@ export class Runner {
     // doesn't list it is here: Claude Code would refuse it and end, and a terminal with no way to run it again is no use.
     const refused = settings.tool === 'claude' && !this.managedAllowed && existsSync(this.options.managedMcp ?? managedMcpPath())
     const config: Awaited<ReturnType<Runner['mcpConfig']>> = settings.cli || refused ? { env: {} } : await this.mcpConfig(settings)
-    const built = this.interactiveFor(settings, dir, config.path, config.quiet)
+    const opened = this.interactiveFor(settings, dir, config.path, config.quiet)
+    // Nobody's card, so no prompt to put it in: it goes in as what the tool is told from the start, where the tool can be.
+    const built = { ...opened, args: withBinderContext(settings.tool, opened.args, await this.contextFor()) }
     const command = await whereIs(built.command)
     if (!command) throw new Error(`${tool.name} isn’t installed on this machine (no “${built.command}” on the PATH or in the usual places).`)
     return {

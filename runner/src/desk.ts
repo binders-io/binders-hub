@@ -138,6 +138,7 @@ export const agentHelp = `binders: your line to Binders, for the card you're wor
   binders release WHY          give the card back, so another agent or a person can take it
   binders note ID              read a note
   binders note-append ID TEXT  add to the end of a note
+  binders propose NOTE JSON    Distill: propose a note's work items, as a JSON list in one argument, each with its title and quote (the note's exact words), and any of brief, done_when, size, meant_for
   binders note-propose ID TEXT --why REASON  for a locked note: the whole note as it should read, for a person to review
   binders context              this binder's guide and where to look
   binders lesson TEXT          one line the team should know about this repo
@@ -250,7 +251,7 @@ export async function agentCommand(argv: string[], env: NodeJS.ProcessEnv = proc
   }
   const { words, named } = flags(rest)
   const text = words.join(' ').trim()
-  const args: Record<string, unknown> = verb === 'note' || verb === 'note-append' || verb === 'note-propose'
+  const args: Record<string, unknown> = verb === 'note' || verb === 'note-append' || verb === 'note-propose' || verb === 'propose'
     ? { id: words[0], text: words.slice(1).join(' '), ...named }
     : verb === 'message' ? { to: words[0], text: words.slice(1).join(' ') }
     : { text, ...named }

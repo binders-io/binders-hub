@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { linkedNotes, titleOf, isBlank } from '../../shared/notes.ts'
-import { binderContext } from '../../shared/guide.ts'
+import { binderContext, howBindersWorks } from '../../shared/guide.ts'
 import { commentOn, propose } from './noteChanges.ts'
 import { briefText, docsFolderName, docsGiven, repoDocs } from '../../shared/briefs.ts'
 import { byWorst, challengeSet, doneWhenPoints, numberedDiff, setOfCard } from '../../shared/changeSet.ts'
@@ -121,9 +121,15 @@ export function personServer(hub: Hub, actions: Actions, session: PersonSession)
   const openProposals = (noteId: string) => hub.state.noteProposals.filter((p) => p.noteId === noteId && p.state === 'open').map((p) => ({ id: p.id, by: hub.state.agents.find((x) => x.id === p.by)?.name ?? p.by, why: p.why, comments: p.comments.length }))
 
   server.registerTool('get_binder_context', {
-    description: 'What to read before working in a binder: how Binders works, the binder’s guide, and where to look. of: a binder, card, change set or note (id or name).',
-    inputSchema: { of: z.string() },
-  }, run(async ({ of }: { of: string }) => {
+    description: 'What to read before working in a binder: how Binders works, the binder’s guide, and where to look. of: a binder, card, change set or note (id or name); left out, the binders you work in.',
+    inputSchema: { of: z.string().optional() },
+  }, run(async ({ of }: { of?: string }) => {
+    // Not about anything in particular, a terminal say: the one binder it works in, or which ones there are to ask about.
+    if (!of) {
+      const mine = hub.state.binders.filter((b) => mayUse(b.id))
+      if (mine.length === 1) return text(binderContext(hub.state, mine[0].id))
+      return text(`${howBindersWorks}\n\nYou work in these binders. Before working in one, get_binder_context with its name: ${mine.map((b) => b.name).join(', ') || 'none yet'}.`)
+    }
     const card = hub.state.cards.find((c) => c.id === of)
     const set = hub.state.changeSets.find((c) => c.id === of)
     const noteOf = hub.state.notes.find((n) => n.id === of)
