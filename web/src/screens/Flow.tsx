@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type Dispatch,
 import { LayoutGroup, motion, AnimatePresence } from 'motion/react'
 import { ArrowRight, Check, Eye, EyeOff, GitPullRequest, MessageCircleQuestion, Plus, Sparkles } from 'lucide-react'
 import { stages, type Agent, type Card, type Proposal, type Stage } from '../data/model'
-import { asksOf, mayTake, meantForNow } from '../../../shared/work.ts'
+import { asksOf, cardNumber, mayTake, meantForNow } from '../../../shared/work.ts'
 import { nameFor, sameValues, useActions, useClock, useHub, type State } from '../data/store'
 import { AgentAvatar, CheckDots, Progress, RepoTag, Who, ago, checksSummary, codeRepo, stageTone } from '../components/bits'
 import { NewCardDialog } from '../components/NewCardDialog'
@@ -285,12 +285,12 @@ const CardView = memo(function CardView({ card, stage }: { card: Card; stage: St
     // The whole card opens it for a pointer, and its title's button for a keyboard or a screen reader: a button can't hold the card's others.
     <motion.article layout layoutId={card.id} className={`card ${stage}${asksOf(card) ? ' asks' : ''}`} onClick={() => openItem(card.id)} onContextMenu={(e) => openMenu(e, cardMenuItems(card, store, openItem, split))} transition={spring} initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }}>
       <div className="card-top">
-        <span className="mono faint" title={card.issue ? `Its issue: #${card.issue.number} in ${card.issue.repo}` : undefined}>{card.issue ? `#${card.issue.number}` : binder?.name}</span>
+        <span className="mono faint" title={card.jira ? `Its Jira issue: ${card.jira.key}` : card.issue ? `Its issue: #${card.issue.number} in ${card.issue.repo}` : undefined}>{cardNumber(card) ?? binder?.name}</span>
         {(() => {
           const code = codeRepo(card, pull?.repo, binder?.repo)
           return code ? <RepoTag repo={code} title={pull ? `Its pull request is in ${code}` : `The binder’s repo: ${code}`} /> : null
         })()}
-        {set && <span className="set-tag">CS-{set.number}</span>}
+        {set && !card.jira && <span className="set-tag">CS-{set.number}</span>}
         <CardMenu card={card} open={openItem} split={split} />
       </div>
       <h3><button type="button" className="card-open">{card.title}</button></h3>

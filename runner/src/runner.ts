@@ -131,6 +131,15 @@ export function dshPatch(hubUrl: string, model?: string) {
   ].join('\n')
 }
 
+/** A terminal's agent, told about its binder as it starts. Only Claude Code takes this: the others read it with get_binder_context, as their tools' instructions say. */
+export const withBinderContext = (tool: string, args: string[], context: string) => (tool === 'claude' && context ? [...args, '--append-system-prompt', context] : args)
+
+/** Finished, and asked to make its last changes in Jira as the person it works for: its run has a moment left for it. */
+export const finishingInJira = (card: { jira?: string | { finishing?: boolean } }) => typeof card.jira === 'object' && !!card.jira.finishing
+
+/** What a command-line agent is told on doing something: what the hub asks of it in Jira goes with it. */
+export const withJiraAsk = (said: string, card: { jira?: string | { ask?: string } }) => (typeof card.jira === 'object' && card.jira.ask ? `${said}\n\n${card.jira.ask}` : said)
+
 /**
  * The name of Binders' server in an enterprise MCP config, when the config lists one: by its address (this hub's
  * /mcp) or by the name the README gives it. Claude Code then has Binders' tools from the config itself.
@@ -191,6 +200,8 @@ interface CardJSON {
   holder_id?: string
   /** The repo its work is in: its project's. */
   repo?: string
+  /** Its Jira issue: its key from most tools, and with get_task what this agent's asked to do there. finishing: its run has a moment left to do it. */
+  jira?: string | { key: string; ask?: string; finishing?: boolean }
   needs_you?: string
   permission?: { request: string; tool: string; what: string; answer?: 'allow' | 'deny'; by?: string }
   resume?: boolean
@@ -558,13 +569,24 @@ export class Runner {
           const of = Number(args.of)
           return this.call('report_progress', { id: card, doing: words('are you doing'), ...(of >= 0 && of <= 1 ? { progress: of } : {}) }).then(() => 'Noted.')
         }
-        case 'comment': return this.call('comment_task', { id: card, text: words('do you want to say') }).then(() => 'Said.')
+        case 'comment': return this.call<string>('comment_task', { id: card, text: words('do you want to say') }).then((said) => (typeof said === 'string' && said.startsWith('Commented. ') ? `Said. ${said.slice('Commented. '.length)}` : 'Said.'))
         case 'ask': return this.call('ask', { id: card, question: words('do you want to ask') }).then(() => 'Asked. Stop now: you’ll be started again with the answer.')
-        case 'done': return this.call('complete_task', { id: card, summary: words('did you do'), ...(args.pr ? { pull_request: String(args.pr) } : {}) }).then(() => 'Done.')
+        case 'done': return this.call<CardJSON>('complete_task', { id: card, summary: words('did you do'), ...(args.pr ? { pull_request: String(args.pr) } : {}) }).then((now) => withJiraAsk('Done.', now))
         case 'release': return this.call('release_task', { id: card, reason: words('is the reason') }).then(() => 'Given back.')
         case 'message': return this.call('message_agent', { to: String(args.to ?? ''), text: words('do you want to say'), card: args.card ? String(args.card) : undefined })
         case 'run-note': return this.call('write_run_note', { id: card, text: words('did it find') })
         case 'note': return this.call('get_note', { id: String(args.id ?? '') })
+        case 'context': return this.contextFor(card)
+        case 'propose': {
+          let items: unknown
+          try {
+            items = JSON.parse(words('should it propose'))
+          } catch {
+            throw new Error('Give the items as a JSON list, in one argument: [{"title": "…", "quote": "the note’s exact words", "brief": "…", "done_when": "…", "size": "S"}]')
+          }
+          return this.call('propose_work_items', { note: String(args.id ?? ''), items })
+        }
+        case 'note-propose': return this.call('propose_note_change', { id: String(args.id ?? ''), text: words('should the whole note say'), why: String(args.why ?? '') })
         case 'note-append': return this.call('append_to_note', { id: String(args.id ?? ''), text: words('should it add') }).then(() => 'Added.')
         case 'lesson': return this.call<CardJSON>('get_task', { id: card }).then((now) => this.call('add_repo_lesson', { repo: now.repo ?? '', lesson: words('is the lesson') })).then(() => 'Kept.')
         case 'hook': return this.heardHook(card, String(args.which ?? ''), args.payload as Record<string, unknown> | undefined, gone)
@@ -1175,7 +1197,8 @@ export class Runner {
     // With Binders' tools, or (a tool without MCP, or an enterprise MCP config here) with the runner reporting for it.
     const mcp = tool.mcp && this.usesMcp(settings)
     // What the team knows about its repo, unless it's carrying on in a session that has it already.
-    const brief = card.resume && mcp && this.sessions.has(card.id) ? '' : await this.briefFor(card.repo ?? await repoOf(dir), mcp)
+    const carriesOn = !!card.resume && !!mcp && this.sessions.has(card.id)
+    const brief = await this.readingFor(card.id, carriesOn ? '' : await this.briefFor(card.repo ?? await repoOf(dir), mcp), carriesOn)
     // With the binders command it reports for itself as an agent with Binders' tools does, whatever MCP is up to here.
     const reports = mcp || !!settings.cli
     const prompt = settings.cli ? this.cliPrompt(card, dir, brief) : mcp ? this.prompt(card, dir, brief) : await this.plainPrompt(card, dir, brief)
@@ -1216,6 +1239,7 @@ export class Runner {
           if (++ticks % 2) return
           void this.call<CardJSON>('get_task', { id: card.id }).then((now) => {
             if (now.stage === 'blocked' && this.holds(now) && !now.needs_you) return stop(`“${card.title}” was put in Blocked: stopping its run until it’s moved back.`)
+            if (finishingInJira(now)) return
             if (now.stage !== 'working' && now.stage !== 'blocked') return stop(`“${card.title}” was taken back: stopping its run.`)
             if (!this.holds(now)) return stop(`“${card.title}” was taken back: stopping its run.`)
             const all = (now.conversation ?? []).filter(people)
@@ -1317,7 +1341,10 @@ export class Runner {
         await writeFile(noteFile, before, { mode: 0o600 })
       }
     }
+    // What to read before working in this binder, once per conversation: its guide, its rules and where to look.
+    const reading = !resumed && chat.note ? await this.contextFor(chat.note.id) : ''
     const said = [
+      ...(reading ? [reading, ''] : []),
       resumed
         ? `${from?.from ?? 'The person'} says, in the chat about the note “${chat.note?.title}”:`
         : `You're ${this.name}. ${from?.from ?? 'A person'} is working on the note “${chat.note?.title}”${chat.note?.binder ? ` in the ${chat.note.binder} binder` : ''} in Binders and is talking with you about it.`,
@@ -1390,7 +1417,7 @@ export class Runner {
     // Without Binders' tools, the agent writes the sections to a file of its own.
     const answer = mcp ? undefined : await agentFile(dir, `debrief-${randomBytes(6).toString('hex')}.json`)
     try {
-      const brief = await this.briefFor(await repoOf(dir), mcp)
+      const brief = await this.readingFor(job.id, await this.briefFor(await repoOf(dir), mcp))
       const prompt = answer ? await this.plainDebriefPrompt(job, dir, answer, brief) : this.debriefPrompt(job, dir, brief)
       const ran = await this.runWithRoom(settings, key, prompt, dir, { BINDERS_DEBRIEF: job.id }, job.id.startsWith('set-') ? settings.timeoutMinutes : Math.min(settings.timeoutMinutes, 20), (reader) => {
         const { steps } = reader.take(false)
@@ -1500,7 +1527,7 @@ export class Runner {
         if (blast) await this.call('send_challenge', { id: job.id, doing: 'Mapping the blast radius', blast_radius: blast }).catch(() => {})
       }
       // What the team knows about the repo: a reviewer that knows its rules finds what breaks them.
-      const brief = await this.briefFor(set.pull?.repo ?? await repoOf(dir), mcp)
+      const brief = await this.readingFor(job.id, await this.briefFor(set.pull?.repo ?? await repoOf(dir), mcp))
       const prompt = answer ? await this.plainChallengePrompt(job, set, checkout?.dir, answer, blast, brief) : this.challengePrompt(job, checkout?.dir, !!blast, brief)
       // A card's Challenge has 20 minutes; a whole change set's, the agent's own limit.
       const minutes = job.id.startsWith('set-') ? settings.timeoutMinutes : Math.min(settings.timeoutMinutes, 20)
@@ -2365,6 +2392,22 @@ export class Runner {
    * default branch, has this agent asked to write it, beside its other work, when this machine has a clone of it: the
    * next agent there gets it.
    */
+  /** What to read before working in a binder, fresh for each run. A hub from before this has none to give. */
+  async contextFor(of?: string) {
+    const context = await this.call<string>('get_binder_context', of ? { of } : {}).catch(() => undefined)
+    return typeof context === 'string' ? context : ''
+  }
+
+  private contextSent = new Map<string, string>()
+
+  /** The binder's context, then the repo's brief. A session carrying on has heard it, unless it's changed since. */
+  private async readingFor(of: string, brief: string, carriesOn = false) {
+    const context = await this.contextFor(of)
+    const same = carriesOn && this.contextSent.get(of) === context
+    if (context) this.contextSent.set(of, context)
+    return same ? brief : [context, brief].filter(Boolean).join('\n\n')
+  }
+
   async briefFor(repo: string | undefined, lessonsTool: boolean) {
     if (!repo) return ''
     const brief = await this.call<BriefRead>('get_repo_brief', { repo }).catch(() => undefined)
@@ -2463,7 +2506,9 @@ export class Runner {
     // doesn't list it is here: Claude Code would refuse it and end, and a terminal with no way to run it again is no use.
     const refused = settings.tool === 'claude' && !this.managedAllowed && existsSync(this.options.managedMcp ?? managedMcpPath())
     const config: Awaited<ReturnType<Runner['mcpConfig']>> = settings.cli || refused ? { env: {} } : await this.mcpConfig(settings)
-    const built = this.interactiveFor(settings, dir, config.path, config.quiet)
+    const opened = this.interactiveFor(settings, dir, config.path, config.quiet)
+    // Nobody's card, so no prompt to put it in: it goes in as what the tool is told from the start, where the tool can be.
+    const built = { ...opened, args: withBinderContext(settings.tool, opened.args, await this.contextFor()) }
     const command = await whereIs(built.command)
     if (!command) throw new Error(`${tool.name} isn’t installed on this machine (no “${built.command}” on the PATH or in the usual places).`)
     return {

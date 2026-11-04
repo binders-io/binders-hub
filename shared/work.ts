@@ -164,6 +164,8 @@ export interface Card {
   parent?: string
   /** Its GitHub issue, once the binder's repo has one for it. */
   issue?: { repo: string; number: number; url: string }
+  /** Its Jira issue, once the binder's project has one for it. */
+  jira?: { key: string; url: string; imported?: boolean }
   prId?: string
   /** Before there's a pull request: the diff of the card's worktree, as its runner last saw it. */
   worktree?: WorktreeDiff
@@ -809,3 +811,9 @@ export function worksIn(agent: { binders: string[] }, binderId: string, binders:
   const live = agent.binders.filter((id) => binders.some((b) => b.id === id))
   return !live.length || live.includes(binderId)
 }
+
+/** Whether a card goes by this name: its GitHub issue as #12, or its Jira issue's key. */
+export const goesBy = (card: Pick<Card, 'jira' | 'issue'>, name: string) => (!!card.issue && `#${card.issue.number}` === name.trim()) || card.jira?.key === name.trim().toUpperCase()
+
+/** The number a card goes by: its Jira issue's, or its GitHub issue's. */
+export const cardNumber = (card: Pick<Card, 'jira' | 'issue'>) => card.jira?.key ?? (card.issue ? `#${card.issue.number}` : undefined)

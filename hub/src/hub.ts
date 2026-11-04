@@ -5,6 +5,7 @@ import type { ChangeLog } from './log.ts'
 import type { Presence } from '../../shared/work.ts'
 import { changesTo, check, NoteDocs, type NoteDoc } from '../../shared/noteDoc.ts'
 import { log } from './logger.ts'
+import { lockStops } from '../../shared/notes.ts'
 import { whatsWrong } from './schemas.ts'
 
 /** Who's sending a change. */
@@ -29,6 +30,8 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
   state: HubState = emptyState()
   version = 0
   readonly log: ChangeLog
+  /** Whether a person is one of this Binder's owners or admins, who may change any locked note. */
+  lockManager: (login: string) => boolean = () => false
   private reading: Promise<void> = Promise.resolve()
   /** Each note's Automerge document, in step with the log. */
   private docs = new NoteDocs()
@@ -157,10 +160,21 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
     return versions
   }
 
+  /** A locked note's words and place are only for who may change it, however the change gets here. */
+  private guardLock(change: Change, actor: Actor) {
+    if (actor.kind === 'hub') return
+    const id = change.type === 'note.edit' || change.type === 'note.move' || change.type === 'note.delete' ? change.id : change.type === 'note.put' ? change.note.id : undefined
+    const note = id ? this.state.notes.find((n) => n.id === id) : undefined
+    if (!note?.locked) return
+    const login = actor.kind === 'user' ? actor.login : undefined
+    if (lockStops(note, { login, manager: !!login && this.lockManager(login) })) throw new Refused(`“${note.title}” is locked by @${note.locked.by}. Propose the change instead, for them to review.`)
+  }
+
   private check(change: Change, login: string) {
     if (!fromPeople.has(change.type)) throw new Refused(`That can’t be sent from the web app (${change.type}).`)
     const wrong = whatsWrong(change)
     if (wrong) throw new Refused(`That change can’t be used (${change.type}): ${wrong}.`)
+    this.guardLock(change, { kind: 'user', login })
     // A permission runs something on an agent's machine: answered through answerPermission, by its owner, never written.
     if (change.type === 'card.update' && change.fields.permission) throw new Refused('A permission is answered on its card, by its agent’s owner.')
     if (change.type === 'card.put' && change.card.permission && JSON.stringify(change.card.permission) !== JSON.stringify(this.state.cards.find((c) => c.id === change.card.id)?.permission)) throw new Refused('A permission is answered on its card, by its agent’s owner.')
@@ -218,6 +232,7 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
 
   /** The hub's own changes, and what agents do through its tools. */
   async record(actor: Actor, change: Change, id: string = randomUUID()) {
+    this.guardLock(change, actor)
     const version = await this.log.append({ id, client: clientOf(actor), at: new Date().toISOString(), change: await this.prepare(change) })
     await this.catchUp()
     return version
@@ -225,6 +240,7 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
 
   /** Several at once, in order. */
   async recordAll(actor: Actor, changes: Change[]) {
+    for (const change of changes) this.guardLock(change, actor)
     for (const change of changes) await this.log.append({ id: randomUUID(), client: clientOf(actor), at: new Date().toISOString(), change: await this.prepare(change) })
     await this.catchUp()
   }

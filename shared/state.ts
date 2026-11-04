@@ -19,9 +19,9 @@ export interface Outgoing {
   change: Change
 }
 
-export const emptyState = (): HubState => ({ binders: [], folders: [], notes: [], ...emptyWork() })
+export const emptyState = (): HubState => ({ binders: [], folders: [], notes: [], noteProposals: [], ...emptyWork() })
 
-const noteTypes = new Set(['binder.put', 'binder.delete', 'folder.put', 'folder.delete', 'note.put', 'note.edit', 'note.link', 'note.move', 'note.delete', 'note.saved'])
+const noteTypes = new Set(['note.lock', 'noteProposal.put', 'noteProposal.update', 'binder.put', 'binder.delete', 'folder.put', 'folder.delete', 'note.put', 'note.edit', 'note.link', 'note.move', 'note.delete', 'note.saved'])
 
 export function applyChange<S extends HubState>(state: S, change: Change): S {
   return noteTypes.has(change.type) ? applyNotes(state, change as NoteChange) : applyWork(state, change as WorkChange)

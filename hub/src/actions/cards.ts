@@ -3,7 +3,7 @@ import type { Change } from '../../../shared/state.ts'
 import { isBlank, titleOf } from '../../../shared/notes.ts'
 import { checkTimeZone, defaultStaleHours, describeCron, parseCron, type Schedule, type ScheduleRun } from '../../../shared/schedule.ts'
 import { parseDiff } from '../../../shared/changeSet.ts'
-import { agentNamed, worksIn, type Agent, type Card, type PlanStep, type Stage, type PullRequest } from '../../../shared/work.ts'
+import { agentNamed, goesBy, worksIn, type Agent, type Card, type PlanStep, type Stage, type PullRequest } from '../../../shared/work.ts'
 import { parsePullRef } from '../github.ts'
 import { Refused, type Actor } from '../hub.ts'
 import { ActionsBase, checkedRunner } from './base.ts'
@@ -202,7 +202,7 @@ export abstract class CardService extends ActionsBase {
     const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
     return [...new Set(named.map((name) => {
       const found = cards.find((c) => c.id === name.trim())
-        ?? cards.find((c) => c.binderId === binderId && c.issue && `#${c.issue.number}` === name.trim().replace(/^issue\s*/i, ''))
+        ?? cards.find((c) => c.binderId === binderId && goesBy(c, name.trim().replace(/^issue\s*/i, '')))
         ?? cards.find((c) => c.binderId === binderId && same(c.title, name))
       if (!found) throw new Refused(`It waits for “${name.slice(0, 80)}”, which isn’t a card on this board: name each card it waits for by its id, its issue (#226) or its exact title.`)
       return found.id
