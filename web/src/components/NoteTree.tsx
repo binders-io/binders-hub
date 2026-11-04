@@ -1,6 +1,7 @@
 import { createElement, useEffect, useState, type DragEvent, type ReactNode } from 'react'
-import { ArrowUpRight, BookPlus, ChevronRight, CloudUpload, FilePlus, LoaderCircle, FileText, Folder as FolderIcon, FolderOpen, FolderPlus, Link2, MoreHorizontal, Pencil, Search, Settings2, Trash2, X } from 'lucide-react'
+import { ArrowUpRight, BookPlus, ChevronRight, CloudUpload, FilePlus, LoaderCircle, FileText, Folder as FolderIcon, FolderOpen, FolderCog, FolderInput, FolderPlus, Link2, MoreHorizontal, Pencil, Search, Settings2, Trash2, X } from 'lucide-react'
 import { openMenu, openMenuUnder, type MenuItem } from './ContextMenu'
+import { FolderRuleDialog } from './FolderRules'
 import { attempt, toast } from './Toast'
 import type { Folder, Note } from '../data/model'
 import { sameFields, useActions, useHub, type NotesSaved } from '../data/store'
@@ -75,6 +76,9 @@ export function NoteTree({ currentId }: { currentId: string }) {
   const [renaming, setRenaming] = useState<string>()
   const [dropOn, setDropOn] = useState<string>()
   const [newBinder, setNewBinder] = useState<string>()
+  const [ruling, setRuling] = useState<string>()
+  const ruled = useHub((state) => (state.folderRules ?? []).filter((r) => r.enabled).map((r) => r.folderId).join())
+  const mayRule = useHub((state) => state.me?.role === 'owner' || state.me?.role === 'admin')
   const current = notes.find((n) => n.id === currentId)
 
   const toggle = (id: string, open?: boolean) => {
@@ -143,7 +147,7 @@ export function NoteTree({ currentId }: { currentId: string }) {
       { binderId: b.id, folderId: undefined as string | undefined, label: b.name },
       ...folders.filter((f) => f.binderId === b.id && !within(f)).map((f) => ({ binderId: b.id, folderId: f.id, label: [b.name, ...folderPath(f.id)].join(' / ') })),
     ]).filter((place) => place.binderId !== here.binderId || place.folderId !== here.folderId)
-    return places.length ? [{ separator: true }, { heading: 'Move to' }, ...places.map((place) => ({ label: place.label, onSelect: () => move(place.binderId, place.folderId) }))] : []
+    return places.length ? [{ label: 'Move to', icon: icon(FolderInput), submenu: places.map((place) => ({ label: place.label, onSelect: () => move(place.binderId, place.folderId) })) }] : []
   }
   const noteMenu = (note: Note): MenuItem[] => [
     { label: 'Open', icon: icon(ArrowUpRight), onSelect: () => go({ screen: 'notes', id: note.id }) },
@@ -158,6 +162,7 @@ export function NoteTree({ currentId }: { currentId: string }) {
     { label: 'New note', icon: icon(FilePlus), onSelect: () => newNote(folder.binderId, folder.id) },
     { label: 'New folder', icon: icon(FolderPlus), onSelect: () => newFolder(folder.binderId, folder.id) },
     { label: 'Rename', icon: icon(Pencil), onSelect: () => setRenaming(folder.id) },
+    ...(mayRule ? [{ label: ruled.split(',').includes(folder.id) ? 'Rules (on)' : 'Rules', icon: icon(FolderCog), onSelect: () => setRuling(folder.id) }] : []),
     ...moveItems({ binderId: folder.binderId, folderId: folder.parentId }, (binderId, parentId) => store.moveFolder(folder.id, binderId, parentId), folder),
     { separator: true },
     { label: 'Delete', icon: icon(Trash2), danger: true, confirm: 'Delete it? What’s in it moves up', onSelect: () => store.deleteFolder(folder.id) },
@@ -313,6 +318,7 @@ export function NoteTree({ currentId }: { currentId: string }) {
           )
         })
       )}
+      {ruling && <FolderRuleDialog key={ruling} folderId={ruling} onClose={() => setRuling(undefined)} />}
     </nav>
   )
 }

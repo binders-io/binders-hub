@@ -1,13 +1,14 @@
 import { space } from '../data/space'
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { ArrowUpRight, CalendarClock, Check, GitCommitHorizontal, LoaderCircle, ChevronsLeft, ChevronsRight, ExternalLink, Maximize2, MessageSquare, Minimize2, PanelLeft, PanelRight, Sparkles, Trash2, X } from 'lucide-react'
+import { ArrowUpRight, CalendarClock, Check, GitCommitHorizontal, GitPullRequest, LoaderCircle, ChevronsLeft, ChevronsRight, ExternalLink, Maximize2, MessageSquare, Minimize2, PanelLeft, PanelRight, Sparkles, Trash2, X } from 'lucide-react'
 import { stages } from '../data/model'
 import { isOnline, nameFor, sameFields, sameValues, useActions, useClock, useHub, useLiveNote, usePresence, type State } from '../data/store'
 import { cardPrompt } from '../data/prompts'
 import type { Card, Note } from '../data/model'
 import { ago, usePhone } from '../components/bits'
-import { attempt } from '../components/Toast'
+import { attempt, toast } from '../components/Toast'
+import { call } from '../data/api'
 import { AgentAvatar, Who, stageTone } from '../components/bits'
 import { NoteTree } from '../components/NoteTree'
 import { NoteChat } from '../components/NoteChat'
@@ -16,6 +17,7 @@ import { MarkdownEditor, type EditorHandle } from '../editor/MarkdownEditor'
 import { Toolbar } from '../editor/Toolbar'
 import type { Marks, WorkMark } from '../editor/workMarks'
 import { linksIn, slug } from '../../../shared/notes.ts'
+import { changeSetOf } from '../../../shared/work.ts'
 import { go, href } from '../route'
 import { useUI } from '../ui'
 import { openMenu } from '../components/ContextMenu'
@@ -96,6 +98,10 @@ function NoteScreen({ noteId }: { noteId: string }) {
   const folders = useHub((state) => state.folders)
   const login = useHub((state) => state.me?.user.login)
   const scheduled = useHub((state) => (state.schedules ?? []).filter((x) => x.noteId === noteId && x.enabled).length)
+  const ownSet = useHub((state) => {
+    const here = state.notes.find((n) => n.id === noteId)
+    return !!here && changeSetOf(state, here) === 'own'
+  })
   usePresence()
   const proposals = useMemo(() => allProposals.filter((p) => p.noteId === noteId && p.state !== 'dismissed'), [allProposals, noteId])
   const fresh = useMemo(() => proposals.filter((p) => p.state === 'new'), [proposals])
@@ -180,6 +186,7 @@ function NoteScreen({ noteId }: { noteId: string }) {
             {focus === 'none' && !phone && <button type="button" className="icon-button" onClick={() => change({ sideOpen: !layout.sideOpen })} title={layout.sideOpen ? 'Hide the chat and Distill' : 'Show the chat and Distill'} aria-label={layout.sideOpen ? 'Hide the side panel' : 'Show the side panel'}><PanelRight size={15} /></button>}
             {!popped && <button type="button" className="icon-button" onClick={() => setFocus(focus === 'note' ? 'none' : 'note')} title={focus === 'note' ? 'Leave full screen (Esc)' : 'Full screen'} aria-label={focus === 'note' ? 'Leave full screen' : 'Full screen'}>{focus === 'note' ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>}
             <button type="button" className={`icon-button${scheduled ? ' on' : ''}`} onClick={() => setScheduling(true)} title={scheduled ? `Scheduled: ${scheduled} schedule${scheduled === 1 ? '' : 's'}` : 'Schedule it: run this note as a card on a timer'} aria-label="Schedule"><CalendarClock size={15} /></button>
+            <button type="button" className={`icon-button${ownSet ? ' on' : ''}`} aria-pressed={ownSet} onClick={() => void attempt(() => call('PUT', `/api/notes/${note.id}/change-set`, { changeSet: ownSet ? 'shared' : 'own' })).then((done) => { if (done !== undefined) toast(ownSet ? 'This note’s work joins the open change set.' : 'This note’s work gets its own change set.') })} title={ownSet ? 'This note’s work gets its own change set. Click to add it to the open one instead.' : 'This note’s work joins the open change set. Click to give it its own.'} aria-label="Own change set"><GitPullRequest size={15} /></button>
             {!popped && <button type="button" className="icon-button" onClick={() => popOut('note', note.id)} title="Open in a window of its own" aria-label="Pop out"><ExternalLink size={15} /></button>}
           </span>
           <DeleteNote onDelete={() => {

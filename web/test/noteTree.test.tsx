@@ -29,6 +29,30 @@ afterEach(() => {
 })
 
 describe('the notes tree without a right-click', () => {
+  it('keeps a folder’s own actions in reach, however many places it could move to', async () => {
+    await opened()
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Old' }))
+    await screen.findByRole('menu')
+    expect(items()).toEqual(expect.arrayContaining(['New note', 'Rename', 'Move to', 'Delete']))
+    expect(items()).not.toContain('Binder')
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move to' }))
+    await screen.findByRole('menuitem', { name: 'Back' })
+    expect(items()).not.toContain('Delete')
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Back' }))
+    await screen.findByRole('menuitem', { name: 'Delete' })
+  })
+
+  it('stays open while its own list scrolls, and closes when the page does', async () => {
+    await opened()
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for n1' }))
+    const menu = await screen.findByRole('menu')
+    fireEvent.scroll(menu)
+    expect(screen.getByRole('menu')).toBeTruthy()
+    fireEvent.scroll(document.body)
+    await settle()
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+
   it('has no control inside a link', async () => {
     await opened()
     expect(document.querySelectorAll('a button, a a')).toHaveLength(0)
@@ -68,6 +92,7 @@ describe('moving without dragging', () => {
   it('moves a note to a folder from its menu', async () => {
     await opened()
     fireEvent.click(screen.getByRole('button', { name: 'Actions for n1' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Move to' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Binder / Plans / Old' }))
     await settle()
     expect(posted.flatMap((p) => p.changes)[0].change).toMatchObject({ type: 'note.move', id: 'n1', binderId: 'b1', folderId: 'f2' })
@@ -76,7 +101,8 @@ describe('moving without dragging', () => {
   it('doesn’t offer the place a note already is', async () => {
     await opened()
     fireEvent.click(screen.getByRole('button', { name: 'Actions for n1' }))
-    await screen.findByRole('menu')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Move to' }))
+    await screen.findByRole('menuitem', { name: 'Back' })
     expect(items()).not.toContain('Binder')
     expect(items()).toContain('Binder / Plans')
   })
@@ -91,6 +117,7 @@ describe('moving without dragging', () => {
   it('moves a folder up out of the one it’s in', async () => {
     await opened()
     fireEvent.click(screen.getByRole('button', { name: 'Actions for Old' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Move to' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Binder' }))
     await settle()
     expect(posted.flatMap((p) => p.changes)[0].change).toMatchObject({ type: 'folder.put', folder: { id: 'f2', binderId: 'b1' } })

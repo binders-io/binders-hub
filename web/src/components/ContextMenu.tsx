@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type SyntheticEvent } from 'react'
 import { createPortal } from 'react-dom'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 
 // Right-click menus, as the Mac app has them: on a card, a card's chip in a note, a note or a folder. One menu at a time,
 // drawn where the click was, kept on screen, gone on Escape, a click elsewhere or a scroll. Text keeps the browser's
@@ -7,6 +8,10 @@ import { createPortal } from 'react-dom'
 
 export type MenuItem =
   | { label: string; icon?: ReactNode; onSelect: () => void; danger?: boolean; disabled?: boolean; confirm?: string }
+  /** A long list of its own, opened in place of the menu, so it never pushes the rest of the menu out of reach. */
+  | { label: string; icon?: ReactNode; submenu: MenuItem[] }
+  /** The way back out of one. */
+  | { label: string; icon?: ReactNode; back: MenuItem[] }
   | { heading: string }
   | { separator: true }
 
@@ -61,6 +66,8 @@ export function ContextMenuHost() {
     if (!open) return
     const away = (event: MouseEvent) => { if (!list.current?.contains(event.target as Node)) setOpen(undefined) }
     const close = () => setOpen(undefined)
+    // A scroll elsewhere moves what the menu was opened on. Its own is just reading down a long menu.
+    const scrolled = (event: Event) => { if (!list.current?.contains(event.target as Node)) close() }
     const keys = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         refocus(open)
@@ -73,12 +80,12 @@ export function ContextMenuHost() {
       buttons[(now + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus()
     }
     window.addEventListener('mousedown', away)
-    window.addEventListener('scroll', close, true)
+    window.addEventListener('scroll', scrolled, true)
     window.addEventListener('resize', close)
     window.addEventListener('keydown', keys)
     return () => {
       window.removeEventListener('mousedown', away)
-      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('scroll', scrolled, true)
       window.removeEventListener('resize', close)
       window.removeEventListener('keydown', keys)
     }
@@ -90,6 +97,23 @@ export function ContextMenuHost() {
       {open.items.map((item, index) => {
         if ('separator' in item) return <hr key={index} />
         if ('heading' in item) return <span key={index} role="presentation" className="context-menu-heading">{item.heading}</span>
+        if ('submenu' in item) {
+          return (
+            <button key={index} type="button" role="menuitem" aria-haspopup="menu" onClick={() => {
+              setSure(undefined)
+              setOpen({ ...open, items: [{ label: 'Back', icon: <ChevronLeft size={14} />, back: open.items }, { separator: true }, ...item.submenu] })
+            }}>
+              {item.icon}<span>{item.label}</span><ChevronRight size={14} className="context-menu-more" />
+            </button>
+          )
+        }
+        if ('back' in item) {
+          return (
+            <button key={index} type="button" role="menuitem" onClick={() => setOpen({ ...open, items: item.back })}>
+              {item.icon}<span>{item.label}</span>
+            </button>
+          )
+        }
         const asking = item.confirm && sure === index
         return (
           <button key={index} type="button" role="menuitem" className={`${item.danger ? 'danger' : ''}${asking ? ' sure' : ''}`} disabled={item.disabled}
@@ -100,7 +124,7 @@ export function ContextMenuHost() {
               setOpen(undefined)
               item.onSelect()
             }}>
-            {item.icon}<span>{asking ? item.confirm : item.label}</span>
+            {item.icon}<span title={item.label}>{asking ? item.confirm : item.label}</span>
           </button>
         )
       })}

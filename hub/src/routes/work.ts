@@ -8,7 +8,7 @@ import type { Context } from './context.ts'
 // Cards, change sets, schedules and what else people ask of the work.
 
 export async function workRoutes(app: FastifyInstance, context: Context) {
-  const { sp, login, param, act, bodyOf } = context
+  const { sp, login, param, act, bodyOf, spaces, isAdmin } = context
   /** Asking an agent for a debrief or a Challenge: the one named, or one the hub picks. */
   const askFor = <T>(request: FastifyRequest, ask: (login: string, id: string, agentId?: string, effort?: string) => Promise<T>) => {
     const { agentId, effort } = bodyOf(bodies.ask, request)
@@ -54,15 +54,32 @@ export async function workRoutes(app: FastifyInstance, context: Context) {
   // Scheduled runs: a note run as a card on a timer.
   app.post('/api/schedules', act(async (request) => {
     const body = bodyOf(bodies.newSchedule, request)
-    return sp(request).actions.addSchedule(login(request), { noteId: body.noteId ?? '', agentId: body.agentId || undefined, cron: body.cron ?? '', tz: body.tz ?? '', enabled: body.enabled })
+    return sp(request).actions.addSchedule(login(request), { noteId: body.noteId ?? '', agentId: body.agentId || undefined, cron: body.cron ?? '', tz: body.tz ?? '', enabled: body.enabled, folderId: body.folderId || undefined, staleHours: body.staleHours })
   }))
   app.patch('/api/schedules/:id', act(async (request) => {
     const body = bodyOf(bodies.changeSchedule, request)
-    return sp(request).actions.updateSchedule(login(request), param(request, 'id'), { agentId: body.agentId, cron: body.cron, tz: body.tz, enabled: body.enabled })
+    return sp(request).actions.updateSchedule(login(request), param(request, 'id'), { agentId: body.agentId, cron: body.cron, tz: body.tz, enabled: body.enabled, folderId: body.folderId, staleHours: body.staleHours })
   }))
   app.delete('/api/schedules/:id', act(async (request) => sp(request).actions.deleteSchedule(login(request), param(request, 'id'))))
   app.post('/api/schedules/:id/run', act(async (request) => sp(request).actions.runSchedule(param(request, 'id'), login(request))))
   // Repos' briefs: written by an agent when asked, with lessons people and agents add meanwhile.
+  // A folder's rule sends work to agents with nobody reading it first, under its owner's sign-in: a Binder's owners' and
+  // admins' to set.
+  const mayManage = (request: FastifyRequest) => {
+    if (!spaces.mayManage(sp(request).id, login(request), isAdmin(login(request)))) throw new Refused('Only this Binder’s owners and admins can set a folder’s rules.')
+  }
+  app.put('/api/folders/:id/rule', act(async (request) => {
+    mayManage(request)
+    const body = bodyOf(bodies.folderRule, request)
+    return sp(request).actions.setFolderRule(login(request), param(request, 'id'), { enabled: body.enabled, distill: body.distill, agentId: body.agentId, quietMinutes: body.quietMinutes, accept: body.accept as never, changeSet: body.changeSet })
+  }))
+  app.delete('/api/folders/:id/rule', act(async (request) => {
+    mayManage(request)
+    return sp(request).actions.deleteFolderRule(login(request), param(request, 'id'))
+  }))
+  // Whether one note's work stays together is its people's to say.
+  app.put('/api/notes/:id/change-set', act(async (request) => sp(request).actions.setNoteChangeSet(login(request), param(request, 'id'), bodyOf(bodies.noteChangeSet, request).changeSet)))
+
   const repoParam = (request: FastifyRequest) => `${param(request, 'owner')}/${param(request, 'name')}`
   app.post('/api/briefs/:owner/:name/ask', act(async (request) => {
     const { agentId, refresh } = bodyOf(bodies.briefAsk, request)

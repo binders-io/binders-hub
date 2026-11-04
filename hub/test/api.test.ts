@@ -108,6 +108,28 @@ describe('a delivery from GitHub', () => {
   })
 })
 
+describe('a folder’s rule', () => {
+  it('is its Binder’s owners’ and admins’ to set, because it sends work to agents with nobody reading it first', async () => {
+    const { hub, url, close } = await setUp({ admins: ['root'], members: [{ login: 'sam', role: 'member' }, { login: 'boss', role: 'admin' }] })
+    const member = api(url, await signIn(url, 'sam'))
+    const admin = api(url, await signIn(url, 'boss'))
+    const folder = hub.state.folders[0].id
+    const refused = await member('PUT', `/api/folders/${folder}/rule`, { distill: true })
+    assert.equal(refused.status, 422)
+    assert.match(refused.body.error, /owners and admins/)
+    assert.equal((hub.state.folderRules ?? []).length, 0)
+    assert.equal((await member('DELETE', `/api/folders/${folder}/rule`)).status, 422)
+    const set = await admin('PUT', `/api/folders/${folder}/rule`, { distill: true, quietMinutes: 5, changeSet: 'own' })
+    assert.equal(set.status, 200, JSON.stringify(set.body))
+    assert.equal(hub.state.folderRules![0].createdBy, 'boss')
+    const state = await member('GET', '/api/state')
+    assert.equal(state.body.state.folderRules?.[0]?.folderId, folder, 'everyone in the Binder can see what it does')
+    assert.equal((await member('PUT', `/api/notes/${hub.state.notes[0].id}/change-set`, { changeSet: 'own' })).status, 200, 'one note’s change set is its people’s')
+    assert.equal((await member('POST', '/api/changes', { client: 'tab-one', changes: [{ id: 'x', change: { type: 'rule.delete', id: hub.state.folderRules![0].id } }] })).status, 422)
+    await close()
+  })
+})
+
 describe('an agent’s owner', () => {
   async function teamWithAgent() {
     const set = await setUp({ admins: ['root'], members: [{ login: 'you', role: 'member' }, { login: 'sam', role: 'member' }, { login: 'boss', role: 'admin' }] })
