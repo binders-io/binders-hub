@@ -1607,6 +1607,11 @@ if (mode === 'permission-unanswered') {
     return { ...set, log, card, notes, ready, newRunner, stored: () => set.hub.state.cards.find((c) => c.id === card.id)! }
   }
   const inside = (runner: Runner) => runner.openTerminals as unknown as { sessions: Map<string, { info: { sid: string; card?: string; run?: boolean; name?: string } }>; handle: (message: object) => Promise<void> }
+  // A run's process can be going before its terminal is listed, so a test waits for the terminal.
+  const runTerminal = async (runner: Runner) => {
+    for (let i = 0; i < 500 && ![...(inside(runner)?.sessions?.values() ?? [])].some((s) => s.info.run); i++) await new Promise((done) => setTimeout(done, 20))
+    return [...inside(runner).sessions.values()].find((s) => s.info.run)!
+  }
 
   it('opens, reads, types to and waits on terminals of its own, kept to its work, ending with its card', async () => {
     const set = await setUpAgent('terminals')
@@ -1633,7 +1638,7 @@ if (mode === 'permission-unanswered') {
     const runner = set.newRunner()
     const running = runner.start(true)
     await set.ready()
-    const terminal = [...inside(runner).sessions.values()].find((s) => s.info.run)!
+    const terminal = await runTerminal(runner)
     assert.equal(terminal.info.card, set.card.id)
     await inside(runner).handle({ type: 'input', sid: terminal.info.sid, data: 'typed by a person\r' })
     for (let i = 0; i < 1500 && !(await set.notes()).some((n) => 'typed' in n); i++) await new Promise((done) => setTimeout(done, 20))
@@ -1801,7 +1806,7 @@ if (args.includes('--mcp-config')) {
     const runner = set.newRunner()
     const running = runner.start(true)
     await set.ready()
-    const terminal = [...inside(runner).sessions.values()].find((s) => s.info.run)!
+    const terminal = await runTerminal(runner)
     await inside(runner).handle({ type: 'input', sid: terminal.info.sid, data: 'mine now\r' })
     await running
     const notes = await set.notes()
@@ -1821,8 +1826,7 @@ if (args.includes('--mcp-config')) {
     assert.equal(set.stored().stage, 'working')
     const next = set.newRunner()
     const going = next.start(true)
-    for (let i = 0; i < 300 && ![...(inside(next)?.sessions?.values() ?? [])].some((s) => s.info.run); i++) await new Promise((done) => setTimeout(done, 20))
-    const terminal = [...inside(next).sessions.values()].find((s) => s.info.run)!
+    const terminal = await runTerminal(next)
     assert.equal(terminal.info.card, set.card.id)
     await inside(next).handle({ type: 'input', sid: terminal.info.sid, data: 'after the restart\r' })
     for (let i = 0; i < 300 && !(await set.notes()).some((n) => 'typed' in n); i++) await new Promise((done) => setTimeout(done, 20))
