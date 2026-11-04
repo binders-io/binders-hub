@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { isBlank, titleOf } from '../../../shared/notes.ts'
-import { changeSetOf, ruleFor, worksIn, type Card, type FolderRule } from '../../../shared/work.ts'
+import { changeSetOf, goesBy, ruleFor, worksIn, type Card, type FolderRule } from '../../../shared/work.ts'
 import { Refused, type Actor } from '../hub.ts'
 import { CardService } from './cards.ts'
 
@@ -197,7 +197,7 @@ export abstract class RuleService extends CardService {
     const judging = state.cards.some((c) => (c.agentId === toId && options.reviewing(fromId, c)) || (c.agentId === fromId && options.reviewing(toId, c)))
     if (judging) throw new Refused('One of you is challenging the other’s work: a Challenge judges the code alone, without talking to its author.')
     const mine = state.cards.filter((c) => c.agentId === fromId && c.stage === 'working')
-    const named = options.card ? theirs.find((c) => c.id === options.card || (c.issue && `#${c.issue.number}` === options.card!.trim())) : undefined
+    const named = options.card ? theirs.find((c) => c.id === options.card || goesBy(c, options.card!)) : undefined
     if (options.card && !named) throw new Refused(`${name} doesn’t hold that card. It holds: ${theirs.map((c) => `${c.title} (${c.id})`).join(', ') || 'nothing you can see'}.`)
     const sameNote = theirs.filter((c) => c.noteId && mine.some((m) => m.noteId === c.noteId))
     const target = named ?? [...(sameNote.length ? sameNote : theirs)].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]

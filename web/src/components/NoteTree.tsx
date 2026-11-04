@@ -1,5 +1,7 @@
+import { guideTemplate } from '../../../shared/guide.ts'
+import type { NoteProposal } from '../../../shared/notes.ts'
 import { createElement, useEffect, useState, type DragEvent, type ReactNode } from 'react'
-import { ArrowUpRight, BookPlus, ChevronRight, CloudUpload, FilePlus, LoaderCircle, FileText, Folder as FolderIcon, FolderOpen, FolderCog, FolderInput, FolderPlus, Link2, MoreHorizontal, Pencil, Search, Settings2, Trash2, X } from 'lucide-react'
+import { ArrowUpRight, BookPlus, ChevronRight, CloudUpload, FilePlus, LoaderCircle, FileText, BookMarked, Lock, Folder as FolderIcon, FolderOpen, FolderCog, FolderInput, FolderPlus, Link2, MoreHorizontal, Pencil, Search, Settings2, Trash2, X } from 'lucide-react'
 import { openMenu, openMenuUnder, type MenuItem } from './ContextMenu'
 import { FolderRuleDialog } from './FolderRules'
 import { attempt, toast } from './Toast'
@@ -9,8 +11,9 @@ import { go, href } from '../route'
 import { useUI } from '../ui'
 
 const collapsedKey = 'binders-hub-collapsed'
+const noProposals: NoteProposal[] = []
 
-const sameRow = sameFields<Note>('id', 'title', 'binderId', 'folderId', 'saving')
+const sameRow = sameFields<Note>('id', 'title', 'binderId', 'folderId', 'saving', 'locked')
 const sameRows = (a: Note[], b: Note[]) => a.length === b.length && a.every((note, index) => sameRow(note, b[index]))
 
 function readCollapsed(): Set<string> {
@@ -68,6 +71,9 @@ export function NoteTree({ currentId }: { currentId: string }) {
   const binders = useHub((state) => state.binders)
   const folders = useHub((state) => state.folders)
   const proposals = useHub((state) => state.proposals)
+  const noteProposals = useHub((state) => state.noteProposals ?? noProposals)
+  const reviewing = (noteId: string) => noteProposals.filter((p) => p.noteId === noteId && p.state === 'open').length
+  const guides = new Set(binders.flatMap((b) => (b.guideNoteId ? [b.guideNoteId] : [])))
   const ui = useUI()
   const [filter, setFilter] = useState('')
   // Typing changes a note's text, which the tree only reads to search it.
@@ -169,6 +175,12 @@ export function NoteTree({ currentId }: { currentId: string }) {
   ]
   const projectMenu = (binderId: string): MenuItem[] => [
     { label: 'New note', icon: icon(FilePlus), onSelect: () => newNote(binderId) },
+    ...(binders.find((b) => b.id === binderId)?.guideNoteId ? [{ label: 'Open its guide', icon: icon(BookMarked), onSelect: () => go({ screen: 'notes', id: binders.find((b) => b.id === binderId)!.guideNoteId! }) }] : [{ label: 'Add a guide for agents', icon: icon(BookMarked), onSelect: () => {
+      const binder = binders.find((b) => b.id === binderId)
+      const id = store.addNote(binderId, undefined, guideTemplate(binder?.name ?? 'This binder'))
+      store.updateBinder(binderId, { guideNoteId: id })
+      go({ screen: 'notes', id })
+    } }]),
     { label: 'New folder', icon: icon(FolderPlus), onSelect: () => newFolder(binderId) },
     { separator: true },
     { label: 'Binder settings', icon: icon(Settings2), onSelect: () => { try { window.localStorage.setItem('binders-settings-part', 'binder') } catch { /* only a convenience */ } go({ screen: 'settings' }) } },
@@ -191,12 +203,14 @@ export function NoteTree({ currentId }: { currentId: string }) {
         onDragStart={(event) => event.dataTransfer.setData('text/note', note.id)}
         onContextMenu={(event) => openMenu(event, noteMenu(note))}
       >
-        <FileText size={14} className="tree-icon" />
+        {guides.has(note.id) ? <BookMarked size={14} className="tree-icon" aria-label="The binder’s guide" /> : <FileText size={14} className="tree-icon" />}
         <span className="tree-label">
           <b>{note.title || 'Untitled'}</b>
           {path && <em>{path}</em>}
         </span>
         {waiting(note) > 0 && <i className="waiting num">{waiting(note)}</i>}
+        {note.locked && <Lock size={11} className="tree-lock" aria-label="Locked" />}
+        {reviewing(note.id) > 0 && <i className="waiting num" title="Proposed changes to review">{reviewing(note.id)}</i>}
         {note.saving && <i className="saving-dot" title="Saving" />}
       </a>
       {more(note.title || 'Untitled', () => noteMenu(note))}

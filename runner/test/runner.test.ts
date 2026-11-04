@@ -20,7 +20,7 @@ import { Sealer } from '../../hub/src/secrets.ts'
 import { buildServer } from '../../hub/src/server.ts'
 import { Spaces } from '../../hub/src/spaces.ts'
 import { Webhooks } from '../../hub/src/webhooks.ts'
-import { Runner, actionsFromReply, agentFile, dshPatch, dshTooOld, allBindersAmong, bindersAmong, bypassTurnedOff, carryClaudeSettings, noteFromReply, parseMcpList, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
+import { Runner, finishingInJira, withBinderContext, withJiraAsk, actionsFromReply, agentFile, dshPatch, dshTooOld, allBindersAmong, bindersAmong, bypassTurnedOff, carryClaudeSettings, noteFromReply, parseMcpList, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
 
 // The runner's own files (~/.binders/run) in a home of the tests' own, not this machine's.
 process.env.BINDERS_HOME ??= mkdtempSync(join(tmpdir(), 'binders-home-'))
@@ -1189,6 +1189,68 @@ await client.close()
     assert.throws(() => process.kill(pid, 0))
     assert.equal(set.stored().stage, 'ready', 'and its card goes back')
     await set.close()
+  })
+
+  it('gives a card’s run its binder’s guide and where to look, in its prompt, and again only if it changed', async () => {
+    const { hub, actions, url, dir, issued, card, close } = await setUp()
+    const said = join(dir, 'prompt.txt')
+    const script = join(dir, 'reads.mjs')
+    await writeFile(script, `import { writeFileSync } from 'node:fs'\nwriteFileSync(${JSON.stringify(said)}, process.argv[2])\nconsole.log('Read it.')\n`)
+    await hub.record({ kind: 'hub' }, { type: 'note.put', note: { id: 'g1', title: 'Guide', binderId: 'b1', editedAt: 'now', editors: [], text: '# Guide\n\nAlways read the runbook first.' } })
+    await hub.record({ kind: 'hub' }, { type: 'note.put', note: { id: 'n2', title: 'Runbook', binderId: 'b1', editedAt: 'now', editors: [], text: '# Runbook' } })
+    await hub.record({ kind: 'hub' }, { type: 'binder.put', binder: { id: 'b1', name: 'Server', guideNoteId: 'g1' } })
+    const made = await actions.putAgent('you', { name: 'Reader', runner: { tool: 'custom', access: 'full', timeoutMinutes: 1, worktrees: false, command: `node ${script} {prompt}` } } as never)
+    const runner = new Runner({ hubUrl: url, token: await issued(made.id), workspace: dir, log: () => {}, waitSeconds: 1 })
+    await runner.connect()
+    const running = runner.start(true)
+    await card('Read the guide', made.id)
+    await running
+    const prompt = await readFile(said, 'utf8')
+    assert.match(prompt, /Always read the runbook first\./)
+    assert.match(prompt, /## How to work in Binders/)
+    assert.match(prompt, /Runbook \(n2\)/)
+
+    const reading = (runner as unknown as { readingFor: (of: string, brief: string, carriesOn?: boolean) => Promise<string> }).readingFor.bind(runner)
+    const id = hub.state.cards[0].id
+    assert.match(await reading(id, ''), /Always read/)
+    assert.equal(await reading(id, '', true), '', 'a session carrying on has heard it')
+    await hub.record({ kind: 'hub' }, { type: 'note.edit', id: 'g1', text: '# Guide\n\nThe rule changed.', title: 'Guide', by: 'you', at: 'now' })
+    assert.match(await reading(id, '', true), /The rule changed\./, 'unless it’s changed')
+
+    // With nothing in particular, a terminal say: the one binder it works in.
+    assert.match(await runner.contextFor(), /The rule changed\./)
+    await close()
+  })
+
+  it('tells a terminal’s Claude Code about its binder as it starts, and leaves other tools’ commands alone', () => {
+    assert.deepEqual(withBinderContext('claude', ['--mcp-config', 'x'], 'The guide.'), ['--mcp-config', 'x', '--append-system-prompt', 'The guide.'])
+    assert.deepEqual(withBinderContext('claude', ['a'], ''), ['a'], 'a hub with none to give')
+    assert.deepEqual(withBinderContext('codex', ['a'], 'The guide.'), ['a'])
+  })
+
+  it('takes a note’s work items from the binders command, as the tool would', async () => {
+    const { hub, actions, url, dir, issued, close } = await setUp()
+    await hub.record({ kind: 'hub' }, { type: 'note.put', note: { id: 'n1', title: 'Plan', binderId: 'b1', editedAt: 'now', editors: [], text: '# Plan\n\nAdd a health check.' } })
+    const made = await actions.putAgent('you', { name: 'Distiller', runner: { tool: 'custom', access: 'full', timeoutMinutes: 1, worktrees: false, command: 'true' } } as never)
+    const runner = new Runner({ hubUrl: url, token: await issued(made.id), workspace: dir, log: () => {}, waitSeconds: 1 })
+    await runner.connect()
+    const asked = (runner as unknown as { deskAsked: (card: string, verb: string, args: object) => Promise<unknown> }).deskAsked.bind(runner)
+    const held = await actions.createCard({ kind: 'user', login: 'you' }, { binderId: 'b1', title: 'Distill', meantFor: made.id })
+    await actions.claim(made.id, held.id)
+    await asked(held.id, 'propose', { id: 'n1', text: JSON.stringify([{ title: 'Health check', quote: 'Add a health check.', size: 'S' }]) })
+    assert.deepEqual(hub.state.proposals.map((p) => [p.noteId, p.title]), [['n1', 'Health check']])
+    await assert.rejects(asked(held.id, 'propose', { id: 'n1', text: 'not json' }), /JSON list/)
+    await close()
+  })
+
+  it('gives a run a moment after finishing only when it’s asked to act in Jira, and passes on what it’s asked', () => {
+    assert.equal(finishingInJira({ jira: { finishing: true } }), true)
+    assert.equal(finishingInJira({ jira: {} }), false)
+    assert.equal(finishingInJira({ jira: 'BIND-7' }), false, 'a key alone is only a key')
+    assert.equal(finishingInJira({}), false)
+    assert.equal(withJiraAsk('Done.', { jira: { ask: 'Move it.' } }), 'Done.\n\nMove it.')
+    assert.equal(withJiraAsk('Done.', { jira: 'BIND-7' }), 'Done.')
+    assert.equal(withJiraAsk('Done.', {}), 'Done.')
   })
 
   it('stops a run left for a card that was taken back while no runner watched', async () => {

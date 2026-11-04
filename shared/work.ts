@@ -164,6 +164,8 @@ export interface Card {
   parent?: string
   /** Its GitHub issue, once the binder's repo has one for it. */
   issue?: { repo: string; number: number; url: string }
+  /** Its Jira issue, once the binder's project has one for it. */
+  jira?: { key: string; url: string; imported?: boolean }
   prId?: string
   /** Before there's a pull request: the diff of the card's worktree, as its runner last saw it. */
   worktree?: WorktreeDiff
@@ -189,6 +191,8 @@ export interface Card {
   distillRule?: string
   /** Accepted without a person, under a folder's rule: the rule, and who set it. */
   acceptedBy?: { rule: string; setBy: string }
+  /** Suggested by an agent on work nobody had read: that card. It's proposed until a person moves it on, whichever agent is asked. */
+  madeUnread?: string
 }
 
 export interface Proposal {
@@ -714,8 +718,16 @@ export function repliesFor(state: WorkState, agent: Agent, busy: string[] = []):
  * Work that went out with nobody reading it, which only the agent a person chose may take: a rule's Distill and what it
  * accepted, and a run that writes into a folder. If that agent goes, it waits for a person, rather than being open to all.
  */
-export function pinned(state: { schedules?: Schedule[] }, card: Pick<Card, 'distillRule' | 'acceptedBy' | 'scheduleId'>) {
-  return !!card.distillRule || !!card.acceptedBy || (!!card.scheduleId && !!(state.schedules ?? []).find((s) => s.id === card.scheduleId)?.folderId)
+export function pinned(state: { schedules?: Schedule[] }, card: Pick<Card, 'distillRule' | 'acceptedBy' | 'scheduleId' | 'madeUnread'>) {
+  return !!card.distillRule || !!card.acceptedBy || !!card.madeUnread || (!!card.scheduleId && !!(state.schedules ?? []).find((s) => s.id === card.scheduleId)?.folderId)
+}
+
+/**
+ * The work an agent has out with nobody having read it, up to a person's review of it. What it asks for meanwhile can come
+ * from what it read, so what it suggests stays a suggestion.
+ */
+export function unreadWorkOf(state: { schedules?: Schedule[]; cards: Card[] }, agentId: string) {
+  return state.cards.find((c) => c.agentId === agentId && (c.stage === 'working' || c.stage === 'blocked' || c.stage === 'review') && pinned(state, c))
 }
 
 /** The rule a folder's notes go by: its own, or the nearest one above it that's on. */
@@ -799,3 +811,9 @@ export function worksIn(agent: { binders: string[] }, binderId: string, binders:
   const live = agent.binders.filter((id) => binders.some((b) => b.id === id))
   return !live.length || live.includes(binderId)
 }
+
+/** Whether a card goes by this name: its GitHub issue as #12, or its Jira issue's key. */
+export const goesBy = (card: Pick<Card, 'jira' | 'issue'>, name: string) => (!!card.issue && `#${card.issue.number}` === name.trim()) || card.jira?.key === name.trim().toUpperCase()
+
+/** The number a card goes by: its Jira issue's, or its GitHub issue's. */
+export const cardNumber = (card: Pick<Card, 'jira' | 'issue'>) => card.jira?.key ?? (card.issue ? `#${card.issue.number}` : undefined)

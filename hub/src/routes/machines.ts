@@ -65,7 +65,7 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
       const space = spaces.get(agent.space ?? spaces.list()[0]?.id ?? '')
       if (space && named && named !== space.id) return setByHand(reply, 'This agent’s token is for another binder.')
       if (!space || !space.hub.state.agents.some((a) => a.id === agent.id && !a.revoked)) return setByHand(reply, agentStale)
-      return serve(request, reply, mcpServer(space.hub, space.actions, agent.id, { issueToken: (id) => auth.issueAgentToken(id, space.id), publicUrl: options.publicUrl }))
+      return serve(request, reply, mcpServer(space.hub, space.actions, agent.id, { issueToken: (id) => auth.issueAgentToken(id, space.id), publicUrl: options.publicUrl }, space.jira))
     }
     if (token?.startsWith('bnd_')) return setByHand(reply, agentStale)
     // A person's token: signed in through OAuth, acting as themselves in the binder the connection is for.

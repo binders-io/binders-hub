@@ -3,7 +3,7 @@ import type { Change } from '../../../shared/state.ts'
 import { isBlank, titleOf } from '../../../shared/notes.ts'
 import { checkTimeZone, defaultStaleHours, describeCron, parseCron, type Schedule, type ScheduleRun } from '../../../shared/schedule.ts'
 import { parseDiff } from '../../../shared/changeSet.ts'
-import { agentNamed, worksIn, type Agent, type Card, type PlanStep, type Stage, type PullRequest } from '../../../shared/work.ts'
+import { agentNamed, goesBy, worksIn, type Agent, type Card, type PlanStep, type Stage, type PullRequest } from '../../../shared/work.ts'
 import { parsePullRef } from '../github.ts'
 import { Refused, type Actor } from '../hub.ts'
 import { ActionsBase, checkedRunner } from './base.ts'
@@ -16,7 +16,7 @@ export abstract class CardService extends ActionsBase {
 
   // People ---------------------------------------------------------------------------------------------------------
 
-  async createCard(actor: Actor, fields: { binderId: string; title: string; brief?: string; doneWhen?: string; size?: Card['size']; stage?: Stage; noteId?: string; quote?: string; meantFor?: string; waitsFor?: string[]; scheduleId?: string; distillRule?: string; acceptedBy?: Card['acceptedBy']; said?: string; id?: string }) {
+  async createCard(actor: Actor, fields: { binderId: string; title: string; brief?: string; doneWhen?: string; size?: Card['size']; stage?: Stage; noteId?: string; quote?: string; meantFor?: string; waitsFor?: string[]; scheduleId?: string; distillRule?: string; acceptedBy?: Card['acceptedBy']; madeUnread?: string; said?: string; id?: string }) {
     if (!this.hub.state.binders.some((b) => b.id === fields.binderId)) throw new Refused(`No binder ${fields.binderId}.`)
     if (!fields.title.trim()) throw new Refused('A card needs a title.')
     const at = this.now()
@@ -41,6 +41,7 @@ export abstract class CardService extends ActionsBase {
       ...(fields.scheduleId ? { scheduleId: fields.scheduleId } : {}),
       ...(fields.distillRule ? { distillRule: fields.distillRule } : {}),
       ...(fields.acceptedBy ? { acceptedBy: fields.acceptedBy } : {}),
+      ...(fields.madeUnread ? { madeUnread: fields.madeUnread } : {}),
       activity: [{ at, by, kind: 'created', text: fields.said ?? fields.scheduleId ? fields.said ?? 'Put it on the board: a scheduled run of its note' : actor.kind === 'agent' ? 'Suggested it' : 'Put it on the board' }],
     }
     const changes: Change[] = [{ type: 'card.put', card }]
@@ -201,7 +202,7 @@ export abstract class CardService extends ActionsBase {
     const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
     return [...new Set(named.map((name) => {
       const found = cards.find((c) => c.id === name.trim())
-        ?? cards.find((c) => c.binderId === binderId && c.issue && `#${c.issue.number}` === name.trim().replace(/^issue\s*/i, ''))
+        ?? cards.find((c) => c.binderId === binderId && goesBy(c, name.trim().replace(/^issue\s*/i, '')))
         ?? cards.find((c) => c.binderId === binderId && same(c.title, name))
       if (!found) throw new Refused(`It waits for “${name.slice(0, 80)}”, which isn’t a card on this board: name each card it waits for by its id, its issue (#226) or its exact title.`)
       return found.id

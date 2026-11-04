@@ -39,7 +39,7 @@ function lifecycle(card: Card, state: HubState): Step[] {
   const rank = stages.findIndex((s) => s.id === card.stage)
   const raw: [string, string, string, boolean, typeof Check][] = [
     ['note', 'Written', note ? `In “${titleOf(note.text)}”` : 'Put on the board by hand', true, FileText],
-    ['board', 'On the board', card.issue ? `Issue #${card.issue.number}` : 'Ready for an agent', card.stage !== 'proposed', ListChecks],
+    ['board', 'On the board', card.jira ? `Jira ${card.jira.key}` : card.issue ? `Issue #${card.issue.number}` : 'Ready for an agent', card.stage !== 'proposed', ListChecks],
     ['claim', 'Claimed', agent ? agent.name : meantForNow(state, card) ? `Meant for ${nameFor(state, card.meantFor!)}` : card.stage === 'ready' && !state.agents.some((a) => !a.revoked && mayTake(state, a, card)) ? 'No agent works in this binder and repo: set one’s binders and repos on the Agents page' : 'Any agent that can', !!agent || rank >= 3, Workflow],
     ['build', 'Built', card.stage === 'working' ? (card.doing ?? 'Working') : rank > 2 ? 'Finished' : 'Not started', rank > 2, SquareTerminal],
     ['pr', 'Pull request', pull ? `${pull.repo.split('/')[1]}#${pull.number}` : card.stage === 'live' && !pull ? 'None needed' : 'Not opened', !!pull || (card.stage === 'live' && !pull), GitPullRequest],
@@ -136,6 +136,7 @@ export function Work({ id }: { id: string }) {
         <button className="icon-button" onClick={() => (window.history.length > 1 ? window.history.back() : go({ screen: 'flow' }))} aria-label="Back"><ArrowLeft size={17} /></button>
         <div className="work-title">
           <div className="work-tags">
+            {card.jira && (/^https:\/\//.test(card.jira.url) ? <a className="mono faint" href={card.jira.url} target="_blank" rel="noreferrer" title="Its Jira issue">{card.jira.key} <ArrowUpRight size={11} /></a> : <span className="mono faint">{card.jira.key}</span>)}
             {card.issue && (card.issue.url ? <a className="mono faint" href={card.issue.url} target="_blank" rel="noreferrer" title={`Its issue, in ${card.issue.repo}`}>#{card.issue.number} {card.issue.repo.split('/')[1]} <ArrowUpRight size={11} /></a> : <span className="mono faint">#{card.issue.number} {card.issue.repo.split('/')[1]}</span>)}
             <span className="faint">{binder?.name}</span>
             {pull ? <RepoTag repo={pull.repo} title={`Its pull request is in ${pull.repo}`} /> : !card.issue && binder?.repo && <RepoTag repo={binder.repo} />}

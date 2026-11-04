@@ -53,10 +53,12 @@ interface Props {
   raw: boolean
   /** The note it shows, so pasted pictures are kept with its binder. */
   noteId?: string
+  /** Shown, not changed: a note someone else has locked. Set from the start: the parent keys it by this too. */
+  readOnly?: boolean
 }
 
 /** The note as Markdown, shown rendered. The parent keys it by note, so each note gets its own editor and history. */
-export const MarkdownEditor = forwardRef<EditorHandle, Props>(function MarkdownEditor({ text, onChange, live, links, marks, raw, noteId }, ref) {
+export const MarkdownEditor = forwardRef<EditorHandle, Props>(function MarkdownEditor({ text, onChange, live, links, marks, raw, noteId, readOnly }, ref) {
   const host = useRef<HTMLDivElement>(null)
   const view = useRef<EditorView>(undefined)
   const change = useRef(onChange)
@@ -96,6 +98,8 @@ export const MarkdownEditor = forwardRef<EditorHandle, Props>(function MarkdownE
           workMarks,
           pictureDrops,
           noteOf.of(noteId ?? ''),
+          EditorState.readOnly.of(!!readOnly),
+          EditorView.editable.of(!readOnly),
           Prec.high(controlPaste),
           autocompletion({ override: [linkCompletions, slashCompletions], icons: false, closeOnBlur: true, activateOnTyping: true }),
           keymap.of([...formattingKeys, ...completionKeymap, ...searchKeymap, ...historyKeymap, ...defaultKeymap, indentWithTab]),
