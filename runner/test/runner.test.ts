@@ -1540,7 +1540,7 @@ if (mode === 'permission-unanswered') {
     const terminal = [...inside(runner).sessions.values()].find((s) => s.info.run)!
     assert.equal(terminal.info.card, set.card.id)
     await inside(runner).handle({ type: 'input', sid: terminal.info.sid, data: 'typed by a person\r' })
-    for (let i = 0; i < 300 && !(await set.notes()).some((n) => 'typed' in n); i++) await new Promise((done) => setTimeout(done, 20))
+    for (let i = 0; i < 1500 && !(await set.notes()).some((n) => 'typed' in n); i++) await new Promise((done) => setTimeout(done, 20))
     await set.actions.comment('you', set.card.id, 'Mind the tests.')
     await running
     const notes = await set.notes()

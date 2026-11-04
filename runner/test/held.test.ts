@@ -86,6 +86,14 @@ describe('a held program', () => {
     await until(() => seen.ended)
   })
 
+  it('keeps what’s typed the moment it starts reading, before it has reached its holder', async () => {
+    const held = await start(await root(), 'early', 'read line; echo "got $line"', 'pty')
+    const seen = collect(held)
+    assert.equal(held.write('straight away\n'), true)
+    await until(() => seen.text.includes('got straight away'))
+    await until(() => seen.ended)
+  })
+
   it('takes a resize in pty mode', async () => {
     const dir = await root()
     const held = await start(dir, 'six', `read a; stty size; read b`, 'pty')
