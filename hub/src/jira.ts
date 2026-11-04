@@ -36,6 +36,8 @@ export interface JiraSettings {
   points?: Record<Card['size'], number | string>
   /** The board whose active sprint an issue joins once work on it starts. Unset: sprints are left alone. */
   sprintBoard?: number
+  /** False: agents aren't asked to make their changes in Jira with their own tools, and the hub makes them all. */
+  agentWrites?: boolean
   on?: boolean
 }
 
@@ -153,6 +155,7 @@ export class JiraConnection {
       pointsKind: fields.pointsField?.trim() ? fields.pointsKind ?? 'number' : undefined,
       points: fields.pointsField?.trim() ? fields.points ?? usualPointsOf(fields.pointsKind ?? 'number') : undefined,
       sprintBoard: fields.sprintBoard,
+      agentWrites: fields.agentWrites === false ? false : undefined,
       on: fields.on !== false && !!baseUrl && !!email && !!token && !!project,
     }
     await this.kv.set(`${this.key}:settings`, JSON.stringify({ ...this.settings, token: undefined, sealed: token ? this.sealer.seal(token) : undefined }))
@@ -337,6 +340,12 @@ export class JiraConnection {
 
   async addToSprint(sprintId: number, id: string) {
     await this.call(`/rest/agile/1.0/sprint/${sprintId}/issue`, { method: 'POST', body: { issues: [id] } })
+  }
+
+  /** The words of an issue's latest comments. */
+  async commentTexts(id: string) {
+    const { comments = [] } = await this.call<{ comments?: JiraComment[] }>(`/issue/${encodeURIComponent(id)}/comment?maxResults=100&orderBy=-created`)
+    return comments.map((c) => this.textOf(c.body))
   }
 
   /** Whether this project's workflow for cards has a status of this name: going through others to one it doesn't would only wander. */
@@ -638,6 +647,44 @@ interface JiraEvent {
   comment?: JiraComment
 }
 
+/** How long an agent has to make its own changes in Jira before the hub makes them. */
+export const agentGraceMs = 120_000
+
+/** How long after finishing it's asked to, and its run kept going: less than that, so the two don't cross. */
+const agentAskMs = 90_000
+
+/** What an agent ends a comment with, so the hub knows it's there, and knows it's no one's news when it comes back. */
+export const markOf = (cardId: string, said: Pick<Activity, 'at' | 'text'>) => `[binders:${createHash('sha1').update(`${cardId}|${said.at}|${said.text}`).digest('hex').slice(0, 10)}]`
+const marked = /\[binders:[0-9a-f]{10}\]/
+
+const ownTools = 'with your own Jira tools (an Atlassian or Jira MCP server), if you have them, so that Jira shows the person you work for did it. If you have none, or one fails, skip it and don’t try again: the hub does it for you'
+
+/**
+ * What an agent holding a card is asked to do in Jira. The hub can't act as its owner, but the agent can, with the Jira
+ * connection it already has. It's asked to move the issue only once the board has the card there, so a move can't read
+ * as a person's. Nothing depends on it: what's still not done when the time's up, the hub does.
+ */
+export function askOfAgent(settings: JiraSettings, card: Card, agentId: string, now = Date.now()) {
+  if (!card.jira) return undefined
+  const { key, url } = card.jira
+  if (settings.agentWrites === false || card.agentId !== agentId) return { key, url }
+  const status = statusFor(card.stage, settings.statuses)
+  if (card.stage === 'working') {
+    return { key, url, ask: `This card is Jira issue ${key}. Now, ${ownTools}: assign ${key} to yourself${status ? ` and move it to “${status}”` : ''}. Make no other Jira issues, and don’t move it again while you work: complete_task’s reply says what to do at the end.` }
+  }
+  const done = card.activity.findLast((a) => a.kind === 'completed' && a.by === agentId)
+  if ((card.stage === 'review' || card.stage === 'live') && done && now - Date.parse(done.at) < agentAskMs) {
+    return { key, url, finishing: true, ask: `One last step before you stop, ${ownTools}: ${status ? `move ${key} to “${status}”, and ` : ''}add this comment to it, with the mark at the end exactly as it is:\n\n${done.text} ${markOf(card.id, done)}` }
+  }
+  return { key, url }
+}
+
+/** The same for something it just said on the card. */
+export function commentAskOfAgent(settings: JiraSettings, card: Card, said: Pick<Activity, 'at' | 'text'>) {
+  if (!card.jira || settings.agentWrites === false) return undefined
+  return `Add this to Jira issue ${card.jira.key} too, ${ownTools}. Keep the mark at the end exactly as it is:\n\n${said.text} ${markOf(card.id, said)}`
+}
+
 /** A comment the hub wrote on someone's behalf says so, and it's only that when the service account wrote it: a person using that account is still a person. */
 const saidInBinders = /^[*_]*[^\n]{1,200}, in Binders:/
 export const inBinders = (who: string, text: string) => `**${who}, in Binders:** ${text}`
@@ -645,7 +692,8 @@ export const inBinders = (who: string, text: string) => `**${who}, in Binders:**
 /** A comment from Jira lands on its card, once. */
 export async function heardComment(hub: Hub, jira: JiraConnection, card: Card, comment: JiraComment | undefined, at: string): Promise<'comment' | 'echo' | 'ignored'> {
   const text = jira.textOf(comment?.body).slice(0, 2000)
-  if (!text || (saidInBinders.test(text) && (await jira.isMe(comment?.author)))) return 'ignored'
+  // An agent's own comment is what it already said on the card.
+  if (!text || marked.test(text) || (saidInBinders.test(text) && (await jira.isMe(comment?.author)))) return 'ignored'
   const activity = commentFrom(comment?.author?.displayName, text, comment?.created ?? at)
   // Jira sends again when it isn't sure: the same words at the same moment are that, and the same words later are said again.
   if (card.activity.some((a) => a.kind === 'comment' && a.at === activity.at && a.by === activity.by && a.text === text)) return 'echo'

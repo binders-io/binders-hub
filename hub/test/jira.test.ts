@@ -1,11 +1,14 @@
 import { describe, it } from 'node:test'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import assert from 'node:assert/strict'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type { AddressInfo } from 'node:net'
 import Fastify from 'fastify'
 import { Actions } from '../src/actions.ts'
+import { mcpServer } from '../src/mcp.ts'
 import { Auth } from '../src/auth.ts'
-import { suggestStatuses, suggestTypes, handleWebhook, jiraAddress, JiraConnection, stageOf, fieldsForPoints } from '../src/jira.ts'
+import { suggestStatuses, suggestTypes, handleWebhook, jiraAddress, JiraConnection, stageOf, fieldsForPoints, askOfAgent, markOf } from '../src/jira.ts'
 import { GitHubConnection } from '../src/githubConnection.ts'
 import { Sealer } from '../src/secrets.ts'
 import { Hub } from '../src/hub.ts'
@@ -90,6 +93,7 @@ async function fakeJira(options: { refuseWrites?: () => boolean; refuseSearch?: 
     if (one) one.status = to
     return {}
   })
+  app.get('/rest/api/3/issue/:id/comment', async (request) => ({ comments: issues.get((request.params as { id: string }).id)?.comments ?? [] }))
   app.post('/rest/api/3/issue/:id/comment', async (request) => {
     const one = issues.get((request.params as { id: string }).id)!
     ;(one.comments ??= []).push({ body: (request.body as { body: unknown }).body, created: new Date().toISOString(), author: { displayName: 'Binders Saver', accountId: account } })
@@ -146,7 +150,7 @@ async function fakeJira(options: { refuseWrites?: () => boolean; refuseSearch?: 
   return { url: `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`, calls, issues, sprintOf, closedIn, start: (id: number, name: string, startDate = new Date(Date.now() - 86_400_000).toISOString()) => { active = { id, name, startDate } }, end: () => { active = undefined }, close: () => app.close() }
 }
 
-async function setUp(fakeOptions: Parameters<typeof fakeJira>[0] = {}, statuses = {}) {
+async function setUp(fakeOptions: Parameters<typeof fakeJira>[0] = {}, statuses = {}, agentGraceMs = 0) {
   const fake = await fakeJira(fakeOptions)
   const hub = new Hub(new MemoryLog())
   await hub.start([{ type: 'binder.put', binder: { id: 'b1', name: 'T' } }])
@@ -159,7 +163,7 @@ async function setUp(fakeOptions: Parameters<typeof fakeJira>[0] = {}, statuses 
   const jira = new JiraConnection(kv, sealer, 'test')
   await jira.load()
   await jira.configure({ baseUrl: fake.url, email: 'binders@example.test', token: 'tok-ab', project: 'BIND', issueType: 'Task', statuses })
-  const saver = new JiraSaver(hub, () => jira, kv, 'test', { quietMs: 5, retryMs: 10, retries: 3 })
+  const saver = new JiraSaver(hub, () => jira, kv, 'test', { quietMs: 5, retryMs: 10, retries: 3, agentGraceMs })
   await saver.load()
   saver.start()
   const spaces = Spaces.of(kv, [{
@@ -195,7 +199,7 @@ async function setUp(fakeOptions: Parameters<typeof fakeJira>[0] = {}, statuses 
     }
   }
   return {
-    hub, app, url, fake, jira, saver, kv, sealer, card, edit, stored, note, statusChange, signIn, lines,
+    actions, hub, app, url, fake, jira, saver, kv, sealer, card, edit, stored, note, statusChange, signIn, lines,
     made: () => fake.calls.filter((c) => c.method === 'POST' && c.path === '/rest/api/3/issue').length,
     close: async () => { await saver.stop(); await app.close(); await fake.close() },
   }
@@ -729,6 +733,125 @@ describe('Jira talking back', () => {
     const number = { type: 'number' }
     assert.deepEqual(fieldsForPoints([{ id: 'customfield_1', name: 'Team Points', schema: number }, { id: 'customfield_2', name: 'Story Points', schema: number }]).map((f) => f.id), ['customfield_2', 'customfield_1'], 'Jira’s own comes first')
     assert.deepEqual(fieldsForPoints([{ id: 'customfield_3', name: 'Mine', schema: number, scope: { project: { id: 'a' } } }], 'b'), [], 'another project’s isn’t offered')
+  })
+
+  it('gives an agent time to move an issue itself, and moves it only if it hasn’t', async () => {
+    const set = await setUp({}, {}, 150)
+    const moves = () => set.fake.calls.filter((c) => c.method === 'POST' && c.path.endsWith('/transitions')).length
+    try {
+      await set.hub.record(actor, { type: 'agent.put', agent: { id: 'a1', name: 'Builder', owner: 'sam', provider: 'claude', repos: [], binders: [], skills: [], createdAt: 'then' } as never })
+      await set.card('card-theirs')
+      await set.card('card-forgot')
+      await mirrored(set, 2)
+      await settled()
+      const before = moves()
+      const claim = (id: string) => set.hub.record({ kind: 'agent', id: 'a1' }, { type: 'card.claim', id, agentId: 'a1', at: new Date().toISOString() })
+      await claim('card-theirs')
+      await claim('card-forgot')
+      await settled()
+      assert.equal(moves(), before, 'nothing yet: it’s the agent’s to do')
+      const theirs = [...set.fake.issues.values()].find((i) => i.labels?.includes('binders-card-theirs'))!
+      const forgot = [...set.fake.issues.values()].find((i) => i.labels?.includes('binders-card-forgot'))!
+      theirs.status = 'In Progress'
+
+      await until(() => forgot.status === 'In Progress', 4000)
+      await settled()
+      assert.equal(moves(), before + 1, 'only the one the agent left')
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('doesn’t wait when a person moves a card an agent holds', async () => {
+    const set = await setUp({}, {}, 60_000)
+    try {
+      await set.card('card-held', 'ready')
+      await mirrored(set)
+      await settled()
+      await set.hub.record({ kind: 'agent', id: 'a1' }, { type: 'card.claim', id: 'card-held', agentId: 'a1', at: new Date().toISOString() })
+      await set.edit('card-held', { stage: 'review' })
+      await set.edit('card-held', { stage: 'live' })
+      await until(() => set.fake.issues.get('101')!.status === 'Done', 4000)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('leaves an agent’s comment to it, and says it for it, naming whose agent, if it doesn’t', async () => {
+    const set = await setUp({}, {}, 100)
+    try {
+      await set.hub.record(actor, { type: 'agent.put', agent: { id: 'a1', name: 'Builder', owner: 'sam', provider: 'claude', repos: [], binders: [], skills: [], createdAt: 'then' } as never })
+      await set.card('card-words')
+      await mirrored(set)
+      await settled()
+      const at = () => new Date().toISOString()
+      const said = { at: at(), by: 'a1', kind: 'comment' as const, text: 'Halfway there.' }
+      await set.hub.record({ kind: 'agent', id: 'a1' }, { type: 'card.activity', id: 'card-words', activity: said })
+      await settled()
+      const issue = set.fake.issues.get('101')!
+      assert.equal(issue.comments, undefined, 'it’s the agent’s to say first')
+      // It says it, as its owner, with the mark.
+      issue.comments = [{ body: `Halfway there. ${markOf('card-words', said)}`, created: at(), author: { displayName: 'Sam', accountId: 'sams-account' } }]
+      await sleep(150)
+      await set.saver.poll()
+      assert.equal(issue.comments.length, 1, 'not said twice')
+      assert.equal(set.stored('card-words')!.activity.filter((a) => a.text.includes('Halfway there')).length, 1, 'and it doesn’t come back to the card')
+
+      await set.hub.record({ kind: 'agent', id: 'a1' }, { type: 'card.activity', id: 'card-words', activity: { at: at(), by: 'a1', kind: 'completed', text: 'All done.' } })
+      await until(() => issue.comments!.length === 2, 4000)
+      assert.match(JSON.stringify(issue.comments[1].body), /Builder, sam’s agent, in Binders:.*All done\./)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('tells an agent what to do in Jira through its own tools, as it takes a card, comments and finishes', async () => {
+    const set = await setUp({}, { ready: 'To Do', working: 'In Progress', live: 'Done' }, 60_000)
+    const client = new Client({ name: 'a1', version: '1' })
+    try {
+      await set.hub.record(actor, { type: 'agent.put', agent: { id: 'a1', name: 'Builder', owner: 'sam', provider: 'claude', repos: [], binders: ['b1'], skills: [], createdAt: 'then' } as never })
+      await set.card('card-run')
+      await until(() => !!set.stored('card-run')?.jira, 4000)
+      const [ours, theirs] = InMemoryTransport.createLinkedPair()
+      await Promise.all([mcpServer(set.hub, set.actions, 'a1', { issueToken: async () => 'unused', publicUrl: 'http://hub.test' }, set.jira).connect(theirs), client.connect(ours)])
+      const call = async (name: string, args: Record<string, unknown>) => ((await client.callTool({ name, arguments: args })) as { content: { text: string }[] }).content[0].text
+
+      const taken = JSON.parse(await call('claim_task', { id: 'card-run' }))
+      assert.equal(taken.jira.key, 'BIND-101')
+      assert.match(taken.jira.ask, /assign BIND-101 to yourself and move it to “In Progress”/)
+      assert.match(JSON.parse(await call('get_task', { id: 'card-run' })).jira.ask, /assign BIND-101/)
+
+      assert.match(await call('comment_task', { id: 'card-run', text: 'Halfway.' }), /^Commented\. Add this to Jira issue BIND-101.*Halfway\. \[binders:[0-9a-f]{10}\]/s)
+
+      const finished = JSON.parse(await call('complete_task', { id: 'card-run', summary: 'All done.' }))
+      assert.equal(finished.jira.finishing, true)
+      assert.match(finished.jira.ask, /move BIND-101 to “Done”.*All done\. \[binders:[0-9a-f]{10}\]/s)
+    } finally {
+      await client.close()
+      await set.close()
+    }
+  })
+
+  it('asks an agent to act in Jira only with what the board already has, and stops asking', () => {
+    const settings = { statuses: { working: 'Building', review: 'Peer Review', live: 'Shipped' } }
+    const base = { id: 'c1', jira: { key: 'BIND-7', url: 'https://x.atlassian.net/browse/BIND-7' }, agentId: 'a1', activity: [] as never[] }
+    const of = (over: object, agent = 'a1', now?: number) => askOfAgent(settings, { ...base, stage: 'working', ...over } as never, agent, now)
+
+    const started = of({})!
+    assert.match(started.ask!, /assign BIND-7 to yourself and move it to “Building”/)
+    assert.equal(started.finishing, undefined)
+    assert.equal(of({}, 'someone-else')!.ask, undefined, 'only the agent holding it')
+    assert.equal(of({ jira: undefined }), undefined, 'not till it has an issue')
+    assert.equal(askOfAgent({ ...settings, agentWrites: false }, { ...base, stage: 'working' } as never, 'a1')!.ask, undefined, 'and not when it’s turned off')
+
+    const done = { at: new Date(1000).toISOString(), by: 'a1', kind: 'completed', text: 'Fixed it.' }
+    const finished = of({ stage: 'review', activity: [done] }, 'a1', 2000)!
+    assert.equal(finished.finishing, true)
+    assert.match(finished.ask!, /move BIND-7 to “Peer Review”/)
+    assert.ok(finished.ask!.includes(`Fixed it. ${markOf('c1', done)}`))
+    const later = of({ stage: 'review', activity: [done] }, 'a1', 1000 + 100_000)!
+    assert.equal(later.finishing, undefined, 'its time is up before the hub steps in')
+    assert.equal(later.ask, undefined)
   })
 
   it('lands comments as from Jira, once each, in either of Jira’s formats', async () => {

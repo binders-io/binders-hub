@@ -20,7 +20,7 @@ import { Sealer } from '../../hub/src/secrets.ts'
 import { buildServer } from '../../hub/src/server.ts'
 import { Spaces } from '../../hub/src/spaces.ts'
 import { Webhooks } from '../../hub/src/webhooks.ts'
-import { Runner, actionsFromReply, agentFile, dshPatch, dshTooOld, allBindersAmong, bindersAmong, bypassTurnedOff, carryClaudeSettings, noteFromReply, parseMcpList, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
+import { Runner, finishingInJira, withJiraAsk, actionsFromReply, agentFile, dshPatch, dshTooOld, allBindersAmong, bindersAmong, bypassTurnedOff, carryClaudeSettings, noteFromReply, parseMcpList, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
 
 // The runner's own files (~/.binders/run) in a home of the tests' own, not this machine's.
 process.env.BINDERS_HOME ??= mkdtempSync(join(tmpdir(), 'binders-home-'))
@@ -1189,6 +1189,16 @@ await client.close()
     assert.throws(() => process.kill(pid, 0))
     assert.equal(set.stored().stage, 'ready', 'and its card goes back')
     await set.close()
+  })
+
+  it('gives a run a moment after finishing only when it’s asked to act in Jira, and passes on what it’s asked', () => {
+    assert.equal(finishingInJira({ jira: { finishing: true } }), true)
+    assert.equal(finishingInJira({ jira: {} }), false)
+    assert.equal(finishingInJira({ jira: 'BIND-7' }), false, 'a key alone is only a key')
+    assert.equal(finishingInJira({}), false)
+    assert.equal(withJiraAsk('Done.', { jira: { ask: 'Move it.' } }), 'Done.\n\nMove it.')
+    assert.equal(withJiraAsk('Done.', { jira: 'BIND-7' }), 'Done.')
+    assert.equal(withJiraAsk('Done.', {}), 'Done.')
   })
 
   it('stops a run left for a card that was taken back while no runner watched', async () => {

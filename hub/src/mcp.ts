@@ -8,6 +8,7 @@ import { agentNamed, goesBy, briefId, briefJobFor, briefMost, briefOf, challenge
 import type { Actions } from './actions.ts'
 import type { SentTest } from './actions/debriefs.ts'
 import { Refused, type Hub } from './hub.ts'
+import { askOfAgent, commentAskOfAgent, type JiraConnection } from './jira.ts'
 
 // The hub's MCP server: how an agent registered here finds work, takes it, says what it's doing, asks, and hands it
 // back with its pull request. One server per request (the transport is stateless), bound to the agent its token names.
@@ -107,7 +108,7 @@ const providers: Provider[] = ['claude', 'openai', 'copilot', 'opencode', 'dsh',
 /** An owner's agents an agent may set up, all told: enough for a team, not a runaway loop. */
 export const maxAgentsMade = 20
 
-export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: AgentMaking) {
+export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: AgentMaking, jira?: JiraConnection) {
   const server = new McpServer({ name: 'binders', version: '0.1.0' }, { instructions })
   const me = () => {
     const agent = hub.state.agents.find((a) => a.id === agentId && !a.revoked)
@@ -141,12 +142,15 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
     holder: hub.state.agents.find((a) => a.id === card.agentId)?.name, holder_id: card.agentId, meant_for: hub.state.agents.find((a) => a.id === card.meantFor)?.name,
     issue: card.issue?.url, jira: card.jira?.key, waits_for: card.waitsFor, needs_you: reviewing(card) ? undefined : card.needsYou, permission: card.permission,
   })
+  // Its own Jira connection can do what the hub's can't: act as the person it works for.
+  const inJira = (card: Card) => (jira?.on() ? askOfAgent(jira.settings, card, agentId) : undefined)
   const full = (card: Card) => reviewing(card) ? {
     ...summary(card),
     brief: card.brief, done_when: card.doneWhen, quote: card.quote,
     challenge: { state: (card.challenge ?? setOfCard(hub.state, card)?.challenge)?.state, note: 'You are challenging this card (or its change set): its plan, log, conversation and debrief are kept from you. get_challenge_set gives its diff.' },
   } : {
     ...summary(card),
+    ...(inJira(card) ? { jira: inJira(card) } : {}),
     brief: card.brief, done_when: card.doneWhen,
     note: card.noteId ? { id: card.noteId, title: titleOf(hub.state.notes.find((n) => n.id === card.noteId)?.text ?? '') } : undefined,
     quote: card.quote,
@@ -785,7 +789,10 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
 
   server.registerTool('comment_task', { description: 'Leaves a comment on a card.', inputSchema: { id: z.string(), text: z.string() } }, run(async ({ id, text: body }: { id: string; text: string }) => {
     await actions.agentComment(agentId, id, body)
-    return text('Commented.')
+    const card = hub.state.cards.find((c) => c.id === id)
+    const said = card?.activity.findLast((a) => a.by === agentId && a.kind === 'comment')
+    const ask = card && said && jira?.on() ? commentAskOfAgent(jira.settings, card, said) : undefined
+    return text(ask ? `Commented. ${ask}` : 'Commented.')
   }))
 
   server.registerTool('message_agent', {

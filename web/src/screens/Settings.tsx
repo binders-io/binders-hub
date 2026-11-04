@@ -226,7 +226,7 @@ type JiraPointsKind = 'number' | 'option' | 'string'
 const usualPoints = (kind: JiraPointsKind): JiraPoints => (kind === 'number' ? { S: 1, M: 3, L: 5 } : { S: 'S', M: 'M', L: 'L' })
 const pointsKindLabel: Record<JiraPointsKind, string> = { number: 'number', option: 'dropdown', string: 'text' }
 
-type JiraStatus = { on?: boolean; mayManage?: boolean; baseUrl?: string; email?: string; tokenSet?: boolean; hint?: string; noteIssueType?: string; inbound?: Record<string, string>; pointsField?: string; pointsKind?: JiraPointsKind; points?: JiraPoints; sprintBoard?: number; project?: string; issueType?: string; statuses?: Record<string, string>; stages?: string[]; webhook?: { url: string } }
+type JiraStatus = { on?: boolean; mayManage?: boolean; baseUrl?: string; email?: string; tokenSet?: boolean; hint?: string; noteIssueType?: string; inbound?: Record<string, string>; pointsField?: string; pointsKind?: JiraPointsKind; points?: JiraPoints; agentWrites?: boolean; sprintBoard?: number; project?: string; issueType?: string; statuses?: Record<string, string>; stages?: string[]; webhook?: { url: string } }
 
 function JiraPart() {
   const [jira, setJira] = useState<JiraStatus>()
@@ -242,6 +242,7 @@ function JiraPart() {
   const [pointsKind, setPointsKind] = useState<JiraPointsKind>('number')
   const [points, setPoints] = useState<JiraPoints>(usualPoints('number'))
   const [sprintBoard, setSprintBoard] = useState('')
+  const [agentWrites, setAgentWrites] = useState(true)
   const [found, setFound] = useState<JiraFound>()
   const [filled, setFilled] = useState(false)
 
@@ -289,6 +290,7 @@ function JiraPart() {
     setPointsKind(next.pointsKind ?? 'number')
     setPoints(next.points ?? usualPoints(next.pointsKind ?? 'number'))
     setSprintBoard(next.sprintBoard ? String(next.sprintBoard) : '')
+    setAgentWrites(next.agentWrites !== false)
     // Connected before: what Jira has now, for the lists, leaving what's saved as it is.
     if (next.mayManage && next.baseUrl && next.tokenSet) void read(next.project ?? '', '', false, next.baseUrl, next.email ?? '').catch(() => undefined)
   })
@@ -296,7 +298,7 @@ function JiraPart() {
   if (!jira) return null
 
   const save = () => void attempt(() => call('PUT', '/api/jira', {
-    baseUrl, email, ...(token.trim() ? { token } : {}), project, issueType, noteIssueType, statuses, inbound, pointsField, pointsKind, points, sprintBoard: sprintBoard ? Number(sprintBoard) : undefined,
+    baseUrl, email, ...(token.trim() ? { token } : {}), project, issueType, noteIssueType, statuses, inbound, pointsField, pointsKind, points, sprintBoard: sprintBoard ? Number(sprintBoard) : undefined, agentWrites,
   })).then((next) => {
     if (!next) return
     setToken('')
@@ -437,6 +439,10 @@ function JiraPart() {
                 {withSaved(sprintBoards.map((b) => ({ value: String(b.id), label: b.name })), sprintBoard || undefined).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
               {sprintBoard && <span className="field-hint">Once work on a card starts, its issue joins this board’s active sprint. Planning stays in Jira.</span>}
+            </label>
+            <label className="field">
+              <span><input id="jira-agent-writes" type="checkbox" checked={agentWrites} onChange={(e) => setAgentWrites(e.target.checked)} /> Agents make their own changes in Jira</span>
+              <span className="field-hint">An agent with its own Jira connection assigns the issue, moves it and adds its comments, so Jira shows the person it works for. Whatever it hasn’t done after two minutes, this service account does, and comments name who said them.</span>
             </label>
             <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
               <button className="button primary" disabled={!canConnect || !project.trim()}>Save</button>

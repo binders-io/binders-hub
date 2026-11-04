@@ -131,6 +131,12 @@ export function dshPatch(hubUrl: string, model?: string) {
   ].join('\n')
 }
 
+/** Finished, and asked to make its last changes in Jira as the person it works for: its run has a moment left for it. */
+export const finishingInJira = (card: { jira?: string | { finishing?: boolean } }) => typeof card.jira === 'object' && !!card.jira.finishing
+
+/** What a command-line agent is told on doing something: what the hub asks of it in Jira goes with it. */
+export const withJiraAsk = (said: string, card: { jira?: string | { ask?: string } }) => (typeof card.jira === 'object' && card.jira.ask ? `${said}\n\n${card.jira.ask}` : said)
+
 /**
  * The name of Binders' server in an enterprise MCP config, when the config lists one: by its address (this hub's
  * /mcp) or by the name the README gives it. Claude Code then has Binders' tools from the config itself.
@@ -191,6 +197,8 @@ interface CardJSON {
   holder_id?: string
   /** The repo its work is in: its project's. */
   repo?: string
+  /** Its Jira issue: its key from most tools, and with get_task what this agent's asked to do there. finishing: its run has a moment left to do it. */
+  jira?: string | { key: string; ask?: string; finishing?: boolean }
   needs_you?: string
   permission?: { request: string; tool: string; what: string; answer?: 'allow' | 'deny'; by?: string }
   resume?: boolean
@@ -558,9 +566,9 @@ export class Runner {
           const of = Number(args.of)
           return this.call('report_progress', { id: card, doing: words('are you doing'), ...(of >= 0 && of <= 1 ? { progress: of } : {}) }).then(() => 'Noted.')
         }
-        case 'comment': return this.call('comment_task', { id: card, text: words('do you want to say') }).then(() => 'Said.')
+        case 'comment': return this.call<string>('comment_task', { id: card, text: words('do you want to say') }).then((said) => (typeof said === 'string' && said.startsWith('Commented. ') ? `Said. ${said.slice('Commented. '.length)}` : 'Said.'))
         case 'ask': return this.call('ask', { id: card, question: words('do you want to ask') }).then(() => 'Asked. Stop now: you’ll be started again with the answer.')
-        case 'done': return this.call('complete_task', { id: card, summary: words('did you do'), ...(args.pr ? { pull_request: String(args.pr) } : {}) }).then(() => 'Done.')
+        case 'done': return this.call<CardJSON>('complete_task', { id: card, summary: words('did you do'), ...(args.pr ? { pull_request: String(args.pr) } : {}) }).then((now) => withJiraAsk('Done.', now))
         case 'release': return this.call('release_task', { id: card, reason: words('is the reason') }).then(() => 'Given back.')
         case 'message': return this.call('message_agent', { to: String(args.to ?? ''), text: words('do you want to say'), card: args.card ? String(args.card) : undefined })
         case 'run-note': return this.call('write_run_note', { id: card, text: words('did it find') })
@@ -1216,6 +1224,7 @@ export class Runner {
           if (++ticks % 2) return
           void this.call<CardJSON>('get_task', { id: card.id }).then((now) => {
             if (now.stage === 'blocked' && this.holds(now) && !now.needs_you) return stop(`“${card.title}” was put in Blocked: stopping its run until it’s moved back.`)
+            if (finishingInJira(now)) return
             if (now.stage !== 'working' && now.stage !== 'blocked') return stop(`“${card.title}” was taken back: stopping its run.`)
             if (!this.holds(now)) return stop(`“${card.title}” was taken back: stopping its run.`)
             const all = (now.conversation ?? []).filter(people)

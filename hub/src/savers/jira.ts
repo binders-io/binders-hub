@@ -4,7 +4,7 @@ import { linkedNotes, linksAsWords, titleOf, type Note } from '../../../shared/n
 import type { Hub } from '../hub.ts'
 import type { KV } from '../kv.ts'
 import { log } from '../logger.ts'
-import { heardComment, heardStatus, inBinders, stageOf, statusFor, type JiraConnection, type JiraMirror, type JiraSprint } from '../jira.ts'
+import { agentGraceMs, heardComment, heardStatus, inBinders, markOf, stageOf, statusFor, type JiraConnection, type JiraMirror, type JiraSprint } from '../jira.ts'
 
 // Cards mirrored into Jira, the way others are mirrored into GitHub Issues: an edit is one write when the typing
 // pauses, and a stage becomes the transition the binder's map names. What's in Jira is remembered only once Jira has
@@ -50,10 +50,11 @@ interface Timing {
   retryMs?: number
   retries?: number
   pollMs?: number
+  agentGraceMs?: number
 }
 
 /** What's said on a card goes to its issue, unless Jira said it first. */
-const worthSaying = (a: Card['activity'][number]) => (a.kind === 'comment' || a.kind === 'answer' || a.kind === 'question') && !a.by.endsWith(' on Jira')
+const worthSaying = (a: Card['activity'][number]) => (a.kind === 'comment' || a.kind === 'answer' || a.kind === 'question' || a.kind === 'completed') && !a.by.endsWith(' on Jira')
 
 /** Jira may hold a change back for a while before a search finds it: how far back each look goes. */
 const lookBackMinutes = 10
@@ -80,6 +81,7 @@ export class JiraSaver implements JiraMirror {
   private sprint?: JiraSprint
   private sprintAt = 0
   private pollMs: number
+  private agentGraceMs: number
   private quietMs: number
   private retryMs: number
   private retries: number
@@ -93,6 +95,7 @@ export class JiraSaver implements JiraMirror {
     this.retryMs = timing.retryMs ?? 60_000
     this.retries = timing.retries ?? 5
     this.pollMs = timing.pollMs ?? 60_000
+    this.agentGraceMs = timing.agentGraceMs ?? agentGraceMs
   }
 
   private get key() {
@@ -447,14 +450,39 @@ export class JiraSaver implements JiraMirror {
       known.points = points
       this.persist()
     }
-    if (known.stage !== card.stage && known.stuck !== card.stage) await this.moveIssue(card, known)
+    if (known.stage !== card.stage && known.stuck !== card.stage) {
+      // An agent has been asked to make this move as its owner. moveTo finds it done if it has, and makes it if not.
+      const left = this.agentsMoveEnds(card) - Date.now()
+      if (left > 0) this.later(cardId, left)
+      else await this.moveIssue(card, known)
+    }
     await this.joinSprint(card, known)
     for (const said of this.unsaid(card, known)) {
-      const who = this.hub.state.agents.find((a) => a.id === said.by)?.name ?? said.by
-      await jira.addComment(known.id, inBinders(who, said.text))
+      const agent = this.hub.state.agents.find((a) => a.id === said.by)
+      if (agent && jira.settings.agentWrites !== false && (said.kind === 'comment' || said.kind === 'completed')) {
+        const left = Date.parse(said.at) + this.agentGraceMs - Date.now()
+        // In order: what's said after it waits with it.
+        if (left > 0) {
+          this.later(cardId, left)
+          break
+        }
+        if ((await jira.commentTexts(known.id)).some((text) => text.includes(markOf(card.id, said)))) {
+          known.saidUpTo = said.at
+          this.persist()
+          continue
+        }
+      }
+      await jira.addComment(known.id, inBinders(agent ? `${agent.name}, ${agent.owner}’s agent` : said.by, said.text))
       known.saidUpTo = said.at
       this.persist()
     }
+  }
+
+  /** When an agent's time to move its card's issue itself is up: only for what it did, taking the card or finishing it. */
+  private agentsMoveEnds(card: Card) {
+    if (this.jira().settings.agentWrites === false || !card.agentId) return 0
+    const cause = card.activity.findLast((a) => a.kind === 'claimed' || a.kind === 'completed' || a.kind === 'moved' || a.kind === 'merged' || a.kind === 'released')
+    return cause && (cause.kind === 'claimed' || cause.kind === 'completed') && cause.by === card.agentId ? Date.parse(cause.at) + this.agentGraceMs : 0
   }
 
   /** The issue goes to the status its card's stage stands for. The board keeps the stage either way, and says when Jira won't. */

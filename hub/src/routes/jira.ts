@@ -62,7 +62,7 @@ export async function jiraRoutes(app: FastifyInstance, context: Context) {
       return given !== '' && given !== undefined && Number.isFinite(value) && value >= 0 && value <= 100_000 ? value : usualPointsOf(pointsKind)[size]
     }
     const moved = (was.baseUrl && was.baseUrl !== baseUrl) || (was.project && was.project !== body.project!.trim().toUpperCase())
-    const saved = await jira.configure({ baseUrl, email: String(body.email ?? ''), token, project: body.project, issueType: String(body.issueType ?? ''), noteIssueType: typeof body.noteIssueType === 'string' ? body.noteIssueType.slice(0, 100) : undefined, statuses, inbound, pointsField, pointsKind, points: { S: worth('S'), M: worth('M'), L: worth('L') }, sprintBoard: Number.isInteger(body.sprintBoard) && Number(body.sprintBoard) > 0 ? body.sprintBoard : undefined })
+    const saved = await jira.configure({ baseUrl, email: String(body.email ?? ''), token, project: body.project, issueType: String(body.issueType ?? ''), noteIssueType: typeof body.noteIssueType === 'string' ? body.noteIssueType.slice(0, 100) : undefined, statuses, inbound, pointsField, pointsKind, points: { S: worth('S'), M: worth('M'), L: worth('L') }, agentWrites: body.agentWrites !== false, sprintBoard: Number.isInteger(body.sprintBoard) && Number(body.sprintBoard) > 0 ? body.sprintBoard : undefined })
     // Issue ids mean nothing at another address, and could be someone else's issue there.
     if (moved) await binder.jiraIssues?.forget()
     await binder.jiraIssues?.load().catch(() => undefined)
