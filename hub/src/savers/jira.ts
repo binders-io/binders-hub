@@ -4,7 +4,7 @@ import { linkedNotes, linksAsWords, titleOf, type Note } from '../../../shared/n
 import type { Hub } from '../hub.ts'
 import type { KV } from '../kv.ts'
 import { log } from '../logger.ts'
-import { heardComment, heardStatus, inBinders, stageOf, statusFor, type JiraConnection, type JiraMirror } from '../jira.ts'
+import { heardComment, heardStatus, inBinders, stageOf, statusFor, type JiraConnection, type JiraMirror, type JiraSprint } from '../jira.ts'
 
 // Cards mirrored into Jira, the way others are mirrored into GitHub Issues: an edit is one write when the typing
 // pauses, and a stage becomes the transition the binder's map names. What's in Jira is remembered only once Jira has
@@ -26,11 +26,17 @@ interface Mirrored {
   /** The stage whose status Jira wouldn't move it to, and the card's been told: tried again when the stage changes. */
   stuck?: Stage
   /** The points last written. */
-  points?: number
+  points?: number | string
   /** When the last of the card's words to go to Jira were said on the card. */
   saidUpTo?: string
   /** The newest comment heard from Jira. */
   heardUpTo?: number
+  /** The sprint it's in, as far as the hub knows. */
+  sprint?: number
+  /** The sprint Jira wouldn't put it in, and the card's been told. */
+  refusedSprint?: number
+  /** The card's been told the board has no active sprint. */
+  toldNoSprint?: boolean
 }
 
 const noteJob = 'note:'
@@ -52,6 +58,9 @@ const worthSaying = (a: Card['activity'][number]) => (a.kind === 'comment' || a.
 /** Jira may hold a change back for a while before a search finds it: how far back each look goes. */
 const lookBackMinutes = 10
 
+/** How long the board's active sprint is taken as read between looks. */
+const sprintKeptMs = 60_000
+
 export class JiraSaver implements JiraMirror {
   private hub: Hub
   private jira: () => JiraConnection
@@ -68,6 +77,8 @@ export class JiraSaver implements JiraMirror {
   private polling?: NodeJS.Timeout
   /** Whether every issue's been looked at since starting: after that, those changed lately. */
   private scanned = false
+  private sprint?: JiraSprint
+  private sprintAt = 0
   private pollMs: number
   private quietMs: number
   private retryMs: number
@@ -91,6 +102,9 @@ export class JiraSaver implements JiraMirror {
   /** Catches up with the board: cards that are still going, not its history, which stays out of Jira. */
   async load() {
     if (!this.jira().on()) return
+    // The board may be another one now.
+    this.sprint = undefined
+    this.sprintAt = 0
     // What this hub already holds is newer than what it last wrote down.
     const raw = this.issues.size ? undefined : await this.kv.get(this.key).catch(() => undefined)
     if (raw) {
@@ -126,6 +140,8 @@ export class JiraSaver implements JiraMirror {
     this.issues.clear()
     this.epics.clear()
     this.scanned = false
+    this.sprint = undefined
+    this.sprintAt = 0
     await this.queue.catch(() => undefined)
     this.issues.clear()
     this.epics.clear()
@@ -168,7 +184,66 @@ export class JiraSaver implements JiraMirror {
     if (!known) return card.stage !== 'live'
     if (known.gone) return false
     const points = this.jira().pointsOf(card.size)
-    return known.hash !== this.hashOf(card) || (known.stage !== card.stage && known.stuck !== card.stage) || this.wantsParent(card, known) || (points !== undefined && known.points !== points) || this.unsaid(card, known).length > 0
+    return known.hash !== this.hashOf(card) || (known.stage !== card.stage && known.stuck !== card.stage) || this.wantsParent(card, known) || (points !== undefined && known.points !== points) || this.wantsSprint(card, known) || this.unsaid(card, known).length > 0
+  }
+
+  /**
+   * Whether the issue belongs in the active sprint and isn't there. Work going on follows into each new sprint. Finished
+   * work joins only if it finished during this one and has no sprint yet: a sprint's numbers aren't for what came before.
+   */
+  private wantsSprint(card: Card, known: Mirrored) {
+    const { sprint } = this
+    if (!sprint || !this.jira().settings.sprintBoard || known.sprint === sprint.id || known.refusedSprint === sprint.id) return false
+    if (card.stage === 'live') return known.sprint === undefined && !!sprint.startDate && Date.parse(card.updatedAt) >= Date.parse(sprint.startDate)
+    return card.stage !== 'ready' && card.stage !== 'proposed'
+  }
+
+  private async readSprint(force = false) {
+    const jira = this.jira()
+    if (!jira.settings.sprintBoard) {
+      this.sprint = undefined
+      return
+    }
+    if (!force && Date.now() - this.sprintAt < sprintKeptMs) return
+    // A board that won't say is as good as it was: the next look asks again.
+    await jira.activeSprint().then((sprint) => {
+      this.sprint = sprint
+      this.sprintAt = Date.now()
+    }, (error: Error) => log.warn({ binder: this.space, why: error.message }, 'Couldn’t read the board’s active sprint'))
+  }
+
+  /** Puts the issue in the board's active sprint once work on it has started. Sprints themselves are Jira's to plan. */
+  private async joinSprint(card: Card, known: Mirrored) {
+    const jira = this.jira()
+    if (!jira.settings.sprintBoard) return
+    await this.readSprint()
+    const { sprint } = this
+    if (!sprint) {
+      if (!known.toldNoSprint && card.stage !== 'ready' && card.stage !== 'proposed' && card.stage !== 'live') {
+        known.toldNoSprint = true
+        this.persist()
+        await this.say(card, `The board has no active sprint, so ${known.key} stays in the backlog until one starts.`)
+      }
+      return
+    }
+    if (!this.wantsSprint(card, known)) return
+    try {
+      const now = await jira.sprintsOf(known.id)
+      // Already there, or finished and already counted in a sprint: where it is stands.
+      if (now.current === sprint.id || (card.stage === 'live' && (now.current !== undefined || now.closed))) {
+        known.sprint = now.current ?? sprint.id
+      } else {
+        await jira.addToSprint(sprint.id, known.id)
+        known.sprint = sprint.id
+        await this.say(card, `${known.key} joined ${sprint.name}.`)
+      }
+      delete known.toldNoSprint
+    } catch (error) {
+      if (!/^Jira said (400|403)/.test((error as Error).message)) throw error
+      known.refusedSprint = sprint.id
+      await this.say(card, `Jira wouldn’t put ${known.key} in ${sprint.name}: ${(error as Error).message.slice(0, 200)}`)
+    }
+    this.persist()
   }
 
   private unsaid(card: Card, known: Mirrored) {
@@ -373,6 +448,7 @@ export class JiraSaver implements JiraMirror {
       this.persist()
     }
     if (known.stage !== card.stage && known.stuck !== card.stage) await this.moveIssue(card, known)
+    await this.joinSprint(card, known)
     for (const said of this.unsaid(card, known)) {
       const who = this.hub.state.agents.find((a) => a.id === said.by)?.name ?? said.by
       await jira.addComment(known.id, inBinders(who, said.text))
@@ -430,6 +506,10 @@ export class JiraSaver implements JiraMirror {
   private async look() {
     const jira = this.jira()
     if (!jira.on() || this.stopped || !this.issues.size) return
+    // A sprint that's just started takes in the work going on.
+    const before = this.sprint?.id
+    await this.readSprint(true)
+    if (this.sprint && this.sprint.id !== before) for (const card of this.hub.state.cards) if (this.behind(card)) this.later(card.id, 0)
     const found = await jira.recent(this.scanned ? lookBackMinutes : undefined)
     this.scanned = true
     const at = new Date().toISOString()

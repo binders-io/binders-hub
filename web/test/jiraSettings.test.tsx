@@ -17,7 +17,7 @@ const epic = { name: 'Epic', level: 1, statuses: [], suggested: { statuses: {}, 
 const discovered = {
   who: 'Binders Saver',
   projects: [{ key: 'BIND', name: 'Binders' }],
-  project: { key: 'BIND', name: 'Binders', types: [epic, story, task], suggested: { noteIssueType: 'Epic', issueType: 'Story' } },
+  project: { key: 'BIND', name: 'Binders', sprintBoards: [{ id: 9, name: 'Team board' }], sprintBoard: 9, pointFields: [{ id: 'customfield_10016', name: 'Story Points', kind: 'number' }, { id: 'customfield_10600', name: 'T-shirt', kind: 'option' }], types: [epic, story, task], suggested: { noteIssueType: 'Epic', issueType: 'Story' } },
 }
 
 function jiraAnswering(saved: object) {
@@ -55,15 +55,19 @@ describe('connecting a binder to Jira', () => {
     expect(value('jira-card-type')).toBe('Story')
     expect(value('jira-stage-working')).toBe('Building')
     expect(value('jira-stage-blocked')).toBe('')
+    expect(value('jira-sprint-board')).toBe('9')
     screen.getByText(/Nothing in this workflow looks like blocked/)
 
     fireEvent.change(document.getElementById('jira-card-type')!, { target: { value: 'Task' } })
     expect(value('jira-stage-ready')).toBe('Open')
     fireEvent.change(document.getElementById('jira-card-type')!, { target: { value: 'Story' } })
+    fireEvent.change(document.getElementById('jira-points-field')!, { target: { value: 'customfield_10600' } })
+    expect(value('jira-points-M')).toBe('M')
+    fireEvent.change(document.getElementById('jira-points-M')!, { target: { value: 'Medium' } })
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(sent.some((s) => s.method === 'PUT')).toBe(true))
-    expect(sent.find((s) => s.method === 'PUT')!.body).toMatchObject({ project: 'BIND', issueType: 'Story', noteIssueType: 'Epic', statuses: story.suggested.statuses })
+    expect(sent.find((s) => s.method === 'PUT')!.body).toMatchObject({ project: 'BIND', issueType: 'Story', noteIssueType: 'Epic', statuses: story.suggested.statuses, sprintBoard: 9, pointsField: 'customfield_10600', pointsKind: 'option', points: { S: 'S', M: 'Medium', L: 'L' } })
   })
 
   it('leaves a saved mapping as it is on opening, until a person asks Jira to fill it in again', async () => {

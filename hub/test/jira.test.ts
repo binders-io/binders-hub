@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net'
 import Fastify from 'fastify'
 import { Actions } from '../src/actions.ts'
 import { Auth } from '../src/auth.ts'
-import { suggestStatuses, suggestTypes, handleWebhook, jiraAddress, JiraConnection, stageOf } from '../src/jira.ts'
+import { suggestStatuses, suggestTypes, handleWebhook, jiraAddress, JiraConnection, stageOf, fieldsForPoints } from '../src/jira.ts'
 import { GitHubConnection } from '../src/githubConnection.ts'
 import { Sealer } from '../src/secrets.ts'
 import { Hub } from '../src/hub.ts'
@@ -38,9 +38,12 @@ interface FakeIssue {
   [field: string]: unknown
 }
 
-async function fakeJira(options: { refuseWrites?: () => boolean; refuseSearch?: () => boolean; refuseParent?: () => boolean; epicName?: boolean; workflow?: Record<string, string[]>; refuseMoveTo?: string; refusePoints?: boolean } = {}) {
+async function fakeJira(options: { refuseWrites?: () => boolean; refuseSearch?: () => boolean; refuseParent?: () => boolean; epicName?: boolean; workflow?: Record<string, string[]>; refuseMoveTo?: string; refusePoints?: boolean; refuseSprint?: boolean } = {}) {
   const calls: { method: string; path: string; body?: unknown }[] = []
   const issues = new Map<string, FakeIssue>()
+  let active: { id: number; name: string; startDate: string } | undefined
+  const sprintOf = new Map<string, number>()
+  const closedIn = new Set<string>()
   const statuses = ['To Do', 'In Progress', 'Done']
   let ids = 100
   const app = Fastify()
@@ -92,7 +95,30 @@ async function fakeJira(options: { refuseWrites?: () => boolean; refuseSearch?: 
     ;(one.comments ??= []).push({ body: (request.body as { body: unknown }).body, created: new Date().toISOString(), author: { displayName: 'Binders Saver', accountId: account } })
     return { id: '1' }
   })
-  app.get('/rest/api/3/field', async () => [{ id: 'customfield_10016', name: 'Story Points' }, { id: 'summary', name: 'Summary' }])
+  app.get('/rest/agile/1.0/board', async () => ({ values: [{ id: 7, name: 'Flow', type: 'kanban' }, { id: 8, name: 'No sprints here', type: 'simple' }, { id: 9, name: 'Team board', type: 'simple' }] }))
+  app.get('/rest/agile/1.0/board/:id/sprint', async (request, reply) => {
+    if ((request.params as { id: string }).id === '8') return reply.code(400).send({ errorMessages: ['This board doesn’t support sprints.'] })
+    return { values: active ? [{ ...active, state: 'active' }] : [] }
+  })
+  app.get('/rest/agile/1.0/issue/:id', async (request) => {
+    const { id } = request.params as { id: string }
+    return { id, fields: { sprint: sprintOf.has(id) ? { id: sprintOf.get(id) } : null, closedSprints: closedIn.has(id) ? [{ id: 1 }] : null } }
+  })
+  app.post('/rest/agile/1.0/sprint/:id/issue', async (request, reply) => {
+    if (options.refuseSprint) return reply.code(403).send({ errorMessages: ['You can’t schedule issues.'] })
+    for (const id of (request.body as { issues: string[] }).issues) sprintOf.set(id, Number((request.params as { id: string }).id))
+    return reply.code(204).send()
+  })
+  app.get('/rest/api/3/field', async () => [
+    { id: 'summary', name: 'Summary', schema: { type: 'string', system: 'summary' } },
+    { id: 'customfield_10600', name: 'T-shirt', schema: { type: 'option' } },
+    { id: 'customfield_10500', name: 'Complexity', schema: { type: 'number' } },
+    { id: 'customfield_10016', name: 'Story Points', schema: { type: 'number' } },
+    { id: 'customfield_10020', name: 'Sprint', schema: { type: 'array' } },
+    { id: 'customfield_10700', name: 'Sizing note', schema: { type: 'string', custom: 'com.atlassian.jira.plugin.system.customfieldtypes:textfield' } },
+    { id: 'customfield_10701', name: 'Long note', schema: { type: 'string', custom: 'com.atlassian.jira.plugin.system.customfieldtypes:textarea' } },
+    { id: 'customfield_10800', name: 'Another project’s', schema: { type: 'number' }, scope: { type: 'PROJECT', project: { id: 'not-this-one' } } },
+  ])
   app.get('/rest/api/3/search', async (_request, reply) => reply.code(410).send({ errorMessages: ['This API has been removed.'] }))
   app.get('/rest/api/3/search/jql', async (request, reply) => {
     if (options.refuseSearch?.()) return reply.code(503).send({})
@@ -104,7 +130,7 @@ async function fakeJira(options: { refuseWrites?: () => boolean; refuseSearch?: 
     return { issues: [...issues.entries()].filter(([, one]) => one.labels?.includes(label) && one.project === project).map(([id, one]) => ({ id, key: one.key })) }
   })
   app.get('/rest/api/3/project/search', async () => ({ isLast: true, values: [{ key: 'BIND', name: 'Binders', id: '1' }, { key: 'OPS', name: 'Operations', id: '2' }] }))
-  app.get('/rest/api/3/project/:key', async () => ({ issueTypes: [
+  app.get('/rest/api/3/project/:key', async () => ({ id: 'this-one', issueTypes: [
     { name: 'Epic', hierarchyLevel: 1, subtask: false }, { name: 'Task', hierarchyLevel: 0, subtask: false }, { name: 'Story', hierarchyLevel: 0, subtask: false }, { name: 'Sub-task', hierarchyLevel: -1, subtask: true },
   ] }))
   app.get('/rest/api/3/project/:key/statuses', async () => {
@@ -117,7 +143,7 @@ async function fakeJira(options: { refuseWrites?: () => boolean; refuseSearch?: 
   })
   app.get('/rest/api/3/myself', async () => ({ accountId: account, displayName: 'Binders Saver', emailAddress: 'binders@example.test' }))
   await app.listen({ port: 0, host: '127.0.0.1' })
-  return { url: `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`, calls, issues, close: () => app.close() }
+  return { url: `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`, calls, issues, sprintOf, closedIn, start: (id: number, name: string, startDate = new Date(Date.now() - 86_400_000).toISOString()) => { active = { id, name, startDate } }, end: () => { active = undefined }, close: () => app.close() }
 }
 
 async function setUp(fakeOptions: Parameters<typeof fakeJira>[0] = {}, statuses = {}) {
@@ -562,6 +588,149 @@ describe('Jira talking back', () => {
     }
   })
 
+  it('puts an issue in the active sprint once work on it starts, once, and leaves ready ones to the people planning', async () => {
+    const set = await setUp()
+    try {
+      await set.jira.configure({ ...set.jira.settings, sprintBoard: 9 })
+      set.fake.start(40, 'Sprint 12')
+      await set.card('card-sprint')
+      await mirrored(set)
+      await settled()
+      assert.equal(set.fake.sprintOf.size, 0, 'only ready: it stays in the backlog')
+      await set.edit('card-sprint', { stage: 'working' })
+      await until(() => set.fake.sprintOf.get('101') === 40, 4000)
+      await until(() => !!set.stored('card-sprint')?.activity.some((a) => a.text === 'BIND-101 joined Sprint 12.'), 4000)
+      const adds = () => set.fake.calls.filter((c) => c.method === 'POST' && c.path.endsWith('/issue') && c.path.includes('/sprint/')).length
+      assert.equal(adds(), 1)
+      await set.edit('card-sprint', { stage: 'review' })
+      await settled()
+      assert.equal(adds(), 1, 'it’s already there')
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('says when there’s no active sprint, and takes the work in when one starts, into the next as well', async () => {
+    const set = await setUp()
+    try {
+      await set.jira.configure({ ...set.jira.settings, sprintBoard: 9 })
+      await set.card('card-wait', 'working')
+      await mirrored(set)
+      await until(() => !!set.stored('card-wait')?.activity.some((a) => /no active sprint, so BIND-101 stays in the backlog/.test(a.text)), 4000)
+      await set.edit('card-wait', { title: 'Another title' })
+      await settled()
+      assert.equal(set.stored('card-wait')!.activity.filter((a) => /no active sprint/.test(a.text)).length, 1)
+
+      set.fake.start(40, 'Sprint 12')
+      await set.saver.poll()
+      await until(() => set.fake.sprintOf.get('101') === 40, 4000)
+      set.fake.start(41, 'Sprint 13')
+      await set.saver.poll()
+      await until(() => set.fake.sprintOf.get('101') === 41, 4000)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('keeps a sprint to the work that finished during it', async () => {
+    const set = await setUp()
+    try {
+      await set.jira.configure({ ...set.jira.settings, sprintBoard: 9 })
+      await set.card('card-done')
+      await mirrored(set)
+      await settled()
+      await set.edit('card-done', { stage: 'live' })
+      await settled()
+
+      // It finished after this sprint started: it joins.
+      set.fake.start(40, 'Sprint 12')
+      await set.saver.poll()
+      await until(() => set.fake.sprintOf.get('101') === 40, 4000)
+
+      // A later sprint doesn't take it from that one.
+      set.fake.start(41, 'Sprint 13', new Date(Date.now() + 60_000).toISOString())
+      await set.saver.poll()
+      await settled()
+      assert.equal(set.fake.sprintOf.get('101'), 40)
+
+      // Nor does one that started after it finished, with no sprint before.
+      await set.card('card-old')
+      await mirrored(set, 2)
+      await settled()
+      await set.edit('card-old', { stage: 'live' })
+      await settled()
+      assert.equal(set.fake.sprintOf.has('102'), false)
+
+      // Nor one it's already been through.
+      set.fake.start(42, 'Sprint 14')
+      set.fake.closedIn.add('102')
+      await set.saver.poll()
+      await settled()
+      assert.equal(set.fake.sprintOf.has('102'), false)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('says when Jira won’t have it in the sprint, and doesn’t ask again for that sprint', async () => {
+    const set = await setUp({ refuseSprint: true })
+    try {
+      await set.jira.configure({ ...set.jira.settings, sprintBoard: 9 })
+      set.fake.start(40, 'Sprint 12')
+      await set.card('card-no', 'working')
+      await until(() => !!set.stored('card-no')?.activity.some((a) => /wouldn’t put BIND-101 in Sprint 12: Jira said 403/.test(a.text)), 4000)
+      const adds = () => set.fake.calls.filter((c) => c.method === 'POST' && c.path.includes('/sprint/')).length
+      const was = adds()
+      await set.edit('card-no', { title: 'Another title' })
+      await settled()
+      assert.equal(adds(), was)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('leaves sprints alone with no board chosen', async () => {
+    const set = await setUp()
+    try {
+      set.fake.start(40, 'Sprint 12')
+      await set.card('card-none', 'working')
+      await mirrored(set)
+      await settled()
+      await set.saver.poll()
+      assert.ok(!set.fake.calls.some((c) => c.path.startsWith('/rest/agile')))
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('writes a card’s size into a custom field of any kind the binder picks', async () => {
+    const value = (set: Set_) => (set.fake.issues.get('101') as unknown as Record<string, unknown> | undefined)
+    const set = await setUp()
+    try {
+      await set.jira.configure({ ...set.jira.settings, pointsField: 'customfield_10600', pointsKind: 'option', points: { S: 'Small', M: 'Medium', L: 'Large' } })
+      await set.card('card-sized')
+      await until(() => JSON.stringify(value(set)?.customfield_10600) === '{"value":"Medium"}', 4000)
+      await set.edit('card-sized', { size: 'L' })
+      await until(() => JSON.stringify(value(set)?.customfield_10600) === '{"value":"Large"}', 4000)
+    } finally {
+      await set.close()
+    }
+    const text = await setUp()
+    try {
+      await text.jira.configure({ ...text.jira.settings, pointsField: 'customfield_10700', pointsKind: 'string', points: { S: 'S', M: 'M', L: 'L' } })
+      await text.card('card-sized')
+      await until(() => value(text)?.customfield_10700 === 'M', 4000)
+    } finally {
+      await text.close()
+    }
+  })
+
+  it('suggests a number field that says it’s points when Jira’s own isn’t there, and doesn’t guess past that', () => {
+    const number = { type: 'number' }
+    assert.deepEqual(fieldsForPoints([{ id: 'customfield_1', name: 'Team Points', schema: number }, { id: 'customfield_2', name: 'Story Points', schema: number }]).map((f) => f.id), ['customfield_2', 'customfield_1'], 'Jira’s own comes first')
+    assert.deepEqual(fieldsForPoints([{ id: 'customfield_3', name: 'Mine', schema: number, scope: { project: { id: 'a' } } }], 'b'), [], 'another project’s isn’t offered')
+  })
+
   it('lands comments as from Jira, once each, in either of Jira’s formats', async () => {
     const set = await setUp()
     try {
@@ -664,7 +833,14 @@ describe('a binder’s Jira settings', () => {
       assert.deepEqual(story.suggested.statuses, { ready: 'Backlog', working: 'Building', blocked: 'On Hold', review: 'Peer Review', live: 'Shipped' })
       assert.deepEqual(story.suggested.inbound, { Selected: 'ready' })
       assert.equal(story.suggested.pointsField, 'customfield_10016')
-      assert.deepEqual(project.pointFields, [{ id: 'customfield_10016', name: 'Story Points' }])
+      assert.deepEqual(project.pointFields, [
+        { id: 'customfield_10016', name: 'Story Points', kind: 'number' },
+        { id: 'customfield_10500', name: 'Complexity', kind: 'number' },
+        { id: 'customfield_10600', name: 'T-shirt', kind: 'option' },
+        { id: 'customfield_10700', name: 'Sizing note', kind: 'string' },
+      ])
+      assert.deepEqual(project.sprintBoards, [{ id: 9, name: 'Team board' }], 'only boards that have sprints')
+      assert.equal(project.sprintBoard, 9)
       assert.equal(JSON.stringify(set.jira.settings), before)
       assert.ok(!JSON.stringify(project).includes('tok-ab'))
 

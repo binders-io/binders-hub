@@ -30,13 +30,22 @@ export interface JiraSettings {
   statuses?: StageStatuses
   /** The stage each other status of the workflow counts as when someone moves an issue there: an issue only goes to `statuses`. */
   inbound?: Record<string, Stage>
-  /** The field an issue's points go in, as Jira names it (customfield_10016), and what each size of card is worth. Unset: points are left alone. */
+  /** The field an issue's points go in, as Jira names it (customfield_10016), what sort of field, and what each size of card is in it. Unset: points are left alone. */
   pointsField?: string
-  points?: Record<Card['size'], number>
+  pointsKind?: PointsKind
+  points?: Record<Card['size'], number | string>
+  /** The board whose active sprint an issue joins once work on it starts. Unset: sprints are left alone. */
+  sprintBoard?: number
   on?: boolean
 }
 
+/** The sorts of custom field a card's size can go in: a number, a dropdown's option, or a line of text. */
+export type PointsKind = 'number' | 'option' | 'string'
+
 export const usualPoints: Record<Card['size'], number> = { S: 1, M: 3, L: 5 }
+
+/** What a size is in a field of this kind until someone says otherwise: 1, 3, 5, or the size's own letter. */
+export const usualPointsOf = (kind: PointsKind): Record<Card['size'], number | string> => (kind === 'number' ? usualPoints : { S: 'S', M: 'M', L: 'L' })
 
 /** The stages a Jira issue can stand for: a proposed card has no issue yet. */
 export const stages: Stage[] = ['ready', 'working', 'blocked', 'review', 'live']
@@ -77,7 +86,8 @@ export interface JiraCredentials {
 }
 
 async function jiraCall<T>(who: JiraCredentials, path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
-  const response = await fetch(`${who.baseUrl}/rest/api/3${path}`, {
+  // Sprints are the one part of Jira under another API.
+  const response = await fetch(`${who.baseUrl}${path.startsWith('/rest/') ? path : `/rest/api/3${path}`}`, {
     method: init.method ?? 'GET',
     // The token goes to the address that was set, not wherever that address points next.
     redirect: 'error',
@@ -140,7 +150,9 @@ export class JiraConnection {
       statuses: tidyStatuses(fields.statuses),
       inbound: fields.inbound && Object.keys(fields.inbound).length ? fields.inbound : undefined,
       pointsField: fields.pointsField?.trim() || undefined,
-      points: fields.pointsField?.trim() ? fields.points ?? usualPoints : undefined,
+      pointsKind: fields.pointsField?.trim() ? fields.pointsKind ?? 'number' : undefined,
+      points: fields.pointsField?.trim() ? fields.points ?? usualPointsOf(fields.pointsKind ?? 'number') : undefined,
+      sprintBoard: fields.sprintBoard,
       on: fields.on !== false && !!baseUrl && !!email && !!token && !!project,
     }
     await this.kv.set(`${this.key}:settings`, JSON.stringify({ ...this.settings, token: undefined, sealed: token ? this.sealer.seal(token) : undefined }))
@@ -298,15 +310,33 @@ export class JiraConnection {
 
   /** The points an issue of this size is worth, when the binder has a field for them. */
   pointsOf(size: Card['size']) {
-    return this.settings.pointsField ? (this.settings.points ?? usualPoints)[size] : undefined
+    return this.settings.pointsField ? (this.settings.points ?? usualPointsOf(this.settings.pointsKind ?? 'number'))[size] : undefined
   }
 
-  async setPoints(id: string, points: number) {
-    await this.call(`/issue/${encodeURIComponent(id)}`, { method: 'PUT', body: { fields: { [this.settings.pointsField!]: points } } })
+  async setPoints(id: string, points: number | string) {
+    const kind = this.settings.pointsKind ?? 'number'
+    const value = kind === 'option' ? { value: String(points) } : kind === 'number' ? Number(points) : String(points)
+    await this.call(`/issue/${encodeURIComponent(id)}`, { method: 'PUT', body: { fields: { [this.settings.pointsField!]: value } } })
   }
 
   async addComment(id: string, text: string) {
     await this.call(`/issue/${encodeURIComponent(id)}/comment`, { method: 'POST', body: { body: this.adf(text.slice(0, 30_000)) } })
+  }
+
+  /** The board's active sprint, the latest to start if it runs several. */
+  async activeSprint(): Promise<JiraSprint | undefined> {
+    const { values = [] } = await this.call<{ values?: JiraSprint[] }>(`/rest/agile/1.0/board/${this.settings.sprintBoard}/sprint?state=active&maxResults=50`)
+    return values.sort((a, b) => (Date.parse(b.startDate ?? '') || 0) - (Date.parse(a.startDate ?? '') || 0))[0]
+  }
+
+  /** The sprint an issue is in now, and whether it's been through any that closed. */
+  async sprintsOf(id: string) {
+    const { fields } = await this.call<{ fields?: { sprint?: { id: number } | null; closedSprints?: unknown[] | null } }>(`/rest/agile/1.0/issue/${encodeURIComponent(id)}?fields=sprint,closedSprints`)
+    return { current: fields?.sprint?.id, closed: !!fields?.closedSprints?.length }
+  }
+
+  async addToSprint(sprintId: number, id: string) {
+    await this.call(`/rest/agile/1.0/sprint/${sprintId}/issue`, { method: 'POST', body: { issues: [id] } })
   }
 
   /** Whether this project's workflow for cards has a status of this name: going through others to one it doesn't would only wander. */
@@ -383,6 +413,12 @@ interface JiraTransition {
   id: string
   name?: string
   to?: { name?: string; statusCategory?: { key?: string } }
+}
+
+export interface JiraSprint {
+  id: number
+  name: string
+  startDate?: string
 }
 
 export interface JiraComment {
@@ -495,6 +531,31 @@ export function suggestTypes(types: JiraTypeInfo[]) {
   }
 }
 
+interface JiraField {
+  id: string
+  name: string
+  schema?: { type?: string; custom?: string }
+  scope?: { project?: { id?: string } }
+}
+
+const looksStoryPoints = /^story points?( estimate)?$/i
+
+/**
+ * The custom fields a card's size can go in, most likely first. A team-managed project's fields are its own, so another
+ * project's are left off. Long text isn't here: Jira wants a whole document in those.
+ */
+export function fieldsForPoints(fields: JiraField[], projectId?: string) {
+  const kindOf = (f: JiraField): PointsKind | undefined => (f.schema?.type === 'number' ? 'number' : f.schema?.type === 'option' ? 'option' : f.schema?.type === 'string' && f.schema.custom?.endsWith(':textfield') ? 'string' : undefined)
+  const rank = (f: { name: string; kind: PointsKind }) => (looksStoryPoints.test(f.name) ? 0 : { number: 1, option: 2, string: 3 }[f.kind])
+  return fields
+    .filter((f) => /^customfield_\d+$/.test(f.id) && (!f.scope?.project?.id || !projectId || f.scope.project.id === projectId))
+    .flatMap((f) => {
+      const kind = kindOf(f)
+      return kind ? [{ id: f.id, name: f.name, kind }] : []
+    })
+    .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
+}
+
 /** What the service account can see, and for a project (the one asked for, or the only one) what it has and what to map it to. */
 export async function discoverJira(who: JiraCredentials, wanted?: string) {
   const me = await jiraCall<{ displayName?: string; emailAddress?: string }>(who, '/myself').catch((error: Error) => {
@@ -515,12 +576,13 @@ export async function discoverJira(who: JiraCredentials, wanted?: string) {
   if (!chosen) return found
   const key = encodeURIComponent(chosen.key)
   const [detail, byType, fields] = await Promise.all([
-    jiraCall<{ issueTypes?: { id?: string; name: string; subtask?: boolean; hierarchyLevel?: number }[] }>(who, `/project/${key}`),
+    jiraCall<{ id?: string; issueTypes?: { id?: string; name: string; subtask?: boolean; hierarchyLevel?: number }[] }>(who, `/project/${key}`),
     jiraCall<{ name: string; subtask?: boolean; statuses?: { name: string; statusCategory?: { key?: string } }[] }[]>(who, `/project/${key}/statuses`),
     // Only points need these: a Jira that won't say leaves them to be set by hand.
-    jiraCall<{ id: string; name: string }[]>(who, '/field').catch(() => []),
+    jiraCall<JiraField[]>(who, '/field').catch(() => [] as JiraField[]),
   ])
-  const pointFields = fields.filter((f) => /^story points?( estimate)?$/i.test(f.name)).map(({ id, name }) => ({ id, name }))
+  const pointFields = fieldsForPoints(fields, detail.id)
+  const storyPoints = pointFields.filter((f) => looksStoryPoints.test(f.name))
   const levelOf = (name: string, level?: number) => level ?? (/^(epic|feature)$/i.test(name) ? 1 : 0)
   const listed = (detail.issueTypes ?? []).filter((t) => !t.subtask && levelOf(t.name, t.hierarchyLevel) >= 0)
   const types = listed.map((t): JiraTypeInfo => ({
@@ -528,15 +590,25 @@ export async function discoverJira(who: JiraCredentials, wanted?: string) {
     level: levelOf(t.name, t.hierarchyLevel),
     statuses: (byType.find((b) => b.name === t.name)?.statuses ?? []).map((s) => ({ name: s.name, category: s.statusCategory?.key })),
   }))
-  // A project usually has one of them. Where it has both, the one on the type's screen is the one its board adds up.
+  // A project usually has one of Jira's own. Where it has both, the one on the type's screen is the one its board adds up.
+  // With neither, a number field that says it's points or an estimate. Anything less sure is a person's to pick.
+  const fallback = pointFields.find((f) => f.kind === 'number' && /\bpoints?\b|estimate/i.test(f.name))?.id
   const pointsOfType = async (type: { id?: string; hierarchyLevel?: number; name: string }) => {
-    if (pointFields.length < 2 || !type.id || levelOf(type.name, type.hierarchyLevel) !== 0) return pointFields[0]?.id
+    if (storyPoints.length === 0) return fallback
+    if (storyPoints.length < 2 || !type.id || levelOf(type.name, type.hierarchyLevel) !== 0) return storyPoints[0].id
     const screen = await jiraCall<{ fields?: { fieldId?: string }[]; values?: { fieldId?: string }[] }>(who, `/issue/createmeta/${key}/issuetypes/${encodeURIComponent(type.id)}?maxResults=200`).catch(() => undefined)
     const on = [...(screen?.fields ?? []), ...(screen?.values ?? [])].map((f) => f.fieldId)
-    return (pointFields.find((f) => on.includes(f.id)) ?? pointFields[0]).id
+    return (storyPoints.find((f) => on.includes(f.id)) ?? storyPoints[0]).id
   }
   const points = await Promise.all(listed.map(pointsOfType))
-  return { ...found, project: { ...chosen, pointFields, types: types.map((t, i) => ({ ...t, suggested: { ...suggestStatuses(t.statuses), pointsField: points[i] } })), suggested: suggestTypes(types) } }
+  // A board has sprints if asking for them works: a team-managed project's says neither scrum nor kanban.
+  const { values: boards = [] } = await jiraCall<{ values?: { id: number; name: string; type?: string }[] }>(who, `/rest/agile/1.0/board?projectKeyOrId=${key}&maxResults=50`).catch(() => ({ values: [] }))
+  const sprintBoards = (await Promise.all(boards.filter((b) => b.type !== 'kanban').slice(0, 10).map(async ({ id, name, type }) => {
+    const works = await jiraCall(who, `/rest/agile/1.0/board/${id}/sprint?maxResults=1`).then(() => true, () => false)
+    return works ? { id, name, type } : undefined
+  }))).filter((b) => !!b)
+  const sprintBoard = (sprintBoards.find((b) => b.type === 'scrum') ?? sprintBoards[0])?.id
+  return { ...found, project: { ...chosen, pointFields, sprintBoards: sprintBoards.map(({ id, name }) => ({ id, name })), sprintBoard, types: types.map((t, i) => ({ ...t, suggested: { ...suggestStatuses(t.statuses), pointsField: points[i] } })), suggested: suggestTypes(types) } }
 }
 
 export function tidyStatuses(statuses: StageStatuses | undefined): StageStatuses {

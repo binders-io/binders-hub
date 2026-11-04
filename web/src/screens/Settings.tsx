@@ -221,10 +221,12 @@ function AgentsPart() {
   )
 }
 
-type JiraPoints = { S: number; M: number; L: number }
-const usualPoints: JiraPoints = { S: 1, M: 3, L: 5 }
+type JiraPoints = { S: number | string; M: number | string; L: number | string }
+type JiraPointsKind = 'number' | 'option' | 'string'
+const usualPoints = (kind: JiraPointsKind): JiraPoints => (kind === 'number' ? { S: 1, M: 3, L: 5 } : { S: 'S', M: 'M', L: 'L' })
+const pointsKindLabel: Record<JiraPointsKind, string> = { number: 'number', option: 'dropdown', string: 'text' }
 
-type JiraStatus = { on?: boolean; mayManage?: boolean; baseUrl?: string; email?: string; tokenSet?: boolean; hint?: string; noteIssueType?: string; inbound?: Record<string, string>; pointsField?: string; points?: JiraPoints; project?: string; issueType?: string; statuses?: Record<string, string>; stages?: string[]; webhook?: { url: string } }
+type JiraStatus = { on?: boolean; mayManage?: boolean; baseUrl?: string; email?: string; tokenSet?: boolean; hint?: string; noteIssueType?: string; inbound?: Record<string, string>; pointsField?: string; pointsKind?: JiraPointsKind; points?: JiraPoints; sprintBoard?: number; project?: string; issueType?: string; statuses?: Record<string, string>; stages?: string[]; webhook?: { url: string } }
 
 function JiraPart() {
   const [jira, setJira] = useState<JiraStatus>()
@@ -237,22 +239,32 @@ function JiraPart() {
   const [statuses, setStatuses] = useState<Record<string, string>>({})
   const [inbound, setInbound] = useState<Record<string, string>>({})
   const [pointsField, setPointsField] = useState('')
-  const [points, setPoints] = useState<JiraPoints>(usualPoints)
+  const [pointsKind, setPointsKind] = useState<JiraPointsKind>('number')
+  const [points, setPoints] = useState<JiraPoints>(usualPoints('number'))
+  const [sprintBoard, setSprintBoard] = useState('')
   const [found, setFound] = useState<JiraFound>()
   const [filled, setFilled] = useState(false)
 
+  /** A field for a card's size: what each size is in it starts over when the sort of field changes. */
+  const pickPoints = (id: string, fields: JiraPointField[] | undefined) => {
+    const kind = fields?.find((f) => f.id === id)?.kind ?? 'number'
+    setPointsField(id)
+    if (kind !== pointsKind) setPoints(usualPoints(kind))
+    setPointsKind(kind)
+  }
   /** Fills the mapping in with what Jira suggests for a card type. */
-  const fillStages = (type: JiraFoundType | undefined) => {
+  const fillStages = (type: JiraFoundType | undefined, fields?: JiraPointField[]) => {
     setStatuses(type?.suggested.statuses ?? {})
     setInbound(type?.suggested.inbound ?? {})
-    setPointsField(type?.suggested.pointsField ?? '')
+    pickPoints(type?.suggested.pointsField ?? '', fields)
   }
   const fill = (next: NonNullable<JiraFound['project']>) => {
     const cards = next.suggested.issueType ?? next.types[0]?.name ?? ''
     setProject(next.key)
     setIssueType(cards)
     setNoteIssueType(next.suggested.noteIssueType ?? '')
-    fillStages(next.types.find((t) => t.name === cards))
+    setSprintBoard(next.sprintBoard ? String(next.sprintBoard) : '')
+    fillStages(next.types.find((t) => t.name === cards), next.pointFields)
     setFilled(true)
   }
   const read = (wanted: string, typedToken: string, shouldFill: boolean, address = baseUrl, account = email) => call<JiraFound>('POST', '/api/jira/discover', {
@@ -274,7 +286,9 @@ function JiraPart() {
     setStatuses(next.statuses ?? {})
     setInbound(next.inbound ?? {})
     setPointsField(next.pointsField ?? '')
-    setPoints(next.points ?? usualPoints)
+    setPointsKind(next.pointsKind ?? 'number')
+    setPoints(next.points ?? usualPoints(next.pointsKind ?? 'number'))
+    setSprintBoard(next.sprintBoard ? String(next.sprintBoard) : '')
     // Connected before: what Jira has now, for the lists, leaving what's saved as it is.
     if (next.mayManage && next.baseUrl && next.tokenSet) void read(next.project ?? '', '', false, next.baseUrl, next.email ?? '').catch(() => undefined)
   })
@@ -282,7 +296,7 @@ function JiraPart() {
   if (!jira) return null
 
   const save = () => void attempt(() => call('PUT', '/api/jira', {
-    baseUrl, email, ...(token.trim() ? { token } : {}), project, issueType, noteIssueType, statuses, inbound, pointsField, points,
+    baseUrl, email, ...(token.trim() ? { token } : {}), project, issueType, noteIssueType, statuses, inbound, pointsField, pointsKind, points, sprintBoard: sprintBoard ? Number(sprintBoard) : undefined,
   })).then((next) => {
     if (!next) return
     setToken('')
@@ -295,7 +309,7 @@ function JiraPart() {
   }
   const pickCards = (name: string) => {
     setIssueType(name)
-    fillStages(types.find((t) => t.name === name))
+    fillStages(types.find((t) => t.name === name), found?.project?.pointFields)
   }
   const disconnect = () => void attempt(() => call('DELETE', '/api/jira')).then((done) => {
     if (!done) return
@@ -321,6 +335,7 @@ function JiraPart() {
   const unmatched = stages.filter((stage) => !statuses[stage])
   const counted = Object.entries(inbound)
   const pointFields = found?.project?.pointFields ?? []
+  const sprintBoards = found?.project?.sprintBoards ?? []
   const canConnect = !!baseUrl.trim() && !!email.trim() && (!!token.trim() || !!jira.tokenSet)
 
   return (
@@ -397,21 +412,32 @@ function JiraPart() {
               {counted.length > 0 && <span className="field-hint">When someone moves an issue in Jira, these count too: {counted.map(([name, stage]) => `${name} as ${stage}`).join(', ')}.</span>}
             </fieldset>
             <fieldset className="field">
-              <legend className="field-label">Story points, from a card’s size</legend>
+              <legend className="field-label">Points, from a card’s size</legend>
               <div className="form-row" style={{ flexWrap: 'wrap', gap: '.5rem' }}>
                 <label className="field"><span className="field-label">Field</span>
-                  <select id="jira-points-field" value={pointsField} onChange={(e) => setPointsField(e.target.value)}>
-                    <option value="">Don’t set points</option>
-                    {withSaved(pointFields.map((f) => ({ value: f.id, label: f.name })), pointsField).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                  </select>
+                  {/* A custom field needs Jira's list to be picked; without it, its id is typed. */}
+                  {pointFields.length
+                    ? <select id="jira-points-field" value={pointsField} onChange={(e) => pickPoints(e.target.value, pointFields)}>
+                        <option value="">Don’t set points</option>
+                        {withSaved(pointFields.map((f) => ({ value: f.id, label: `${f.name} (${pointsKindLabel[f.kind]}, ${f.id})` })), pointsField || undefined).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      </select>
+                    : <input id="jira-points-field" className="mono" value={pointsField} onChange={(e) => setPointsField(e.target.value)} placeholder="customfield_10016" />}
                 </label>
                 {pointsField && (['S', 'M', 'L'] as const).map((size) => (
                   <label key={size} className="field"><span className="field-label">{size}</span>
-                    <input id={`jira-points-${size}`} type="number" min={0} max={1000} step="any" value={points[size]} onChange={(e) => setPoints((was) => ({ ...was, [size]: Number(e.target.value) }))} />
+                    <input id={`jira-points-${size}`} type={pointsKind === 'number' ? 'number' : 'text'} {...(pointsKind === 'number' ? { min: 0, step: 'any' } : {})} value={points[size]} onChange={(e) => setPoints((was) => ({ ...was, [size]: e.target.value }))} />
                   </label>
                 ))}
               </div>
+              {pointsField && pointsKind === 'option' && <span className="field-hint">Use the dropdown’s options exactly as Jira has them. If Jira won’t take one, the card says so.</span>}
             </fieldset>
+            <label className="field"><span className="field-label">Sprints, from this board</span>
+              <select id="jira-sprint-board" value={sprintBoard} onChange={(e) => setSprintBoard(e.target.value)}>
+                <option value="">Leave sprints alone</option>
+                {withSaved(sprintBoards.map((b) => ({ value: String(b.id), label: b.name })), sprintBoard || undefined).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              {sprintBoard && <span className="field-hint">Once work on a card starts, its issue joins this board’s active sprint. Planning stays in Jira.</span>}
+            </label>
             <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
               <button className="button primary" disabled={!canConnect || !project.trim()}>Save</button>
               {found?.project && <button type="button" className="button" onClick={() => fill(found.project!)}>Fill in from Jira again</button>}
@@ -431,6 +457,12 @@ function JiraPart() {
   )
 }
 
+interface JiraPointField {
+  id: string
+  name: string
+  kind: JiraPointsKind
+}
+
 interface JiraFoundType {
   name: string
   level: number
@@ -441,7 +473,7 @@ interface JiraFoundType {
 interface JiraFound {
   who?: string
   projects: { key: string; name: string }[]
-  project?: { key: string; name: string; pointFields?: { id: string; name: string }[]; types: JiraFoundType[]; suggested: { noteIssueType?: string; issueType?: string } }
+  project?: { key: string; name: string; pointFields?: JiraPointField[]; sprintBoards?: { id: number; name: string }[]; sprintBoard?: number; types: JiraFoundType[]; suggested: { noteIssueType?: string; issueType?: string } }
 }
 
 /** A list from Jira, with what's saved kept on it even if Jira no longer has it, so opening the page never changes a setting. */

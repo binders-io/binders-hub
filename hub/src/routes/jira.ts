@@ -1,6 +1,6 @@
 import { Refusal } from '../auth.ts'
 import { Refused } from '../hub.ts'
-import { discoverJira, jiraAddress, stages, usualPoints, validProject, type JiraSettings, type StageStatuses } from '../jira.ts'
+import { discoverJira, jiraAddress, stages, usualPointsOf, validProject, type JiraSettings, type StageStatuses } from '../jira.ts'
 import type { Stage } from '../../../shared/work.ts'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { Context } from './context.ts'
@@ -54,12 +54,15 @@ export async function jiraRoutes(app: FastifyInstance, context: Context) {
       if (name.length <= 200 && stages.includes(stage as Stage)) inbound[name] = stage as Stage
     }
     const pointsField = typeof body.pointsField === 'string' && /^customfield_\d+$/.test(body.pointsField) ? body.pointsField : undefined
+    const pointsKind = body.pointsKind === 'option' || body.pointsKind === 'string' ? body.pointsKind : 'number'
     const worth = (size: 'S' | 'M' | 'L') => {
-      const value = Number(body.points?.[size])
-      return Number.isFinite(value) && value >= 0 && value <= 1000 ? value : usualPoints[size]
+      const given = body.points?.[size]
+      if (pointsKind !== 'number') return typeof given === 'string' && given.trim() && given.length <= 200 ? given.trim() : usualPointsOf(pointsKind)[size]
+      const value = Number(given)
+      return given !== '' && given !== undefined && Number.isFinite(value) && value >= 0 && value <= 100_000 ? value : usualPointsOf(pointsKind)[size]
     }
     const moved = (was.baseUrl && was.baseUrl !== baseUrl) || (was.project && was.project !== body.project!.trim().toUpperCase())
-    const saved = await jira.configure({ baseUrl, email: String(body.email ?? ''), token, project: body.project, issueType: String(body.issueType ?? ''), noteIssueType: typeof body.noteIssueType === 'string' ? body.noteIssueType.slice(0, 100) : undefined, statuses, inbound, pointsField, points: { S: worth('S'), M: worth('M'), L: worth('L') } })
+    const saved = await jira.configure({ baseUrl, email: String(body.email ?? ''), token, project: body.project, issueType: String(body.issueType ?? ''), noteIssueType: typeof body.noteIssueType === 'string' ? body.noteIssueType.slice(0, 100) : undefined, statuses, inbound, pointsField, pointsKind, points: { S: worth('S'), M: worth('M'), L: worth('L') }, sprintBoard: Number.isInteger(body.sprintBoard) && Number(body.sprintBoard) > 0 ? body.sprintBoard : undefined })
     // Issue ids mean nothing at another address, and could be someone else's issue there.
     if (moved) await binder.jiraIssues?.forget()
     await binder.jiraIssues?.load().catch(() => undefined)
