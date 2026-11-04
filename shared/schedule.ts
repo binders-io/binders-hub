@@ -19,7 +19,31 @@ export interface Schedule {
   lastRun?: string
   lastCardId?: string
   lastSkipped?: string
+  /** The time it last fired for, and who took it: see schedule.fire. */
+  lastDue?: string
+  lastClaim?: string
+  /** A folder its runs write their note into: a run with nothing to report writes none. */
+  folderId?: string
+  /** A run nothing has happened on for this long (24 hours unless set) no longer holds up the next. */
+  staleHours?: number
+  /** Why its last try went wrong, until one goes right. */
+  failing?: string
+  /** The last runs, newest first. */
+  runs?: ScheduleRun[]
 }
+
+/** One time a schedule fired, and what came of it. */
+export interface ScheduleRun {
+  at: string
+  /** "timer", or the person who ran it. */
+  by: string
+  cardId?: string
+  skipped?: string
+  failed?: string
+}
+
+export const runsKept = 20
+export const defaultStaleHours = 24
 
 type Field = { values: Set<number>; any: boolean }
 

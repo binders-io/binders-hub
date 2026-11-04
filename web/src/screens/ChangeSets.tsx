@@ -126,7 +126,7 @@ export function ChangeSets({ id }: { id: string }) {
             <div className="set-meta">
               {repos.map((r) => <RepoTag key={r} repo={r} />)}
               <span className="num"><span className="plus">+{added}</span> <span className="minus">−{removed}</span></span>
-              {firstNote && <span>from <a href={href({ screen: 'notes', id: firstNote.id })}>{titleOf(firstNote.text)}</a></span>}
+              {firstNote && <span>from <a href={href({ screen: 'notes', id: firstNote.id })}>{titleOf(firstNote.text)}</a>{set.forNote && ' only'}</span>}
               {set.debrief?.testPlan?.length ? <TestsLine set={set} /> : null}
             </div>
           </div>

@@ -8,7 +8,7 @@ import { promisify } from 'node:util'
 import { randomBytes } from 'node:crypto'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import { Desk, framed, writeShim, type HookReply } from './desk.ts'
+import { Desk, framed, notAPerson, writeShim, type HookReply } from './desk.ts'
 import { canHold, Held, heldIn, type HeldMeta } from './held.ts'
 import { mcpServer, StreamReader } from './stream.ts'
 import { blastRadius, blastSummary } from './blast.ts'
@@ -196,7 +196,7 @@ interface CardJSON {
   resume?: boolean
   note?: { id: string; title: string }
   quote?: string
-  conversation?: { at?: string; by: string; from_agent?: boolean; kind: string; text: string }[]
+  conversation?: { at?: string; by: string; from_agent?: boolean; kind: string; text: string; to_me?: boolean }[]
   /** Cards it waits for, and how far each has got (review: its pull request is open, not merged yet). */
   waits_for?: { id: string; title?: string; stage?: string }[]
 }
@@ -421,6 +421,7 @@ const proxied: Record<string, string> = {
   propose_work_items: '{"note": "<the note’s id>", "items": [{"title": "…", "quote": "the note’s exact words it came from", "brief": "…", "done_when": "…", "size": "S | M | L", "meant_for": "an agent’s name, optional"}]}',
   create_task: '{"binder": "<binder id or name>", "title": "…", "brief": "…", "done_when": "…", "size": "S | M | L"}',
   append_to_note: '{"id": "<the note’s id>", "text": "Markdown to add at its end"}',
+  write_run_note: '{"id": "<this card’s id>", "text": "for a scheduled run that writes into a folder: its findings, as Markdown"}',
   ask: '{"question": "what a person has to decide or answer before the card can be finished"}: the card waits in Blocked for them, rather than being finished',
 }
 
@@ -561,6 +562,8 @@ export class Runner {
         case 'ask': return this.call('ask', { id: card, question: words('do you want to ask') }).then(() => 'Asked. Stop now: you’ll be started again with the answer.')
         case 'done': return this.call('complete_task', { id: card, summary: words('did you do'), ...(args.pr ? { pull_request: String(args.pr) } : {}) }).then(() => 'Done.')
         case 'release': return this.call('release_task', { id: card, reason: words('is the reason') }).then(() => 'Given back.')
+        case 'message': return this.call('message_agent', { to: String(args.to ?? ''), text: words('do you want to say'), card: args.card ? String(args.card) : undefined })
+        case 'run-note': return this.call('write_run_note', { id: card, text: words('did it find') })
         case 'note': return this.call('get_note', { id: String(args.id ?? '') })
         case 'note-append': return this.call('append_to_note', { id: String(args.id ?? ''), text: words('should it add') }).then(() => 'Added.')
         case 'lesson': return this.call<CardJSON>('get_task', { id: card }).then((now) => this.call('add_repo_lesson', { repo: now.repo ?? '', lesson: words('is the lesson') })).then(() => 'Kept.')
@@ -646,7 +649,10 @@ export class Runner {
     if (live && !live.asking && which === 'notification' && payload?.notification_type === 'permission_prompt') {
       void this.call('report_progress', { id: card, doing: 'Waiting for permission, in its terminal: open it from the card' }).catch(() => {})
     }
-    const messages = which === 'post-tool' || which === 'stop' ? this.takeInbox(card) : []
+    // Asking a person, what another agent said can't keep it going or answer for them. It's on the card for later.
+    const fromAgent = this.inboxes.get(card)?.some((m) => m.by.endsWith(notAPerson))
+    const asking = fromAgent && (which === 'post-tool' || which === 'stop') ? await this.call<CardJSON>('get_task', { id: card }).then((now) => now.stage === 'blocked' || !!now.needs_you, () => true) : false
+    const messages = which === 'post-tool' || which === 'stop' ? this.takeInbox(card, asking) : []
     if (which === 'post-tool') return messages.length ? { context: framed(messages) } : {}
     if (which !== 'stop') return {}
     if (messages.length) return { block: framed(messages) }
@@ -691,16 +697,17 @@ export class Runner {
     return { name: info.name, dir: info.dir }
   }
   /** Hands over what people wrote: it's the agent's now, and the card says it got there. */
-  private takeInbox(card: string) {
-    const messages = this.inboxes.get(card) ?? []
+  private takeInbox(card: string, peopleOnly = false) {
+    const all = this.inboxes.get(card) ?? []
     this.inboxes.delete(card)
+    const messages = peopleOnly ? all.filter((m) => !m.by.endsWith(notAPerson)) : all
+    // Told to its holder, so the next runner doesn't hand them over again.
+    const holder = all.length ? this.held.get(card) : undefined
+    if (holder) {
+      holder.meta = { ...holder.meta, before: (holder.meta.before ?? 0) + all.length }
+      void holder.saveMeta().catch(() => {})
+    }
     if (messages.length) {
-      // Told to its holder, so the next runner doesn't hand them over again.
-      const holder = this.held.get(card)
-      if (holder) {
-        holder.meta = { ...holder.meta, before: (holder.meta.before ?? 0) + messages.length }
-        void holder.saveMeta().catch(() => {})
-      }
       void this.call('report_progress', { id: card, said: `Got ${messages.length === 1 ? 'what you wrote' : `your ${messages.length} messages`}, without stopping.` }).catch(() => {})
     }
     return messages
@@ -1184,7 +1191,11 @@ export class Runner {
     let revived = false
     for (;;) {
       // What people have written so far; anything after this steers. Counted, so the hub's clock and this one needn't agree.
-      const people = (c: { kind: string; by: string; from_agent?: boolean }) => (c.kind === 'comment' || c.kind === 'answer') && (c.from_agent === undefined ? c.by.toLowerCase() !== this.name.toLowerCase() : !c.from_agent)
+      const people = (c: { kind: string; by: string; from_agent?: boolean; to_me?: boolean }) => (c.kind === 'message' && !!c.to_me) || ((c.kind === 'comment' || c.kind === 'answer') && (c.from_agent === undefined ? c.by.toLowerCase() !== this.name.toLowerCase() : !c.from_agent))
+      // Another agent's words say so when they reach it: they aren't a person's, and can't approve anything.
+      const whoSaid = (c: { kind: string; by: string }) => (c.kind === 'message' ? `${c.by} ${notAPerson}` : c.by)
+      // Quoted, on one line, so its words can't look like a line of their own from someone else.
+      const whatSaid = (c: { kind: string; text: string }) => (c.kind === 'message' ? JSON.stringify(c.text) : c.text)
       // A run picked up again counts from when it started, so what people wrote with no runner watching is still heard.
       const before = adopt?.meta.before ?? ((await this.call<CardJSON>('get_task', { id: card.id }).catch(() => card)).conversation ?? []).filter(people).length
       let steer: string | undefined
@@ -1208,24 +1219,31 @@ export class Runner {
             if (now.stage !== 'working' && now.stage !== 'blocked') return stop(`“${card.title}” was taken back: stopping its run.`)
             if (!this.holds(now)) return stop(`“${card.title}” was taken back: stopping its run.`)
             const all = (now.conversation ?? []).filter(people)
-            const said = all.slice(before + passedOn)
+            // Waiting on a person: another agent's words wait too, so nothing it says stands in for their answer.
+            const waitingOnPerson = now.stage === 'blocked' || !!now.needs_you
+            const pending = all.slice(before + passedOn)
+            const firstFromAgent = waitingOnPerson ? pending.findIndex((c) => c.kind === 'message') : -1
+            const said = firstFromAgent >= 0 ? pending.slice(0, firstFromAgent) : pending
             // An agent that can hear it while it works isn't stopped for it: it gets it at its next step. One that
             // hasn't taken it in a while, deep in a long command, say, is stopped and told, as any other agent is.
             if (hears && said.length && !steer) {
               const box = this.inboxes.get(card.id) ?? []
-              this.inboxes.set(card.id, [...box, ...said.map((c) => ({ by: c.by, text: c.text }))])
+              this.inboxes.set(card.id, [...box, ...said.map((c) => ({ by: whoSaid(c), text: whatSaid(c) }))])
               passedOn += said.length
               waitingSince ??= Date.now()
             } else if (said.length && !steer) {
-              steer = said.map((c) => `${c.by}: ${c.text}`).join('\n')
-              stop(`A person wrote on “${card.title}”: carrying on with it.`)
+              steer = said.map((c) => `${whoSaid(c)}: ${whatSaid(c)}`).join('\n')
+              stop(`${said.every((c) => c.kind === 'message') ? 'Another agent' : 'A person'} wrote on “${card.title}”: carrying on with it.`)
             }
             if (!this.inboxes.get(card.id)?.length) waitingSince = undefined
             // Held up on a permission it can't hear anything through: not its doing, and the wait starts again after.
             else if (this.liveRuns.get(card.id)?.asking) waitingSince = Date.now()
             else if (waitingSince && Date.now() - waitingSince > (this.options.hearWithinMs ?? 90_000) && !steer) {
-              steer = this.takeInbox(card.id).map((m) => `${m.by}: ${m.text}`).join('\n')
-              stop(`“${card.title}” hasn’t taken what a person wrote: stopping it to tell it.`)
+              const told = this.takeInbox(card.id, waitingOnPerson)
+              if (told.length) {
+                steer = told.map((m) => `${m.by}: ${m.text}`).join('\n')
+                stop(`“${card.title}” hasn’t taken what a person wrote: stopping it to tell it.`)
+              }
             }
           }).catch(() => {})
         }, { held: !!settings.held, adopt, before, github: how.github, card: card.id, cli: !!settings.cli, hooks: hears && settings.tool === 'claude', live: !!settings.live && !!settings.held && reports && canHold() && (settings.tool === 'claude' || settings.tool === 'custom') })
@@ -1268,9 +1286,11 @@ export class Runner {
         return
       }
       resume = true
+      // Who said what is on each line: another agent's are marked.
+      const writer = steer.includes(notAPerson) ? 'someone' : 'a person'
       next = reports && this.sessions.has(card.id)
-        ? `A person wrote on Binders card ${card.id} while you were working on it:\n${steer}\n\nTake it into account and carry on with the card (${settings.cli ? 'binders card' : 'get_task'} has the whole conversation).`
-        : `${await this.plainPrompt({ ...card, resume: false }, dir, brief)}\n\nWhile you were working on it, a person wrote:\n${steer}\nTake it into account.`
+        ? `${writer === 'someone' ? 'Someone' : 'A person'} wrote on Binders card ${card.id} while you were working on it:\n${steer}\n\nTake it into account and carry on with the card (${settings.cli ? 'binders card' : 'get_task'} has the whole conversation).`
+        : `${await this.plainPrompt({ ...card, resume: false }, dir, brief)}\n\nWhile you were working on it, ${writer} wrote:\n${steer}\nTake it into account.`
     }
   }
 

@@ -109,7 +109,7 @@ export function Work({ id }: { id: string }) {
     { stage: 'proposed', title: 'Proposed' }, { stage: 'ready', title: 'Ready' }, { stage: 'review', title: 'In review' }, { stage: 'live', title: 'Done' },
   ]
   const moveTo = (stage: Card['stage']) => store.moveCard(card.id, stage)
-  const conversation = card.activity.filter((a) => a.kind === 'question' || a.kind === 'answer' || a.kind === 'comment')
+  const conversation = card.activity.filter((a) => a.kind === 'question' || a.kind === 'answer' || a.kind === 'comment' || a.kind === 'message')
   // The open question is shown once, in the conversation, marked; the banner is only for a question that isn't there.
   const lastQuestion = card.needsYou ? conversation.map((a) => a.kind).lastIndexOf('question') : -1
   const plan = card.plan ?? []
@@ -119,7 +119,7 @@ export function Work({ id }: { id: string }) {
   const edits = tasks.filter((t) => /Edit|Write|Update/.test(t.tool ?? ''))
   const runs = tasks.filter((t) => t.tool === 'Bash')
   // Newest first, a run of the same event as one line, and the latest 30 until asked for all.
-  const timeline = foldRepeats(card.activity.filter((a) => a.kind !== 'step' && a.kind !== 'said')).reverse()
+  const timeline = foldRepeats(card.activity.filter((a) => a.kind !== 'step' && a.kind !== 'said' && a.kind !== 'message')).reverse()
   const shownTimeline = allActivity ? timeline : timeline.slice(0, 30)
 
   const send = async (event: FormEvent) => {
@@ -224,7 +224,7 @@ export function Work({ id }: { id: string }) {
                   <li key={index} className={`${a.kind}${index === lastQuestion ? ' open' : ''}`}>
                     <Who id={a.by} size={24} />
                     <div>
-                      <b>{nameFor(state, a.by)}</b> <time>{ago(a.at)}</time>
+                      <b>{nameFor(state, a.by)}</b>{a.to && <span className="faint"> to {nameFor(state, a.to)}</span>} <time>{ago(a.at)}</time>
                       {index === lastQuestion && <span className="asks-tag"><MessageCircleQuestion size={11} /> Asks you</span>}
                       <p>{a.text}</p>
                     </div>
