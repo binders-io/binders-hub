@@ -221,7 +221,7 @@ function AgentsPart() {
   )
 }
 
-type JiraStatus = { on?: boolean; mayManage?: boolean; baseUrl?: string; email?: string; tokenSet?: boolean; hint?: string; project?: string; issueType?: string; statuses?: Record<string, string>; stages?: string[]; webhook?: { url: string } }
+type JiraStatus = { on?: boolean; mayManage?: boolean; baseUrl?: string; email?: string; tokenSet?: boolean; hint?: string; noteIssueType?: string; inbound?: Record<string, string>; project?: string; issueType?: string; statuses?: Record<string, string>; stages?: string[]; webhook?: { url: string } }
 
 function JiraPart() {
   const [jira, setJira] = useState<JiraStatus>()
@@ -229,34 +229,71 @@ function JiraPart() {
   const [email, setEmail] = useState('')
   const [token, setToken] = useState('')
   const [project, setProject] = useState('')
-  const [issueType, setIssueType] = useState('Task')
+  const [issueType, setIssueType] = useState('Story')
+  const [noteIssueType, setNoteIssueType] = useState('')
   const [statuses, setStatuses] = useState<Record<string, string>>({})
-  const [tested, setTested] = useState<{ ok: boolean; who?: string; error?: string }>()
+  const [inbound, setInbound] = useState<Record<string, string>>({})
+  const [found, setFound] = useState<JiraFound>()
+  const [filled, setFilled] = useState(false)
+
+  /** Fills the mapping in with what Jira suggests for a card type. */
+  const fillStages = (type: JiraFoundType | undefined) => {
+    setStatuses(type?.suggested.statuses ?? {})
+    setInbound(type?.suggested.inbound ?? {})
+  }
+  const fill = (next: NonNullable<JiraFound['project']>) => {
+    const cards = next.suggested.issueType ?? next.types[0]?.name ?? ''
+    setProject(next.key)
+    setIssueType(cards)
+    setNoteIssueType(next.suggested.noteIssueType ?? '')
+    fillStages(next.types.find((t) => t.name === cards))
+    setFilled(true)
+  }
+  const read = (wanted: string, typedToken: string, shouldFill: boolean, address = baseUrl, account = email) => call<JiraFound>('POST', '/api/jira/discover', {
+    baseUrl: address, email: account, ...(typedToken.trim() ? { token: typedToken } : {}), ...(wanted.trim() ? { project: wanted } : {}),
+  }).then((next) => {
+    if (!next) return
+    setFound(next)
+    if (next.project && shouldFill) fill(next.project)
+  })
+
   const load = () => void call<JiraStatus>('GET', '/api/jira').then((next) => {
     if (!next) return
     setJira(next)
     setBaseUrl(next.baseUrl ?? '')
     setEmail(next.email ?? '')
     setProject(next.project ?? '')
-    setIssueType(next.issueType ?? 'Task')
+    setIssueType(next.issueType ?? 'Story')
+    setNoteIssueType(next.noteIssueType ?? '')
     setStatuses(next.statuses ?? {})
+    setInbound(next.inbound ?? {})
+    // Connected before: what Jira has now, for the lists, leaving what's saved as it is.
+    if (next.mayManage && next.baseUrl && next.tokenSet) void read(next.project ?? '', '', false, next.baseUrl, next.email ?? '').catch(() => undefined)
   })
   useEffect(load, [])
   if (!jira) return null
 
   const save = () => void attempt(() => call('PUT', '/api/jira', {
-    baseUrl, email, ...(token.trim() ? { token } : {}), project, issueType, statuses,
+    baseUrl, email, ...(token.trim() ? { token } : {}), project, issueType, noteIssueType, statuses, inbound,
   })).then((next) => {
     if (!next) return
     setToken('')
-    setTested(undefined)
     void call<JiraStatus>('GET', '/api/jira').then(setJira)
   })
-  const test = () => void attempt(() => call<{ ok: boolean; who?: string; error?: string }>('POST', '/api/jira/test', {})).then((r) => r && setTested(r))
+  const connect = () => void attempt(() => read(project, token, !jira.on))
+  const pickProject = (key: string) => {
+    setProject(key)
+    if (key) void attempt(() => read(key, token, true))
+  }
+  const pickCards = (name: string) => {
+    setIssueType(name)
+    fillStages(types.find((t) => t.name === name))
+  }
   const disconnect = () => void attempt(() => call('DELETE', '/api/jira')).then((done) => {
     if (!done) return
     setToken('')
-    setTested(undefined)
+    setFound(undefined)
+    setFilled(false)
     load()
   })
   const stages = jira.stages ?? []
@@ -269,14 +306,21 @@ function JiraPart() {
     )
   }
 
+  const types = found?.project?.types ?? []
+  const noteTypes = types.filter((t) => t.level === 1)
+  const cardTypes = types.filter((t) => t.level === 0)
+  const workflow = types.find((t) => t.name === issueType)?.statuses ?? []
+  const unmatched = stages.filter((stage) => !statuses[stage])
+  const counted = Object.entries(inbound)
+  const canConnect = !!baseUrl.trim() && !!email.trim() && (!!token.trim() || !!jira.tokenSet)
+
   return (
     <div className="settings-card">
       <form className="form" onSubmit={(e) => { e.preventDefault(); save() }}>
         <p className="faint">
-          Cards still going are mirrored into one Jira Cloud project once you save; ones already done stay out. The hub
-          keeps the words: a card’s brief and done-when are the issue’s description, its stage the status named below, and
-          what comes back is a status someone changes, and comments. Only an agent starts work, so moving an issue to In
-          Progress in Jira doesn’t move its card.
+          Connect a service account and the hub reads your project from Jira and fills in the rest. Cards still going are
+          mirrored once you save; ones already done stay out. What comes back is a status someone changes, and comments. Only
+          an agent starts work, so moving an issue to In Progress in Jira doesn’t move its card.
         </p>
         <label className="field">
           <span className="field-label">Jira address</span>
@@ -290,31 +334,66 @@ function JiraPart() {
             <input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder={jira.tokenSet ? 'Leave it to keep what’s set, at the same address' : 'The token'} autoComplete="new-password" />
           </label>
         </div>
-        <div className="form-row">
-          <label className="field"><span className="field-label">Project key</span>
-            <input value={project} onChange={(e) => setProject(e.target.value)} placeholder="BIND" className="mono" />
-          </label>
-          <label className="field"><span className="field-label">Issue type</span>
-            <input value={issueType} onChange={(e) => setIssueType(e.target.value)} placeholder="Task" />
-          </label>
+        <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          <button type="button" className="button" disabled={!canConnect} onClick={connect}>{found ? 'Read it again' : 'Connect to Jira'}</button>
+          {found && <span className="ok faint">Connected as {found.who}.</span>}
         </div>
-        <fieldset className="field">
-          <legend className="field-label">What each stage is in this project’s workflow</legend>
-          <div className="form-row" style={{ flexWrap: 'wrap', gap: '.5rem' }}>
-            {stages.map((stage) => (
-              <label key={stage} className="field">
-                <span className="field-label">{stage}</span>
-                <input value={statuses[stage] ?? ''} onChange={(e) => setStatuses((was) => ({ ...was, [stage]: e.target.value }))} placeholder={({ ready: 'To Do', working: 'In Progress', blocked: 'Blocked', review: 'In Review', live: 'Done' } as Record<string, string>)[stage]} />
+
+        {(found || jira.project) && (
+          <>
+            <div className="form-row">
+              <label className="field"><span className="field-label">Project</span>
+                {found?.projects.length
+                  ? <select id="jira-project" value={project} onChange={(e) => pickProject(e.target.value)}>
+                      <option value="">Pick a project…</option>
+                      {withSaved(found.projects.map((p) => ({ value: p.key, label: `${p.name} (${p.key})` })), project).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                  : <input id="jira-project" value={project} onChange={(e) => setProject(e.target.value)} placeholder="BIND" className="mono" />}
               </label>
-            ))}
-          </div>
-        </fieldset>
-        <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center' }}>
-          <button className="button primary" disabled={!baseUrl.trim() || !email.trim() || (!token.trim() && !jira.tokenSet) || !project.trim()}>Save</button>
-          <button type="button" className="button" disabled={!jira.on} onClick={test}>Try it</button>
-          {jira.baseUrl && <button type="button" className="button" onClick={disconnect}>Disconnect</button>}
-          {tested && <span className={tested.ok ? 'ok faint' : 'faint'}>{tested.ok ? `Jira knows it: ${tested.who}` : tested.error}</span>}
-        </div>
+            </div>
+            <div className="form-row">
+              <label className="field"><span className="field-label">A note becomes</span>
+                {types.length
+                  ? <select id="jira-note-type" value={noteIssueType} onChange={(e) => setNoteIssueType(e.target.value)}>
+                      <option value="">Nothing: its cards stand alone</option>
+                      {withSaved(noteTypes.map((t) => ({ value: t.name, label: t.name })), noteIssueType).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                  : <input id="jira-note-type" value={noteIssueType} onChange={(e) => setNoteIssueType(e.target.value)} placeholder="Epic" />}
+              </label>
+              <label className="field"><span className="field-label">A card becomes</span>
+                {types.length
+                  ? <select id="jira-card-type" value={issueType} onChange={(e) => pickCards(e.target.value)}>
+                      {withSaved(cardTypes.map((t) => ({ value: t.name, label: t.name })), issueType).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                  : <input id="jira-card-type" value={issueType} onChange={(e) => setIssueType(e.target.value)} placeholder="Story" />}
+              </label>
+            </div>
+            {noteIssueType && <span className="field-hint">A note’s title and words go to Jira as its {noteIssueType} when its first card is accepted, and its cards go under it.</span>}
+            <fieldset className="field">
+              <legend className="field-label">What each stage is in this project’s workflow</legend>
+              <div className="form-row" style={{ flexWrap: 'wrap', gap: '.5rem' }}>
+                {stages.map((stage) => (
+                  <label key={stage} className="field">
+                    <span className="field-label">{stage}</span>
+                    {workflow.length
+                      ? <select id={`jira-stage-${stage}`} value={statuses[stage] ?? ''} onChange={(e) => setStatuses((was) => ({ ...was, [stage]: e.target.value }))}>
+                          <option value="">Leave the issue where it is</option>
+                          {withSaved(workflow.map((s) => ({ value: s.name, label: s.name })), statuses[stage]).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                        </select>
+                      : <input id={`jira-stage-${stage}`} value={statuses[stage] ?? ''} onChange={(e) => setStatuses((was) => ({ ...was, [stage]: e.target.value }))} />}
+                  </label>
+                ))}
+              </div>
+              {filled && <span className="field-hint">Filled in from your Jira: check it reads right, then save.{unmatched.length ? ` Nothing in this workflow looks like ${unmatched.join(' or ')}.` : ''}</span>}
+              {counted.length > 0 && <span className="field-hint">When someone moves an issue in Jira, these count too: {counted.map(([name, stage]) => `${name} as ${stage}`).join(', ')}.</span>}
+            </fieldset>
+            <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+              <button className="button primary" disabled={!canConnect || !project.trim()}>Save</button>
+              {found?.project && <button type="button" className="button" onClick={() => fill(found.project!)}>Fill in from Jira again</button>}
+              {jira.baseUrl && <button type="button" className="button" onClick={disconnect}>Disconnect</button>}
+            </div>
+          </>
+        )}
       </form>
       {jira.on && jira.webhook && (
         <div className="copy-row" style={{ marginTop: '.75rem' }}>
@@ -326,6 +405,23 @@ function JiraPart() {
     </div>
   )
 }
+
+interface JiraFoundType {
+  name: string
+  level: number
+  statuses: { name: string; category?: string }[]
+  suggested: { statuses: Record<string, string>; inbound: Record<string, string>; unmatched: string[] }
+}
+
+interface JiraFound {
+  who?: string
+  projects: { key: string; name: string }[]
+  project?: { key: string; name: string; types: JiraFoundType[]; suggested: { noteIssueType?: string; issueType?: string } }
+}
+
+/** A list from Jira, with what's saved kept on it even if Jira no longer has it, so opening the page never changes a setting. */
+const withSaved = (options: { value: string; label: string }[], saved: string | undefined) =>
+  saved && !options.some((o) => o.value === saved) ? [{ value: saved, label: saved }, ...options] : options
 
 function CopyWebhook({ url }: { url: string }) {
   const [copied, setCopied] = useState(false)

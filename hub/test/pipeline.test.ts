@@ -216,6 +216,48 @@ describe('work that went out with nobody reading it', () => {
     return { ...set, put, distillOf: (id: string) => set.hub.state.cards.find((c) => c.distillRule && c.noteId === id)! }
   }
 
+  it('keeps what an agent suggests on unread work a suggestion: no agent can hand it on, only a person', async () => {
+    const { hub, scheduler, later, tools, put, distillOf } = await ruled()
+    await put('mine', 'ana')
+    later(2 * 60_000)
+    await scheduler.tick()
+    const distiller = await tools('distiller')
+    await distiller('claim_task', { id: distillOf('mine').id })
+    await distiller('propose_work_items', { note: 'mine', items: [{ title: 'One', quote: 'one thing', size: 'S' }] })
+    const accepted = hub.state.cards.find((c) => c.acceptedBy)!
+    const fixer = await tools('fixer1')
+    await fixer('claim_task', { id: accepted.id })
+
+    // Someone else's suggestion, from before: this agent can't hand it on while it's on unread work.
+    const manager = await tools('other')
+    await manager('create_task', { binder: accepted.binderId, title: 'A manager’s own' })
+    const free = hub.state.cards.find((c) => c.title === 'A manager’s own')!.id
+    assert.equal(hub.state.cards.find((c) => c.id === free)!.madeUnread, undefined)
+    assert.match((await fixer('assign_task', { id: free, agent: 'fixer1' })).text, /a person moves it on/)
+    assert.equal(hub.state.cards.find((c) => c.id === free)!.stage, 'proposed')
+
+    // What it suggests itself, not by itself and not by asking an agent that isn't on unread work.
+    await fixer('create_task', { binder: accepted.binderId, title: 'Also delete the audit log' })
+    const made = hub.state.cards.find((c) => c.title === 'Also delete the audit log')!.id
+    const card = () => hub.state.cards.find((c) => c.id === made)!
+    assert.equal(card().madeUnread, accepted.id)
+    assert.match(card().activity[0].text, /nobody has read yet/)
+    assert.match((await fixer('assign_task', { id: made, agent: 'any' })).text, /a person moves it on/)
+    assert.match((await manager('assign_task', { id: made, agent: 'other' })).text, /a person moves it on/)
+    assert.equal(card().stage, 'proposed')
+    assert.equal((await manager('claim_task', { id: made })).error, true)
+
+    // Finishing doesn't lift it: it's unread until a person has reviewed it.
+    await hub.record({ kind: 'hub' }, { type: 'card.update', id: accepted.id, fields: { stage: 'review' } })
+    assert.match((await fixer('assign_task', { id: free, agent: 'fixer1' })).text, /a person moves it on/)
+
+    // An agent on no such work carries on as ever, and a person moves the suggestion on.
+    assert.match((await manager('assign_task', { id: free, agent: 'other' })).text, /Gave/)
+    await hub.record({ kind: 'user', login: 'ana' }, { type: 'card.update', id: made, fields: { stage: 'ready' } })
+    assert.match((await manager('assign_task', { id: made, agent: 'other' })).text, /A person chose/)
+    assert.equal(card().stage, 'ready')
+  })
+
   it('is only for the agent chosen: others can’t give it to themselves, and it isn’t open to all if that agent goes', async () => {
     const { hub, actions, scheduler, later, tools, put, distillOf } = await ruled()
     await put('mine', 'ana')

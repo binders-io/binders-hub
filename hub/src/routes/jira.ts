@@ -1,6 +1,7 @@
 import { Refusal } from '../auth.ts'
 import { Refused } from '../hub.ts'
-import { jiraAddress, stages, validProject, type JiraSettings, type StageStatuses } from '../jira.ts'
+import { discoverJira, jiraAddress, stages, validProject, type JiraSettings, type StageStatuses } from '../jira.ts'
+import type { Stage } from '../../../shared/work.ts'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { Context } from './context.ts'
 
@@ -48,8 +49,12 @@ export async function jiraRoutes(app: FastifyInstance, context: Context) {
       const name = body.statuses?.[stage]
       if (typeof name === 'string' && name) statuses[stage] = name
     }
+    const inbound: Record<string, Stage> = {}
+    for (const [name, stage] of Object.entries((body.inbound ?? {}) as Record<string, unknown>).slice(0, 200)) {
+      if (name.length <= 200 && stages.includes(stage as Stage)) inbound[name] = stage as Stage
+    }
     const moved = (was.baseUrl && was.baseUrl !== baseUrl) || (was.project && was.project !== body.project!.trim().toUpperCase())
-    const saved = await jira.configure({ baseUrl, email: String(body.email ?? ''), token, project: body.project, issueType: String(body.issueType ?? ''), statuses })
+    const saved = await jira.configure({ baseUrl, email: String(body.email ?? ''), token, project: body.project, issueType: String(body.issueType ?? ''), noteIssueType: typeof body.noteIssueType === 'string' ? body.noteIssueType.slice(0, 100) : undefined, statuses, inbound })
     // Issue ids mean nothing at another address, and could be someone else's issue there.
     if (moved) await binder.jiraIssues?.forget()
     await binder.jiraIssues?.load().catch(() => undefined)
@@ -62,6 +67,23 @@ export async function jiraRoutes(app: FastifyInstance, context: Context) {
     await binder.jiraIssues?.forget()
     await binder.jira?.disconnect()
     return { ok: true }
+  }))
+
+  // What Jira has, to fill in the mapping: nothing is kept. As on saving, a saved token goes only to the address it was given for.
+  app.post('/api/jira/discover', act(async (request) => {
+    owner(request, 'read')
+    const jira = sp(request).jira
+    if (!jira) throw new Refused('Jira isn’t available on this binder.')
+    const body = (request.body ?? {}) as { baseUrl?: unknown; email?: unknown; token?: unknown; project?: unknown }
+    const was = jira.settings
+    const given = typeof body.baseUrl === 'string' && body.baseUrl.trim() ? body.baseUrl : undefined
+    const baseUrl = given ? jiraAddress(given) : was.baseUrl
+    if (given && !baseUrl) throw new Refused('A Jira Cloud address looks like https://yourcompany.atlassian.net.')
+    const typed = typeof body.token === 'string' ? body.token.trim() : ''
+    const token = typed || (baseUrl === was.baseUrl ? was.token : undefined)
+    const email = (typeof body.email === 'string' && body.email.trim()) || was.email
+    if (!baseUrl || !email || !token) throw new Refused('Connecting needs Jira’s address, the service account’s email and its API token.')
+    return discoverJira({ baseUrl, email, token }, typeof body.project === 'string' ? body.project : undefined)
   }))
 
   app.post('/api/jira/test', act(async (request) => {

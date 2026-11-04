@@ -270,6 +270,10 @@ token and runner. Replacing an agent's token doesn't touch a person's connection
 
 **Jira** is the first adapter past GitHub, on the boundaries the design names: the binder's own connection (a Jira Cloud address, service account, project, the status each stage is) in the hub's store, sealed; a saver that mirrors cards still going into issues as edits settle, finds them again by a label naming the card, and tries again when Jira won't take a write; a webhook that hears only about issues the saver made. A status moves the card only when someone other than the service account changed it, and by the same rules as moving it on the board. The hub keeps the words: Jira's description is written, never read back, so nothing loops. Changing the address needs the token again and starts a new mirror, since issue ids mean nothing at another address.
 
+**The mapping fills itself in.** Connecting reads the service account's projects, then the chosen project's issue types and each type's workflow, and nothing is kept until it's saved. A note's type is one Stories can sit under (hierarchy level 1, Epic before Feature), a card's is level 0 (Story before Task). Each stage goes to one status: its usual name when the workflow has it, otherwise by the category Jira sorts the status into. Every other status counts as a stage when someone moves an issue there, except ones that ended without being done (Won't Do, Cancelled), which count as nothing.
+
+**A note is an Epic.** With a note type set, the first of a note's cards to be accepted makes its Epic, from its title and words, found again by a label naming the note. Its cards go under it, those already in Jira as well, and edits to the note follow. Some projects require an Epic Name, which is filled in from the title. If Jira won't have a card under the Epic, the card is still mirrored and says so. A deleted Epic isn't made again. Without a note type, cards stand alone as before.
+
 A card **split for a swarm** becomes parts: only a ready card that no agent holds can be split, and each part is a card that names its parent, meant for the agent it's given, carrying the parent's brief, its note and whatever the parent was waiting for. The parent is never offered to an agent while it has parts, and when the last part is live it follows. The parts' pull requests join the binder's open change set like any others. One level of parts; a part isn't split again.
 
 ## Live runs (an experiment, on each agent's runner settings)
@@ -310,7 +314,9 @@ on are left alone, as is a note a schedule runs. Editing a note afterwards doesn
 Only the agent the rule names, holding the Distill card the hub made, gets this: another agent proposing for the same note
 waits for a person, as ever, and so does what comes of a note another agent wrote. A proposal's `meant_for` counts only if it's
 one of the rule's agents. What's over the limits stays a proposal, and the log decides the limit (`proposal.take`). These cards
-are only for the agent chosen: agents can't reassign them, and if that agent goes they wait for a person.
+are only for the agent chosen: agents can't reassign them, and if that agent goes they wait for a person. What an agent
+suggests with `create_task` while it has such work out, up to a person's review of it, stays proposed: no agent can hand it
+on, and that agent can't hand on anyone's proposed card meanwhile.
 A card accepted this way says so in its brief and on its timeline, with who set the rule.
 
 The note may carry words from outside (scanner output, advisories, READMEs), so this is a path from those words to agents with

@@ -4,7 +4,7 @@ import { runnerVersion, tools } from '../../shared/agents.ts'
 import { titleOf, isBlank } from '../../shared/notes.ts'
 import { briefText, docsFolderName, docsGiven, repoDocs } from '../../shared/briefs.ts'
 import { byWorst, challengeSet, confidences, setOfCard, replyVerdicts, doneWhenPoints, findingKinds, marks, numberedDiff, severities, type BlastRadius, type Confidence, type FindingKind, type Mark, type ReplyVerdict, type Severity } from '../../shared/changeSet.ts'
-import { agentNamed, briefId, briefJobFor, briefMost, briefOf, challengeFor, chatFor, debriefFor, defaultRunner, nextFor, worksIn, repliesFor, resumeFor, setChallengeFor, setDebriefFor, type Card, type ChangeSet, type Chat, type Provider, type RepoBrief, pinned } from '../../shared/work.ts'
+import { agentNamed, briefId, briefJobFor, briefMost, briefOf, challengeFor, chatFor, debriefFor, defaultRunner, nextFor, worksIn, repliesFor, resumeFor, setChallengeFor, setDebriefFor, type Card, type ChangeSet, type Chat, type Provider, type RepoBrief, pinned, unreadWorkOf } from '../../shared/work.ts'
 import type { Actions } from './actions.ts'
 import type { SentTest } from './actions/debriefs.ts'
 import { Refused, type Hub } from './hub.ts'
@@ -395,7 +395,7 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
   }))
 
   server.registerTool('assign_task', {
-    description: 'Gives a card to an agent (this one or another, by name or id) so its runner takes it next, as a person giving it on the board would; or to any agent, with agent "any". For a card that’s ready or proposed and nobody holds. Use it when a person asks you to hand work to an agent; claim_task is for taking a card to work on now.',
+    description: 'Gives a card to an agent (this one or another, by name or id) so its runner takes it next, as a person giving it on the board would; or to any agent, with agent "any". For a card that’s ready or proposed and nobody holds; a proposed one that comes of work nobody has read yet waits for a person. Use it when a person asks you to hand work to an agent; claim_task is for taking a card to work on now.',
     inputSchema: { id: z.string(), agent: z.string().describe('the agent’s name or id, or "any"') },
   }, run(async ({ id, agent: ref }: { id: string; agent: string }) => {
     const card = hub.state.cards.find((c) => c.id === id || (c.issue && `#${c.issue.number}` === id.trim()))
@@ -403,6 +403,8 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
     const any = ref.trim().toLowerCase() === 'any'
     const to = any ? undefined : hub.state.agents.find((a) => !a.revoked && a.id === ref) ?? agentNamed(hub.state.agents, ref)
     if (!any && !to) throw new Refused(`No agent ${ref}. These are: ${hub.state.agents.filter((a) => !a.revoked).map((a) => a.name).join(', ')}.`)
+    // A suggestion made on, or asked for by, work nobody has read goes no further without a person: its limits would mean nothing.
+    if (card.stage === 'proposed' && (card.madeUnread || unreadWorkOf(hub.state, agentId))) throw new Refused('That card is proposed, and it comes of work nobody has read yet: a person moves it on.')
     if (pinned(hub.state, card)) throw new Refused('A person chose who takes that card, because it went out with nobody reading it: a person can give it to someone else.')
     if (card.agentId && (card.stage === 'working' || card.stage === 'blocked')) throw new Refused(`${hub.state.agents.find((a) => a.id === card.agentId)?.name ?? 'Another agent'} is working on it: a person gives it back first.`)
     if (card.stage !== 'ready' && card.stage !== 'proposed') throw new Refused(`That card is ${card.stage}: only a ready or proposed card is given to an agent.`)
@@ -816,7 +818,8 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
   }, run(async ({ binder, title, brief, done_when, size, waits_for }: { binder: string; title: string; brief?: string; done_when?: string; size?: Card['size']; waits_for?: string[] }) => {
     const target = findBinder(binder)
     if (!target || !mayUse(target.id)) throw new Refused(`No binder ${binder} you may work in.`)
-    return text(summary(await actions.createCard({ kind: 'agent', id: agentId }, { binderId: target.id, title, brief, doneWhen: done_when, size, waitsFor: waits_for })))
+    const unread = unreadWorkOf(hub.state, agentId)
+    return text(summary(await actions.createCard({ kind: 'agent', id: agentId }, { binderId: target.id, title, brief, doneWhen: done_when, size, waitsFor: waits_for, ...(unread ? { madeUnread: unread.id, said: `Suggested while working on “${unread.title}”, which nobody has read yet: only a person can move it on` } : {}) })))
   }))
 
   server.registerTool('propose_work_items', {

@@ -189,6 +189,8 @@ export interface Card {
   distillRule?: string
   /** Accepted without a person, under a folder's rule: the rule, and who set it. */
   acceptedBy?: { rule: string; setBy: string }
+  /** Suggested by an agent on work nobody had read: that card. It's proposed until a person moves it on, whichever agent is asked. */
+  madeUnread?: string
 }
 
 export interface Proposal {
@@ -714,8 +716,16 @@ export function repliesFor(state: WorkState, agent: Agent, busy: string[] = []):
  * Work that went out with nobody reading it, which only the agent a person chose may take: a rule's Distill and what it
  * accepted, and a run that writes into a folder. If that agent goes, it waits for a person, rather than being open to all.
  */
-export function pinned(state: { schedules?: Schedule[] }, card: Pick<Card, 'distillRule' | 'acceptedBy' | 'scheduleId'>) {
-  return !!card.distillRule || !!card.acceptedBy || (!!card.scheduleId && !!(state.schedules ?? []).find((s) => s.id === card.scheduleId)?.folderId)
+export function pinned(state: { schedules?: Schedule[] }, card: Pick<Card, 'distillRule' | 'acceptedBy' | 'scheduleId' | 'madeUnread'>) {
+  return !!card.distillRule || !!card.acceptedBy || !!card.madeUnread || (!!card.scheduleId && !!(state.schedules ?? []).find((s) => s.id === card.scheduleId)?.folderId)
+}
+
+/**
+ * The work an agent has out with nobody having read it, up to a person's review of it. What it asks for meanwhile can come
+ * from what it read, so what it suggests stays a suggestion.
+ */
+export function unreadWorkOf(state: { schedules?: Schedule[]; cards: Card[] }, agentId: string) {
+  return state.cards.find((c) => c.agentId === agentId && (c.stage === 'working' || c.stage === 'blocked' || c.stage === 'review') && pinned(state, c))
 }
 
 /** The rule a folder's notes go by: its own, or the nearest one above it that's on. */

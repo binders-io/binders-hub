@@ -16,7 +16,7 @@ export abstract class CardService extends ActionsBase {
 
   // People ---------------------------------------------------------------------------------------------------------
 
-  async createCard(actor: Actor, fields: { binderId: string; title: string; brief?: string; doneWhen?: string; size?: Card['size']; stage?: Stage; noteId?: string; quote?: string; meantFor?: string; waitsFor?: string[]; scheduleId?: string; distillRule?: string; acceptedBy?: Card['acceptedBy']; said?: string; id?: string }) {
+  async createCard(actor: Actor, fields: { binderId: string; title: string; brief?: string; doneWhen?: string; size?: Card['size']; stage?: Stage; noteId?: string; quote?: string; meantFor?: string; waitsFor?: string[]; scheduleId?: string; distillRule?: string; acceptedBy?: Card['acceptedBy']; madeUnread?: string; said?: string; id?: string }) {
     if (!this.hub.state.binders.some((b) => b.id === fields.binderId)) throw new Refused(`No binder ${fields.binderId}.`)
     if (!fields.title.trim()) throw new Refused('A card needs a title.')
     const at = this.now()
@@ -41,6 +41,7 @@ export abstract class CardService extends ActionsBase {
       ...(fields.scheduleId ? { scheduleId: fields.scheduleId } : {}),
       ...(fields.distillRule ? { distillRule: fields.distillRule } : {}),
       ...(fields.acceptedBy ? { acceptedBy: fields.acceptedBy } : {}),
+      ...(fields.madeUnread ? { madeUnread: fields.madeUnread } : {}),
       activity: [{ at, by, kind: 'created', text: fields.said ?? fields.scheduleId ? fields.said ?? 'Put it on the board: a scheduled run of its note' : actor.kind === 'agent' ? 'Suggested it' : 'Put it on the board' }],
     }
     const changes: Change[] = [{ type: 'card.put', card }]
