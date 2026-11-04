@@ -4,7 +4,7 @@ import { linkedNotes, linksAsWords, titleOf, type Note } from '../../../shared/n
 import type { Hub } from '../hub.ts'
 import type { KV } from '../kv.ts'
 import { log } from '../logger.ts'
-import { agentGraceMs, heardComment, heardStatus, inBinders, markOf, stageOf, statusFor, type JiraConnection, type JiraMirror, type JiraSprint } from '../jira.ts'
+import { agentGraceMs, heardComment, heardStatus, inBinders, labelFor, markOf, noteLabelFor, stageOf, statusFor, type JiraConnection, type JiraMirror, type JiraSprint } from '../jira.ts'
 
 // Cards mirrored into Jira, the way others are mirrored into GitHub Issues: an edit is one write when the typing
 // pauses, and a stage becomes the transition the binder's map names. What's in Jira is remembered only once Jira has
@@ -31,6 +31,10 @@ interface Mirrored {
   saidUpTo?: string
   /** The newest comment heard from Jira. */
   heardUpTo?: number
+  /** Brought in from Jira: the words its team wrote stay theirs. */
+  imported?: boolean
+  /** Brought in, and not labelled as the hub's yet. */
+  wantsLabels?: boolean
   /** The sprint it's in, as far as the hub knows. */
   sprint?: number
   /** The sprint Jira wouldn't put it in, and the card's been told. */
@@ -182,12 +186,14 @@ export class JiraSaver implements JiraMirror {
 
   /** Whether Jira has less than the board does. A card already done when the mirror began isn't brought in. */
   private behind(card: Card) {
-    if (card.stage === 'proposed') return false
     const known = this.issues.get(card.id)
+    // A proposed card waits for a person before it's in Jira. One brought in from there already is.
+    if (card.stage === 'proposed' && !known?.imported) return false
+    if (known?.wantsLabels) return true
     if (!known) return card.stage !== 'live'
     if (known.gone) return false
     const points = this.jira().pointsOf(card.size)
-    return known.hash !== this.hashOf(card) || (known.stage !== card.stage && known.stuck !== card.stage) || this.wantsParent(card, known) || (points !== undefined && known.points !== points) || this.wantsSprint(card, known) || this.unsaid(card, known).length > 0
+    return known.hash !== this.hashOf(card, known) || (known.stage !== card.stage && known.stuck !== card.stage) || this.wantsParent(card, known) || (points !== undefined && known.points !== points) || this.wantsSprint(card, known) || this.unsaid(card, known).length > 0
   }
 
   /**
@@ -197,6 +203,8 @@ export class JiraSaver implements JiraMirror {
   private wantsSprint(card: Card, known: Mirrored) {
     const { sprint } = this
     if (!sprint || !this.jira().settings.sprintBoard || known.sprint === sprint.id || known.refusedSprint === sprint.id) return false
+    // What a team brought in stays in whatever sprint they planned it in, until an agent takes it up.
+    if (known.imported && !card.agentId) return false
     if (card.stage === 'live') return known.sprint === undefined && !!sprint.startDate && Date.parse(card.updatedAt) >= Date.parse(sprint.startDate)
     return card.stage !== 'ready' && card.stage !== 'proposed'
   }
@@ -249,6 +257,23 @@ export class JiraSaver implements JiraMirror {
     this.persist()
   }
 
+  /** A card brought in from Jira: linked as it stands, so nothing's written there until something changes here. */
+  adopt(card: Card, issue: { id: string; key: string; status?: string; parent: string }) {
+    const known: Mirrored = { id: issue.id, key: issue.key, hash: '', stage: card.stage, status: issue.status, parent: issue.parent, imported: true, wantsLabels: true, saidUpTo: new Date().toISOString() }
+    known.hash = this.hashOf(card, known)
+    known.points = this.jira().pointsOf(card.size)
+    this.issues.set(card.id, known)
+    this.persist()
+    this.later(card.id, 0)
+  }
+
+  /** A note brought in from a feature: the feature's words stay what they are, and new cards go under it. */
+  adoptEpic(noteId: string, issue: { id: string; key: string }) {
+    this.epics.set(noteId, { id: issue.id, key: issue.key, hash: '', imported: true, wantsLabels: true })
+    this.persist()
+    this.later(noteJob + noteId, 0)
+  }
+
   private unsaid(card: Card, known: Mirrored) {
     return known.saidUpTo === undefined ? [] : card.activity.filter((a) => worthSaying(a) && a.at > known.saidUpTo!)
   }
@@ -262,8 +287,9 @@ export class JiraSaver implements JiraMirror {
 
   private epicBehind(noteId: string) {
     const epic = this.epics.get(noteId)
+    if (epic?.wantsLabels) return true
     const note = this.hub.state.notes.find((n) => n.id === noteId)
-    return !!epic && !epic.gone && !!note && epic.hash !== this.epicHash(note)
+    return !!epic && !epic.gone && !epic.imported && !!note && epic.hash !== this.epicHash(note)
   }
 
   /** The note's words, then those of the notes it links to, so the Epic can be read without them. */
@@ -302,7 +328,7 @@ export class JiraSaver implements JiraMirror {
   private async showKey(card: Card) {
     if (!this.keyWrong(card)) return
     const key = this.keyOf(card)
-    await this.hub.record({ kind: 'hub' }, { type: 'card.update', id: card.id, fields: { jira: key ? { key, url: this.jira().browse(key) } : undefined } })
+    await this.hub.record({ kind: 'hub' }, { type: 'card.update', id: card.id, fields: { jira: key ? { key, url: this.jira().browse(key), ...(this.issues.get(card.id)?.imported ? { imported: true } : {}) } : undefined } })
   }
 
   private epicHash(note: Note) {
@@ -325,7 +351,7 @@ export class JiraSaver implements JiraMirror {
       this.epics.set(note.id, epic)
       this.persist()
     }
-    if (epic.hash !== hash) await this.writeEpic(note.id)
+    if (epic.hash !== hash && !epic.imported) await this.writeEpic(note.id)
     return epic
   }
 
@@ -333,6 +359,15 @@ export class JiraSaver implements JiraMirror {
     const epic = this.epics.get(noteId)
     const note = this.hub.state.notes.find((n) => n.id === noteId)
     if (!epic || epic.gone || !note) return
+    if (epic.wantsLabels) {
+      await this.jira().addLabels(epic.id, ['binders', noteLabelFor(noteId)]).catch((error: Error) => {
+        if (!/^Jira said (400|403)/.test(error.message)) throw error
+        log.warn({ binder: this.space, note: noteId, why: error.message }, 'Jira wouldn’t label a feature brought in')
+      })
+      delete epic.wantsLabels
+      this.persist()
+    }
+    if (epic.imported) return
     await this.jira().update(epic.id, this.epicWords(note))
     epic.hash = this.epicHash(note)
     this.persist()
@@ -388,7 +423,9 @@ export class JiraSaver implements JiraMirror {
     return card.noteId ? this.hub.state.notes.find((n) => n.id === card.noteId) : undefined
   }
 
-  private hashOf(card: Card) {
+  private hashOf(card: Card, known?: Mirrored) {
+    // Of what's written there. An imported issue only ever has its title written.
+    if (known?.imported) return createHash('sha1').update(card.title).digest('hex')
     const note = this.noteOf(card)
     return createHash('sha1').update(`${card.title}|${card.brief}|${card.doneWhen ?? ''}|${note ? titleOf(note.text) : ''}`).digest('hex')
   }
@@ -426,6 +463,15 @@ export class JiraSaver implements JiraMirror {
       this.persist()
     }
     await this.showKey(card)
+    if (known.wantsLabels) {
+      // How the hub hears about it from now on. If Jira won't, the link still works, and the card says what's lost.
+      await jira.addLabels(known.id, ['binders', labelFor(cardId)]).catch(async (error: Error) => {
+        if (!/^Jira said (400|403)/.test(error.message)) throw error
+        await this.say(card, `Jira wouldn’t label ${known!.key}, so what people do there may not reach this card without a webhook: ${error.message.slice(0, 200)}`)
+      })
+      delete known.wantsLabels
+      this.persist()
+    }
     if (epic && known.parent !== epic.key) {
       await jira.setParent(known.id, epic.key).then(() => {
         known!.parent = epic.key
@@ -435,9 +481,10 @@ export class JiraSaver implements JiraMirror {
       })
       this.persist()
     }
-    if (known.hash !== hash) {
-      await jira.update(known.id, words)
-      known.hash = hash
+    const written = this.hashOf(card, known)
+    if (known.hash !== written) {
+      await (known.imported ? jira.updateSummary(known.id, card.title) : jira.update(known.id, words))
+      known.hash = written
       this.persist()
     }
     const points = jira.pointsOf(card.size)

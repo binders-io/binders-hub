@@ -73,6 +73,24 @@ export interface JiraIssue {
   status?: string
 }
 
+interface IssueFields {
+  id: string
+  key?: string
+  fields?: { summary?: string; description?: unknown; status?: { name?: string; statusCategory?: { key?: string } }; parent?: { key?: string }; assignee?: { displayName?: string } | null }
+}
+
+export interface JiraStory {
+  id: string
+  key: string
+  summary: string
+  description?: unknown
+  status?: string
+  category?: string
+  parent?: string
+  assignee?: string
+  points?: unknown
+}
+
 interface IssueJSON {
   id: string
   key: string
@@ -340,6 +358,51 @@ export class JiraConnection {
 
   async addToSprint(sprintId: number, id: string) {
     await this.call(`/rest/agile/1.0/sprint/${sprintId}/issue`, { method: 'POST', body: { issues: [id] } })
+  }
+
+  /** The project's features: what its stories sit under. */
+  async features() {
+    const type = this.settings.noteIssueType ?? 'Epic'
+    const jql = encodeURIComponent(`project = "${this.settings.project}" AND issuetype = "${type.replace(/"/g, '')}" ORDER BY created DESC`)
+    const found = await this.call<{ issues?: IssueFields[] }>(`/search/jql?maxResults=100&fields=summary,status&jql=${jql}`)
+    return (found.issues ?? []).map((i) => ({ id: i.id, key: i.key ?? '', summary: i.fields?.summary ?? i.key ?? '', status: i.fields?.status?.name }))
+  }
+
+  async feature(key: string) {
+    const one = await this.call<IssueFields>(`/issue/${encodeURIComponent(key)}?fields=summary,description,status`)
+    return { id: one.id, key: one.key ?? key, summary: one.fields?.summary ?? key, description: one.fields?.description, status: one.fields?.status?.name }
+  }
+
+  /** The stories under these features, in this project. With `whole`, what a card needs of each; else only how they stand. */
+  async storiesUnder(keys: string[], whole = false): Promise<JiraStory[]> {
+    const stories: JiraStory[] = []
+    const points = this.settings.pointsField
+    const fields = ['status', 'parent', 'summary', ...(whole ? ['description', 'assignee', ...(points ? [points] : [])] : [])].join(',')
+    for (let at = 0; at < keys.length; at += 50) {
+      const some = keys.slice(at, at + 50).filter((key) => /^[A-Z][A-Z0-9_]*-\d+$/.test(key))
+      if (!some.length) continue
+      const jql = encodeURIComponent(`project = "${this.settings.project}" AND parent in (${some.join(',')}) ORDER BY created ASC`)
+      let next: string | undefined
+      for (let page = 0; page < 20; page++) {
+        const one = await this.call<{ issues?: IssueFields[]; nextPageToken?: string }>(`/search/jql?maxResults=100&fields=${fields}&jql=${jql}${next ? `&nextPageToken=${encodeURIComponent(next)}` : ''}`)
+        for (const i of one.issues ?? []) {
+          stories.push({ id: i.id, key: i.key ?? '', summary: i.fields?.summary ?? i.key ?? '', description: i.fields?.description, status: i.fields?.status?.name, category: i.fields?.status?.statusCategory?.key, parent: i.fields?.parent?.key, assignee: i.fields?.assignee?.displayName, points: points ? (i.fields as Record<string, unknown> | undefined)?.[points] : undefined })
+        }
+        next = one.nextPageToken
+        if (!next) break
+      }
+    }
+    return stories
+  }
+
+  /** Marks an issue as the hub's to find again and hear about. Nothing else about it changes. */
+  async addLabels(id: string, labels: string[]) {
+    await this.call(`/issue/${encodeURIComponent(id)}`, { method: 'PUT', body: { update: { labels: labels.map((add) => ({ add })) } } })
+  }
+
+  /** The issue's title alone: an imported issue's description stays what its team wrote. */
+  async updateSummary(id: string, summary: string) {
+    await this.call(`/issue/${encodeURIComponent(id)}`, { method: 'PUT', body: { fields: { summary: oneLine(summary) } } })
   }
 
   /** The words of an issue's latest comments. */
@@ -685,6 +748,72 @@ export function commentAskOfAgent(settings: JiraSettings, card: Card, said: Pick
   return `Add this to Jira issue ${card.jira.key} too, ${ownTools}. Keep the mark at the end exactly as it is:\n\n${said.text} ${markOf(card.id, said)}`
 }
 
+/** Where an issue that already exists stands on the board: the binder's map, then how Jira sorts the status. A status that ended without being done has no place. */
+export function stageOfImported(status: string | undefined, category: string | undefined, settings: Pick<JiraSettings, 'statuses' | 'inbound'>): Stage | undefined {
+  if (!status) return undefined
+  const mapped = Object.entries(settings.statuses ?? {}).find(([, name]) => sameName(name, status))?.[0] as Stage | undefined
+  return mapped ?? Object.entries(settings.inbound ?? {}).find(([name]) => sameName(name, status))?.[1] ?? countsAs({ name: status, category })
+}
+
+/** Jira's document format as Markdown, as near as Markdown goes: what has no Markdown keeps its words. */
+export function markdownOf(document: unknown): string {
+  if (typeof document === 'string') return document.trim()
+  const textOf = (node: AdfNode): string => {
+    if (node.type === 'hardBreak') return '\n'
+    if (node.type === 'mention' || node.type === 'emoji' || node.type === 'inlineCard' || node.type === 'status' || node.type === 'date') return String(node.attrs?.text ?? node.attrs?.shortName ?? node.attrs?.url ?? '')
+    if (node.type !== 'text') return (node.content ?? []).map(textOf).join('')
+    let words = node.text ?? ''
+    for (const mark of node.marks ?? []) {
+      if (mark.type === 'strong') words = `**${words}**`
+      else if (mark.type === 'em') words = `*${words}*`
+      else if (mark.type === 'code') words = `\`${words}\``
+      else if (mark.type === 'strike') words = `~~${words}~~`
+      else if (mark.type === 'link' && mark.attrs?.href) words = `[${words}](${String(mark.attrs.href)})`
+    }
+    return words
+  }
+  const blockOf = (node: AdfNode, depth = 0): string => {
+    const kids = node.content ?? []
+    const indent = '  '.repeat(depth)
+    switch (node.type) {
+      case 'doc': return kids.map((k) => blockOf(k)).filter(Boolean).join('\n\n')
+      case 'paragraph': return kids.map(textOf).join('')
+      case 'heading': return `${'#'.repeat(Math.min(6, Number(node.attrs?.level) || 2))} ${kids.map(textOf).join('')}`
+      case 'codeBlock': return `\`\`\`${String(node.attrs?.language ?? '')}\n${kids.map(textOf).join('')}\n\`\`\``
+      case 'blockquote': return kids.map((k) => blockOf(k)).join('\n\n').split('\n').map((line) => `> ${line}`).join('\n')
+      case 'rule': return '---'
+      case 'panel': return kids.map((k) => blockOf(k)).join('\n\n')
+      case 'bulletList':
+      case 'orderedList':
+        return kids.map((item, index) => {
+          const parts = (item.content ?? []).map((k) => blockOf(k, depth + 1))
+          return `${indent}${node.type === 'orderedList' ? `${index + 1}.` : '-'} ${parts.join('\n')}`
+        }).join('\n')
+      case 'taskList': return kids.map((item) => `${indent}- [${item.attrs?.state === 'DONE' ? 'x' : ' '}] ${(item.content ?? []).map(textOf).join('')}`).join('\n')
+      case 'table': {
+        const rows = kids.map((row) => (row.content ?? []).map((cell) => (cell.content ?? []).map((k) => blockOf(k)).join(' ').replace(/\|/g, '\\|').replace(/\n/g, ' ')))
+        if (!rows.length) return ''
+        const widest = Math.max(...rows.map((r) => r.length))
+        const line = (cells: string[]) => `| ${Array.from({ length: widest }, (_, i) => cells[i] ?? '').join(' | ')} |`
+        return [line(rows[0]), line(Array.from({ length: widest }, () => '---')), ...rows.slice(1).map(line)].join('\n')
+      }
+      case 'mediaSingle':
+      case 'mediaGroup': return '(an attachment, in Jira)'
+      default: return node.content ? kids.map((k) => blockOf(k, depth)).filter(Boolean).join('\n\n') : textOf(node)
+    }
+  }
+  if (!document || typeof document !== 'object') return ''
+  return blockOf(document as AdfNode).trim()
+}
+
+interface AdfNode {
+  type?: string
+  text?: string
+  attrs?: Record<string, unknown>
+  marks?: { type?: string; attrs?: Record<string, unknown> }[]
+  content?: AdfNode[]
+}
+
 /** A comment the hub wrote on someone's behalf says so, and it's only that when the service account wrote it: a person using that account is still a person. */
 const saidInBinders = /^[*_]*[^\n]{1,200}, in Binders:/
 export const inBinders = (who: string, text: string) => `**${who}, in Binders:** ${text}`
@@ -705,7 +834,9 @@ export async function heardComment(hub: Hub, jira: JiraConnection, card: Card, c
 export async function heardStatus(hub: Hub, jira: JiraConnection, mirror: JiraMirror, card: Card, status: string | undefined, at: string): Promise<'moved' | 'echo' | 'ignored'> {
   if (!mirror.statusNews(card.id, status)) return 'echo'
   const stage = stageOf(status, jira.settings.statuses, card, jira.settings.inbound)
-  const fields = stage && handMove(card, stage)
+  // Work the team is doing in Jira with no agent on it is theirs to start there: that's only for the board's own cards.
+  const theirs = card.jira?.imported && !card.agentId && stage === 'working'
+  const fields = stage && (theirs ? { stage, needsYou: undefined, doing: `In progress in Jira` } : handMove(card, stage))
   if (!stage || !fields) return 'ignored'
   mirror.heard(card.id, stage)
   await hub.record({ kind: 'hub' }, { type: 'card.update', id: card.id, fields, activity: { at, by: 'Jira', kind: 'moved', text: `Jira moved it to ${status}` } })

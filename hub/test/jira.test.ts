@@ -8,7 +8,8 @@ import Fastify from 'fastify'
 import { Actions } from '../src/actions.ts'
 import { mcpServer } from '../src/mcp.ts'
 import { Auth } from '../src/auth.ts'
-import { suggestStatuses, suggestTypes, handleWebhook, jiraAddress, JiraConnection, stageOf, fieldsForPoints, askOfAgent, markOf } from '../src/jira.ts'
+import { suggestStatuses, suggestTypes, handleWebhook, jiraAddress, JiraConnection, stageOf, fieldsForPoints, askOfAgent, markOf, markdownOf } from '../src/jira.ts'
+import { importFeatures, listFeatures } from '../src/jiraImport.ts'
 import { GitHubConnection } from '../src/githubConnection.ts'
 import { Sealer } from '../src/secrets.ts'
 import { Hub } from '../src/hub.ts'
@@ -67,13 +68,20 @@ async function fakeJira(options: { refuseWrites?: () => boolean; refuseSearch?: 
     if (options.refuseWrites?.()) return reply.code(503).send({})
     const one = issues.get((request.params as { id: string }).id)
     if (!one) return reply.code(404).send({})
-    if ((request.body as { fields: { parent?: unknown } }).fields.parent && options.refuseParent?.()) return reply.code(400).send({ errors: { parent: 'Not under that.' } })
+    if ((request.body as { fields?: { parent?: unknown } }).fields?.parent && options.refuseParent?.()) return reply.code(400).send({ errors: { parent: 'Not under that.' } })
     if (options.refusePoints && (request.body as { fields: object }).fields && 'customfield_10016' in (request.body as { fields: object }).fields) return reply.code(400).send({ errors: { customfield_10016: 'Not on the screen.' } })
+    const labelled = (request.body as { update?: { labels?: { add: string }[] } }).update?.labels
+    if (labelled) {
+      one.labels = [...(one.labels ?? []), ...labelled.map((l) => l.add)]
+      return {}
+    }
     Object.assign(one, (request.body as { fields: object }).fields)
     return {}
   })
   app.get('/rest/api/3/issue/:id', async (request, reply) => {
-    const { id } = request.params as { id: string }
+    // Jira takes an issue's id or its key.
+    const asked = (request.params as { id: string }).id
+    const id = issues.has(asked) ? asked : [...issues.entries()].find(([, one]) => one.key === asked)?.[0] ?? asked
     const one = issues.get(id)
     if (!one) return reply.code(404).send({})
     return { id, key: one.key, fields: { summary: one.summary, description: one.description, status: { name: one.status } } }
@@ -127,6 +135,12 @@ async function fakeJira(options: { refuseWrites?: () => boolean; refuseSearch?: 
   app.get('/rest/api/3/search/jql', async (request, reply) => {
     if (options.refuseSearch?.()) return reply.code(503).send({})
     const { jql } = request.query as { jql: string }
+    // Stories under features, or the features themselves.
+    const under = /parent in \(([^)]*)\)/.exec(jql)?.[1].split(',').map((k) => k.trim())
+    const describe = (id: string, one: FakeIssue) => ({ id, key: one.key, fields: { ...one, summary: one.summary, description: one.description, parent: one.parent, status: { name: one.status, statusCategory: { key: categoryOf(one.status) } }, assignee: one.assignee } })
+    if (under) return { issues: [...issues.entries()].filter(([, one]) => one.parent && under.includes(one.parent.key)).map(([id, one]) => describe(id, one)) }
+    const type = /issuetype = "([^"]+)"/.exec(jql)?.[1]
+    if (type) return { issues: [...issues.entries()].filter(([, one]) => one.type === type).map(([id, one]) => describe(id, one)) }
     // A look at what's changed.
     if (/labels = "binders"/.test(jql)) return { issues: [...issues.entries()].filter(([, one]) => one.labels?.includes('binders')).map(([id, one]) => ({ id, key: one.key, fields: { status: { name: one.status }, comment: { comments: one.comments ?? [] } } })) }
     const label = /labels = "([^"]+)"/.exec(jql)?.[1] ?? ''
@@ -852,6 +866,160 @@ describe('Jira talking back', () => {
     const later = of({ stage: 'review', activity: [done] }, 'a1', 1000 + 100_000)!
     assert.equal(later.finishing, undefined, 'its time is up before the hub steps in')
     assert.equal(later.ask, undefined)
+  })
+
+  describe('bringing in what a team already has', () => {
+    const doc = (...content: unknown[]) => ({ type: 'doc', version: 1, content })
+    const para = (text: string) => ({ type: 'paragraph', content: [{ type: 'text', text }] })
+    const seed = (set: Set_) => {
+      const add = (id: string, one: Partial<FakeIssue> & { key: string }) => set.fake.issues.set(id, { status: 'To Do', project: 'BIND', type: 'Task', ...one })
+      add('900', { key: 'BIND-900', type: 'Epic', summary: 'Checkout', description: doc(para('Faster checkout.')), status: 'In Progress' })
+      add('901', { key: 'BIND-901', summary: 'Not started', description: doc(para('Their words.')), parent: { key: 'BIND-900' } })
+      add('902', { key: 'BIND-902', summary: 'Being built', status: 'In Progress', assignee: { displayName: 'Pat' }, parent: { key: 'BIND-900' } })
+      add('903', { key: 'BIND-903', summary: 'Finished', status: 'Done', parent: { key: 'BIND-900' } })
+      add('904', { key: 'BIND-904', summary: 'Dropped', status: 'Won’t Do', parent: { key: 'BIND-900' } })
+    }
+    const settings = { statuses: { ready: 'To Do', working: 'In Progress', live: 'Done' }, noteIssueType: 'Epic' }
+    const stage = (set: Set_, id: string) => set.stored(`card-jira-${id}`)?.stage
+    const go = (set: Set_, more: object = {}) => importFeatures(set.hub, set.jira, set.saver, { binderId: 'b1', keys: ['BIND-900'], by: 'you', ...more })
+
+    it('lists features with how their stories stand, changing nothing', async () => {
+      const set = await setUp({}, settings.statuses)
+      try {
+        await set.jira.configure({ ...set.jira.settings, ...settings })
+        seed(set)
+        const [feature] = await listFeatures(set.hub, set.jira)
+        assert.deepEqual({ key: feature.key, stories: feature.stories, stages: feature.stages, leftOut: feature.leftOut }, { key: 'BIND-900', stories: 4, stages: { ready: 1, working: 1, live: 1 }, leftOut: 1 })
+        assert.ok(!set.fake.calls.some((c) => c.method !== 'GET'))
+      } finally {
+        await set.close()
+      }
+    })
+
+    it('makes a note and cards where each stands, keeps agents off it, and leaves their words alone', async () => {
+      const set = await setUp({}, settings.statuses)
+      try {
+        await set.jira.configure({ ...set.jira.settings, ...settings })
+        seed(set)
+        const counted = await go(set)
+        assert.equal(counted.stories, 3)
+        assert.deepEqual(counted.leftOut, ['BIND-904'])
+        assert.equal(stage(set, '901'), 'proposed', 'no agent starts it till someone says')
+        assert.equal(stage(set, '902'), 'working')
+        assert.equal(stage(set, '903'), 'live')
+        assert.equal(stage(set, '904'), undefined)
+        assert.match(set.stored('card-jira-902')!.doing!, /Pat/)
+        assert.equal(set.stored('card-jira-901')!.brief, 'Their words.')
+        assert.equal(set.stored('card-jira-902')!.jira?.key, 'BIND-902')
+        const note = set.hub.state.notes.find((n) => n.id === 'note-jira-900')!
+        assert.match(note.text, /^# Checkout\n\nFaster checkout\./)
+        assert.equal(set.hub.state.folders.find((f) => f.id === note.folderId)?.name, 'From Jira')
+
+        await until(() => !!set.fake.issues.get('902')!.labels?.includes('binders-card-jira-902') && !!set.fake.issues.get('900')!.labels?.includes('binders-note-note-jira-900'), 4000)
+        await settled()
+        const writes = set.fake.calls.filter((c) => c.method !== 'GET')
+        assert.equal(set.made(), 0, 'no issue is made')
+        assert.ok(!writes.some((c) => c.path.endsWith('/transitions') || c.path.endsWith('/comment')), 'nothing moves or is said')
+        assert.ok(writes.every((c) => 'update' in (c.body as object)), 'and labels are all that’s written')
+        assert.deepEqual(set.fake.issues.get('901')!.description, doc(para('Their words.')))
+      } finally {
+        await set.close()
+      }
+    })
+
+    it('lets agents take what hasn’t started, when it’s asked to', async () => {
+      const set = await setUp({}, settings.statuses)
+      try {
+        await set.jira.configure({ ...set.jira.settings, ...settings })
+        seed(set)
+        await go(set, { agentsMayTake: true })
+        assert.equal(stage(set, '901'), 'ready')
+      } finally {
+        await set.close()
+      }
+    })
+
+    it('brings in only what’s new the next time, and only this project’s', async () => {
+      const set = await setUp({}, settings.statuses)
+      try {
+        await set.jira.configure({ ...set.jira.settings, ...settings })
+        seed(set)
+        await go(set)
+        const cards = set.hub.state.cards.length
+        const notes = set.hub.state.notes.length
+        set.fake.issues.set('905', { key: 'BIND-905', summary: 'New', status: 'To Do', project: 'BIND', type: 'Task', parent: { key: 'BIND-900' } })
+        const again = await go(set)
+        assert.equal(again.stories, 1)
+        assert.equal(again.already, 3)
+        assert.equal(set.hub.state.cards.length, cards + 1)
+        assert.equal(set.hub.state.notes.length, notes)
+        await assert.rejects(go(set, { keys: ['OTHER-1'] }), /Only BIND/)
+      } finally {
+        await set.close()
+      }
+    })
+
+    it('follows Jira after, writes only the title back, and never the description', async () => {
+      const set = await setUp({}, settings.statuses)
+      try {
+        await set.jira.configure({ ...set.jira.settings, ...settings })
+        seed(set)
+        await go(set)
+        await settled()
+        await set.saver.poll()
+        const issue = set.fake.issues.get('901')!
+        issue.status = 'In Progress'
+        issue.comments = [{ body: 'Started on this.', created: '2026-01-01T10:00:00.000Z', author: { displayName: 'Pat', accountId: 'a-person' } }]
+        await set.saver.poll()
+        assert.equal(stage(set, '901'), 'working', 'work started in Jira shows here, with no agent on it')
+        assert.equal(set.stored('card-jira-901')!.activity.filter((a) => a.by === 'Pat on Jira').length, 1)
+
+        set.fake.issues.get('903')!.status = 'To Do'
+        await set.saver.poll()
+        assert.equal(stage(set, '903'), 'ready')
+
+        await set.edit('card-jira-902', { title: 'Better title', brief: 'Changed here.' })
+        await until(() => set.fake.issues.get('902')!.summary === 'Better title', 4000)
+        assert.equal(set.fake.issues.get('902')!.description, undefined, 'its description isn’t touched')
+
+        await set.hub.record(actor, { type: 'note.edit', id: 'note-jira-900', text: '# Checkout\n\nNew words.', title: 'Checkout', by: 'you', at: new Date().toISOString() })
+        await sleep(60)
+        assert.deepEqual(set.fake.issues.get('900')!.description, doc(para('Faster checkout.')), 'nor is the feature’s')
+      } finally {
+        await set.close()
+      }
+    })
+
+    it('keeps its points until the size changes, and reads the size from them', async () => {
+      const set = await setUp({}, settings.statuses)
+      try {
+        await set.jira.configure({ ...set.jira.settings, ...settings, pointsField: 'customfield_10016', pointsKind: 'number', points: { S: 1, M: 3, L: 5 } })
+        seed(set)
+        set.fake.issues.get('901')!.customfield_10016 = 8
+        await go(set)
+        await settled()
+        assert.equal(set.stored('card-jira-901')!.size, 'L', 'nearest to 8')
+        assert.equal(set.fake.issues.get('901')!.customfield_10016, 8, 'and Jira’s number stands')
+        await set.edit('card-jira-901', { size: 'S' })
+        await until(() => set.fake.issues.get('901')!.customfield_10016 === 1, 4000)
+      } finally {
+        await set.close()
+      }
+    })
+
+    it('reads Jira’s format as Markdown', () => {
+      const text = (t: string, ...marks: object[]) => ({ type: 'text', text: t, marks })
+      assert.equal(markdownOf(doc(
+        { type: 'heading', attrs: { level: 2 }, content: [text('Goal')] },
+        { type: 'paragraph', content: [text('Be '), text('fast', { type: 'strong' }), text(' see '), text('docs', { type: 'link', attrs: { href: 'https://x.test' } })] },
+        { type: 'bulletList', content: [{ type: 'listItem', content: [para('One')] }, { type: 'listItem', content: [para('Two')] }] },
+        { type: 'orderedList', content: [{ type: 'listItem', content: [para('First')] }] },
+        { type: 'codeBlock', attrs: { language: 'ts' }, content: [text('a()')] },
+        { type: 'table', content: [{ type: 'tableRow', content: [{ type: 'tableHeader', content: [para('A')] }, { type: 'tableHeader', content: [para('B')] }] }, { type: 'tableRow', content: [{ type: 'tableCell', content: [para('1')] }, { type: 'tableCell', content: [para('2')] }] }] },
+      )), '## Goal\n\nBe **fast** see [docs](https://x.test)\n\n- One\n- Two\n\n1. First\n\n\`\`\`ts\na()\n\`\`\`\n\n| A | B |\n| --- | --- |\n| 1 | 2 |')
+      assert.equal(markdownOf(undefined), '')
+      assert.equal(markdownOf('Plain.'), 'Plain.')
+    })
   })
 
   it('lands comments as from Jira, once each, in either of Jira’s formats', async () => {

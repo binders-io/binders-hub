@@ -165,7 +165,7 @@ export interface Card {
   /** Its GitHub issue, once the binder's repo has one for it. */
   issue?: { repo: string; number: number; url: string }
   /** Its Jira issue, once the binder's project has one for it. */
-  jira?: { key: string; url: string }
+  jira?: { key: string; url: string; imported?: boolean }
   prId?: string
   /** Before there's a pull request: the diff of the card's worktree, as its runner last saw it. */
   worktree?: WorktreeDiff

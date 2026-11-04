@@ -2,10 +2,10 @@ import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { ArrowUpRight } from 'lucide-react'
 import { call } from '../data/api'
 import { BookOpen, Check, Copy, Plug, Plus, RefreshCw, Server, ShieldCheck, Trash2, Bot, Users, X, } from 'lucide-react'
-import { useStore } from '../data/store'
+import { useHub, useStore } from '../data/store'
 import { ago } from '../components/bits'
 import type { Binder } from '../../../shared/notes.ts'
-import { attempt } from '../components/Toast'
+import { attempt, toast } from '../components/Toast'
 import { GitHubSetup } from '../components/GitHubSetup'
 import { HubOptionsPanel } from '../components/HubOptionsPanel'
 import { RepoInput } from '../components/RepoInput'
@@ -452,12 +452,92 @@ function JiraPart() {
           </>
         )}
       </form>
+      {jira.on && <JiraImport />}
       {jira.on && jira.webhook && (
         <div className="copy-row" style={{ marginTop: '.75rem' }}>
           <span className="field-label">Jira’s webhook, to this hub (optional)</span>
           <div className="token-value mono"><span>{jira.webhook.url}</span><CopyWebhook url={jira.webhook.url} /></div>
           <span className="field-hint">The hub asks Jira every minute without one. For news as it happens, in Jira: Settings → System → WebHooks → Create. Use this address, with the events Issue updated, Issue deleted and Comment created, limited to this project. The address holds a secret: keep it like a password.</span>
         </div>
+      )}
+    </div>
+  )
+}
+
+interface JiraFeature {
+  key: string
+  title: string
+  status?: string
+  stories: number
+  stages: Record<string, number>
+  leftOut: number
+  here: number
+  noted: boolean
+}
+
+const stageWords: Record<string, string> = { ready: 'not started', working: 'in progress', blocked: 'blocked', review: 'in review', live: 'done' }
+
+/** A team's existing work: its features and their stories, onto the board where they stand. */
+function JiraImport() {
+  const [features, setFeatures] = useState<JiraFeature[]>()
+  const [chosen, setChosen] = useState<string[]>([])
+  const [mayTake, setMayTake] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const binders = useHub((state) => state.binders)
+  const [binderId, setBinderId] = useState('')
+  const into = binderId || binders[0]?.id || ''
+  const read = () => void attempt(() => call<{ features: JiraFeature[] }>('GET', '/api/jira/features')).then((found) => { if (found) setFeatures(found.features) })
+  const bring = () => {
+    setBusy(true)
+    void attempt(() => call<{ features: number; stories: number; already: number; leftOut: string[] }>('POST', '/api/jira/import', { binderId: into, keys: chosen, agentsMayTake: mayTake })).then((done) => {
+      setBusy(false)
+      if (!done) return
+      toast(`Brought in ${done.stories} ${done.stories === 1 ? 'story' : 'stories'}${done.already ? `. ${done.already} ${done.already === 1 ? 'was' : 'were'} already here` : ''}${done.leftOut.length ? `. Left out, as ended without being done: ${done.leftOut.join(', ')}` : ''}.`)
+      setChosen([])
+      read()
+    })
+  }
+  return (
+    <div className="jira-import">
+      <span className="field-label">Bring in existing work</span>
+      {!features && (
+        <>
+          <span className="field-hint">Bring a feature and its stories onto the board, each where it stands in Jira.</span>
+          <div><button type="button" className="button" onClick={read}>See what’s in Jira</button></div>
+        </>
+      )}
+      {features && !features.length && <span className="field-hint">No features in this project. It looks for the type you chose under “A note becomes”.</span>}
+      {features && features.length > 0 && (
+        <>
+          <ul className="jira-features">
+            {features.map((f) => (
+              <li key={f.key}>
+                <label>
+                  <input id={`jira-feature-${f.key}`} type="checkbox" checked={chosen.includes(f.key)} onChange={(e) => setChosen((was) => (e.target.checked ? [...was, f.key] : was.filter((k) => k !== f.key)))} />
+                  <span>
+                    <b className="mono">{f.key}</b> {f.title}
+                    <em className="faint">
+                      {f.stories} {f.stories === 1 ? 'story' : 'stories'}{f.stories ? `: ${Object.entries(f.stages).map(([stage, count]) => `${count} ${stageWords[stage] ?? stage}`).join(', ')}` : ''}
+                      {f.leftOut ? `, ${f.leftOut} left out` : ''}{f.here ? `, ${f.here} already here` : ''}
+                    </em>
+                  </span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          {binders.length > 1 && (
+            <label className="field"><span className="field-label">Into</span>
+              <select id="jira-import-binder" value={into} onChange={(e) => setBinderId(e.target.value)}>
+                {binders.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </label>
+          )}
+          <label className="jira-import-take">
+            <input id="jira-import-take" type="checkbox" checked={mayTake} onChange={(e) => setMayTake(e.target.checked)} /> Let agents take what hasn’t started
+          </label>
+          <span className="field-hint">{mayTake ? 'Stories not started go to Ready, and any agent working in this binder can take them straight away.' : 'Stories not started go to Proposed, so no agent starts them until someone moves them to Ready.'} Their descriptions in Jira aren’t changed. Each issue gets a “binders” label, so the hub can follow it.</span>
+          <div><button type="button" className="button primary" disabled={!chosen.length || busy} onClick={bring}>{busy ? 'Bringing them in…' : `Bring in ${chosen.length || ''} ${chosen.length === 1 ? 'feature' : 'features'}`}</button></div>
+        </>
       )}
     </div>
   )

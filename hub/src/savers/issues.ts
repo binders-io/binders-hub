@@ -137,6 +137,8 @@ export class IssuesSaver {
     if (!binder || !repo || binder.issues === false) return
     // A proposed card waits for a person before it's anyone's issue.
     if (card.stage === 'proposed' && !card.issue) return
+    // Brought in from Jira, which keeps track of it: it's only worth an issue here once an agent takes it up.
+    if (card.jira?.imported && !card.issue && !card.agentId) return
     const github = await this.github.forRepo(repo)
     if (!github) {
       this.problems.set(binder.id, `The hub can’t reach ${repo}: install the GitHub App on it, or check the name.`)

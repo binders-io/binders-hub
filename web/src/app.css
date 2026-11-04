@@ -1718,3 +1718,12 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
 .note-versions ol { list-style: none; margin: 0; padding: 0; max-height: 240px; overflow: auto; }
 .note-version { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: 6px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .note-version:hover, .note-version.on { background: var(--fill-3); }
+
+/* Bringing existing work in from Jira */
+.jira-import { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line, currentColor); }
+.jira-features { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow: auto; }
+.jira-features label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.jira-features input { flex: none; margin-top: 3px; }
+.jira-features span { min-width: 0; overflow-wrap: anywhere; }
+.jira-features em { display: block; font-style: normal; font-size: 12.5px; }
+.jira-import-take { display: flex; gap: 8px; align-items: center; }

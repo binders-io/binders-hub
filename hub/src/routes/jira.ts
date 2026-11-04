@@ -2,6 +2,7 @@ import { Refusal } from '../auth.ts'
 import { Refused } from '../hub.ts'
 import { discoverJira, jiraAddress, stages, usualPointsOf, validProject, type JiraSettings, type StageStatuses } from '../jira.ts'
 import type { Stage } from '../../../shared/work.ts'
+import { importFeatures, listFeatures } from '../jiraImport.ts'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { Context } from './context.ts'
 
@@ -75,6 +76,22 @@ export async function jiraRoutes(app: FastifyInstance, context: Context) {
     await binder.jiraIssues?.forget()
     await binder.jira?.disconnect()
     return { ok: true }
+  }))
+
+  // A team's existing work: what there is to bring in, and bringing it.
+  app.get('/api/jira/features', act(async (request) => {
+    owner(request, 'bring work in from')
+    const { hub, jira } = sp(request)
+    if (!jira?.on()) throw new Refused('Connect Jira first.')
+    return { features: await listFeatures(hub, jira) }
+  }))
+  app.post('/api/jira/import', act(async (request) => {
+    owner(request, 'bring work in from')
+    const { hub, jira, jiraIssues } = sp(request)
+    if (!jira || !jiraIssues) throw new Refused('Jira isn’t available on this binder.')
+    const body = (request.body ?? {}) as { binderId?: unknown; keys?: unknown; agentsMayTake?: unknown }
+    if (typeof body.binderId !== 'string' || !Array.isArray(body.keys) || !body.keys.every((k) => typeof k === 'string')) throw new Refused('Say which binder and which features.')
+    return importFeatures(hub, jira, jiraIssues, { binderId: body.binderId, keys: body.keys as string[], by: login(request), agentsMayTake: body.agentsMayTake === true })
   }))
 
   // What Jira has, to fill in the mapping: nothing is kept. As on saving, a saved token goes only to the address it was given for.
