@@ -1,6 +1,6 @@
 import { tools, type AgentTool } from './agents.ts'
 import { withTestResult, type Challenge, type Debrief, type TestResult, type WorktreeDiff } from './changeSet.ts'
-import type { Schedule } from './schedule.ts'
+import { runsKept, type Schedule, type ScheduleRun } from './schedule.ts'
 // The work: cards on a binder's board, the agents that take them, their pull requests, the change sets those are
 // approved in, and the environments they ship to. Like notes, all of it moves by changes in the hub's log, applied in
 // order with the same `applyWork` on the hub and in every browser.
@@ -113,9 +113,11 @@ export interface Presence {
   listening: boolean
   /** Runners heard from lately for this agent: more than one take the same work. */
   runners?: number
+  /** Where they run, as each says. */
+  runnersOn?: string[]
 }
 
-export type ActivityKind = 'created' | 'claimed' | 'released' | 'progress' | 'step' | 'said' | 'comment' | 'question' | 'answer' | 'pr' | 'completed' | 'moved' | 'merged' | 'deployed' | 'ran' | 'debrief' | 'challenge'
+export type ActivityKind = 'created' | 'claimed' | 'released' | 'progress' | 'step' | 'said' | 'comment' | 'question' | 'answer' | 'pr' | 'completed' | 'moved' | 'merged' | 'deployed' | 'ran' | 'permission' | 'debrief' | 'challenge' | 'message'
 
 export interface Activity {
   at: string
@@ -130,6 +132,8 @@ export interface Activity {
   /** For a run ending ("ran"): what it used. */
   tokens?: number
   cost?: number
+  /** For a message: the agent it's to. */
+  to?: string
 }
 
 export interface PlanStep {
@@ -172,6 +176,8 @@ export interface Card {
   plan?: PlanStep[]
   /** A question waiting for a person. */
   needsYou?: string
+  /** A live run waiting on a permission: what it wants to do, until its agent's owner answers or the run moves on. */
+  permission?: { request: string; agent: string; tool: string; what: string; at: string; answer?: 'allow' | 'deny'; by?: string }
   activity: Activity[]
   cost?: number
   /** Tokens its runs used, all told. */
@@ -179,6 +185,12 @@ export interface Card {
   minutes?: number
   /** The schedule that put it on the board, for a scheduled run of a note. */
   scheduleId?: string
+  /** A Distill the hub started under a folder's rule: the rule, whose limits say what's accepted without a person. */
+  distillRule?: string
+  /** Accepted without a person, under a folder's rule: the rule, and who set it. */
+  acceptedBy?: { rule: string; setBy: string }
+  /** Suggested by an agent on work nobody had read: that card. It's proposed until a person moves it on, whichever agent is asked. */
+  madeUnread?: string
 }
 
 export interface Proposal {
@@ -194,6 +206,44 @@ export interface Proposal {
   by: string
   state: 'new' | 'accepted' | 'dismissed'
   cardId?: string
+  /** Who accepted it, by the log's say (see proposal.take), and the rule it counted against. */
+  claim?: string
+  rule?: string
+}
+
+/** What a folder does with the notes in it (and in folders inside it, unless one has its own rule). Only people set these. */
+export interface FolderRule {
+  id: string
+  binderId: string
+  folderId: string
+  enabled: boolean
+  /** Distill a note here without being asked, once, when it's finished. */
+  distill: boolean
+  /** The agent that distills them; none for the first one free. */
+  agentId?: string
+  /** A person's note counts as finished after this long with no edit. A scheduled run's note, when its run is over. */
+  quietMinutes: number
+  /** Accept what's proposed without a person, up to these limits. What's over them waits for a person. It never approves a change set. */
+  accept?: { maxCards: number; sizes: Card['size'][]; agents: string[] }
+  /** Whether a note's work joins the change set that's open, or gets one of its own. */
+  changeSet: 'shared' | 'own'
+  /** Notes last edited before this are left alone: a rule isn't for what's already there. */
+  since: string
+  createdAt: string
+  createdBy: string
+  /** Why it can't do what it says, until a person changes it. */
+  failing?: string
+}
+
+/** What the hub knows of a note beyond its words. */
+export interface NoteWork {
+  noteId: string
+  /** A person's choice for this one note; the folder's rule when there's none. */
+  changeSet?: 'shared' | 'own'
+  /** The scheduled run that wrote it. */
+  fromRun?: { scheduleId: string; cardId: string }
+  /** Its one automatic Distill: taken by whichever hub's `claim` is first, with the id its card gets, and `made` once it has it. */
+  distill?: { rule: string; claim: string; at: string; cardId: string; made?: boolean }
 }
 
 export type CheckState = 'queued' | 'running' | 'passed' | 'failed'
@@ -257,6 +307,8 @@ export interface ChangeSet {
   /** In merge order. */
   prIds: string[]
   noteIds: string[]
+  /** A note's own: only that note's work goes in it, and open work elsewhere stays out. */
+  forNote?: string
   approvedBy?: string
   issue?: { repo: string; number: number; url: string }
   /** Approved, and merging as each pull request is ready: those it's waiting on, and for what. */
@@ -404,9 +456,11 @@ export interface WorkState {
   schedules?: Schedule[]
   /** Each repo's brief. Missing from logs written before there were any. */
   briefs?: RepoBrief[]
+  folderRules?: FolderRule[]
+  noteWork?: NoteWork[]
 }
 
-export const emptyWork = (): WorkState => ({ agents: [], cards: [], proposals: [], pulls: [], changeSets: [], environments: [], runs: [], chats: [], schedules: [], briefs: [] })
+export const emptyWork = (): WorkState => ({ agents: [], cards: [], proposals: [], pulls: [], changeSets: [], environments: [], runs: [], chats: [], schedules: [], briefs: [], folderRules: [], noteWork: [] })
 
 /** How many messages a chat keeps; older ones are dropped. */
 export const chatKept = 200
@@ -423,7 +477,9 @@ export type WorkChange =
   | { type: 'card.activity'; id: string; activity: Activity }
   | { type: 'card.delete'; id: string }
   | { type: 'proposal.put'; proposal: Proposal }
-  | { type: 'proposal.update'; id: string; fields: Partial<Pick<Proposal, 'state' | 'cardId' | 'meantFor'>> }
+  | { type: 'proposal.update'; id: string; fields: Partial<Pick<Proposal, 'state' | 'cardId' | 'meantFor' | 'claim' | 'rule'>> }
+  /** A proposal accepted: only the first counts, and under a rule, only up to its limit for the note. */
+  | { type: 'proposal.take'; id: string; claim: string; rule?: string; limit?: number }
   | { type: 'pr.put'; pull: PullRequest }
   | { type: 'pr.update'; id: string; fields: Partial<Omit<PullRequest, 'id'>> }
   | { type: 'set.put'; set: ChangeSet }
@@ -437,6 +493,15 @@ export type WorkChange =
   | { type: 'schedule.put'; schedule: Schedule }
   | { type: 'schedule.update'; id: string; fields: Partial<Omit<Schedule, 'id'>> }
   | { type: 'schedule.delete'; id: string }
+  /** A schedule's time taken: only the first for each `due`, and never one before it, so a run fires once however many hubs share the log. */
+  | { type: 'schedule.fire'; id: string; due: string; claim: string; at: string }
+  /** What came of a firing, kept with the schedule. */
+  | { type: 'schedule.ran'; id: string; fields: Partial<Omit<Schedule, 'id' | 'runs'>>; run: ScheduleRun }
+  | { type: 'rule.put'; rule: FolderRule }
+  | { type: 'rule.delete'; id: string }
+  | { type: 'note.work'; noteId: string; fields: Partial<Omit<NoteWork, 'noteId' | 'distill'>> }
+  /** A note's automatic Distill taken: only the first counts, or one taking over from a `replaces` that never made its card. */
+  | { type: 'note.distill'; noteId: string; rule: string; claim: string; at: string; cardId: string; made?: boolean; replaces?: string }
   | { type: 'brief.put'; brief: RepoBrief }
   | { type: 'brief.delete'; id: string }
   /** A person ran one of a debrief's functional tests (by its card or change set's id): its result, or none to clear it. */
@@ -480,7 +545,7 @@ export function applyWork<S extends WorkState>(state: S, change: WorkChange): S 
         ...state,
         agents: patch(state.agents, change.id, { revoked: true }),
         // What it held goes back on the board.
-        cards: state.cards.map((c) => (c.agentId === change.id && c.stage === 'working' ? { ...c, agentId: undefined, stage: 'ready', doing: undefined, progress: undefined } : c)),
+        cards: state.cards.map((c) => (c.agentId === change.id && c.stage === 'working' ? { ...c, permission: undefined, agentId: undefined, stage: 'ready', doing: undefined, progress: undefined } : c)),
       }
     case 'card.put':
       return { ...state, cards: upsert(state.cards, { ...change.card, stage: current(change.card.stage) }) }
@@ -491,6 +556,8 @@ export function applyWork<S extends WorkState>(state: S, change: WorkChange): S 
           if (c.id !== change.id) return c
           const fields = change.fields.stage ? { ...change.fields, stage: current(change.fields.stage) } : change.fields
           const next = { ...merge(c, fields), updatedAt: change.activity?.at ?? c.updatedAt }
+          // A permission belongs to the run that asked: given to another agent, nobody is waiting on it any more.
+          if ('agentId' in fields && (fields.agentId ?? undefined) !== c.agentId) delete next.permission
           return change.activity ? withActivity(next, change.activity) : next
         }),
       }
@@ -504,6 +571,7 @@ export function applyWork<S extends WorkState>(state: S, change: WorkChange): S 
           if (c.stage !== 'ready' && !(c.stage === 'working' && c.agentId === change.agentId)) return c
           const meant = meantForNow(state, c)
           if (meant && meant !== change.agentId) return c
+          if (c.meantFor && c.meantFor !== change.agentId && pinned(state, c)) return c
           const agent = state.agents.find((a) => a.id === change.agentId)
           return withActivity({ ...c, agentId: change.agentId, stage: 'working', progress: 0 }, { at: change.at, by: change.agentId, kind: 'claimed', text: `${agent?.name ?? 'An agent'} took it` })
         }),
@@ -512,7 +580,7 @@ export function applyWork<S extends WorkState>(state: S, change: WorkChange): S 
       return {
         ...state,
         cards: state.cards.map((c) => (c.id === change.id && c.agentId === change.agentId
-          ? withActivity({ ...c, agentId: undefined, stage: 'ready', doing: undefined, progress: undefined }, { at: change.at, by: change.agentId, kind: 'released', text: change.why })
+          ? withActivity({ ...c, agentId: undefined, stage: 'ready', doing: undefined, progress: undefined, permission: undefined }, { at: change.at, by: change.agentId, kind: 'released', text: change.why })
           : c)),
       }
     case 'card.activity':
@@ -523,6 +591,12 @@ export function applyWork<S extends WorkState>(state: S, change: WorkChange): S 
       return { ...state, proposals: upsert(state.proposals, change.proposal) }
     case 'proposal.update':
       return { ...state, proposals: patch(state.proposals, change.id, change.fields) }
+    case 'proposal.take': {
+      const proposal = state.proposals.find((p) => p.id === change.id)
+      if (proposal?.state !== 'new') return state
+      if (change.rule && change.limit !== undefined && state.proposals.filter((p) => p.noteId === proposal.noteId && p.rule === change.rule).length >= change.limit) return state
+      return { ...state, proposals: patch(state.proposals, change.id, { state: 'accepted', claim: change.claim, ...(change.rule ? { rule: change.rule } : {}) }) }
+    }
     case 'pr.put':
       return { ...state, pulls: upsert(state.pulls, change.pull) }
     case 'pr.update':
@@ -550,6 +624,24 @@ export function applyWork<S extends WorkState>(state: S, change: WorkChange): S 
       return { ...state, chats: patch(state.chats ?? [], change.id, { working: change.working || undefined, doing: change.working ? change.doing : undefined }) }
     case 'chat.clear':
       return { ...state, chats: (state.chats ?? []).filter((c) => c.id !== change.id) }
+    case 'schedule.fire':
+      return { ...state, schedules: (state.schedules ?? []).map((x) => (x.id === change.id && (!x.lastDue || change.due > x.lastDue) ? { ...x, lastDue: change.due, lastClaim: change.claim, lastRun: change.at } : x)) }
+    case 'schedule.ran':
+      return { ...state, schedules: (state.schedules ?? []).map((x) => (x.id === change.id ? { ...merge(x, change.fields), runs: [change.run, ...(x.runs ?? [])].slice(0, runsKept) } : x)) }
+    case 'rule.put':
+      return { ...state, folderRules: upsert(state.folderRules ?? [], change.rule) }
+    case 'rule.delete':
+      return { ...state, folderRules: (state.folderRules ?? []).filter((r) => r.id !== change.id) }
+    case 'note.work': {
+      const was = (state.noteWork ?? []).find((w) => w.noteId === change.noteId) ?? { noteId: change.noteId }
+      return { ...state, noteWork: [...(state.noteWork ?? []).filter((w) => w.noteId !== change.noteId), merge(was, change.fields)] }
+    }
+    case 'note.distill': {
+      const was = (state.noteWork ?? []).find((w) => w.noteId === change.noteId) ?? { noteId: change.noteId }
+      if (was.distill && was.distill.claim !== change.claim && was.distill.claim !== change.replaces) return state
+      const distill = { rule: change.rule, claim: change.claim, at: change.at, cardId: change.cardId, ...(change.made ? { made: true } : {}) }
+      return { ...state, noteWork: [...(state.noteWork ?? []).filter((w) => w.noteId !== change.noteId), { ...was, distill }] }
+    }
     case 'schedule.put':
       return { ...state, schedules: upsert(state.schedules ?? [], change.schedule) }
     case 'schedule.update':
@@ -620,6 +712,38 @@ export function repliesFor(state: WorkState, agent: Agent, busy: string[] = []):
 }
 
 /** A card the agent holds whose question a person just answered: the agent goes on with it. */
+/**
+ * Work that went out with nobody reading it, which only the agent a person chose may take: a rule's Distill and what it
+ * accepted, and a run that writes into a folder. If that agent goes, it waits for a person, rather than being open to all.
+ */
+export function pinned(state: { schedules?: Schedule[] }, card: Pick<Card, 'distillRule' | 'acceptedBy' | 'scheduleId' | 'madeUnread'>) {
+  return !!card.distillRule || !!card.acceptedBy || !!card.madeUnread || (!!card.scheduleId && !!(state.schedules ?? []).find((s) => s.id === card.scheduleId)?.folderId)
+}
+
+/**
+ * The work an agent has out with nobody having read it, up to a person's review of it. What it asks for meanwhile can come
+ * from what it read, so what it suggests stays a suggestion.
+ */
+export function unreadWorkOf(state: { schedules?: Schedule[]; cards: Card[] }, agentId: string) {
+  return state.cards.find((c) => c.agentId === agentId && (c.stage === 'working' || c.stage === 'blocked' || c.stage === 'review') && pinned(state, c))
+}
+
+/** The rule a folder's notes go by: its own, or the nearest one above it that's on. */
+export function ruleFor(state: WorkState & { folders: { id: string; parentId?: string }[] }, folderId?: string): FolderRule | undefined {
+  const seen = new Set<string>()
+  for (let id = folderId; id && !seen.has(id); id = state.folders.find((f) => f.id === id)?.parentId) {
+    seen.add(id)
+    const rule = (state.folderRules ?? []).find((r) => r.folderId === id && r.enabled)
+    if (rule) return rule
+  }
+  return undefined
+}
+
+/** Whether a note's work gets a change set of its own: the note's say, then its folder's rule. */
+export function changeSetOf(state: WorkState & { folders: { id: string; parentId?: string }[] }, note: { id: string; folderId?: string }): 'shared' | 'own' {
+  return (state.noteWork ?? []).find((w) => w.noteId === note.id)?.changeSet ?? ruleFor(state, note.folderId)?.changeSet ?? 'shared'
+}
+
 export function resumeFor(state: WorkState, agent: Agent, busy: string[] = []): Card | undefined {
   // A card it holds, not asking anything, where a person had the last word: an answer, a comment such as a nudge, or
   // moving it back from blocked.
@@ -627,7 +751,7 @@ export function resumeFor(state: WorkState, agent: Agent, busy: string[] = []): 
   return state.cards.find((c) => {
     if (c.agentId !== agent.id || c.stage !== 'working' || c.needsYou || busy.includes(c.id)) return false
     // Someone asking for its debrief or a Challenge isn't talking to the agent working it.
-    const last = c.activity.filter((a) => a.kind !== 'debrief' && a.kind !== 'challenge').at(-1)
+    const last = c.activity.filter((a) => a.kind !== 'debrief' && a.kind !== 'challenge' && a.kind !== 'message').at(-1)
     return !!last && (last.kind === 'answer' || last.kind === 'comment' || last.kind === 'moved') && people(last.by)
   })
 }
@@ -645,8 +769,12 @@ export function handMove(card: Pick<Card, 'stage' | 'agentId'>, stage: Stage): P
   if (card.stage === stage) return undefined
   if (stage === 'working' && !(card.stage === 'blocked' && card.agentId)) return undefined
   const keep = stage === 'review' || stage === 'live' || stage === 'blocked' || stage === 'working'
-  return { stage, needsYou: undefined, doing: undefined, ...(keep ? {} : { agentId: undefined, progress: undefined }) }
+  return { stage, needsYou: undefined, permission: undefined, doing: undefined, ...(keep ? {} : { agentId: undefined, progress: undefined }) }
 }
+
+/** What a card is waiting on from a person, in a line: an agent's question, or a permission nobody has answered yet. */
+export const asksOf = (card: Pick<Card, 'needsYou' | 'permission'>) =>
+  card.needsYou ?? (card.permission && !card.permission.answer ? `Allow ${card.permission.tool}: ${card.permission.what}` : undefined)
 
 export function nextFor(state: WorkState & { binders: { id: string; repo?: string }[] }, agent: Agent, busy: string[] = []): Card | undefined {
   const done = new Set(state.cards.filter((c) => c.stage === 'review' || c.stage === 'live').map((c) => c.id))
@@ -665,9 +793,10 @@ export function nextFor(state: WorkState & { binders: { id: string; repo?: strin
  * Whether an agent may take a card, as the board offers them: one meant for it, whatever its binders and repos (a
  * person's to give), or one meant for nobody in a binder and repo it works in.
  */
-export function mayTake(state: { binders: { id: string; repo?: string }[]; agents?: { id: string; revoked?: boolean }[] }, agent: Pick<Agent, 'id' | 'binders' | 'repos'>, card: Pick<Card, 'meantFor' | 'binderId'>) {
+export function mayTake(state: { binders: { id: string; repo?: string }[]; agents?: { id: string; revoked?: boolean }[]; schedules?: Schedule[] }, agent: Pick<Agent, 'id' | 'binders' | 'repos'>, card: Pick<Card, 'meantFor' | 'binderId' | 'distillRule' | 'acceptedBy' | 'scheduleId'>) {
   const meant = meantForNow(state, card)
   if (meant) return meant === agent.id
+  if (card.meantFor && pinned(state, card)) return false
   const repo = state.binders.find((b) => b.id === card.binderId)?.repo
   return worksIn(agent, card.binderId, state.binders) && (!agent.repos.length || !repo || agent.repos.some((r) => sameRepo(r, repo)))
 }

@@ -2,8 +2,8 @@ import { useState, type FormEvent } from 'react'
 import { AnimatePresence } from 'motion/react'
 import { Check, ChevronDown, Copy, KeyRound, Play, Plus, RotateCw, SquareTerminal, Trash2 } from 'lucide-react'
 import type { Agent, Provider } from '../data/model'
-import { isListening, isOnline, useStore, runnersOf } from '../data/store'
-import { usualRules, defaultRunner, runnerShown, toolForProvider, type RunnerSettings } from '../../../shared/work.ts'
+import { isListening, isOnline, useStore, runnerPlaces, runnersOf } from '../data/store'
+import { asksOf, usualRules, defaultRunner, runnerShown, toolForProvider, type RunnerSettings } from '../../../shared/work.ts'
 import { accessNames, atLeast, restartSince, toolInfo, tools, type Access, type AgentTool } from '../../../shared/agents.ts'
 import { call } from '../data/api'
 import { ToolIcon } from '../components/ToolIcon'
@@ -88,7 +88,7 @@ export function Agents() {
 function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent; onEdit: () => void; onToken: () => void; onRevoke: () => void; onStart: () => void }) {
   const { state } = useStore()
   const holding = state.cards.filter((c) => c.agentId === agent.id && c.stage === 'working')
-  const asks = holding.filter((c) => c.needsYou)
+  const asks = holding.filter((c) => asksOf(c))
   const done = state.cards.filter((c) => c.agentId === agent.id && (c.stage === 'review' || c.stage === 'live')).length
   const online = isOnline(agent)
   const listening = isListening(agent)
@@ -130,13 +130,13 @@ function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent
       </header>
       {agent.runnerSeen?.enterpriseMcp && (runner?.tool ?? 'claude') === 'claude' && <p className="agent-note" role="status">Enterprise MCP config on this machine: working without Binders’ MCP tools, its runner reporting for it.</p>}
       {agent.runnerSeen?.bypassOff && (runner?.tool ?? 'claude') === 'claude' && runner?.access === 'full' && <p className="agent-note" role="status">This machine’s Claude Code policy turns full access off: it edits files without asking, and the commands it runs follow the policy’s rules.</p>}
-      {runnersOf(agent) > 1 && <p className="agent-warning" role="status">{runnersOf(agent)} runners are running as {agent.name}. They take the same work, each in its own folder: stop all but one.</p>}
+      {runnersOf(agent) > 1 && <p className="agent-warning" role="status">{runnersOf(agent)} runners are running as {agent.name}{runnerPlaces(agent).length ? `, on ${runnerPlaces(agent).join(' and ')}` : ''}. They take the same work, each in its own folder: stop all but one.</p>}
 
       <div className={`agent-doing${holding.length ? ' busy' : ''}${asks.length ? ' asks' : ''}`}>
         {holding.length ? holding.map((c) => (
           <a key={c.id} href={href({ screen: 'work', id: c.id })}>
-            <b>{c.needsYou ? 'Asks you' : 'Working on'}</b>
-            <span>{c.needsYou ?? c.doing ?? c.title}</span>
+            <b>{asksOf(c) ? 'Asks you' : 'Working on'}</b>
+            <span>{asksOf(c) ?? c.doing ?? c.title}</span>
           </a>
         )) : <span className="faint">Waiting for work{done ? ` · ${done} finished` : ''}</span>}
       </div>

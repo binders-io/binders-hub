@@ -99,6 +99,7 @@ export interface Actions {
   /** Gives a card to an agent (or opens it to any): one held by another agent goes back on the board for it. */
   giveCard: (id: string, agentId: string) => void
   comment: (cardId: string, text: string) => Promise<void>
+  answerPermission: (cardId: string, request: string, allow: boolean) => Promise<void>
   /** Splits a card into parts for a swarm of agents; each part a card, the card waiting for them. */
   splitCard: (id: string, parts: { title: string; brief?: string; agent?: string }[]) => Promise<void>
   /** Asks an agent for the card's debrief: the one named, or one the hub picks. */
@@ -410,6 +411,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
       },
       comment: (cardId, text) => call('POST', `/api/cards/${cardId}/comment`, { text }),
+      answerPermission: (cardId, request, allow) => call('POST', `/api/cards/${cardId}/permission`, { request, allow }),
       splitCard: (id, parts) => call('POST', `/api/cards/${id}/split`, { parts }).then(() => undefined),
       debrief: (cardId, agentId) => call('POST', `/api/cards/${cardId}/debrief`, { ...(agentId ? { agentId } : {}), ...askedReasoning() }),
       challenge: (cardId, agentId) => call('POST', `/api/cards/${cardId}/challenge`, { ...(agentId ? { agentId } : {}), ...askedReasoning() }),
@@ -557,6 +559,7 @@ export const isListening = (agent: Agent) => !!presenceNow[agent.id]?.listening
 
 /** How many runners the hub heard from lately for this agent: more than one take the same work. */
 export const runnersOf = (agent: Agent) => presenceNow[agent.id]?.runners ?? 0
+export const runnerPlaces = (agent: Agent) => presenceNow[agent.id]?.runnersOn ?? []
 
 /** Online: listening, or heard from in the last two minutes. */
 export const isOnline = (agent: Agent) => {

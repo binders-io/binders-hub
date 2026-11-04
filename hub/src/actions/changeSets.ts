@@ -5,13 +5,13 @@ import { cardChangeSet, cardsOfSet, setChangeSet, pullOf } from '../../../shared
 import type { Activity, ChangeSet, PullRequest } from '../../../shared/work.ts'
 import { GitHubError } from '../github.ts'
 import { Refused, type Actor } from '../hub.ts'
-import { CardService } from './cards.ts'
+import { RuleService } from './rules.ts'
 import { mergeableOf, bump } from './base.ts'
 import { sameRepo } from '../../../shared/work.ts'
 
 // Change sets: a card's work as one thing, pull requests in order, approving and merging them, and promoting a version.
 
-export abstract class ChangeSetService extends CardService {
+export abstract class ChangeSetService extends RuleService {
   /**
    * A card's Change Set: its pull request's diff (read from GitHub if the hub has none of its files yet) or its
    * worktree's, its brief and done-when, and the agent's log.
@@ -103,14 +103,16 @@ export abstract class ChangeSetService extends CardService {
 
   /** The binder's change set that's taking pull requests, made when there isn't one. */
   protected async addToSet(binderId: string, prId: string, noteId?: string) {
-    const open = this.hub.state.changeSets.find((s) => s.binderId === binderId && s.state === 'assembling')
+    // A note whose work stays together has a set of its own, and the set that's open takes everything else.
+    const forNote = this.ownSetNote(noteId)
+    const open = this.hub.state.changeSets.find((s) => s.binderId === binderId && s.state === 'assembling' && s.forNote === forNote)
     if (open) {
       await this.hub.record({ kind: 'hub' }, { type: 'set.update', id: open.id, fields: { prIds: [...open.prIds, prId], noteIds: noteId && !open.noteIds.includes(noteId) ? [...open.noteIds, noteId] : open.noteIds } })
       return
     }
     const number = Math.max(this.hub.state.setsMade ?? 0, ...this.hub.state.changeSets.map((s) => s.number)) + 1
     const note = noteId ? this.hub.state.notes.find((n) => n.id === noteId) : undefined
-    const set: ChangeSet = { id: `set-${number}`, binderId, number, title: note ? titleOf(note.text) : `Change set ${number}`, summary: '', state: 'assembling', prIds: [prId], noteIds: noteId ? [noteId] : [] }
+    const set: ChangeSet = { id: `set-${number}`, binderId, number, title: note ? titleOf(note.text) : `Change set ${number}`, summary: '', state: 'assembling', prIds: [prId], noteIds: noteId ? [noteId] : [], ...(forNote ? { forNote } : {}) }
     await this.hub.record({ kind: 'hub' }, { type: 'set.put', set })
   }
 

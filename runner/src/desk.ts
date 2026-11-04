@@ -20,7 +20,8 @@ export class Desk {
   private server?: Server
   private runs = new Map<string, DeskRun>()
   readonly path: string
-  private handle: (run: DeskRun, verb: string, args: Record<string, unknown>) => Promise<{ result?: unknown; waiting?: number }>
+  /** `gone`: whoever asked has stopped waiting, as a tool does when it kills its hook. */
+  private handle: (run: DeskRun, verb: string, args: Record<string, unknown>, gone: AbortSignal) => Promise<{ result?: unknown; waiting?: number }>
 
   constructor(path: string, handle: Desk['handle']) {
     this.path = path
@@ -58,6 +59,8 @@ export class Desk {
 
   private serve(socket: Socket) {
     let text = ''
+    const gone = new AbortController()
+    socket.on('close', () => gone.abort())
     socket.on('error', () => {})
     socket.on('data', (data) => {
       text += data.toString('utf8')
@@ -66,16 +69,16 @@ export class Desk {
       if (at < 0) return
       const line = text.slice(0, at)
       text = ''
-      void this.answer(line).then((answer) => socket.end(`${JSON.stringify(answer)}\n`))
+      void this.answer(line, gone.signal).then((answer) => socket.end(`${JSON.stringify(answer)}\n`))
     })
   }
 
-  private async answer(line: string): Promise<DeskAnswer> {
+  private async answer(line: string, gone: AbortSignal): Promise<DeskAnswer> {
     try {
       const { run: secret, verb, args } = JSON.parse(line) as { run?: string; verb?: string; args?: Record<string, unknown> }
       const run = secret ? this.runs.get(secret) : undefined
       if (!run) return { ok: false, error: 'This isn’t a run its runner knows.' }
-      return { ok: true, ...(await this.handle(run, String(verb), args ?? {})) }
+      return { ok: true, ...(await this.handle(run, String(verb), args ?? {}, gone)) }
     } catch (error) {
       return { ok: false, error: (error as Error).message }
     }
@@ -128,6 +131,8 @@ export const agentHelp = `binders: your line to Binders, for the card you're wor
   binders progress TEXT        say what you're doing now, in one line (--of 0.5 for how far along)
   binders inbox                what people wrote on the card since you last looked
   binders comment TEXT         leave a comment on the card
+  binders message AGENT TEXT   say something to another agent working now; its replies reach you as you work
+  binders run-note TEXT        a scheduled run's findings, as a note in its schedule's folder
   binders ask QUESTION         ask a person, then stop: you're started again with the answer
   binders done SUMMARY         finish the card (--pr owner/repo#12 for the pull request you opened)
   binders release WHY          give the card back, so another agent or a person can take it
@@ -160,7 +165,7 @@ function flags(argv: string[]) {
   return { words, named }
 }
 
-const hookEvents: Record<string, string> = { 'session-start': 'SessionStart', 'post-tool': 'PostToolUse', stop: 'Stop', notification: 'Notification' }
+const hookEvents: Record<string, string> = { 'session-start': 'SessionStart', 'post-tool': 'PostToolUse', stop: 'Stop', notification: 'Notification', permission: 'PermissionRequest' }
 
 /** What a tool's hook hands over: its JSON on stdin, when there is any, without waiting long for it. */
 function hookInput(stdin: NodeJS.ReadStream) {
@@ -185,14 +190,17 @@ function hookInput(stdin: NodeJS.ReadStream) {
   })
 }
 
-/** Words from people, as an agent reads them: framed as what they wrote on this card. */
+/** Words from people, and other agents marked as such, as an agent reads them: what was written on this card. */
+export const notAPerson = '(another agent, not a person)'
 export const framed = (messages: { by: string; text: string }[]) =>
-  `People wrote on your Binders card while you were working:\n${messages.map((m) => `${m.by}: ${m.text}`).join('\n')}\nTake it into account and carry on.`
+  `${messages.every((m) => m.by.endsWith(notAPerson)) ? 'Another agent' : messages.some((m) => m.by.endsWith(notAPerson)) ? 'People and other agents' : 'People'} wrote on your Binders card while you were working:\n${messages.map((m) => `${m.by}: ${m.text}`).join('\n')}\nTake it into account and carry on.`
 
 /** What the runner answers a hook with: words for the agent now, or a reason to keep it from stopping. */
 export interface HookReply {
   context?: string
   block?: string
+  /** A person's answer to a permission. None: it asks in its own terminal, as it would have. */
+  decision?: { behavior: 'allow' } | { behavior: 'deny'; message: string }
 }
 
 /**
@@ -205,7 +213,8 @@ async function hook(path: string, secret: string, which: string) {
   const payload = await hookInput(process.stdin)
   const answer = await ask(path, secret, 'hook', { which, payload }).catch(() => undefined)
   const reply = (answer?.ok ? answer.result : undefined) as HookReply | undefined
-  if (reply?.block) console.log(JSON.stringify({ decision: 'block', reason: reply.block }))
+  if (reply?.decision) console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: event, decision: reply.decision } }))
+  else if (reply?.block) console.log(JSON.stringify({ decision: 'block', reason: reply.block }))
   else if (reply?.context) console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: reply.context } }))
   return 0
 }
@@ -241,6 +250,7 @@ export async function agentCommand(argv: string[], env: NodeJS.ProcessEnv = proc
   const text = words.join(' ').trim()
   const args: Record<string, unknown> = verb === 'note' || verb === 'note-append'
     ? { id: words[0], text: words.slice(1).join(' ') }
+    : verb === 'message' ? { to: words[0], text: words.slice(1).join(' ') }
     : { text, ...named }
   const answer = await askPatiently(path, secret, verb, args, Number(env.BINDERS_DESK_PATIENCE) || 120_000).catch((error: Error) => ({ ok: false as const, error: `Its runner didn’t answer: ${error.message}` }))
   if (!answer.ok) {

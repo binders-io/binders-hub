@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { bootstrap, refusedDomain } from '../src/daemon.ts'
+import { bootstrap, refusedAsRoot, refusedDomain, unitFor } from '../src/daemon.ts'
 
 // The `binders` command's parts that install nothing: what it lists, how it finds an agent, and what it says without
 // one. (add, start, stop and restart reach launchd or systemd, so they're tried by hand on a machine.)
@@ -17,6 +17,22 @@ const binders = (home: string, ...args: string[]) => {
     return `${e.stdout ?? ''}${e.stderr ?? ''}`
   }
 }
+
+describe('as a service', () => {
+  it('won’t be set up through sudo, or as root on a Mac, and leaves root’s own Linux logins alone', () => {
+    assert.match(refusedAsRoot(0, 'darwin', 'you')!, /without sudo.*chown -R "you"/)
+    assert.match(refusedAsRoot(0, 'darwin', undefined)!, /without sudo/)
+    assert.match(refusedAsRoot(0, 'linux', 'you')!, /without sudo/)
+    assert.equal(refusedAsRoot(0, 'linux', undefined), undefined)
+    assert.equal(refusedAsRoot(501, 'darwin', undefined), undefined)
+  })
+
+  it('stopping its unit leaves a card’s holder running', () => {
+    const unit = unitFor({ name: 'a', agent: 'A', hub: 'https://hub.test', workspace: '/w', addedAt: '' })
+    assert.match(unit, /^KillMode=process$/m)
+    assert.match(unit, /^ExecStart=.*--token-file /m)
+  })
+})
 
 describe('the binders command', () => {
   it('lists the agents set up here, and says how to set one up when there are none', async () => {

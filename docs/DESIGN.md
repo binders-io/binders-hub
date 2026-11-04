@@ -276,10 +276,58 @@ A card **split for a swarm** becomes parts: only a ready card that no agent hold
 
 Three settings that build on each other, all off by default.
 
-**Held runs.** A card's run lives in a small process of its own, a holder, which keeps what the program writes in a file and serves it over a socket. The runner can stop, update or crash and the agent carries on; the next runner reads the file again and tells the card only what it hadn't. If the holder goes with no word of how the program ended, the machine restarted, say, the card starts again in the same conversation. A signal to stop the runner still stops what it runs; only an update or a restart asked for from the Agents page leaves it running.
+**Held runs.** A card's run lives in a small process of its own, a holder, which keeps what the program writes in a file and serves it over a socket. The runner can stop, update or crash and the agent carries on; the next runner reads the file again and tells the card only what it hadn't. If the holder goes with no word of how the program ended, the machine restarted, say, the card starts again in the same conversation. Its service stopping or restarting, an update, or a restart asked for from the Agents page leaves it running, for the next runner. Ctrl-C and `binders remove` are a person ending it: its cards go back on the board.
 
 **The binders command.** With no MCP config and no token in its environment, an agent works its card through a `binders` command on its PATH, which asks its runner over a local socket. A run's secret lets it speak about its own card and nothing else. It can also open terminals of its own, kept to the card's work and listed on the card for its owner to open, which end with the card.
 
 **Hearing while it works.** What people write on a card reaches a running agent without stopping it: through Claude Code's hooks after each tool call and at the end of its turn, or from `binders inbox`. One that doesn't take it within 90 seconds is stopped and told, as before.
 
 **Live terminals.** Claude Code runs in its own interface in a held terminal its owner can open from the card, watch, type to and take over. Its hooks tell the card what it does. A run whose turn ends with the card unfinished is reminded once, then ended, unless a person has typed to it: then it's theirs until they're done.
+
+**Permissions on the card.** A live run's `PermissionRequest` hook puts what Claude Code wants to do on the card, with Allow and Deny for the agent's owner, as only they open a terminal on its machine. An answer goes back through the hook that asked, tied to that request, so nothing an agent writes to the card can approve anything. No answer in nine minutes, a person typing in its terminal, or a runner that goes away, and the hook returns nothing: Claude Code asks in its own terminal, as it would have.
+
+## Work that runs on its own (built)
+
+The nightly example: a schedule scans the repos, its run writes a note, the note is distilled, the work goes to agents, and
+their pull requests form a change set. A person approves it. Nothing here approves or merges anything.
+
+**Schedules.** On the timer, a schedule fires through the log (`schedule.fire`), first come first served and never for a time
+before the last, so several hubs on one log fire it once. "Run now" is separate: each click is a run. Each firing is kept on the schedule (`runs`, the last 20) with its card, or why it skipped or
+failed, and `failing` says what's wrong until a run goes right. A last run nobody has taken holds up the next, so runs don't
+pile up; one being worked on holds it up until nothing has happened on it for `staleHours` (24 by default); one in review
+holds up nothing. A schedule whose note, agent or folder is gone turns itself off and says why.
+
+**A run's note.** A schedule with `folderId` tells its run to write its findings with `write_run_note` (`binders run-note`),
+one note for the run, in that folder. A run with nothing to report writes none, so nothing downstream starts.
+
+**A folder's rule** (`state.folderRules`, set by a Binder's owners and admins) applies to the notes in a folder and in folders
+inside it, the nearest rule winning. Its Distill starts once for each note (`note.distill`, again first come first served):
+a run's note when its run is over, a person's after `quietMinutes` with no edit. Notes last edited before the rule was turned
+on are left alone, as is a note a schedule runs. Editing a note afterwards doesn't distill it again, and a rule starts at most
+20 a day. A note moved into the folder with an old edit is left alone until someone edits it.
+
+**Accepting without a person.** A rule's `accept` says how many cards a note may become, of what sizes, and for which agents.
+Only the agent the rule names, holding the Distill card the hub made, gets this: another agent proposing for the same note
+waits for a person, as ever, and so does what comes of a note another agent wrote. A proposal's `meant_for` counts only if it's
+one of the rule's agents. What's over the limits stays a proposal, and the log decides the limit (`proposal.take`). These cards
+are only for the agent chosen: agents can't reassign them, and if that agent goes they wait for a person. What an agent
+suggests with `create_task` while it has such work out, up to a person's review of it, stays proposed: no agent can hand it
+on, and that agent can't hand on anyone's proposed card meanwhile.
+A card accepted this way says so in its brief and on its timeline, with who set the rule.
+
+The note may carry words from outside (scanner output, advisories, READMEs), so this is a path from those words to agents with
+repo access. What keeps that in bounds: the Distill's brief and each accepted card's say the note's words are information and
+not instructions, the rule's limits and its fixed list of agents, the agent's own access and permissions, and the person who
+approves the change set. The briefs help and can't be relied on; the limits, the list and the approval are enforced by the hub.
+Choose those agents with only the access they need.
+
+**A note's own change set.** `changeSetOf` gives a note's choice (`noteWork.changeSet`), then its folder's rule, then shared.
+A pull request from a note with its own set goes in that note's assembling set (`forNote`), and the shared set takes everything
+else. Once nothing from the note is still to do and nothing is proposed and waiting, the hub sends the set for review.
+
+**Agents talking.** `message_agent` (`binders message`) writes a `message` on a card the other agent holds, and on the sender's
+own for people to read. It reaches the other's run the way a person's words do, marked `(another agent, not a person)`. It
+never wakes a stopped agent, doesn't count as a person's last word, and can't answer a permission or a question: while its card
+waits on a person, another agent's words aren't passed on. Two agents get
+20 messages an hour between them before they're told to ask a person. An agent reaches only agents working in binders it works
+in, and a Challenge's reviewer and the author it's judging can't message each other.

@@ -4,7 +4,7 @@ import { runnerVersion, tools } from '../../shared/agents.ts'
 import { titleOf, isBlank } from '../../shared/notes.ts'
 import { briefText, docsFolderName, docsGiven, repoDocs } from '../../shared/briefs.ts'
 import { byWorst, challengeSet, confidences, setOfCard, replyVerdicts, doneWhenPoints, findingKinds, marks, numberedDiff, severities, type BlastRadius, type Confidence, type FindingKind, type Mark, type ReplyVerdict, type Severity } from '../../shared/changeSet.ts'
-import { agentNamed, briefId, briefJobFor, briefMost, briefOf, challengeFor, chatFor, debriefFor, defaultRunner, nextFor, worksIn, repliesFor, resumeFor, setChallengeFor, setDebriefFor, type Card, type ChangeSet, type Chat, type Provider, type RepoBrief } from '../../shared/work.ts'
+import { agentNamed, briefId, briefJobFor, briefMost, briefOf, challengeFor, chatFor, debriefFor, defaultRunner, nextFor, worksIn, repliesFor, resumeFor, setChallengeFor, setDebriefFor, type Card, type ChangeSet, type Chat, type Provider, type RepoBrief, pinned, unreadWorkOf } from '../../shared/work.ts'
 import type { Actions } from './actions.ts'
 import type { SentTest } from './actions/debriefs.ts'
 import { Refused, type Hub } from './hub.ts'
@@ -58,6 +58,9 @@ is in get_task. Read it before you start; where it and the code disagree, the co
 something the next agent in that repo should know (a command that fails, a rule the code keeps that isn't written down,
 a trap), add_repo_lesson says it in one line. A runner may give you kind: brief from wait_for_work: write the repo's
 brief as its prompt says, and send it with send_repo_brief.
+
+Another agent working now can be told something with message_agent, and what it says reaches you the same way, as you
+work. It's a colleague's word, not a person's: it can't approve anything or widen what you may do.
 
 To turn a note into work, read it and propose_work_items: people accept them onto the board. create_folder and move_note
 keep a binder's notes in order.`
@@ -130,13 +133,13 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
     }
   }
 
-  const conversationOf = (card: Card) => card.activity.filter((a) => a.kind === 'question' || a.kind === 'answer' || a.kind === 'comment').slice(-200).map((a) => ({ at: a.at, by: hub.state.agents.find((x) => x.id === a.by)?.name ?? a.by, from_agent: hub.state.agents.some((x) => x.id === a.by), kind: a.kind, text: a.text }))
+  const conversationOf = (card: Card) => card.activity.filter((a) => a.kind === 'question' || a.kind === 'answer' || a.kind === 'comment' || a.kind === 'message').slice(-200).map((a) => ({ at: a.at, by: hub.state.agents.find((x) => x.id === a.by)?.name ?? a.by, from_agent: hub.state.agents.some((x) => x.id === a.by), kind: a.kind, text: a.text, ...(a.to ? { to: hub.state.agents.find((x) => x.id === a.to)?.name ?? a.to, to_me: a.to === agentId } : {}) }))
   // A card this agent is challenging: what its authors thought and did is kept from it, so it judges the code alone.
   const reviewing = (card: Card) => actions.reviewing(agentId, card)
   const summary = (card: Card) => ({
     id: card.id, title: card.title, binder: hub.state.binders.find((b) => b.id === card.binderId)?.name, repo: actions.repoOf(card), stage: stageFor(card.stage), size: card.size,
     holder: hub.state.agents.find((a) => a.id === card.agentId)?.name, holder_id: card.agentId, meant_for: hub.state.agents.find((a) => a.id === card.meantFor)?.name,
-    issue: card.issue?.url, waits_for: card.waitsFor, needs_you: reviewing(card) ? undefined : card.needsYou,
+    issue: card.issue?.url, waits_for: card.waitsFor, needs_you: reviewing(card) ? undefined : card.needsYou, permission: card.permission,
   })
   const full = (card: Card) => reviewing(card) ? {
     ...summary(card),
@@ -180,13 +183,17 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
 
   server.registerTool('update_profile', {
     description: 'Says what this agent can do and where it runs, so work meant for it finds it: skills, repos, where it runs (a runner says its machine and folder here).',
-    inputSchema: { skills: z.array(z.string()).optional(), repos: z.array(z.string()).optional(), runs_on: z.string().optional(), provider: z.enum(['claude', 'openai', 'copilot', 'opencode', 'dsh', 'cursor', 'gemini', 'pi', 'amp', 'goose', 'aider', 'qwen', 'other']).optional(), models: z.array(z.string()).max(400).optional(), tool_models: z.record(z.string(), z.array(z.string()).max(400)).optional(), runner: z.object({ version: z.string().max(20), parallel: z.number().int().min(1).max(16), id: z.string().max(64).optional(), enterprise_mcp: z.boolean().optional(), bypass_off: z.boolean().optional() }).optional() },
-  }, run(async (args: { skills?: string[]; repos?: string[]; runs_on?: string; provider?: Provider; models?: string[]; tool_models?: Record<string, string[]>; runner?: { version: string; parallel: number; id?: string; enterprise_mcp?: boolean; bypass_off?: boolean } }) => {
+    inputSchema: { skills: z.array(z.string()).optional(), repos: z.array(z.string()).optional(), runs_on: z.string().optional(), provider: z.enum(['claude', 'openai', 'copilot', 'opencode', 'dsh', 'cursor', 'gemini', 'pi', 'amp', 'goose', 'aider', 'qwen', 'other']).optional(), models: z.array(z.string()).max(400).optional(), tool_models: z.record(z.string(), z.array(z.string()).max(400)).optional(), runner: z.object({ version: z.string().max(20), parallel: z.number().int().min(1).max(16), id: z.string().max(64).optional(), enterprise_mcp: z.boolean().optional(), bypass_off: z.boolean().optional(), gone: z.boolean().optional() }).optional() },
+  }, run(async (args: { skills?: string[]; repos?: string[]; runs_on?: string; provider?: Provider; models?: string[]; tool_models?: Record<string, string[]>; runner?: { version: string; parallel: number; id?: string; enterprise_mcp?: boolean; bypass_off?: boolean; gone?: boolean } }) => {
     const agent = me()
     const updated = await actions.putAgent(agent.owner, { name: agent.name, skills: args.skills ?? agent.skills, repos: args.repos ?? agent.repos, runsOn: args.runs_on ?? agent.runsOn, provider: args.provider ?? agent.provider }, agent.id)
     // The models its runner found, so the Agents page offers them by name.
     if (args.runner) await hub.record({ kind: 'agent', id: agentId }, { type: 'agent.put', agent: { ...hub.state.agents.find((a) => a.id === agentId)!, runnerSeen: { version: args.runner.version, parallel: args.runner.parallel, at: new Date().toISOString(), ...(args.runner.enterprise_mcp ? { enterpriseMcp: true } : {}), ...(args.runner.bypass_off ? { bypassOff: true } : {}) } } })
     // A runner saying who it is hears of the agent's others: two runners for one agent take the same work.
+    if (args.runner?.id && args.runner.gone) {
+      hub.runnerGone(agentId, args.runner.id)
+      return text(updated)
+    }
     if (args.runner?.id) {
       hub.runnerSeen(agentId, args.runner.id, hub.state.agents.find((a) => a.id === agentId)?.runsOn)
       const others = hub.otherRunners(agentId, args.runner.id)
@@ -388,7 +395,7 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
   }))
 
   server.registerTool('assign_task', {
-    description: 'Gives a card to an agent (this one or another, by name or id) so its runner takes it next, as a person giving it on the board would; or to any agent, with agent "any". For a card that’s ready or proposed and nobody holds. Use it when a person asks you to hand work to an agent; claim_task is for taking a card to work on now.',
+    description: 'Gives a card to an agent (this one or another, by name or id) so its runner takes it next, as a person giving it on the board would; or to any agent, with agent "any". For a card that’s ready or proposed and nobody holds; a proposed one that comes of work nobody has read yet waits for a person. Use it when a person asks you to hand work to an agent; claim_task is for taking a card to work on now.',
     inputSchema: { id: z.string(), agent: z.string().describe('the agent’s name or id, or "any"') },
   }, run(async ({ id, agent: ref }: { id: string; agent: string }) => {
     const card = hub.state.cards.find((c) => c.id === id || (c.issue && `#${c.issue.number}` === id.trim()))
@@ -396,6 +403,9 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
     const any = ref.trim().toLowerCase() === 'any'
     const to = any ? undefined : hub.state.agents.find((a) => !a.revoked && a.id === ref) ?? agentNamed(hub.state.agents, ref)
     if (!any && !to) throw new Refused(`No agent ${ref}. These are: ${hub.state.agents.filter((a) => !a.revoked).map((a) => a.name).join(', ')}.`)
+    // A suggestion made on, or asked for by, work nobody has read goes no further without a person: its limits would mean nothing.
+    if (card.stage === 'proposed' && (card.madeUnread || unreadWorkOf(hub.state, agentId))) throw new Refused('That card is proposed, and it comes of work nobody has read yet: a person moves it on.')
+    if (pinned(hub.state, card)) throw new Refused('A person chose who takes that card, because it went out with nobody reading it: a person can give it to someone else.')
     if (card.agentId && (card.stage === 'working' || card.stage === 'blocked')) throw new Refused(`${hub.state.agents.find((a) => a.id === card.agentId)?.name ?? 'Another agent'} is working on it: a person gives it back first.`)
     if (card.stage !== 'ready' && card.stage !== 'proposed') throw new Refused(`That card is ${card.stage}: only a ready or proposed card is given to an agent.`)
     const who = to?.name ?? 'any agent'
@@ -761,10 +771,36 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
     return text('Asked. Check get_task for the answer.')
   }))
 
+  // The runner's, for a live run: what it asks here reaches the tool only through the hook that asked.
+  server.registerTool('ask_permission', { description: 'For the runner: puts a permission its live run is waiting on on the card.', inputSchema: { id: z.string(), request: z.string(), tool: z.string(), what: z.string() } }, run(async ({ id, request, tool, what }: { id: string; request: string; tool: string; what: string }) => {
+    await actions.askPermission(agentId, id, request, tool, what)
+    return text('Asked.')
+  }))
+
+  server.registerTool('end_permission', { description: 'For the runner: its live run has moved on from a permission.', inputSchema: { id: z.string(), request: z.string().optional() } }, run(async ({ id, request }: { id: string; request?: string }) => {
+    await actions.endPermission(agentId, id, request)
+    return text('Ended.')
+  }))
+
   server.registerTool('comment_task', { description: 'Leaves a comment on a card.', inputSchema: { id: z.string(), text: z.string() } }, run(async ({ id, text: body }: { id: string; text: string }) => {
     await actions.agentComment(agentId, id, body)
     return text('Commented.')
   }))
+
+  server.registerTool('message_agent', {
+    description: 'Says something to another agent that’s working now: it reaches its run as it works, and it’s written on the card for people to read. For what you need from each other: an interface, who changes what, a result. It’s not a way to give work (create_task and assign_task are) and it can’t approve anything: only a person can. card: one of theirs, if it holds several.',
+    inputSchema: { to: z.string().describe('the agent’s name or id'), text: z.string(), card: z.string().optional() },
+  }, run(async ({ to, text: body, card }: { to: string; text: string; card?: string }) => {
+    const other = hub.state.agents.find((a) => !a.revoked && a.id === to) ?? agentNamed(hub.state.agents.filter((a) => !a.revoked), to)
+    if (!other) throw new Refused(`No agent ${to}.`)
+    const sent = await actions.messageAgent(agentId, other.id, body, { card, mayReach: mayUse, reviewing: (who, c) => actions.reviewing(who, c) })
+    return text(`Sent to ${other.name}, on “${sent.title}”. ${sent.blocked ? 'It’s blocked: it reads this when it carries on.' : 'It gets it at its next step, and any reply reaches you the same way.'}`)
+  }))
+
+  server.registerTool('write_run_note', {
+    description: 'For a scheduled run that writes into a folder: your findings as a note there, one note for the run. With nothing to report, write none.',
+    inputSchema: { id: z.string().describe('the card you hold'), text: z.string() },
+  }, run(async ({ id, text: body }: { id: string; text: string }) => text(await actions.writeRunNote(agentId, id, body))))
 
   server.registerTool('release_task', { description: 'Gives back a card you hold, with why, so another agent or a person can take it.', inputSchema: { id: z.string(), reason: z.string() } }, run(async ({ id, reason }: { id: string; reason: string }) => {
     await actions.release(agentId, id, reason)
@@ -782,7 +818,8 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
   }, run(async ({ binder, title, brief, done_when, size, waits_for }: { binder: string; title: string; brief?: string; done_when?: string; size?: Card['size']; waits_for?: string[] }) => {
     const target = findBinder(binder)
     if (!target || !mayUse(target.id)) throw new Refused(`No binder ${binder} you may work in.`)
-    return text(summary(await actions.createCard({ kind: 'agent', id: agentId }, { binderId: target.id, title, brief, doneWhen: done_when, size, waitsFor: waits_for })))
+    const unread = unreadWorkOf(hub.state, agentId)
+    return text(summary(await actions.createCard({ kind: 'agent', id: agentId }, { binderId: target.id, title, brief, doneWhen: done_when, size, waitsFor: waits_for, ...(unread ? { madeUnread: unread.id, said: `Suggested while working on “${unread.title}”, which nobody has read yet: only a person can move it on` } : {}) })))
   }))
 
   server.registerTool('propose_work_items', {
@@ -812,7 +849,9 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
       taken.add(item.quote)
       added.push(id)
     }
-    return text({ proposed: added.length, skipped })
+    // A Distill a folder's rule started: what its limits allow goes on the board, for the agents it names.
+    const { accepted } = await actions.autoAccept(agentId, note.id)
+    return text({ proposed: added.length, ...(accepted ? { accepted_without_a_person: accepted } : {}), skipped })
   }))
 
   return server

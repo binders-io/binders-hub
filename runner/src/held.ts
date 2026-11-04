@@ -257,6 +257,8 @@ export class Held {
   readonly home: string
   meta: HeldMeta
   private socket?: Socket
+  /** What was typed before it has reached its holder: sent once it's there, rather than lost. */
+  private early?: object[] = []
 
   constructor(home: string, meta: HeldMeta) {
     this.home = home
@@ -321,7 +323,10 @@ export class Held {
    */
   async read(from: number, onData: (data: Buffer) => void, onEnd: () => void) {
     this.socket?.destroy()
+    this.early ??= []
     const socket = await this.dial().catch(() => undefined)
+    const early = this.early
+    this.early = undefined
     // What's left in the file, for when no holder is there, or it went before sending it all.
     const rest = async (at: number) => {
       const whole = await readFile(join(this.home, 'out')).catch(() => Buffer.alloc(0))
@@ -342,6 +347,7 @@ export class Held {
       void rest(at)
     })
     socket.write(`${JSON.stringify({ from })}\n`)
+    for (const message of early ?? []) socket.write(`${JSON.stringify(message)}\n`)
   }
 
   /** Stops reading: the program and its holder carry on. */
@@ -370,12 +376,19 @@ export class Held {
     return false
   }
 
+  /** Typing and resizing can wait for the holder. A signal can't: it's sent another way when there's no socket. */
+  private sendOrKeep(message: object) {
+    if (this.send(message)) return true
+    this.early?.push(message)
+    return !!this.early
+  }
+
   write(data: string | Buffer) {
-    return this.send({ t: 'i', d: Buffer.from(data).toString('base64') })
+    return this.sendOrKeep({ t: 'i', d: Buffer.from(data).toString('base64') })
   }
 
   resize(cols: number, rows: number) {
-    return this.send({ t: 'r', c: Math.round(cols), r: Math.round(rows) })
+    return this.sendOrKeep({ t: 'r', c: Math.round(cols), r: Math.round(rows) })
   }
 
   private async pids() {

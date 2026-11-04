@@ -798,6 +798,11 @@ a.button { text-decoration: none; }
 
 /* A card, full screen: additions */
 .now-card.asks { border-color: var(--amber-line); background: var(--amber-wash); }
+.permission-card { align-items: flex-start; }
+.permission-body { flex: 1; min-width: 0; display: grid; gap: 8px; font-size: 14px; }
+.permission-body pre { margin: 0; max-height: 200px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.permission-body p { margin: 0; }
+.permission-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .now-card.asks .now-label { display: inline-flex; align-items: center; gap: 5px; background: var(--amber); }
 .conversation { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .conversation li { display: grid; grid-template-columns: 24px 1fr; gap: 10px; }
@@ -1128,6 +1133,7 @@ body.focus-mode .sidebar, body.focus-mode .topbar { display: none; }
 .context-menu { position: fixed; z-index: 80; min-width: 190px; max-width: 280px; max-height: min(440px, calc(100vh - 16px)); overflow-y: auto; display: grid; padding: 5px; border-radius: 10px; background: var(--pop-bg); box-shadow: var(--shadow-pop); text-align: left; }
 .context-menu button { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px; font-size: 13px; color: var(--text); text-align: left; }
 .context-menu button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-menu-more { margin-left: auto; flex: none; color: var(--faint); }
 .context-menu button:hover, .context-menu button:focus-visible { background: var(--fill-2); outline: none; }
 .context-menu button:disabled { color: var(--faint); }
 .context-menu button.danger { color: var(--red); }
@@ -1440,6 +1446,21 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
 .schedule-text .faint { font-size: 12.5px; overflow-wrap: anywhere; }
 .schedule-text .faint a { color: var(--muted); font-weight: 400; }
 .schedule-buttons { display: flex; align-items: center; gap: 4px; flex: none; }
+.schedule-failing { display: flex; align-items: flex-start; gap: 6px; font-size: 12.5px; color: var(--red); overflow-wrap: anywhere; }
+.schedule-failing svg { flex: none; margin-top: 2px; }
+.schedule-runs summary { width: fit-content; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+.schedule-runs ol { list-style: none; display: grid; gap: 4px; margin: 6px 0 0; padding: 0; font-size: 12.5px; color: var(--muted); }
+.schedule-runs ol li { display: grid; grid-template-columns: 76px 1fr; gap: 8px; padding: 0; border: 0; }
+.schedule-runs ol li.bad span { color: var(--red); }
+.schedule-runs time { color: var(--faint); }
+.rule-form { display: grid; gap: 14px; }
+.rule-check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer; }
+.rule-check input { margin-top: 3px; }
+.rule-check > span { display: grid; gap: 2px; }
+.rule-group { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; padding: 0; border: 0; font-size: 13px; }
+.rule-group legend { padding: 0 0 6px; font-size: 12.5px; color: var(--muted); }
+.rule-group label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.rule-warning { margin: 0; padding: 10px 12px; border-radius: var(--r); border: 1px solid var(--amber-line); background: var(--amber-wash); font-size: 12.5px; line-height: 1.5; }
 .schedule-form { padding: 14px; border-radius: var(--r-lg); border: 1px solid var(--line); background: var(--tile); box-shadow: var(--tile-shadow); }
 .schedule-next { margin: 0; font-size: 12.5px; color: var(--muted); }
 .schedule-next.bad { color: var(--red); }

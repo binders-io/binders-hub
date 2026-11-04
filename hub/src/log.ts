@@ -32,7 +32,7 @@ export class MemoryLog implements ChangeLog {
     if (this.seen.has(key)) return 0
     this.seen.add(key)
     const version = this.entries.length + 1
-    this.entries.push({ ...entry, version })
+    this.entries.push({ ...entry, change: forWire(entry.change), version })
     queueMicrotask(() => this.listeners.forEach((listener) => listener()))
     return version
   }

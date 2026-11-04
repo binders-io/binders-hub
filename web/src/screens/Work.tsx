@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { motion } from 'motion/react'
-import { ArrowLeft, ArrowUpRight, Check, ChevronDown, FilePen, FileSearch, FileText, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, Globe, ListChecks, MessageCircleQuestion, Quote, Rocket, Send, ShieldCheck, Sparkles, SquareTerminal, Trash2, Workflow } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, Check, ChevronDown, FilePen, FileSearch, FileText, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, Globe, ListChecks, MessageCircleQuestion, Quote, ShieldQuestionMark, Rocket, Send, ShieldCheck, Sparkles, SquareTerminal, Trash2, Workflow } from 'lucide-react'
 import { stages, type Card, type Environment, type HubState, type PullRequest } from '../data/model'
 import { nameFor, useStore } from '../data/store'
 import { CheckGlyph, Progress, RepoTag, Who, ago, checksSummary, foldRepeats, onTouch, stageTone } from '../components/bits'
@@ -109,7 +109,7 @@ export function Work({ id }: { id: string }) {
     { stage: 'proposed', title: 'Proposed' }, { stage: 'ready', title: 'Ready' }, { stage: 'review', title: 'In review' }, { stage: 'live', title: 'Done' },
   ]
   const moveTo = (stage: Card['stage']) => store.moveCard(card.id, stage)
-  const conversation = card.activity.filter((a) => a.kind === 'question' || a.kind === 'answer' || a.kind === 'comment')
+  const conversation = card.activity.filter((a) => a.kind === 'question' || a.kind === 'answer' || a.kind === 'comment' || a.kind === 'message')
   // The open question is shown once, in the conversation, marked; the banner is only for a question that isn't there.
   const lastQuestion = card.needsYou ? conversation.map((a) => a.kind).lastIndexOf('question') : -1
   const plan = card.plan ?? []
@@ -119,7 +119,7 @@ export function Work({ id }: { id: string }) {
   const edits = tasks.filter((t) => /Edit|Write|Update/.test(t.tool ?? ''))
   const runs = tasks.filter((t) => t.tool === 'Bash')
   // Newest first, a run of the same event as one line, and the latest 30 until asked for all.
-  const timeline = foldRepeats(card.activity.filter((a) => a.kind !== 'step' && a.kind !== 'said')).reverse()
+  const timeline = foldRepeats(card.activity.filter((a) => a.kind !== 'step' && a.kind !== 'said' && a.kind !== 'message')).reverse()
   const shownTimeline = allActivity ? timeline : timeline.slice(0, 30)
 
   const send = async (event: FormEvent) => {
@@ -183,6 +183,21 @@ export function Work({ id }: { id: string }) {
 
       <div className="work-body">
         <div className="work-main">
+          {card.permission && !card.permission.answer && (
+            <section className="now-card asks permission-card">
+              <span className="now-label"><ShieldQuestionMark size={12} /> Asks permission</span>
+              <div className="permission-body">
+                <b>{card.permission.tool}</b>
+                <pre className="mono">{card.permission.what}</pre>
+                {holder && holder.owner.toLowerCase() === state.me?.user.login.toLowerCase() ? (
+                  <div className="permission-actions">
+                    <button className="button primary" onClick={() => void attempt(() => store.answerPermission(card.id, card.permission!.request, true))}>Allow</button>
+                    <button className="button" onClick={() => void attempt(() => store.answerPermission(card.id, card.permission!.request, false))}>Deny</button>
+                  </div>
+                ) : <p className="faint small">Only {holder?.name ?? 'its agent'}’s owner{holder ? `, @${holder.owner},` : ''} can answer this.</p>}
+              </div>
+            </section>
+          )}
           {card.needsYou && lastQuestion >= 0 ? null : card.needsYou ? (
             <section className="now-card asks">
               <span className="now-label"><MessageCircleQuestion size={12} /> Asks you</span>
@@ -209,7 +224,7 @@ export function Work({ id }: { id: string }) {
                   <li key={index} className={`${a.kind}${index === lastQuestion ? ' open' : ''}`}>
                     <Who id={a.by} size={24} />
                     <div>
-                      <b>{nameFor(state, a.by)}</b> <time>{ago(a.at)}</time>
+                      <b>{nameFor(state, a.by)}</b>{a.to && <span className="faint"> to {nameFor(state, a.to)}</span>} <time>{ago(a.at)}</time>
                       {index === lastQuestion && <span className="asks-tag"><MessageCircleQuestion size={11} /> Asks you</span>}
                       <p>{a.text}</p>
                     </div>
