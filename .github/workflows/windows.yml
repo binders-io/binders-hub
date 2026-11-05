@@ -44,15 +44,6 @@ jobs:
           Get-Content "$HOME/.binders/logs/ci.log" -ErrorAction SilentlyContinue
           query user 2>&1
           whoami
-          Write-Host '--- the launcher, run directly for 25 seconds:'
-          $p = Start-Process -FilePath cmd.exe -ArgumentList '/d', '/c', "`"$HOME\.binders\agents\ci.cmd`"" -PassThru -NoNewWindow
-          Start-Sleep 25
-          Get-Content "$HOME/.binders/logs/ci.log" -ErrorAction SilentlyContinue
-          Write-Host '--- through conhost --headless, as the task runs it:'
-          Remove-Item "$HOME/.binders/logs/ci.log" -ErrorAction SilentlyContinue
-          Start-Process -FilePath conhost.exe -ArgumentList '--headless', 'cmd.exe', '/d', '/c', "`"$HOME\.binders\agents\ci.cmd`""
-          Start-Sleep 20
-          Get-Content "$HOME/.binders/logs/ci.log" -ErrorAction SilentlyContinue
       - name: The runner's other tests, to see what else differs here
         continue-on-error: true
         working-directory: runner

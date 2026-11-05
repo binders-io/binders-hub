@@ -1858,7 +1858,9 @@ describe('on Windows, from the installer to a card and back', { skip: !process.e
     await writeFile(installer, windowsInstaller(server.url))
     // Never a sync call here: the hub they talk to is in this process, and would never answer.
     const said = async (command: string, args: string[], shell = false) => {
-      const { stdout, stderr } = await promisify(execFile)(command, args, { encoding: 'utf8', shell, timeout: 120_000 }).catch((error: { stdout?: string; stderr?: string; message: string }) => {
+      // As a person has it: these tests keep the runner's files in a folder of their own, which the installer doesn't use.
+      const env = { ...process.env, BINDERS_HOME: undefined }
+      const { stdout, stderr } = await promisify(execFile)(command, args, { encoding: 'utf8', shell, timeout: 120_000, env }).catch((error: { stdout?: string; stderr?: string; message: string }) => {
         throw new Error(`${command} ${args.join(' ')}: ${error.message}\n${error.stdout ?? ''}\n${error.stderr ?? ''}`)
       })
       return `${stdout}${stderr}`

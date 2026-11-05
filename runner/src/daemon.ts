@@ -223,7 +223,7 @@ async function startOnWindows(s: Saved) {
 
 async function installOnWindows(s: Saved) {
   await stopOnWindows(s)
-  const env = { PATH: path(), ...(s.network ?? {}) }
+  const env = { PATH: path(), ...(process.env.BINDERS_HOME ? { BINDERS_HOME: process.env.BINDERS_HOME } : {}), ...(s.network ?? {}) }
   await writeFile(launcherOf(s.name), launcherFor({ command: command(s), workspace: s.workspace, env, log: logOf(s.name), stopFile: stopFileOf(s.name) }))
   const task = join(agentsDir(), `${s.name}.task.xml`)
   const user = process.env.USERDOMAIN ? `${process.env.USERDOMAIN}\\${process.env.USERNAME}` : String(process.env.USERNAME)
