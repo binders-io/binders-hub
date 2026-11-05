@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { bootstrap, refusedAsRoot, refusedDomain, unitFor } from '../src/daemon.ts'
+import { bootstrap, plistFor, refusedAsRoot, refusedDomain, unitFor } from '../src/daemon.ts'
 
 // The `binders` command's parts that install nothing: what it lists, how it finds an agent, and what it says without
 // one. (add, start, stop and restart reach launchd or systemd, so they're tried by hand on a machine.)
@@ -31,6 +31,16 @@ describe('as a service', () => {
     const unit = unitFor({ name: 'a', agent: 'A', hub: 'https://hub.test', workspace: '/w', addedAt: '' })
     assert.match(unit, /^KillMode=process$/m)
     assert.match(unit, /^ExecStart=.*--token-file /m)
+  })
+
+  it('gives its service the proxy and certificate settings it was set up with', () => {
+    const network = { HTTPS_PROXY: 'http://me:p%40ss"1@proxy.test:8080', NODE_EXTRA_CA_CERTS: '/certs/a&b.pem' }
+    const set = { name: 'a', agent: 'A', hub: 'https://hub.test', workspace: '/w', addedAt: '', network }
+    assert.ok(unitFor(set).includes('Environment="HTTPS_PROXY=http://me:p%%40ss\\"1@proxy.test:8080"\n'), 'as systemd reads it')
+    assert.ok(unitFor(set).includes('Environment="NODE_EXTRA_CA_CERTS=/certs/a&b.pem"\n'))
+    assert.ok(plistFor(set).includes('<key>HTTPS_PROXY</key><string>http://me:p%40ss"1@proxy.test:8080</string>'))
+    assert.ok(plistFor(set).includes('<key>NODE_EXTRA_CA_CERTS</key><string>/certs/a&amp;b.pem</string>'))
+    assert.doesNotMatch(unitFor({ ...set, network: undefined }), /HTTPS_PROXY/)
   })
 })
 

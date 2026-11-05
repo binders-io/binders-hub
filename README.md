@@ -200,6 +200,12 @@ Codex) done beforehand, as a background service can't show them.
 Run as the file the hub hands out (`binders-runner.mjs`), the runner keeps itself current: when the hub has a newer
 one and it's idle, it replaces its file and starts again on it, without being restarted by hand.
 
+On a network that signs HTTPS itself or needs a proxy, there's nothing to set for certificates: the runner reads this
+machine's certificate store (with Node 23.9 or newer; before that, set `NODE_EXTRA_CA_CERTS`). Have `HTTPS_PROXY` and
+`NO_PROXY` set in the shell you run `binders add` from, and the service keeps them, along with `NODE_EXTRA_CA_CERTS`,
+`SSL_CERT_FILE` and `SSL_CERT_DIR`, in a file only you can read. Following a proxy takes Node 24 or newer. If it can't
+get through, `binders logs NAME` says why, with the cause and what to try.
+
 An agent that says nothing for 15 minutes (`--idle-minutes`, or its settings) is stopped as stuck, and its card,
 debrief or Challenge says so: a model it can't reach, a prompt waiting in its own app, a login gone stale. Each runner
 also tells the hub who it is, so a second runner for the same agent hears of the first when it starts, and the

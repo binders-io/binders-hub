@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { heldIn } from './held.ts'
+import { serviceEnv } from './network.ts'
 
 // Agents in the background: `binders add` sets an agent up on this machine and keeps its runner going as a service of
 // the user's (a LaunchAgent on a Mac, a systemd --user unit on Linux), which starts at login, starts again after a
@@ -34,6 +35,8 @@ export interface Saved {
   hub: string
   workspace: string
   addedAt: string
+  /** The proxy and certificate settings of the shell that set it up, which a service doesn't otherwise get. */
+  network?: Record<string, string>
 }
 
 /**
@@ -120,6 +123,8 @@ const path = () => [...new Set([...(process.env.PATH ?? '').split(':'), '/opt/ho
  */
 export function unitFor(s: Saved) {
   const quote = (a: string) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `"${a.replace(/(["\\$`])/g, '\\$1')}"`)
+  // systemd reads % as the start of one of its own values, and a proxy's password can well have one.
+  const environment = Object.entries(s.network ?? {}).map(([name, value]) => `Environment="${name}=${value.replace(/(["\\])/g, '\\$1').replace(/%/g, '%%')}"\n`).join('')
   return `[Unit]
 Description=Binders runner: ${s.agent}
 
@@ -127,7 +132,7 @@ Description=Binders runner: ${s.agent}
 ExecStart=${command(s).map(quote).join(' ')}
 WorkingDirectory=${s.workspace}
 Environment=PATH=${path()}
-Restart=always
+${environment}Restart=always
 RestartSec=10
 KillMode=process
 StandardOutput=append:${logOf(s.name)}
@@ -138,17 +143,23 @@ WantedBy=default.target
 `
 }
 
+/** A service's settings. With a proxy's address among them, which can carry its password, for this user alone. */
+async function writeService(file: string, text: string, s: Saved) {
+  await writeFile(file, text)
+  if (s.network) await chmod(file, 0o600)
+}
+
 async function writeUnit(s: Saved) {
   await mkdir(join(homedir(), '.config', 'systemd', 'user'), { recursive: true })
-  await writeFile(unitOf(s.name), unitFor(s))
+  await writeService(unitOf(s.name), unitFor(s), s)
   await run('systemctl', ['--user', 'daemon-reload'])
 }
 
-async function install(s: Saved) {
-  await mkdir(logsDir(), { recursive: true })
-  if (platform === 'mac') {
-    const args = command(s).map((a) => `    <string>${xml(a)}</string>`).join('\n')
-    const plist = `<?xml version="1.0" encoding="UTF-8"?>
+/** Its LaunchAgent. */
+export function plistFor(s: Saved) {
+  const args = command(s).map((a) => `    <string>${xml(a)}</string>`).join('\n')
+  const environment = Object.entries(s.network ?? {}).map(([name, value]) => `    <key>${xml(name)}</key><string>${xml(value)}</string>\n`).join('')
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -162,7 +173,7 @@ ${args}
   <dict>
     <key>PATH</key><string>${xml(path())}</string>
     <key>HOME</key><string>${xml(homedir())}</string>
-  </dict>
+${environment}  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
@@ -172,8 +183,13 @@ ${args}
 </dict>
 </plist>
 `
+}
+
+async function install(s: Saved) {
+  await mkdir(logsDir(), { recursive: true })
+  if (platform === 'mac') {
     await mkdir(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true })
-    await writeFile(plistOf(s.name), plist)
+    await writeService(plistOf(s.name), plistFor(s), s)
     await bootout(s.name)
     await bootstrap(plistOf(s.name))
     return
@@ -325,7 +341,9 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
       const existing = (await saved()).find((s) => (me.id && s.agentId === me.id) || (s.agent === me.name && s.hub === hub))
       let name = existing?.name ?? (typeof f.name === 'string' ? slug(f.name) : slug(me.name))
       if (!existing) for (let n = 2; (await saved()).some((s) => s.name === name); n++) name = `${slug(me.name)}-${n}`
-      const s: Saved = { name, agent: me.name, ...(me.id ? { agentId: me.id } : {}), hub, workspace, addedAt: existing?.addedAt ?? new Date().toISOString() }
+      const network = serviceEnv()
+      const carried = Object.keys(network)
+      const s: Saved = { name, agent: me.name, ...(me.id ? { agentId: me.id } : {}), hub, workspace, addedAt: existing?.addedAt ?? new Date().toISOString(), ...(carried.length ? { network } : {}) }
       await mkdir(agentsDir(), { recursive: true, mode: 0o700 })
       await writeFile(tokenOf(name), token, { mode: 0o600 })
       await chmod(tokenOf(name), 0o600)
@@ -333,6 +351,7 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
       await install(s)
       console.log(`✓ ${me.name} ${existing ? 'restarted' : 'is running'} in the background, in ${workspace}.`)
       console.log(`  binders list · binders logs ${name} -f · binders restart ${name} · binders remove ${name}`)
+      if (carried.length) console.log(`  It keeps this shell's ${carried.join(', ')}. To change them, run binders add again.`)
       if (platform === 'mac' && workspace.startsWith(join(homedir(), 'Documents'))) console.log('  macOS may ask once whether node may use your Documents folder: allow it, or the agent can’t read its code.')
       return 0
     }

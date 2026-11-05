@@ -10,6 +10,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { Desk, framed, notAPerson, writeShim, type HookReply } from './desk.ts'
 import { canHold, Held, heldIn, type HeldMeta } from './held.ts'
+import { reasonOf } from './network.ts'
 import { mcpServer, StreamReader } from './stream.ts'
 import { blastRadius, blastSummary } from './blast.ts'
 import { behindBy, briefCheckout, briefDue, briefPrompt, briefSection, changesSince, type BriefJSON, type BriefRead } from './briefs.ts'
@@ -982,7 +983,7 @@ export class Runner {
           busy: [...all.flatMap((m) => [...m.keys()]), ...[...replying.keys()].map((key) => key.slice('replies:'.length))],
         })
       } catch (error) {
-        this.log(`The hub didn’t answer (${(error as Error).message}); trying again in 5 s.`)
+        this.log(`The hub didn’t answer (${reasonOf(error)}); trying again in 5 s.`)
         await new Promise((done) => setTimeout(done, 5000))
         continue
       }
@@ -1039,7 +1040,7 @@ export class Runner {
       await rename(`${file}.new`, file)
       return true
     } catch (error) {
-      this.log(`Couldn’t update to runner ${version}: ${(error as Error).message}. Staying on ${runnerVersion}.`)
+      this.log(`Couldn’t update to runner ${version}: ${reasonOf(error)}. Staying on ${runnerVersion}.`)
       return false
     }
   }

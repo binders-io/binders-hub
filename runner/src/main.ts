@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { Runner } from './runner.ts'
 import { daemonCommand, subcommands, usage } from './daemon.ts'
 import { agentCommand } from './desk.ts'
+import { nodeNetwork, reasonOf, settleNetwork, workerCommand } from './network.ts'
 
 // binders-runner: keeps one agent working on what Binders gives it.
 //
@@ -13,6 +14,8 @@ import { agentCommand } from './desk.ts'
 //
 // The token is the agent's, from Binders' Agents page; it's read from BINDERS_TOKEN so it isn't in the shell's history.
 // Which tool runs, how much access it has, its model and time limit are the agent's runner settings, on the Agents page.
+
+settleNetwork()
 
 // An agent's own binders command, from the small script its run has on its PATH (desk.ts).
 if (process.argv[2] === 'agent') process.exit(await agentCommand(process.argv.slice(3)))
@@ -24,10 +27,16 @@ if (sub && (subcommands.has(sub) || sub === 'help')) {
     console.log(usage)
     process.exit(0)
   }
+  // binders add and remove talk to the hub from here, not from a worker: this process starts itself again to do it.
+  if (['add', 'remove', 'rm'].includes(sub) && !process.env.BINDERS_RUNNER_WORKER) {
+    const network = nodeNetwork()
+    const again = spawnSync(process.execPath, [...network.args, process.argv[1], ...process.argv.slice(2)], { stdio: 'inherit', env: { ...process.env, ...network.env, BINDERS_RUNNER_WORKER: '1' } })
+    process.exit(again.status ?? 1)
+  }
   try {
     process.exit(await daemonCommand(process.argv.slice(2), (hub, token) => new Runner({ hubUrl: hub, token, workspace: process.cwd(), log: () => {} }).identity(), (hub, token, cards, why) => new Runner({ hubUrl: hub, token, workspace: process.cwd(), log: () => {} }).handBack(cards, why)))
   } catch (error) {
-    console.error((error as Error).message)
+    console.error(reasonOf(error))
     process.exit(1)
   }
 }
@@ -83,7 +92,8 @@ if (file && !process.env.BINDERS_RUNNER_WORKER) {
   const id = Math.random().toString(16).slice(2, 14)
   for (;;) {
     const code = await new Promise<number>((done) => {
-      const child = spawn(process.execPath, [file, ...process.argv.slice(2)], { stdio: 'inherit', env: { ...process.env, BINDERS_RUNNER_WORKER: '1', BINDERS_RUNNER_ID: id } })
+      const worker = workerCommand(file, process.argv.slice(2))
+      const child = spawn(process.execPath, worker.args, { stdio: 'inherit', env: { ...worker.env, BINDERS_RUNNER_WORKER: '1', BINDERS_RUNNER_ID: id } })
       // Ctrl-C reaches the child too, in one process group, and binders remove signals this process alone: passed on either way.
       const onInt = () => { stopping = true; child.kill('SIGINT') }
       const onTerm = () => { stopping = true; child.kill('SIGTERM') }
@@ -116,6 +126,6 @@ try {
   if (runner.updated) process.exit(restart)
   await runner.goodbye()
 } catch (error) {
-  console.error((error as Error).message)
+  console.error(reasonOf(error))
   process.exit(1)
 }
