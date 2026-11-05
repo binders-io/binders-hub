@@ -17,20 +17,11 @@ export function RunnerSteps({ agent, token: given }: { agent: Agent; token?: str
   const [making, setMaking] = useState(false)
   // In the background (installed with the `binders` command, kept running at login and after a crash), or in this terminal.
   const [how, setHow] = useState<'background' | 'terminal'>('background')
+  const [windows, setWindows] = useState(() => /Windows/.test(navigator.userAgent))
   const live = state.agents.find((a) => a.id === agent.id) ?? agent
   const listening = isListening(live)
-  const origin = window.location.origin
-  const file = '~/.binders/binders-runner.mjs'
   const where = live.runner?.workspace
-  const folder = where ? (where.includes(' ') ? `'${where}'` : where) : '~/path/to/your/code'
-  const command = how === 'background'
-    ? `curl -fsSL ${origin}/install | sh -s -- add --token ${token ?? '<its token>'} --workspace ${folder}`
-    : [
-        ...(where ? [`cd ${folder}`] : []),
-        `mkdir -p ~/.binders`,
-        `curl -fsSL ${origin}/runner/binders-runner.mjs -o ${file}`,
-        `BINDERS_TOKEN=${token ?? '<its token>'} node ${file} --hub ${origin}${where ? '' : ' --workspace ~/path/to/your/code'}`,
-      ].join(' && ')
+  const command = runnerCommand({ windows, how, origin: window.location.origin, token: token ?? '<its token>', where })
   const copy = async () => {
     await navigator.clipboard.writeText(command).catch(() => {})
     setCopied(true)
@@ -46,7 +37,11 @@ export function RunnerSteps({ agent, token: given }: { agent: Agent; token?: str
   return (
     <ol className="runner-steps">
       <li>
-        <h3>Paste this in Terminal <span className="faint">needs Node 20 or newer</span></h3>
+        <h3>Paste this in {windows ? 'PowerShell' : 'Terminal'} <span className="faint">needs Node 20 or newer</span></h3>
+        <div className="segmented runner-how" role="radiogroup" aria-label="What it runs on">
+          <button type="button" role="radio" aria-checked={!windows} className={!windows ? 'on' : ''} onClick={() => setWindows(false)}>macOS or Linux</button>
+          <button type="button" role="radio" aria-checked={windows} className={windows ? 'on' : ''} onClick={() => setWindows(true)}>Windows</button>
+        </div>
         <div className="segmented runner-how" role="radiogroup" aria-label="How it runs">
           <button type="button" role="radio" aria-checked={how === 'background'} className={how === 'background' ? 'on' : ''} onClick={() => setHow('background')}>In the background</button>
           <button type="button" role="radio" aria-checked={how === 'terminal'} className={how === 'terminal' ? 'on' : ''} onClick={() => setHow('terminal')}>In this terminal</button>
@@ -72,6 +67,32 @@ export function RunnerSteps({ agent, token: given }: { agent: Agent; token?: str
       </li>
     </ol>
   )
+}
+
+/** The command to paste, for where it's going to run. */
+export function runnerCommand({ windows, how, origin, token, where }: { windows: boolean; how: 'background' | 'terminal'; origin: string; token: string; where?: string }) {
+  const folder = where ? (where.includes(' ') ? `'${where}'` : where) : windows ? '$HOME/path/to/your/code' : '~/path/to/your/code'
+  if (windows) {
+    const file = '$HOME/.binders/binders-runner.mjs'
+    return how === 'background'
+      ? `& ([scriptblock]::Create((irm ${origin}/install.ps1))) add --token ${token} --workspace ${folder}`
+      : [
+          ...(where ? [`cd ${folder}`] : []),
+          `New-Item -ItemType Directory -Force $HOME/.binders | Out-Null`,
+          `irm ${origin}/runner/binders-runner.mjs -OutFile ${file}`,
+          `$env:BINDERS_TOKEN='${token}'`,
+          `node ${file} --hub ${origin}${where ? '' : ` --workspace ${folder}`}`,
+        ].join('; ')
+  }
+  const file = '~/.binders/binders-runner.mjs'
+  return how === 'background'
+    ? `curl -fsSL ${origin}/install | sh -s -- add --token ${token} --workspace ${folder}`
+    : [
+        ...(where ? [`cd ${folder}`] : []),
+        `mkdir -p ~/.binders`,
+        `curl -fsSL ${origin}/runner/binders-runner.mjs -o ${file}`,
+        `BINDERS_TOKEN=${token} node ${file} --hub ${origin}${where ? '' : ' --workspace ~/path/to/your/code'}`,
+      ].join(' && ')
 }
 
 function Command({ text, copied, onCopy }: { text: string; copied: boolean; onCopy: () => void }) {

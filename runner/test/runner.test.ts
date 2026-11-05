@@ -3,10 +3,13 @@ import { mkdtempSync } from 'node:fs'
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { rm, writeFile, mkdtemp, readFile, readdir, realpath, stat } from 'node:fs/promises'
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
+import { promisify } from 'node:util'
+import { pathToFileURL } from 'node:url'
 import { parseDiff } from '../../shared/changeSet.ts'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { createServer } from 'node:http'
+import { basename, join } from 'node:path'
 // Cards are always worked in worktrees: the tests' go in a folder of their own, never in ~/.binders.
 process.env.BINDERS_WORKTREES_DIR = mkdtempSync(join(tmpdir(), 'binders-test-worktrees-'))
 import type { AddressInfo } from 'node:net'
@@ -26,13 +29,14 @@ import { Runner, finishingInJira, withBinderContext, withJiraAsk, actionsFromRep
 process.env.BINDERS_HOME ??= mkdtempSync(join(tmpdir(), 'binders-home-'))
 import { StreamReader } from '../src/stream.ts'
 import { until } from '../../hub/test/helpers.ts'
+import { windowsInstaller } from '../../hub/src/routes/machines.ts'
 
 // The runner against a real hub, with a stand-in agent: a small script the runner starts as a custom command, which
 // prints Claude Code's stream-json and uses Binders' MCP tools as an agent would. No real agent runs.
 
 const standIn = `
-import { Client } from '${join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js')}'
-import { StreamableHTTPClientTransport } from '${join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js')}'
+import { Client } from '${pathToFileURL(join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js')).href}'
+import { StreamableHTTPClientTransport } from '${pathToFileURL(join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js')).href}'
 
 const mode = process.argv[2]
 const client = new Client({ name: 'stand-in', version: '1' })
@@ -85,6 +89,9 @@ async function setUp() {
   const card = (title: string, meantFor: string) => actions.createCard({ kind: 'user', login: 'you' }, { binderId: 'b1', title, meantFor })
   return { hub, actions, url, dir, agent, card, issued: (id: string) => auth.issueAgentToken(id, 'test'), close: () => app.close() }
 }
+
+// Stand-in tools written as shell scripts, and holders, which are built on a pty: neither is there on Windows.
+const unixOnly = process.platform === 'win32' ? 'needs a shell script or a holder, which Windows doesn’t have' : false
 
 describe('the runner', () => {
   it('takes a card as soon as it’s there, runs the agent, and relays what it does', async () => {
@@ -350,7 +357,7 @@ console.log('Done.')
     await until(() => hub.state.cards.find((c) => c.id === one.id)?.stage === 'live', 15_000)
     runner.stop()
     await running
-    const cardFolder = join(worktrees, `${folder.split('/').pop()}-${one.id}`)
+    const cardFolder = join(worktrees, `${basename(folder)}-${one.id}`)
     assert.deepEqual((await readdir(cardFolder)).sort(), ['api', 'web'], 'the card’s own folder, laid out as the workspace is')
     for (const name of ['web', 'api']) {
       assert.equal(execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: join(cardFolder, name) }).toString().trim(), `binders/${one.id}`, `${name} on the card’s branch`)
@@ -709,7 +716,7 @@ describe('restarting a runner from the Agents page', () => {
   })
 })
 
-describe('an enterprise MCP config', () => {
+describe('an enterprise MCP config', { skip: unixOnly }, () => {
   // A stand-in for Claude Code, first on the PATH: it writes down what it was started with, refuses Binders' server as
   // Claude Code does under an enterprise MCP config (when told to), and otherwise answers in plain words.
   async function standInClaude(dir: string, refuse: boolean) {
@@ -1058,11 +1065,11 @@ console.log('</binders-actions>')
 })
 
 // Cards in holders: the runner can go, and the agent doesn't.
-describe('a card in a holder', () => {
+describe('a card in a holder', { skip: unixOnly }, () => {
   const heldStandIn = `
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs'
-import { Client } from '${join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js')}'
-import { StreamableHTTPClientTransport } from '${join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js')}'
+import { Client } from '${pathToFileURL(join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js')).href}'
+import { StreamableHTTPClientTransport } from '${pathToFileURL(join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js')).href}'
 const [flag, log] = process.argv.slice(2)
 appendFileSync(log, JSON.stringify({ pid: process.pid, resume: process.env.BINDERS_RESUME }) + '\\n')
 const say = (event) => console.log(JSON.stringify(event))
@@ -1275,7 +1282,7 @@ await client.close()
   })
 })
 
-describe('a terminal in a holder', () => {
+describe('a terminal in a holder', { skip: unixOnly }, () => {
   it('is still there, with what it wrote, for the runner after the one that opened it', async () => {
     const root = await mkdtemp(join(tmpdir(), 'bt-'))
     const flag = join(root, 'go')
@@ -1316,7 +1323,7 @@ describe('a terminal in a holder', () => {
 })
 
 // The binders command: the agent talks to its runner, with no MCP, no config and no token.
-describe('an agent with the binders command', () => {
+describe('an agent with the binders command', { skip: unixOnly }, () => {
   const standIn = `
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs'
@@ -1521,7 +1528,7 @@ say({ type: 'result', total_cost_usd: 0.1, duration_ms: 1000, result: 'Done.' })
 })
 
 // Terminals agents open for themselves, and runs as live terminals.
-describe('an agent’s own terminals, and a run in a live one', () => {
+describe('an agent’s own terminals, and a run in a live one', { skip: unixOnly }, () => {
   const standIn = `
 import { execFileSync } from 'node:child_process'
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs'
@@ -1843,3 +1850,52 @@ if (args.includes('--mcp-config')) {
     assert.equal(plainText('\x1b[32mgreen\x1b[0m\r\nprogress 1\rprogress 2\r\n\x1b]0;title\x07done'), 'green\nprogress 2\ndone')
   })
 })
+
+// On a real Windows machine, in CI: it changes that machine's scheduled tasks and PATH, so it's run only where it's asked for.
+describe('on Windows, from the installer to a card and back', { skip: !process.env.BINDERS_WINDOWS_E2E }, () => {
+  it('installs, runs as a logon task, does a card, and stops, starts, restarts and goes when told', async () => {
+    const set = await setUp()
+    const { agent: me, token } = await set.agent('finish')
+    const listening = () => set.hub.presence()[me.id]?.listening === true
+    const installer = join(set.dir, 'install.ps1')
+    const server = await serveRunner()
+    await writeFile(installer, windowsInstaller(server.url))
+    // Never a sync call here: the hub they talk to is in this process, and would never answer.
+    const said = async (command: string, args: string[], shell = false) => {
+      // As a person has it: these tests keep the runner's files in a folder of their own, which the installer doesn't use.
+      const env = { ...process.env, BINDERS_HOME: undefined }
+      const { stdout, stderr } = await promisify(execFile)(command, args, { encoding: 'utf8', shell, timeout: 120_000, env }).catch((error: { stdout?: string; stderr?: string; message: string }) => {
+        throw new Error(`${command} ${args.join(' ')}: ${error.message}\n${error.stdout ?? ''}\n${error.stderr ?? ''}`)
+      })
+      return `${stdout}${stderr}`
+    }
+    const installed = await said('powershell', ['-NoProfile', '-Command', `& ([scriptblock]::Create((Get-Content -Raw '${installer}'))) add --token ${token} --hub ${set.url} --workspace '${set.dir}' --name ci`])
+    assert.match(installed, /is running in the background/)
+    const binders = (...args: string[]) => said(join(homedir(), '.binders', 'bin', 'binders.cmd'), args, true)
+    await until(listening, 60_000)
+    const made = await set.card('A card on Windows', me.id)
+    await until(() => set.hub.state.cards.find((c) => c.id === made.id)!.stage === 'live', 60_000)
+    assert.match(await binders('list'), /ci\s+running/)
+    await binders('stop', 'ci')
+    await until(() => !listening(), 60_000)
+    assert.match(await binders('list'), /ci\s+stopped/)
+    await binders('start', 'ci')
+    await until(listening, 60_000)
+    await binders('restart', 'ci')
+    await until(listening, 60_000)
+    assert.match(await binders('logs', 'ci'), /Connected to/)
+    await binders('remove', 'ci')
+    await until(() => !listening(), 60_000)
+    await assert.rejects(said('schtasks', ['/Query', '/TN', 'Binders\\runner-ci']))
+    await server.close()
+    await set.close()
+  })
+})
+
+/** The hub's one file an installer downloads, from where the runner was just built. */
+async function serveRunner() {
+  const file = await readFile(join(import.meta.dirname, '../dist/binders-runner.mjs'))
+  const server = createServer((_request, response) => response.end(file))
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => new Promise((done) => server.close(done)) }
+}

@@ -18,6 +18,23 @@ app.kubernetes.io/name: {{ include "hub.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{/* The pull secrets the pods use: those named, and the chart's own when it makes one. A name alone works as well as {name: …}. */}}
+{{- define "hub.imagePullSecrets" -}}
+{{- $names := list -}}
+{{- range .Values.imagePullSecrets -}}
+{{- if kindIs "string" . -}}{{- $names = append $names . -}}{{- else -}}{{- $names = append $names .name -}}{{- end -}}
+{{- end -}}
+{{- if .Values.imageCredentials.registry -}}
+{{- $names = append $names (printf "%s-registry" (include "hub.fullname" .)) -}}
+{{- end -}}
+{{- with $names }}
+imagePullSecrets:
+{{- range . }}
+  - name: {{ . | quote }}
+{{- end }}
+{{- end -}}
+{{- end -}}
+
 {{- define "hub.secretName" -}}
 {{- .Values.hubSecret.existingSecret | default (printf "%s-secret" (include "hub.fullname" .)) -}}
 {{- end -}}

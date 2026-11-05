@@ -517,6 +517,7 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
       agent: { id: agent.id, name: agent.name, owner: agent.owner, tool, access, model: args.model, repos: agent.repos, binders: agent.binders.map((b) => hub.state.binders.find((x) => x.id === b)?.name ?? b) },
       token,
       start_runner: `curl -fsSL ${making.publicUrl}/install | sh -s -- add --token ${token} --workspace <folder with its code>`,
+      start_runner_on_windows: `& ([scriptblock]::Create((irm ${making.publicUrl}/install.ps1))) add --token ${token} --workspace <folder with its code>`,
       note: 'The token is shown once. Its owner sees the agent on the Agents page, where they can make a new token or revoke it.',
     })
   }))

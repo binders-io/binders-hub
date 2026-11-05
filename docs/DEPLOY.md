@@ -57,6 +57,8 @@ kubectl logs -n binders deploy/hub-binders-hub | grep "set up"
 
 Its [values.yaml](../deploy/helm/binders-hub/values.yaml) explains each setting: `env` for the hub's other settings (`HUB_ADMINS`…), `hubSecret.existingSecret` for a secret you manage, `redis.enabled: false` with `externalRedis` for your own Redis, `persistence` for storage classes and sizes. To get plain manifests instead, `helm template hub deploy/helm/binders-hub --set publicUrl=…`.
 
+From a private registry: copy the image there, set `image.repository` (and `redis.image`, if Redis comes from there too), and name your pull Secret in `imagePullSecrets`, or have the chart make one from `imageCredentials`. Both pods use them.
+
 Use storage that only one node mounts at a time (`ReadWriteOnce`) and that survives the pod: the hub's notes are a Git repo, which doesn't belong on NFS shared by two writers.
 
 ## AWS: ECS on Fargate
