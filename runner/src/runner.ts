@@ -2,7 +2,7 @@ import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir, hostname } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { randomBytes } from 'node:crypto'
@@ -10,6 +10,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { Desk, framed, notAPerson, writeShim, type HookReply } from './desk.ts'
 import { canHold, Held, heldIn, type HeldMeta } from './held.ts'
+import { reasonOf } from './network.ts'
+import { splitCommand, startable, stopTreeArgs, whereOnWindows } from './windows.ts'
 import { mcpServer, StreamReader } from './stream.ts'
 import { blastRadius, blastSummary } from './blast.ts'
 import { behindBy, briefCheckout, briefDue, briefPrompt, briefSection, changesSince, type BriefJSON, type BriefRead } from './briefs.ts'
@@ -23,7 +25,12 @@ import { briefMost, defaultRunner, type RunnerSettings } from '../../shared/work
 // does to the card as it goes, and never leaves a card stuck: an agent that stops without finishing, crashes or runs
 // too long puts it back with why. An agent that asks a person and stops is started again on that card with the answer.
 
-const run = promisify(execFile)
+const exec = promisify(execFile)
+/** A program, started as it can be here: on Windows, what an npm command really runs. */
+const run = ((command: string, args: string[], options?: object) => {
+  const start = startable(command, args)
+  return exec(start.command, start.args, options)
+}) as typeof exec
 
 /** Claude Code's hooks for a run: what people write reaches it after each tool call, and at the end of its turn. */
 function hearingHooks(binders: string, live = false) {
@@ -162,6 +169,7 @@ export async function managedBinders(file: string, hubUrl: string) {
  * leaves the program under the shell running when only the shell is stopped, as on Linux), else the process itself.
  */
 function stopTree(child: ChildProcess, signal: NodeJS.Signals) {
+  if (process.platform === 'win32' && child.pid) return void execFile('taskkill', stopTreeArgs(child.pid), () => {})
   try {
     if (child.pid && process.platform !== 'win32') return void process.kill(-child.pid, signal)
   } catch {
@@ -982,7 +990,7 @@ export class Runner {
           busy: [...all.flatMap((m) => [...m.keys()]), ...[...replying.keys()].map((key) => key.slice('replies:'.length))],
         })
       } catch (error) {
-        this.log(`The hub didn’t answer (${(error as Error).message}); trying again in 5 s.`)
+        this.log(`The hub didn’t answer (${reasonOf(error)}); trying again in 5 s.`)
         await new Promise((done) => setTimeout(done, 5000))
         continue
       }
@@ -1039,7 +1047,7 @@ export class Runner {
       await rename(`${file}.new`, file)
       return true
     } catch (error) {
-      this.log(`Couldn’t update to runner ${version}: ${(error as Error).message}. Staying on ${runnerVersion}.`)
+      this.log(`Couldn’t update to runner ${version}: ${reasonOf(error)}. Staying on ${runnerVersion}.`)
       return false
     }
   }
@@ -1763,7 +1771,7 @@ export class Runner {
     if (wantsDesk && deskSecret) {
       const desk = await this.openDesk()
       desk.add(deskSecret, { card: how.card!, dir })
-      deskEnv = { BINDERS_DESK: desk.path, BINDERS_RUN: deskSecret, PATH: `${this.agentBin}:${process.env.PATH ?? ''}` }
+      deskEnv = { BINDERS_DESK: desk.path, BINDERS_RUN: deskSecret, PATH: `${this.agentBin}${delimiter}${process.env.PATH ?? ''}` }
     }
     // This runner went and left it running, or its holder went with no word of how it ended.
     let left = false
@@ -1970,7 +1978,8 @@ export class Runner {
         }
       } else exit = await new Promise((done) => {
         // In a process group of its own, so stopping it stops what it started too (a shell's command, a tool's helpers).
-        const child = spawn(command, args, { cwd: dir, shell, detached: process.platform !== 'win32', env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] })
+        const start = shell ? { command, args } : startable(command, args)
+        const child = spawn(start.command, start.args, { cwd: dir, shell, detached: process.platform !== 'win32', env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] })
         this.children.set(key, child)
         const stop = (why: string) => {
           this.log(why)
@@ -2648,6 +2657,10 @@ export class Runner {
       case 'qwen':
         return plain('qwen', ['-p', prompt, ...(full ? ['-y'] : []), ...(model ? ['-m', model] : [])])
       default: {
+        if (process.platform === 'win32') {
+          const [command = '', ...args] = splitCommand(settings.command ?? '', { prompt, dir, mcp: mcp ?? '' })
+          return plain(command, args)
+        }
         const filled = (settings.command ?? '').replaceAll('{prompt}', shellQuote(prompt)).replaceAll('{dir}', shellQuote(dir)).replaceAll('{mcp}', shellQuote(mcp ?? ''))
         return { command: filled, args: [], shell: true, env: {} }
       }
@@ -2790,7 +2803,8 @@ export function challengeFindings(output: string): ChallengeFindings | undefined
  * started from a terminal or a service sees (~/.opencode/bin, ~/.local/bin, Homebrew, Bun, npm's global folder).
  */
 async function whereIs(command: string) {
-  if (command.includes('/')) return command
+  if (/[/\\]/.test(command)) return command
+  if (process.platform === 'win32') return whereOnWindows(command)
   const onPath = await run('/bin/sh', ['-c', `command -v ${shellQuote(command)}`]).then((r) => r.stdout.trim(), () => '')
   if (onPath) return onPath
   const home = homedir()

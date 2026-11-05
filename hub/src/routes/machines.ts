@@ -24,6 +24,7 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
   // The installer: the runner and its `binders` command on this machine, then `binders` with what's passed, so one line
   // sets an agent up in the background: curl -fsSL <hub>/install | sh -s -- add --token bnd_… --workspace ~/code/app
   app.get('/install', async (_request, reply) => reply.type('text/plain; charset=utf-8').header('cache-control', 'no-cache').send(installer(options.publicUrl)))
+  app.get('/install.ps1', async (_request, reply) => reply.type('text/plain; charset=utf-8').header('cache-control', 'no-cache').send(windowsInstaller(options.publicUrl)))
 
   // MCP for agents and people ----------------------------------------------------------------------------------------
 
@@ -146,6 +147,32 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
     scope.post('/webhooks/github', deliver)
     scope.post('/webhooks/github/:space', deliver)
   })
+}
+
+/** The PowerShell script /install.ps1 serves: the same as /install, for Windows. */
+export function windowsInstaller(publicUrl: string) {
+  const hub = publicUrl.replace(/\/$/, '').replace(/[^\w:/.@%+~-]/g, '')
+  return `# Binders: installs (or updates) the runner and its binders command for ${hub}, then runs binders with what was passed.
+#   & ([scriptblock]::Create((irm ${hub}/install.ps1))) add --token bnd_... --workspace C:\\code\\app
+$ErrorActionPreference = 'Stop'
+$Hub = '${hub}'
+$Dir = Join-Path $HOME '.binders'
+$Node = Get-Command node -ErrorAction SilentlyContinue
+if (-not $Node) { throw 'Binders needs Node 20 or newer: https://nodejs.org, or: winget install OpenJS.NodeJS' }
+if ([int](& node -p "process.versions.node.split('.')[0]") -lt 20) { throw "Binders needs Node 20 or newer; this is $(& node -v). https://nodejs.org" }
+New-Item -ItemType Directory -Force -Path (Join-Path $Dir 'bin') | Out-Null
+$Runner = Join-Path $Dir 'binders-runner.mjs'
+Invoke-WebRequest -UseBasicParsing -Uri "$Hub/runner/binders-runner.mjs" -OutFile "$Runner.new"
+Move-Item -Force "$Runner.new" $Runner
+$Command = Join-Path $Dir 'bin\\binders.cmd'
+[IO.File]::WriteAllText($Command, "@if not defined BINDERS_URL set \`"BINDERS_URL=$Hub\`"\`r\`n@\`"$($Node.Source)\`" \`"$Runner\`" %*\`r\`n")
+$Bin = Join-Path $Dir 'bin'
+$UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (($UserPath -split ';') -notcontains $Bin) { [Environment]::SetEnvironmentVariable('Path', "$Bin;$UserPath", 'User') }
+if (($env:Path -split ';') -notcontains $Bin) { $env:Path = "$Bin;$env:Path" }
+Write-Host 'Done: binders is installed. A new window has it on its PATH.'
+if ($args.Count -gt 0) { & $Command @args; if ($LASTEXITCODE) { throw "binders stopped with $LASTEXITCODE" } }
+`
 }
 
 /** The shell script /install serves: installs or updates the runner and the `binders` command, then runs `binders`. */

@@ -192,13 +192,21 @@ binders logs NAME -f    # what it's doing
 binders restart NAME    # also stop, start, remove; --all for every one
 ```
 
-Each runs as a service of yours (a LaunchAgent on a Mac, a `systemd --user` unit on Linux): it starts at login and
+Each runs as a service of yours (a LaunchAgent on a Mac, a `systemd --user` unit on Linux, a logon task on Windows,
+which needs no admin rights: install it with `& ([scriptblock]::Create((irm <hub>/install.ps1))) add --token bnd_… --workspace C:\code\app`
+in PowerShell. Runs kept going through restarts and an agent's own terminals aren't on Windows yet): it starts at login and
 again after a crash, logs to `~/.binders/logs`, and keeps its token in `~/.binders/agents`, readable by you alone. On a
 Mac, an agent working in `~/Documents` needs node allowed there once (macOS asks), and its tools' sign-ins (Claude Code,
 Codex) done beforehand, as a background service can't show them.
 
 Run as the file the hub hands out (`binders-runner.mjs`), the runner keeps itself current: when the hub has a newer
 one and it's idle, it replaces its file and starts again on it, without being restarted by hand.
+
+On a network that signs HTTPS itself or needs a proxy, there's nothing to set for certificates: the runner reads this
+machine's certificate store (with Node 23.9 or newer; before that, set `NODE_EXTRA_CA_CERTS`). Have `HTTPS_PROXY` and
+`NO_PROXY` set in the shell you run `binders add` from, and the service keeps them, along with `NODE_EXTRA_CA_CERTS`,
+`SSL_CERT_FILE` and `SSL_CERT_DIR`, in a file only you can read. Following a proxy takes Node 24 or newer. If it can't
+get through, `binders logs NAME` says why, with the cause and what to try.
 
 An agent that says nothing for 15 minutes (`--idle-minutes`, or its settings) is stopped as stuck, and its card,
 debrief or Challenge says so: a model it can't reach, a prompt waiting in its own app, a login gone stale. Each runner

@@ -2152,6 +2152,9 @@ describe('the runner, from the hub', () => {
     const install = await fetch(`${url}/install`)
     assert.equal(install.status, 200)
     assert.match(await install.text(), /\/runner\/binders-runner\.mjs/)
+    const onWindows = await fetch(`${url}/install.ps1`)
+    assert.equal(onWindows.status, 200)
+    assert.match(await onWindows.text(), /\/runner\/binders-runner\.mjs[\s\S]*binders\.cmd/)
     await close()
   })
 

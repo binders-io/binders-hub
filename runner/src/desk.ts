@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { chmod, mkdir, rm, writeFile } from 'node:fs/promises'
 import { connect, createServer, type Server, type Socket } from 'node:net'
 import { dirname, join } from 'node:path'
@@ -15,6 +16,9 @@ export interface DeskRun {
 
 export type DeskAnswer = { ok: true; result?: unknown; waiting?: number } | { ok: false; error: string }
 
+/** Where a desk listens: a socket file, or, on Windows, which has none, a named pipe. */
+export const deskAddress = (path: string, platform: NodeJS.Platform = process.platform) => (platform === 'win32' ? `\\\\.\\pipe\\binders-${createHash('sha256').update(path).digest('hex').slice(0, 24)}` : path)
+
 /** The runner's side: the socket, the runs it knows, and what to do when one asks for something. */
 export class Desk {
   private server?: Server
@@ -24,7 +28,7 @@ export class Desk {
   private handle: (run: DeskRun, verb: string, args: Record<string, unknown>, gone: AbortSignal) => Promise<{ result?: unknown; waiting?: number }>
 
   constructor(path: string, handle: Desk['handle']) {
-    this.path = path
+    this.path = deskAddress(path)
     this.handle = handle
   }
 
@@ -38,8 +42,11 @@ export class Desk {
 
   async listen() {
     if (this.server) return
-    await mkdir(dirname(this.path), { recursive: true, mode: 0o700 })
-    await rm(this.path, { force: true })
+    const file = process.platform !== 'win32'
+    if (file) {
+      await mkdir(dirname(this.path), { recursive: true, mode: 0o700 })
+      await rm(this.path, { force: true })
+    }
     const server = createServer((socket) => this.serve(socket))
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject)
@@ -48,7 +55,7 @@ export class Desk {
         resolve()
       })
     })
-    await chmod(this.path, 0o600)
+    if (file) await chmod(this.path, 0o600)
     this.server = server
   }
 
@@ -92,6 +99,8 @@ export async function writeShim(folder: string, node: string, runner: string) {
   const quote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`
   await writeFile(file, `#!/bin/sh\nexec ${quote(node)} ${quote(runner)} agent "$@"\n`, { mode: 0o755 })
   await chmod(file, 0o755)
+  // For cmd and PowerShell. The one above is for the Git Bash that Claude Code runs commands in on Windows.
+  if (process.platform === 'win32') await writeFile(`${file}.cmd`, `@"${node}" "${runner}" agent %*\r\n`)
   return file
 }
 

@@ -1,0 +1,54 @@
+# The runner on a real Windows machine, for each push to an experiment. Only in the public repo.
+name: Windows
+
+on:
+  push:
+    branches: ['experiment/**']
+
+permissions:
+  contents: read
+
+jobs:
+  runner:
+    if: github.repository == 'binders-io/binders-hub'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install
+        run: |
+          git config --global user.name Tests
+          git config --global user.email tests@binders.invalid
+          git config --global init.defaultBranch main
+          git config --global core.autocrlf false
+          npm ci --prefix shared
+          npm ci --prefix hub
+          npm ci --prefix runner
+      - name: Build
+        run: npm run build --prefix runner
+      - name: What's specific to Windows
+        working-directory: runner
+        run: node --test --test-force-exit test/windows.test.ts test/network.test.ts
+      - name: From the installer to a card and back
+        working-directory: runner
+        env:
+          BINDERS_WINDOWS_E2E: '1'
+        timeout-minutes: 8
+        run: node --test --test-force-exit --test-timeout=300000 --test-name-pattern="installs, runs as a logon task" test/runner.test.ts
+      - name: What its task and launcher did
+        if: always()
+        shell: pwsh
+        run: |
+          schtasks /Query /TN 'Binders\runner-ci' /V /FO LIST
+          Get-ChildItem "$HOME/.binders/agents" -ErrorAction SilentlyContinue | Select-Object Name, Length
+          Get-Content "$HOME/.binders/agents/ci.cmd" -ErrorAction SilentlyContinue
+          Get-Content "$HOME/.binders/logs/ci.log" -ErrorAction SilentlyContinue
+          query user 2>&1
+          whoami
+      - name: The runner's other tests, to see what else differs here
+        continue-on-error: true
+        working-directory: runner
+        run: node --test --test-force-exit --test-timeout=120000 test/runner.test.ts test/commands.test.ts test/daemon.test.ts
