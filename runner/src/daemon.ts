@@ -1,16 +1,19 @@
 import { execFile, spawn } from 'node:child_process'
 import { chmod, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { delimiter, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { heldIn } from './held.ts'
 import { serviceEnv } from './network.ts'
+import { launcherFor, stopTreeArgs, taskName, taskXml } from './windows.ts'
 
 // Agents in the background: `binders add` sets an agent up on this machine and keeps its runner going as a service of
 // the user's (a LaunchAgent on a Mac, a systemd --user unit on Linux), which starts at login, starts again after a
 // crash, and writes its log to ~/.binders/logs. `binders list` shows them, and logs, start, stop, restart and remove
 // do what they say. What each one is (its hub, folder and name) is kept in ~/.binders/agents/<name>.json, its token
-// beside it in a file only this user can read, never in the service's own settings.
+// beside it in a file only this user can read, never in the service's own settings. On Windows it's a logon task of the
+// user's, which runs a small launcher kept beside them, and a person stopping it leaves a file its runner watches for,
+// as Windows has no signal to ask a process with.
 
 const run = promisify(execFile)
 
@@ -26,6 +29,9 @@ const unitName = (name: string) => `binders-runner-${name}.service`
 const unitOf = (name: string) => join(homedir(), '.config', 'systemd', 'user', unitName(name))
 const logOf = (name: string) => join(logsDir(), `${name}.log`)
 const tokenOf = (name: string) => join(agentsDir(), `${name}.token`)
+const launcherOf = (name: string) => join(agentsDir(), `${name}.cmd`)
+export const stopFileOf = (name: string) => join(agentsDir(), `${name}.stop`)
+export const pidFileOf = (name: string) => join(agentsDir(), `${name}.pid`)
 
 export interface Saved {
   name: string
@@ -48,12 +54,12 @@ export function refusedAsRoot(uid: number | undefined, os: NodeJS.Platform = pro
   return `Run this as yourself, without sudo: an agent's service runs as the account that sets it up.${sudoUser ? ` If sudo left files behind: sudo chown -R "${sudoUser}" ~/.binders` : ''}`
 }
 
-type Platform = 'mac' | 'linux' | 'other'
-const platform: Platform = process.platform === 'darwin' ? 'mac' : process.platform === 'linux' ? 'linux' : 'other'
+type Platform = 'mac' | 'linux' | 'windows' | 'other'
+const platform: Platform = process.platform === 'darwin' ? 'mac' : process.platform === 'linux' ? 'linux' : process.platform === 'win32' ? 'windows' : 'other'
 
 const slug = (text: string) => text.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'agent'
 const xml = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-const home = (path: string) => (path.startsWith('~/') ? join(homedir(), path.slice(2)) : resolve(path))
+const home = (path: string) => (/^~[/\\]/.test(path) ? join(homedir(), path.slice(2)) : resolve(path))
 
 async function saved(): Promise<Saved[]> {
   const names = await readdir(agentsDir()).catch(() => [] as string[])
@@ -115,7 +121,7 @@ function command(s: Saved) {
 }
 
 /** The PATH the agent's tools are found on: this shell's, which has them, and the usual places. */
-const path = () => [...new Set([...(process.env.PATH ?? '').split(':'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', join(homedir(), '.local/bin')].filter(Boolean))].join(':')
+const path = () => [...new Set([...(process.env.PATH ?? '').split(delimiter), ...(platform === 'windows' ? [] : ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin']), join(homedir(), '.local', 'bin')].filter(Boolean))].join(delimiter)
 
 /**
  * Its systemd unit. KillMode=process: stopping it signals the runner alone, which stops what it should. By default
@@ -185,8 +191,57 @@ ${environment}  </dict>
 `
 }
 
+/** Whether a process is there, on any platform. */
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const runningPid = async (s: Saved) => {
+  const pid = await readFile(pidFileOf(s.name), 'utf8').then(Number, () => 0)
+  return pid && alive(pid) ? pid : undefined
+}
+
+/** Asks a Windows runner to stop, by the file it watches for, and gives it time to put its cards back before ending it. */
+async function stopOnWindows(s: Saved) {
+  await writeFile(stopFileOf(s.name), '')
+  const pid = await runningPid(s)
+  const until = Date.now() + 30_000
+  while (pid && alive(pid) && Date.now() < until) await new Promise((done) => setTimeout(done, 250))
+  if (pid && alive(pid)) await run('taskkill', stopTreeArgs(pid)).catch(() => undefined)
+  await run('schtasks', ['/End', '/TN', taskName(s.name)]).catch(() => undefined)
+}
+
+async function startOnWindows(s: Saved) {
+  await rm(stopFileOf(s.name), { force: true })
+  await run('schtasks', ['/Run', '/TN', taskName(s.name)])
+}
+
+async function installOnWindows(s: Saved) {
+  await stopOnWindows(s)
+  const env = { PATH: path(), ...(s.network ?? {}) }
+  await writeFile(launcherOf(s.name), launcherFor({ command: command(s), workspace: s.workspace, env, log: logOf(s.name), stopFile: stopFileOf(s.name) }))
+  const task = join(agentsDir(), `${s.name}.task.xml`)
+  const user = process.env.USERDOMAIN ? `${process.env.USERDOMAIN}\\${process.env.USERNAME}` : String(process.env.USERNAME)
+  await writeFile(task, `\ufeff${taskXml({ description: `Binders runner: ${s.agent}`, user, launcher: launcherOf(s.name) })}`, 'utf16le')
+  try {
+    await run('schtasks', ['/Create', '/F', '/TN', taskName(s.name), '/XML', task])
+  } catch (error) {
+    const said = String((error as { stderr?: string }).stderr ?? (error as Error).message).trim()
+    throw new Error(`Windows wouldn’t add its logon task (${said}). Your organization may not allow it. You can run it in a terminal instead: set BINDERS_TOKEN, then node ${runnerFile()} --hub ${s.hub}`)
+  } finally {
+    await rm(task, { force: true })
+  }
+  await startOnWindows(s)
+}
+
 async function install(s: Saved) {
   await mkdir(logsDir(), { recursive: true })
+  if (platform === 'windows') return installOnWindows(s)
   if (platform === 'mac') {
     await mkdir(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true })
     await writeService(plistOf(s.name), plistFor(s), s)
@@ -216,10 +271,16 @@ async function status(s: Saved): Promise<{ running: boolean; pid?: number; loade
     const pid = Number(/MainPID=(\d+)/.exec(out)?.[1]) || undefined
     return { running: /ActiveState=active/.test(out), pid, loaded: !/LoadState=not-found/.test(out) }
   }
+  if (platform === 'windows') {
+    const loaded = await run('schtasks', ['/Query', '/TN', taskName(s.name)]).then(() => true, () => false)
+    const pid = loaded ? await runningPid(s) : undefined
+    return { running: !!pid, pid, loaded }
+  }
   return { running: false, loaded: false }
 }
 
 async function start(s: Saved) {
+  if (platform === 'windows') return startOnWindows(s)
   if (platform === 'mac') {
     const domain = await loadedIn(s.name)
     if (!domain) return install(s)
@@ -228,6 +289,7 @@ async function start(s: Saved) {
 }
 
 async function stop(s: Saved) {
+  if (platform === 'windows') return stopOnWindows(s)
   // Taken out of launchd altogether: kept alive, a stopped one would only be started again.
   if (platform === 'mac') await bootout(s.name)
   else if (platform === 'linux') {
@@ -238,6 +300,10 @@ async function stop(s: Saved) {
 }
 
 async function restart(s: Saved) {
+  if (platform === 'windows') {
+    await stopOnWindows(s)
+    return startOnWindows(s)
+  }
   if (platform === 'mac') {
     const domain = await loadedIn(s.name)
     if (!domain) return install(s)
@@ -255,17 +321,10 @@ async function restart(s: Saved) {
 async function endRunner(s: Saved) {
   const { running, pid } = await status(s)
   if (!running || !pid) return
+  if (platform === 'windows') return stopOnWindows(s)
   process.kill(pid, 'SIGINT')
   const until = Date.now() + 10_000
-  const alive = () => {
-    try {
-      process.kill(pid, 0)
-      return true
-    } catch {
-      return false
-    }
-  }
-  while (Date.now() < until && alive()) await new Promise((done) => setTimeout(done, 100))
+  while (Date.now() < until && alive(pid)) await new Promise((done) => setTimeout(done, 100))
 }
 
 /** Whatever is still in a holder, with no runner to come back to it, stopped and its cards given back. */
@@ -294,8 +353,25 @@ async function remove(s: Saved, handBack: HandBack) {
     await rm(unitOf(s.name), { force: true })
     await run('systemctl', ['--user', 'daemon-reload']).catch(() => undefined)
   }
+  if (platform === 'windows') {
+    await run('schtasks', ['/Delete', '/F', '/TN', taskName(s.name)]).catch(() => undefined)
+    for (const file of [launcherOf(s.name), stopFileOf(s.name), pidFileOf(s.name)]) await rm(file, { force: true })
+  }
   await rm(join(agentsDir(), `${s.name}.json`), { force: true })
   await rm(tokenOf(s.name), { force: true })
+}
+
+/** The end of a log, and what's added to it if asked: Windows has no tail. */
+async function tailLog(file: string, lines: number, follow: boolean) {
+  const text = await readFile(file, 'utf8').catch(() => '')
+  process.stdout.write(text.split('\n').slice(-lines - 1).join('\n'))
+  let at = Buffer.byteLength(text)
+  while (follow) {
+    await new Promise((done) => setTimeout(done, 1000))
+    const now = await readFile(file).catch(() => Buffer.alloc(0))
+    if (now.length > at) process.stdout.write(now.subarray(at))
+    at = now.length
+  }
 }
 
 // The commands --------------------------------------------------------------------------------------------------------
@@ -352,6 +428,7 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
       console.log(`✓ ${me.name} ${existing ? 'restarted' : 'is running'} in the background, in ${workspace}.`)
       console.log(`  binders list · binders logs ${name} -f · binders restart ${name} · binders remove ${name}`)
       if (carried.length) console.log(`  It keeps this shell's ${carried.join(', ')}. To change them, run binders add again.`)
+      if (platform === 'windows') console.log('  It starts each time you log in to Windows, not before.')
       if (platform === 'mac' && workspace.startsWith(join(homedir(), 'Documents'))) console.log('  macOS may ask once whether node may use your Documents folder: allow it, or the agent can’t read its code.')
       return 0
     }
@@ -376,7 +453,8 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
     case 'logs': {
       const s = await one(rest[0])
       const follow = f.follow === true || f.f === true || args.includes('-f')
-      await new Promise<void>((done) => spawn('tail', ['-n', String(f.lines ?? 80), ...(follow ? ['-f'] : []), logOf(s.name)], { stdio: 'inherit' }).on('exit', () => done()))
+      if (platform === 'windows') await tailLog(logOf(s.name), Number(f.lines ?? 80), follow)
+      else await new Promise<void>((done) => spawn('tail', ['-n', String(f.lines ?? 80), ...(follow ? ['-f'] : []), logOf(s.name)], { stdio: 'inherit' }).on('exit', () => done()))
       return 0
     }
     case 'start':
@@ -401,7 +479,8 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
 export const usage = `binders: Binders agents on this machine. Cards kept running through restarts carry on through stop and restart; remove ends them.
 
   binders add --token bnd_… [--workspace DIR] [--hub URL] [--name NAME]
-                         set an agent up and keep it running in the background (at login, after a crash)
+                         set an agent up and keep it running in the background (at login, after a crash), with
+                         the proxy and certificate settings of this shell
   binders list           every agent here: running or not, its process, how long up, its last log, its folder
   binders logs NAME [-f] what it's been doing (-f: follow)
   binders restart NAME   stop and start it (--all: every one)

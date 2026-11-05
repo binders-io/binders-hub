@@ -192,7 +192,9 @@ binders logs NAME -f    # what it's doing
 binders restart NAME    # also stop, start, remove; --all for every one
 ```
 
-Each runs as a service of yours (a LaunchAgent on a Mac, a `systemd --user` unit on Linux): it starts at login and
+Each runs as a service of yours (a LaunchAgent on a Mac, a `systemd --user` unit on Linux, a logon task on Windows,
+which needs no admin rights: install it with `& ([scriptblock]::Create((irm <hub>/install.ps1))) add --token bnd_… --workspace C:\code\app`
+in PowerShell. Runs kept going through restarts and an agent's own terminals aren't on Windows yet): it starts at login and
 again after a crash, logs to `~/.binders/logs`, and keeps its token in `~/.binders/agents`, readable by you alone. On a
 Mac, an agent working in `~/Documents` needs node allowed there once (macOS asks), and its tools' sign-ins (Claude Code,
 Codex) done beforehand, as a background service can't show them.

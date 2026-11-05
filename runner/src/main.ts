@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util'
 import { spawn, spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { Runner } from './runner.ts'
-import { daemonCommand, subcommands, usage } from './daemon.ts'
+import { daemonCommand, pidFileOf, stopFileOf, subcommands, usage } from './daemon.ts'
 import { agentCommand } from './desk.ts'
 import { nodeNetwork, reasonOf, settleNetwork, workerCommand } from './network.ts'
 
@@ -90,16 +90,25 @@ if (file && !process.env.BINDERS_RUNNER_WORKER) {
   let stopping = false
   // One id for the runner across its restarts, so the hub doesn't take the restarted one for a second runner.
   const id = Math.random().toString(16).slice(2, 14)
+  // On Windows, with no signal to ask a process with: as a logon task, it says who it is and watches for a person stopping it.
+  const windowsTask = process.platform === 'win32' ? values.name : undefined
+  if (windowsTask) writeFileSync(pidFileOf(windowsTask), String(process.pid))
   for (;;) {
     const code = await new Promise<number>((done) => {
       const worker = workerCommand(file, process.argv.slice(2))
-      const child = spawn(process.execPath, worker.args, { stdio: 'inherit', env: { ...worker.env, BINDERS_RUNNER_WORKER: '1', BINDERS_RUNNER_ID: id } })
+      const child = spawn(process.execPath, worker.args, { stdio: windowsTask ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit', env: { ...worker.env, BINDERS_RUNNER_WORKER: '1', BINDERS_RUNNER_ID: id } })
+      const watching = windowsTask ? setInterval(() => {
+        if (stopping || !existsSync(stopFileOf(windowsTask)) || !child.connected) return
+        stopping = true
+        child.send({ stop: true })
+      }, 1000) : undefined
       // Ctrl-C reaches the child too, in one process group, and binders remove signals this process alone: passed on either way.
       const onInt = () => { stopping = true; child.kill('SIGINT') }
       const onTerm = () => { stopping = true; child.kill('SIGTERM') }
       process.on('SIGINT', onInt)
       process.on('SIGTERM', onTerm)
       child.on('exit', (exit, signal) => {
+        clearInterval(watching)
         process.off('SIGINT', onInt)
         process.off('SIGTERM', onTerm)
         done(exit ?? (signal ? 1 : 0))
@@ -119,6 +128,11 @@ const stop = (leave: boolean) => () => {
 }
 process.on('SIGINT', stop(false))
 process.on('SIGTERM', stop(true))
+// Asked by its supervisor, on Windows. Listening for it shouldn't be what keeps this process going.
+if (process.channel) {
+  process.on('message', (message: { stop?: boolean }) => { if (message?.stop) stop(true)() })
+  process.channel.unref()
+}
 
 try {
   await runner.start(values.once)

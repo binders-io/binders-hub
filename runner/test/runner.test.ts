@@ -5,7 +5,8 @@ import assert from 'node:assert/strict'
 import { rm, writeFile, mkdtemp, readFile, readdir, realpath, stat } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { parseDiff } from '../../shared/changeSet.ts'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
+import { createServer } from 'node:http'
 import { join } from 'node:path'
 // Cards are always worked in worktrees: the tests' go in a folder of their own, never in ~/.binders.
 process.env.BINDERS_WORKTREES_DIR = mkdtempSync(join(tmpdir(), 'binders-test-worktrees-'))
@@ -26,6 +27,7 @@ import { Runner, finishingInJira, withBinderContext, withJiraAsk, actionsFromRep
 process.env.BINDERS_HOME ??= mkdtempSync(join(tmpdir(), 'binders-home-'))
 import { StreamReader } from '../src/stream.ts'
 import { until } from '../../hub/test/helpers.ts'
+import { windowsInstaller } from '../../hub/src/routes/machines.ts'
 
 // The runner against a real hub, with a stand-in agent: a small script the runner starts as a custom command, which
 // prints Claude Code's stream-json and uses Binders' MCP tools as an agent would. No real agent runs.
@@ -1843,3 +1845,44 @@ if (args.includes('--mcp-config')) {
     assert.equal(plainText('\x1b[32mgreen\x1b[0m\r\nprogress 1\rprogress 2\r\n\x1b]0;title\x07done'), 'green\nprogress 2\ndone')
   })
 })
+
+// On a real Windows machine, in CI: it changes that machine's scheduled tasks and PATH, so it's run only where it's asked for.
+describe('on Windows, from the installer to a card and back', { skip: !process.env.BINDERS_WINDOWS_E2E }, () => {
+  it('installs, runs as a logon task, does a card, and stops, starts, restarts and goes when told', async () => {
+    const set = await setUp()
+    const { agent: me, token } = await set.agent('finish')
+    const listening = () => set.hub.presence()[me.id]?.listening === true
+    const installer = join(set.dir, 'install.ps1')
+    const server = await serveRunner()
+    await writeFile(installer, windowsInstaller(server.url))
+    const shell = (script: string) => execFileSync('powershell', ['-NoProfile', '-Command', script], { encoding: 'utf8' })
+    const installed = shell(`& ([scriptblock]::Create((Get-Content -Raw '${installer}'))) add --token ${token} --hub ${set.url} --workspace '${set.dir}' --name ci`)
+    assert.match(installed, /is running in the background/)
+    const binders = (...args: string[]) => execFileSync(join(homedir(), '.binders', 'bin', 'binders.cmd'), args, { encoding: 'utf8', shell: true })
+    await until(listening, 60_000)
+    const made = await set.card('A card on Windows', me.id)
+    await until(() => set.hub.state.cards.find((c) => c.id === made.id)!.stage !== 'ready', 60_000)
+    assert.match(binders('list'), /ci\s+running/)
+    binders('stop', 'ci')
+    await until(() => !listening(), 60_000)
+    assert.match(binders('list'), /ci\s+stopped/)
+    binders('start', 'ci')
+    await until(listening, 60_000)
+    binders('restart', 'ci')
+    await until(listening, 60_000)
+    assert.match(binders('logs', 'ci'), /Connected to/)
+    binders('remove', 'ci')
+    await until(() => !listening(), 60_000)
+    assert.throws(() => execFileSync('schtasks', ['/Query', '/TN', 'Binders\\runner-ci'], { stdio: 'ignore' }))
+    await server.close()
+    await set.close()
+  })
+})
+
+/** The hub's one file an installer downloads, from where the runner was just built. */
+async function serveRunner() {
+  const file = await readFile(join(import.meta.dirname, '../dist/binders-runner.mjs'))
+  const server = createServer((_request, response) => response.end(file))
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => new Promise((done) => server.close(done)) }
+}
