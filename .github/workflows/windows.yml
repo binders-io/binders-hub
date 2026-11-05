@@ -32,6 +32,7 @@ jobs:
         working-directory: runner
         env:
           BINDERS_WINDOWS_E2E: '1'
+        timeout-minutes: 8
         run: node --test --test-force-exit --test-timeout=300000 --test-name-pattern="installs, runs as a logon task" test/runner.test.ts
       - name: Show its log
         if: always()

@@ -3,7 +3,8 @@ import { mkdtempSync } from 'node:fs'
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { rm, writeFile, mkdtemp, readFile, readdir, realpath, stat } from 'node:fs/promises'
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
+import { promisify } from 'node:util'
 import { parseDiff } from '../../shared/changeSet.ts'
 import { homedir, tmpdir } from 'node:os'
 import { createServer } from 'node:http'
@@ -1855,25 +1856,31 @@ describe('on Windows, from the installer to a card and back', { skip: !process.e
     const installer = join(set.dir, 'install.ps1')
     const server = await serveRunner()
     await writeFile(installer, windowsInstaller(server.url))
-    const shell = (script: string) => execFileSync('powershell', ['-NoProfile', '-Command', script], { encoding: 'utf8' })
-    const installed = shell(`& ([scriptblock]::Create((Get-Content -Raw '${installer}'))) add --token ${token} --hub ${set.url} --workspace '${set.dir}' --name ci`)
+    // Never a sync call here: the hub they talk to is in this process, and would never answer.
+    const said = async (command: string, args: string[], shell = false) => {
+      const { stdout, stderr } = await promisify(execFile)(command, args, { encoding: 'utf8', shell, timeout: 120_000 }).catch((error: { stdout?: string; stderr?: string; message: string }) => {
+        throw new Error(`${command} ${args.join(' ')}: ${error.message}\n${error.stdout ?? ''}\n${error.stderr ?? ''}`)
+      })
+      return `${stdout}${stderr}`
+    }
+    const installed = await said('powershell', ['-NoProfile', '-Command', `& ([scriptblock]::Create((Get-Content -Raw '${installer}'))) add --token ${token} --hub ${set.url} --workspace '${set.dir}' --name ci`])
     assert.match(installed, /is running in the background/)
-    const binders = (...args: string[]) => execFileSync(join(homedir(), '.binders', 'bin', 'binders.cmd'), args, { encoding: 'utf8', shell: true })
+    const binders = (...args: string[]) => said(join(homedir(), '.binders', 'bin', 'binders.cmd'), args, true)
     await until(listening, 60_000)
     const made = await set.card('A card on Windows', me.id)
     await until(() => set.hub.state.cards.find((c) => c.id === made.id)!.stage !== 'ready', 60_000)
-    assert.match(binders('list'), /ci\s+running/)
-    binders('stop', 'ci')
+    assert.match(await binders('list'), /ci\s+running/)
+    await binders('stop', 'ci')
     await until(() => !listening(), 60_000)
-    assert.match(binders('list'), /ci\s+stopped/)
-    binders('start', 'ci')
+    assert.match(await binders('list'), /ci\s+stopped/)
+    await binders('start', 'ci')
     await until(listening, 60_000)
-    binders('restart', 'ci')
+    await binders('restart', 'ci')
     await until(listening, 60_000)
-    assert.match(binders('logs', 'ci'), /Connected to/)
-    binders('remove', 'ci')
+    assert.match(await binders('logs', 'ci'), /Connected to/)
+    await binders('remove', 'ci')
     await until(() => !listening(), 60_000)
-    assert.throws(() => execFileSync('schtasks', ['/Query', '/TN', 'Binders\\runner-ci'], { stdio: 'ignore' }))
+    await assert.rejects(said('schtasks', ['/Query', '/TN', 'Binders\\runner-ci']))
     await server.close()
     await set.close()
   })
