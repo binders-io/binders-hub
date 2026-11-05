@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { deskAddress } from '../src/desk.ts'
-import { launcherFor, pickProgram, shimTarget, startable, taskName, taskXml } from '../src/windows.ts'
+import { launcherFor, pickProgram, shimTarget, splitCommand, startable, taskName, taskXml } from '../src/windows.ts'
 
 const npmShim = `@ECHO off\r\nGOTO start\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\@anthropic-ai\\claude-code\\cli.js" %*\r\n`
 
@@ -51,6 +51,12 @@ describe('a runner on Windows', () => {
     assert.equal(pickProgram(['C:\\npm\\claude', 'C:\\npm\\claude.cmd', '']), 'C:\\npm\\claude.cmd')
     assert.equal(pickProgram(['C:\\npm\\claude.cmd', 'C:\\x\\claude.exe']), 'C:\\x\\claude.exe')
     assert.equal(pickProgram(['C:\\npm\\claude', '']), undefined)
+  })
+
+  it('runs an agent’s own command without cmd.exe, a card’s text as one argument however it reads', () => {
+    const prompt = 'Fix "it" & del C:\\x\nthen %PATH% | more'
+    assert.deepEqual(splitCommand('node "C:\\my tools\\agent.mjs" --dir {dir} -p {prompt}', { prompt, dir: 'C:\\w' }), ['node', 'C:\\my tools\\agent.mjs', '--dir', 'C:\\w', '-p', prompt])
+    assert.deepEqual(splitCommand("agent '--prompt={prompt}' {other}", { prompt: 'a b' }), ['agent', '--prompt=a b', '{other}'])
   })
 
   it('has an agent reach its runner over a named pipe, one for each', () => {

@@ -11,7 +11,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { Desk, framed, notAPerson, writeShim, type HookReply } from './desk.ts'
 import { canHold, Held, heldIn, type HeldMeta } from './held.ts'
 import { reasonOf } from './network.ts'
-import { startable, stopTreeArgs, whereOnWindows } from './windows.ts'
+import { splitCommand, startable, stopTreeArgs, whereOnWindows } from './windows.ts'
 import { mcpServer, StreamReader } from './stream.ts'
 import { blastRadius, blastSummary } from './blast.ts'
 import { behindBy, briefCheckout, briefDue, briefPrompt, briefSection, changesSince, type BriefJSON, type BriefRead } from './briefs.ts'
@@ -2657,6 +2657,10 @@ export class Runner {
       case 'qwen':
         return plain('qwen', ['-p', prompt, ...(full ? ['-y'] : []), ...(model ? ['-m', model] : [])])
       default: {
+        if (process.platform === 'win32') {
+          const [command = '', ...args] = splitCommand(settings.command ?? '', { prompt, dir, mcp: mcp ?? '' })
+          return plain(command, args)
+        }
         const filled = (settings.command ?? '').replaceAll('{prompt}', shellQuote(prompt)).replaceAll('{dir}', shellQuote(dir)).replaceAll('{mcp}', shellQuote(mcp ?? ''))
         return { command: filled, args: [], shell: true, env: {} }
       }

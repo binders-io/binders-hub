@@ -20,6 +20,10 @@ jobs:
           node-version: 24
       - name: Install
         run: |
+          git config --global user.name Tests
+          git config --global user.email tests@binders.invalid
+          git config --global init.defaultBranch main
+          git config --global core.autocrlf false
           npm ci --prefix shared
           npm ci --prefix hub
           npm ci --prefix runner

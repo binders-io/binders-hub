@@ -105,5 +105,15 @@ export async function whereOnWindows(command: string) {
   return undefined
 }
 
+/**
+ * An agent's own command, as a program and its arguments, for Windows: cmd.exe can't be given a card's text safely,
+ * so it isn't used, and each {placeholder} becomes the text itself. Quotes group words, as in a shell; a pipe or && doesn't work.
+ */
+export function splitCommand(template: string, values: Record<string, string>) {
+  const words: string[] = []
+  for (const found of template.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) words.push(found[1] ?? found[2] ?? found[3])
+  return words.map((word) => word.replace(/\{(\w+)\}/g, (all, name: string) => values[name] ?? all))
+}
+
 /** Stops a process and all it started: Windows has no groups to signal, nor a signal it can catch. */
 export const stopTreeArgs = (pid: number) => ['/T', '/F', '/PID', String(pid)]
