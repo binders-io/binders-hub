@@ -34,10 +34,25 @@ jobs:
           BINDERS_WINDOWS_E2E: '1'
         timeout-minutes: 8
         run: node --test --test-force-exit --test-timeout=300000 --test-name-pattern="installs, runs as a logon task" test/runner.test.ts
-      - name: Show its log
+      - name: What its task and launcher did
         if: always()
         shell: pwsh
-        run: Get-Content "$HOME/.binders/logs/ci.log" -ErrorAction SilentlyContinue
+        run: |
+          schtasks /Query /TN 'Binders\runner-ci' /V /FO LIST
+          Get-ChildItem "$HOME/.binders/agents" -ErrorAction SilentlyContinue | Select-Object Name, Length
+          Get-Content "$HOME/.binders/agents/ci.cmd" -ErrorAction SilentlyContinue
+          Get-Content "$HOME/.binders/logs/ci.log" -ErrorAction SilentlyContinue
+          query user 2>&1
+          whoami
+          Write-Host '--- the launcher, run directly for 25 seconds:'
+          $p = Start-Process -FilePath cmd.exe -ArgumentList '/d', '/c', "`"$HOME\.binders\agents\ci.cmd`"" -PassThru -NoNewWindow
+          Start-Sleep 25
+          Get-Content "$HOME/.binders/logs/ci.log" -ErrorAction SilentlyContinue
+          Write-Host '--- through conhost --headless, as the task runs it:'
+          Remove-Item "$HOME/.binders/logs/ci.log" -ErrorAction SilentlyContinue
+          Start-Process -FilePath conhost.exe -ArgumentList '--headless', 'cmd.exe', '/d', '/c', "`"$HOME\.binders\agents\ci.cmd`""
+          Start-Sleep 20
+          Get-Content "$HOME/.binders/logs/ci.log" -ErrorAction SilentlyContinue
       - name: The runner's other tests, to see what else differs here
         continue-on-error: true
         working-directory: runner
