@@ -7,6 +7,21 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
+# Pulling from a private registry, for the hub and its Redis: Secrets of type kubernetes.io/dockerconfigjson in the
+# release's namespace, by name. Make one with:
+#   kubectl create secret docker-registry regcred -n binders --docker-server=registry.example.com \
+#     --docker-username=… --docker-password=…
+imagePullSecrets: []
+  # - name: regcred
+
+# Or have the chart make one from these, and use it with any above. Its password is then in your values: prefer a
+# Secret you make, or one your cluster syncs from a vault.
+imageCredentials:
+  registry: ""
+  username: ""
+  password: ""
+  email: ""
+
 # The address people open the hub at, with https. Required: GitHub sends its webhooks and sign-ins here.
 publicUrl: ""
 
@@ -35,6 +50,7 @@ persistence:
 # GitHub has it, so whatever Redis you use must keep its data across restarts.
 redis:
   enabled: true
+  # From a private registry too, with the pull secrets above: e.g. registry.example.com/mirror/redis:8.8-alpine.
   image: redis:8.8-alpine
   persistence:
     size: 2Gi
