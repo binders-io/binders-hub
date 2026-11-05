@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import { rm, writeFile, mkdtemp, readFile, readdir, realpath, stat } from 'node:fs/promises'
 import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
+import { pathToFileURL } from 'node:url'
 import { parseDiff } from '../../shared/changeSet.ts'
 import { homedir, tmpdir } from 'node:os'
 import { createServer } from 'node:http'
@@ -34,8 +35,8 @@ import { windowsInstaller } from '../../hub/src/routes/machines.ts'
 // prints Claude Code's stream-json and uses Binders' MCP tools as an agent would. No real agent runs.
 
 const standIn = `
-import { Client } from '${join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js')}'
-import { StreamableHTTPClientTransport } from '${join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js')}'
+import { Client } from '${pathToFileURL(join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js')).href}'
+import { StreamableHTTPClientTransport } from '${pathToFileURL(join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js')).href}'
 
 const mode = process.argv[2]
 const client = new Client({ name: 'stand-in', version: '1' })
@@ -1064,8 +1065,8 @@ console.log('</binders-actions>')
 describe('a card in a holder', () => {
   const heldStandIn = `
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs'
-import { Client } from '${join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js')}'
-import { StreamableHTTPClientTransport } from '${join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js')}'
+import { Client } from '${pathToFileURL(join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js')).href}'
+import { StreamableHTTPClientTransport } from '${pathToFileURL(join(import.meta.dirname, '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js')).href}'
 const [flag, log] = process.argv.slice(2)
 appendFileSync(log, JSON.stringify({ pid: process.pid, resume: process.env.BINDERS_RESUME }) + '\\n')
 const say = (event) => console.log(JSON.stringify(event))
@@ -1870,7 +1871,7 @@ describe('on Windows, from the installer to a card and back', { skip: !process.e
     const binders = (...args: string[]) => said(join(homedir(), '.binders', 'bin', 'binders.cmd'), args, true)
     await until(listening, 60_000)
     const made = await set.card('A card on Windows', me.id)
-    await until(() => set.hub.state.cards.find((c) => c.id === made.id)!.stage !== 'ready', 60_000)
+    await until(() => set.hub.state.cards.find((c) => c.id === made.id)!.stage === 'live', 60_000)
     assert.match(await binders('list'), /ci\s+running/)
     await binders('stop', 'ci')
     await until(() => !listening(), 60_000)
