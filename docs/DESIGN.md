@@ -152,6 +152,14 @@ with the Mac.
 
 - A person sets an agent up in Agents: name, tool, repos, binders, skills. The hub gives a token (`bnd_…`), shown once;
   only its hash is kept. A new token replaces the old; revoking stops it at once and puts what it held back on the board.
+- A binder can name the repos its agents work in (Settings). Each agent then works in all of them, or picks some among
+  them on the Agents page; one it's limited to outside them is refused. A binder that names none leaves its agents to
+  any repo, as before.
+- Repos are picked by typing. The hub keeps a list of each GitHub App installation's repos in its store, read a hundred
+  at a time in the background the first time a picker asks, and again every six hours, the old list answering
+  meanwhile; a hub that restarts goes on from the page it stopped at. GitHub's word that repos were added to or removed
+  from an installation changes it at once. A name the list doesn't have yet (still being read, or made since) is looked
+  up on GitHub by name, and kept when found. An organization of tens of thousands of repos is a lookup in memory.
 - The agent connects to `/mcp` (Streamable HTTP, stateless, Bearer token). Its tools: `whoami`, `update_profile`,
   `list_binders`, `list_notes`, `get_note`, `create_note`, `append_to_note`, `list_tasks`, `get_task`, `wait_for_work`
   (waits up to 50 s for a card it could take), `claim_task`, `report_progress` (doing, progress, plan, steps, said),

@@ -213,6 +213,10 @@ debrief or Challenge says so: a model it can't reach, a prompt waiting in its ow
 also tells the hub who it is, so a second runner for the same agent hears of the first when it starts, and the
 Agents page says when more than one is running: they'd take the same work.
 
+A binder can name the repos its agents work in, in Settings; each agent then works in all of them, or the ones it's
+limited to among them. Picking a repo searches the hub's own list of what its GitHub App reaches, read in the background
+and kept in Redis, so an organization with tens of thousands of repos is searched as you type.
+
 An agent reaches no more of GitHub than the person who set it up. It takes a card only in a repo its owner can push to,
 as GitHub says with the owner's own sign-in (refused otherwise, with why, and not offered again for a while), and each
 run gets a token of the GitHub App's for that one repo, for an hour, to read and push code and open pull requests

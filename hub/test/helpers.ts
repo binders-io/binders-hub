@@ -95,6 +95,9 @@ export async function fakeGitHub(options: {
     bases: {} as Record<number, string>,
     /** Whether each pull request merges, by number: GitHub's mergeable_state (clean unless set). */
     mergeable: {} as Record<number, 'clean' | 'behind' | 'dirty'>,
+    /** How many repos the app's installation reaches (acme/repo-0 onward), and how many of them it lists before the rest. */
+    installationRepos: 0,
+    listedRepos: undefined as number | undefined,
   }
   let notModified = 0
   const app = Fastify()
@@ -140,7 +143,7 @@ export async function fakeGitHub(options: {
     const id = Number((request.params as { id: string }).id)
     const login = options.installations?.[id] ?? 'acme'
     const owner = options.appOwner ?? { login: 'octo', type: 'User' }
-    return { id, account: { login, type: options.installationTypes?.[id] ?? (login === owner.login ? owner.type : 'Organization') } }
+    return { id, repository_selection: 'all', account: { login, type: options.installationTypes?.[id] ?? (login === owner.login ? owner.type : 'Organization') } }
   })
   const bearer = (request: { headers: { authorization?: string } }) => (request.headers.authorization ?? '').replace(/^(Bearer|token) /, '')
   app.get('/user/installations', async (request, reply) => {
@@ -190,7 +193,20 @@ export async function fakeGitHub(options: {
     const { owner, repo } = request.params as { owner: string; repo: string }
     const access = world.access[`${owner}/${repo}`] ?? 'push'
     if (access === 'none') return reply.code(404).send({ message: 'Not Found' })
-    return { default_branch: 'main', permissions: { pull: true, push: access === 'push' } }
+    return { full_name: `${owner}/${repo}`, private: true, default_branch: 'main', permissions: { pull: true, push: access === 'push' } }
+  })
+  app.get('/installation/repositories', async (request) => {
+    const page = Number((request.query as { page?: string }).page ?? 1)
+    const listed = Math.min(world.installationRepos, world.listedRepos ?? world.installationRepos)
+    const repositories = []
+    for (let i = (page - 1) * 100; i < Math.min(listed, page * 100); i++) repositories.push({ full_name: `acme/repo-${i}`, private: i % 2 === 0, description: null })
+    return { total_count: world.installationRepos, repositories }
+  })
+  app.get('/search/repositories', async (request) => {
+    const words = String((request.query as { q?: string }).q ?? '').split(' in:name')[0].toLowerCase()
+    const items = []
+    for (let i = 0; i < world.installationRepos && items.length < 20; i++) if (`repo-${i}`.includes(words)) items.push({ full_name: `acme/repo-${i}`, private: false })
+    return { total_count: items.length, items }
   })
   app.patch('/repos/:owner/:repo/pulls/:n', async (request) => {
     const n = Number((request.params as { n: string }).n)

@@ -2,7 +2,7 @@ import { tools } from '../../../shared/agents.ts'
 import { barredBecause, type AgentReach } from '../reach.ts'
 import type { Change } from '../../../shared/state.ts'
 import { cardChangeSet, type AskedEffort, type BlastRadius, type BlastSymbol, cardsOfSet, setChangeSet, setOfCard, type Challenge, type Debrief } from '../../../shared/changeSet.ts'
-import { allowRule, defaultRunner, type Activity, type Agent, type Card, type ChangeSet, type PullRequest, type RunnerSettings } from '../../../shared/work.ts'
+import { allowRule, binderRepos, defaultRunner, type Activity, type Agent, type Card, type ChangeSet, type PullRequest, type RunnerSettings } from '../../../shared/work.ts'
 import type { GitHub } from '../github.ts'
 import { Refused, type Actor, type Hub } from '../hub.ts'
 
@@ -161,7 +161,10 @@ export abstract class ActionsBase {
     const card = this.held(agentId, cardId)
     const project = this.repoOf(card)
     const same = (a?: string, b?: string) => !!a && !!b && a.toLowerCase() === b.toLowerCase()
-    if (named && !same(named, project) && !agent.repos.some((r) => same(r, named))) throw new Refused(`${named} isn’t this card’s binder’s repo or one of ${agent.name}’s repos: add it to the agent’s repos to work there.`)
+    // Its binder's repos, when the agent isn't limited to some of them; its own, when it is.
+    const binder = this.hub.state.binders.find((b) => b.id === card.binderId)
+    const open = agent.repos.length ? agent.repos : binderRepos(binder)
+    if (named && !same(named, project) && !open.some((r) => same(r, named))) throw new Refused(`${named} isn’t one of this card’s binder’s repos or ${agent.name}’s: add it to the binder’s repos in Settings, or the agent’s, to work there.`)
     const repo = named ?? project
     if (!repo) throw new Refused('That card’s binder has no repo, and no repo was named.')
     if (!this.reach) throw new Refused('This hub doesn’t hand out repo tokens: use this machine’s own GitHub login.')

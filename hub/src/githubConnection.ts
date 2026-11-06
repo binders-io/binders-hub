@@ -4,6 +4,7 @@ import type { KV } from './kv.ts'
 import type { Sealer } from './secrets.ts'
 import { Refusal } from './auth.ts'
 import { log } from './logger.ts'
+import { RepoIndex, type IndexedRepo } from './repoIndex.ts'
 
 export type Access = 'push' | 'read' | 'none'
 
@@ -122,10 +123,20 @@ export class GitHubConnection {
   private repoInstallations = new Map<string, number>()
   private publicUrlAtCreation = ''
   private tokens = new Map<number, { token: string; until: number }>()
+  /** The repos its own app's installations reach, read in the background and kept (repoIndex.ts). */
+  readonly ownIndex: RepoIndex
+  /** What searching GitHub found lately, by what was typed; and when GitHub last said to slow down. */
+  private searched = new Map<string, { at: number; repos: IndexedRepo[] }>()
+  private searchHeldUntil = 0
   /** Its Binder's address, for the paths GitHub comes back to; none for the hub's first, which keeps the plain ones. */
   readonly space?: string
 
-  constructor(kv: KV, sealer: Sealer, endpoints: Endpoints, manual: ManualSettings = {}, space?: string, sharing?: Sharing) {
+  constructor(kv: KV, sealer: Sealer, endpoints: Endpoints, manual: ManualSettings = {}, space?: string, sharing?: Sharing, indexOptions?: ConstructorParameters<typeof RepoIndex>[2]) {
+    this.ownIndex = new RepoIndex(kv, async (installation, page) => {
+      const client = new GitHub(await this.installationToken(installation), this.endpoints.apiUrl)
+      const answer = await client.get<{ total_count?: number; repositories: { full_name: string; private: boolean }[] }>(`/installation/repositories?per_page=100&page=${page}`)
+      return { total: answer.total_count, repos: answer.repositories.map((r) => ({ fullName: r.full_name, private: r.private })) }
+    }, indexOptions)
     this.kv = kv
     this.sealer = sealer
     this.endpoints = endpoints
@@ -394,19 +405,103 @@ export class GitHubConnection {
     return new GitHub(await this.installationToken(installation.id), this.endpoints.apiUrl)
   }
 
-  /** The repos the app can reach, by installation: what a picker offers. */
-  async reachableRepos(): Promise<{ fullName: string; private: boolean; description?: string }[]> {
-    const out: { fullName: string; private: boolean; description?: string }[] = []
-    for (const installation of this.installations) {
+  /** The list of repos it searches: its own app's, or the one of the Binder whose app it borrows. */
+  private get repoIndex() {
+    return this.lending()?.ownIndex ?? this.ownIndex
+  }
+
+  /**
+   * The repos the app reaches that match what's typed, for a picker: from the list kept of each installation's repos,
+   * which starts being read the first time it's asked for. A name it doesn't have yet (still being read, or made since)
+   * is asked of GitHub's search, and kept when found.
+   */
+  async findRepos(typed: string, limit = 50, keep?: (fullName: string) => boolean): Promise<{ repos: IndexedRepo[]; more: number; reading?: { indexed: number; total?: number } }> {
+    const ids = this.installations.map((i) => i.id)
+    if (!ids.length) return { repos: [], more: 0 }
+    const index = this.repoIndex
+    await index.ensure(ids)
+    let found = await index.search(ids, typed, limit, keep)
+    // A first read of a small installation is done in a moment: wait for it rather than show a list half read.
+    if (!found.complete && found.indexed < 100) {
+      await Promise.race([index.settled(ids), new Promise((done) => setTimeout(done, 3000))])
+      found = await index.search(ids, typed, limit, keep)
+    }
+    const words = typed.trim()
+    if (words.length >= 2 && (!found.complete || !found.repos.length)) {
+      const more = (await this.searchGitHub(words).catch(() => [])).filter((r) => (!keep || keep(r.fullName)) && !found.repos.some((f) => f.fullName.toLowerCase() === r.fullName.toLowerCase()))
+      if (more.length) found = { ...found, repos: [...found.repos, ...more].slice(0, limit) }
+    }
+    return { repos: found.repos, more: found.more, ...(found.complete ? {} : { reading: { indexed: found.indexed, total: found.total } }) }
+  }
+
+  /**
+   * Asks GitHub for repos by name, in each installation's account: "owner/name" exactly, else its search. Only an
+   * installation on all of its account's repos is asked: what it finds there, the app reaches. (One on chosen repos has
+   * a short list, read through quickly and kept up to date by GitHub's word of each change.) Search allows few calls a
+   * minute, so answers are kept for a few minutes, and a refusal holds it back for one; an answer cut short isn't kept.
+   */
+  private async searchGitHub(typed: string): Promise<IndexedRepo[]> {
+    // Words of a name, not GitHub's search qualifiers ("org:other" would reach past the app's own accounts).
+    const words = typed.replace(/\S*:\S*/g, ' ').replace(/[^\w./ -]/g, ' ').replace(/\s+/g, ' ').trim()
+    if (words.length < 2) return []
+    const key = words.toLowerCase()
+    const kept = this.searched.get(key)
+    if (kept && Date.now() - kept.at < 5 * 60_000) return kept.repos
+    const out: IndexedRepo[] = []
+    let whole = true
+    const exact = /^([\w.-]+)\/([\w.-]+)$/.exec(words)
+    for (const installation of this.installations.slice(0, 5)) {
+      if (exact && !same(exact[1], installation.account)) continue
+      if (!exact && Date.now() < this.searchHeldUntil) { whole = false; break }
+      const selection = await this.selectionOf(installation.id)
+      if (!selection) whole = false
+      if (selection !== 'all') continue
       const client = new GitHub(await this.installationToken(installation.id), this.endpoints.apiUrl)
-      // Every page, not GitHub's first hundred: an organization's installation can reach many more.
-      for (let n = 1; n <= 50; n++) {
-        const page = await client.get<{ total_count?: number; repositories: { full_name: string; private: boolean; description: string | null }[] }>(`/installation/repositories?per_page=100&page=${n}`).catch(() => ({ repositories: [] }))
-        for (const r of page.repositories) out.push({ fullName: r.full_name, private: r.private, description: r.description ?? undefined })
-        if (page.repositories.length < 100) break
+      try {
+        let repos: IndexedRepo[]
+        if (exact) {
+          const repo = await client.get<{ full_name: string; private: boolean }>(`/repos/${exact[1]}/${exact[2]}`)
+          repos = [{ fullName: repo.full_name, private: repo.private }]
+        } else {
+          const scope = `${installation.type === 'User' ? 'user' : 'org'}:${installation.account}`
+          const answer = await client.get<{ items: { full_name: string; private: boolean }[] }>(`/search/repositories?q=${encodeURIComponent(`${words} in:name ${scope}`)}&per_page=20`)
+          repos = answer.items.map((r) => ({ fullName: r.full_name, private: r.private }))
+        }
+        // In the installation's own account alone.
+        repos = repos.filter((r) => same(r.fullName.split('/')[0], installation.account))
+        out.push(...repos)
+        await this.repoIndex.add(installation.id, repos)
+      } catch (error) {
+        if (error instanceof GitHubError && (error.status === 403 || error.status === 429)) this.searchHeldUntil = Date.now() + 60_000
+        if (!(error instanceof GitHubError && error.status === 404)) whole = false
       }
     }
+    if (!whole) return out
+    if (this.searched.size > 500) this.searched.clear()
+    this.searched.set(key, { at: Date.now(), repos: out })
     return out
+  }
+
+  /** Whether an installation is on all its account's repos or chosen ones, as GitHub says; asked once. */
+  private selections = new Map<number, string>()
+  private async selectionOf(installation: number) {
+    const known = this.selections.get(installation)
+    if (known) return known
+    const found = await this.asApp<{ repository_selection?: string }>('GET', `/app/installations/${installation}`).then((i) => i.repository_selection ?? 'selected', () => undefined)
+    if (found) this.selections.set(installation, found)
+    return found
+  }
+
+  /** What GitHub says of its installations' repos (added, removed, uninstalled), kept in the list it searches. */
+  async heardInstallation(event: string, payload: { action?: string; installation?: { id?: number }; repositories_added?: { full_name: string; private: boolean }[]; repositories_removed?: { full_name: string }[] }) {
+    const id = payload.installation?.id
+    if (typeof id !== 'number') return
+    if (event === 'installation' && payload.action === 'deleted') return this.ownIndex.forget(id)
+    if (event !== 'installation_repositories') return
+    // Changed between all repos and chosen ones, perhaps: asked again when next needed.
+    this.selections.delete(id)
+    await this.ownIndex.add(id, (payload.repositories_added ?? []).map((r) => ({ fullName: r.full_name, private: r.private })))
+    await this.ownIndex.remove(id, (payload.repositories_removed ?? []).map((r) => r.full_name))
   }
 
   /**

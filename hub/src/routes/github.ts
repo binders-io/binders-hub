@@ -6,6 +6,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { HubOptions } from '../options.ts'
 import type { Context } from './context.ts'
 import { deprovisioned } from '../../../shared/people.ts'
+import { binderRepos } from '../../../shared/work.ts'
 
 // The hub's options, GitHub as people reach it, and setting up a Binder's GitHub App.
 
@@ -81,44 +82,51 @@ export async function githubRoutes(app: FastifyInstance, context: Context) {
     return { login: link.as ?? login(request), ...link, projects }
   }))
 
-  // Repos to pick from, for a binder or an agent: the ones the GitHub App reaches, then the person's own.
-  // Kept a couple of minutes per person, as their own repos are theirs alone.
-  const reachable = new Map<string, { at: number; repos: { fullName: string; private: boolean; description?: string; reached: boolean; push?: boolean }[] }>()
-  app.get('/api/github/repos', act(async (request) => {
-    const typed = String((request.query as { q?: string }).q ?? '').trim().toLowerCase()
-    const { github, id } = sp(request)
-    const cacheKey = `${id}:${login(request)}`
-    let known = reachable.get(cacheKey)
-    if (!known || Date.now() - known.at > 2 * 60_000) {
-      const byApp = await github.reachableRepos().catch(() => [])
-      type Theirs = { full_name: string; private: boolean; description: string | null; permissions?: { push?: boolean; maintain?: boolean; admin?: boolean } }
-      // Every page of the person's repos, not GitHub's first hundred.
-      const mine: Theirs[] = []
-      for (let n = 1; request.githubToken && n <= 20; n++) {
-        const page = await github.asUser(request.githubToken).get<Theirs[]>(`/user/repos?per_page=100&sort=pushed&page=${n}`).catch(() => [] as Theirs[])
-        mine.push(...page)
-        if (page.length < 100) break
-      }
-      const pushable = new Set(mine.filter((r) => r.permissions?.push || r.permissions?.maintain || r.permissions?.admin).map((r) => r.full_name.toLowerCase()))
-      // Known for the repos GitHub listed as the person's; for the app's others, the check on linking says.
-      const listed = new Set(mine.map((r) => r.full_name.toLowerCase()))
-      const push = (name: string) => (listed.has(name.toLowerCase()) ? pushable.has(name.toLowerCase()) : undefined)
-      // Through another binder's app, only the repos this person sees on GitHub, or this binder linked already: the
-      // rest of that organization's repos aren't this binder's to list.
-      const borrowing = !!github.status().app?.borrowedFrom
-      const linked = new Set(sp(request).hub.state.binders.flatMap((x) => (x.repo ? [x.repo.toLowerCase()] : [])))
-      const shown = borrowing ? byApp.filter((r) => listed.has(r.fullName.toLowerCase()) || linked.has(r.fullName.toLowerCase())) : byApp
-      known = {
-        at: Date.now(),
-        repos: [
-          ...shown.map((r) => ({ ...r, reached: true, push: push(r.fullName) })),
-          // Only what this binder's app reaches: a repo it isn't installed on can't be worked in from here.
-        ],
-      }
-      reachable.set(cacheKey, known)
+  // Repos to pick from, for a binder or an agent: the ones the GitHub App reaches that match what's typed, from the list
+  // the hub keeps of them (an organization can have tens of thousands), or GitHub's search for one it hasn't read yet.
+  // The person's own repos say which they can push to; kept a few minutes per person, as they're theirs alone.
+  const theirs = new Map<string, { at: number; listed: Set<string>; pushable: Set<string> }>()
+  const theirRepos = async (request: FastifyRequest, everything: boolean) => {
+    const key = `${sp(request).id}:${login(request)}:${everything ? 'all' : 'own'}`
+    const known = theirs.get(key)
+    if (known && Date.now() - known.at < 5 * 60_000) return known
+    type Theirs = { full_name: string; permissions?: { push?: boolean; maintain?: boolean; admin?: boolean } }
+    const mine: Theirs[] = []
+    // Their own and those they were added to, a few pages: an organization's every repo is the app's to list. Through
+    // another Binder's app, all they see, as only those are shown.
+    const affiliation = everything ? '' : '&affiliation=owner,collaborator'
+    for (let n = 1; request.githubToken && n <= (everything ? 20 : 5); n++) {
+      const page = await sp(request).github.asUser(request.githubToken).get<Theirs[]>(`/user/repos?per_page=100&sort=pushed&page=${n}${affiliation}`).catch(() => [] as Theirs[])
+      mine.push(...page)
+      if (page.length < 100) break
     }
-    const found = known.repos.filter((r) => !typed || r.fullName.toLowerCase().includes(typed))
-    return { repos: found.slice(0, 500), more: Math.max(0, found.length - 500) }
+    const found = {
+      at: Date.now(),
+      listed: new Set(mine.map((r) => r.full_name.toLowerCase())),
+      pushable: new Set(mine.filter((r) => r.permissions?.push || r.permissions?.maintain || r.permissions?.admin).map((r) => r.full_name.toLowerCase())),
+    }
+    if (theirs.size > 1000) theirs.clear()
+    theirs.set(key, found)
+    return found
+  }
+  app.get('/api/github/repos', act(async (request) => {
+    const typed = String((request.query as { q?: string }).q ?? '').trim().slice(0, 100)
+    const { github, hub } = sp(request)
+    // Through another binder's app, only the repos this person sees on GitHub, or this binder linked already: the
+    // rest of that organization's repos aren't this binder's to list.
+    const borrowing = !!github.status().app?.borrowedFrom
+    const mine = await theirRepos(request, borrowing)
+    const linked = new Set(hub.state.binders.flatMap((x) => binderRepos(x).map((r) => r.toLowerCase())))
+    const keep = borrowing ? (name: string) => mine.listed.has(name.toLowerCase()) || linked.has(name.toLowerCase()) : undefined
+    const found = await github.findRepos(typed, 50, keep).catch(() => ({ repos: [], more: 0 }))
+    const shown = found.repos
+    // Known for the repos GitHub listed as the person's; for the app's others, the check on linking says.
+    const push = (name: string) => (mine.listed.has(name.toLowerCase()) ? mine.pushable.has(name.toLowerCase()) : undefined)
+    return {
+      repos: shown.map((r) => ({ ...r, reached: true, push: push(r.fullName) })),
+      more: found.more,
+      ...('reading' in found && found.reading ? { reading: found.reading } : {}),
+    }
   }))
 
   app.post('/api/github/repos', act(async (request) => {
@@ -133,7 +141,9 @@ export async function githubRoutes(app: FastifyInstance, context: Context) {
     if (!request.githubToken && !throughApp) throw new Refused(`Connect your GitHub to this binder first (Your account, from your picture at the top → Connect), then make the repo.${mayManageGitHub(request) ? '' : ' Or ask one of its owners or admins: they can make it through its app.'}`)
     try {
       const made = await sp(request).github.createRepo(request.githubToken, acting, { owner, name, private: body.private !== false, description: body.description }, mayManageGitHub(request))
-      reachable.delete(`${sp(request).id}:${login(request)}`)
+      for (const key of theirs.keys()) if (key.startsWith(`${sp(request).id}:${login(request)}:`)) theirs.delete(key)
+      // Into the list pickers search now, rather than when it's next read through.
+      await sp(request).github.findRepos(made.fullName, 1).catch(() => undefined)
       return made
     } catch (error) {
       const words = (error as Error).message

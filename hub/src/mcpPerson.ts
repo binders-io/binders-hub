@@ -5,7 +5,7 @@ import { binderContext, howBindersWorks } from '../../shared/guide.ts'
 import { commentOn, propose } from './noteChanges.ts'
 import { briefText, docsFolderName, docsGiven, repoDocs } from '../../shared/briefs.ts'
 import { byWorst, challengeSet, doneWhenPoints, numberedDiff, setOfCard } from '../../shared/changeSet.ts'
-import { agentNamed, briefId, briefOf, goesBy, type Card, type FileDiff } from '../../shared/work.ts'
+import { agentNamed, binderRepos, briefId, briefOf, goesBy, type Card, type FileDiff } from '../../shared/work.ts'
 import type { Actions } from './actions.ts'
 import { Refused, type Hub } from './hub.ts'
 import { Refusal } from './auth.ts'
@@ -445,7 +445,7 @@ export function personServer(hub: Hub, actions: Actions, session: PersonSession)
   const mayReadRepo = (repo: string) => {
     const wanted = briefId(repo)
     return hub.state.binders.some((b) => allowed.has(b.id) && (
-      (b.repo && briefId(b.repo) === wanted) ||
+      binderRepos(b).some((r) => briefId(r) === wanted) ||
       hub.state.agents.some((a) => !a.revoked && (a.binders.length === 0 || a.binders.includes(b.id)) && a.repos.some((r) => briefId(r) === wanted))
     ))
   }

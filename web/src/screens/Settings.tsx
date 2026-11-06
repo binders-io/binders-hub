@@ -118,6 +118,9 @@ function Binders() {
               </div>
               <label className="field-label" htmlFor={`binder-repo-${binder.id}`}>GitHub repo</label>
               <RepoInput id={`binder-repo-${binder.id}`} single value={binder.repo ? [binder.repo] : []} placeholder="Pick the repo its cards go to…" onChange={(repos) => store.updateBinder(binder.id, { repo: repos[0] ?? '' })} />
+              <label className="field-label" htmlFor={`binder-repos-${binder.id}`}>Repos its agents work in</label>
+              <RepoInput id={`binder-repos-${binder.id}`} value={binder.repos ?? []} placeholder="Add repos… (none: any repo)" onChange={(repos) => store.updateBinder(binder.id, { repos })} />
+              <span className="field-hint">Each agent works in all of these, or the ones it’s limited to on the Agents page.</span>
               {binder.repo && <NotesRow binder={binder} status={issues?.[binder.id]?.notes} onChange={(fields) => store.updateBinder(binder.id, fields)} />}
               {binder.repo && <IssuesRow binderId={binder.id} repo={binder.repo} on={binder.issues !== false} status={issues?.[binder.id]} onChange={(on) => store.updateBinder(binder.id, { issues: on })} onSync={() => void attempt(() => call('POST', `/api/binders/${binder.id}/sync-issues`)).then(refresh)} />}
               <ReviewCommentsRow binderId={binder.id} on={binder.reviewComments === true} onChange={(on) => store.updateBinder(binder.id, { reviewComments: on })} />
