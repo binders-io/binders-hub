@@ -267,9 +267,12 @@ with the Mac.
 A person's MCP client (Claude Code, Cursor, another) connects as the person, not as an agent: the hub is an OAuth 2.1
 authorization server for MCP, and GitHub only says who they are. A client discovers it from a 401, registers itself
 (`/oauth/register`), the person signs in with GitHub and allows it (`/oauth/authorize`), and it exchanges a code with
-PKCE for a person token that runs out and renews (`/oauth/token`, `/oauth/revoke`). The token is `bnp_…`, bound to one
-binder (`/<binder>/mcp`) and revocable from the account page. It's refused at any other binder's address, once the person
-leaves that binder, and on `/api`. It reads and writes notes, makes and comments on cards,
+PKCE for a person token that runs out and renews (`/oauth/token`, `/oauth/revoke`). The token is `bnp_…`, bound to the
+binders the person ticked on the consent page at the hub's `/mcp` (or the one binder a `/<binder>/mcp` address names),
+and revocable from the account page. Each call checks it against the binders the person is still in, and works in one
+binder: tools name it, or find it from the card, note or change set they're given, refusing an id found in more than one
+until told which; nothing moves or points across binders. It's refused at a binder's address it wasn't allowed, and on
+`/api`. It reads and writes notes, makes and comments on cards,
 assigns them, and reads change sets, debriefs and Challenges. It takes no work: that's an agent's, with its `bnd_…`
 token and runner. Replacing an agent's token doesn't touch a person's connection.
 

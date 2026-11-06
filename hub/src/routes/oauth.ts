@@ -53,14 +53,29 @@ function destination(redirect: string) {
 }
 
 /** The page where a person allows an MCP client, naming it, the binder it will act on, and where it goes. */
-function consentPage(query: AuthorizeQuery, client: OAuthClient, binder: { id: string; name: string }, user: User) {
+/**
+ * The page that asks the person to allow a client: for the one Binder its address names, or, at the hub's own /mcp, for
+ * the Binders they tick (one ticked already when they're in one alone). `problem` says why it's shown again.
+ */
+function consentPage(query: AuthorizeQuery, client: OAuthClient, binders: { id: string; name: string }[], user: User, choose: boolean, problem?: string) {
   const hidden = (name: string, value: string | undefined) => (value === undefined ? '' : `<input type="hidden" name="${name}" value="${escape(value)}">`)
+  const who = escape(client.clientName ?? 'An MCP client')
+  const picking = choose
+    ? `<p><b>${who}</b> wants to connect as <b>@${escape(user.login)}</b>. Pick the binders it may work in:</p>
+<input type="hidden" name="choosing" value="1">
+<fieldset style="border: 1px solid #ddd; border-radius: .4rem; padding: .5rem 1rem; margin: 0">
+<legend style="padding: 0 .25rem">Binders</legend>
+${binders.map((b, i) => `<label style="display: flex; gap: .5rem; align-items: baseline; padding: .3rem 0"><input type="checkbox" id="binder-${i}" name="binder" value="${escape(b.id)}"${binders.length === 1 ? ' checked' : ''}> <span><b>${escape(b.name)}</b> <span style="color: #666">/${escape(b.id)}</span></span></label>`).join('\n')}
+</fieldset>
+${problem ? `<p role="alert" style="color: #b42318">${escape(problem)}</p>` : ''}
+<p>As you, it can read and write the notes of the binders you pick, make and comment on cards, give cards to agents (which sets them working), and read change sets. Each binder stays apart: it works in one at a time, and moves nothing between them. To change which binders it reaches, connect it again. You can disconnect it from your account page.</p>`
+    : `<p><b>${who}</b> wants to connect to <b>${escape(binders[0].name)}</b> as <b>@${escape(user.login)}</b>.</p>
+<p>As you, it can read and write this binder's notes, make and comment on cards, give cards to agents (which sets them working), and read change sets. You can disconnect it from your account page.</p>`
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Allow · Binders</title></head><body style="font-family: system-ui, sans-serif; max-width: 34rem; margin: 4rem auto; padding: 0 1.5rem; line-height: 1.5">
 <h1>Allow ${escape(client.clientName ?? 'an MCP client')}?</h1>
-<p><b>${escape(client.clientName ?? 'An MCP client')}</b> wants to connect to <b>${escape(binder.name)}</b> as <b>@${escape(user.login)}</b>.</p>
-<p>As you, it can read and write this binder's notes, make and comment on cards, give cards to agents (which sets them working), and read change sets. You can disconnect it from your account page.</p>
-${destination(query.redirect_uri!)}
 <form method="post" action="/oauth/authorize">
+${picking}
+${destination(query.redirect_uri!)}
 ${hidden('response_type', query.response_type)}${hidden('client_id', query.client_id)}${hidden('redirect_uri', query.redirect_uri)}${hidden('code_challenge', query.code_challenge)}${hidden('code_challenge_method', query.code_challenge_method)}${hidden('state', query.state)}${hidden('resource', query.resource)}${hidden('scope', query.scope)}
 <div style="display: flex; gap: .75rem; margin-top: 1.5rem">
 <button type="submit" style="padding: .6rem 1rem; font: inherit; border-radius: .4rem; border: 1px solid #111; background: #111; color: #fff">Allow</button>
@@ -130,12 +145,17 @@ export async function oauthRoutes(app: FastifyInstance, context: Context) {
     return { client }
   }
 
-  /** The binder a connection is for: the one its resource names, when the person is in it, or else their first. */
-  const binderFor = (login: string, query: AuthorizeQuery) => {
+  /**
+   * The Binders a connection may be for: the one its resource names, when the person is in it; at the hub's own /mcp,
+   * any of theirs, for them to pick (choose).
+   */
+  const bindersFor = (login: string, query: AuthorizeQuery) => {
     const mine = spaces.forPerson(login, isAdmin(login))
     const named = oauth.spaceOf(query.resource)
-    return named ? mine.find((s) => s.info.id === named) : mine[0]
+    if (named) return { choose: false, binders: mine.filter((s) => s.info.id === named).map((s) => s.info) }
+    return { choose: true, binders: mine.map((s) => s.info) }
   }
+  const notIn = (reply: FastifyReply, login: string, query: AuthorizeQuery) => reply.code(403).type('text/html').send(`<p>@${escape(login)} ${query.resource && oauth.spaceOf(query.resource) ? 'isn’t in that binder' : 'isn’t in a binder on this hub yet'}.</p>`)
 
   // The browser half: sign in (through GitHub, or by name on a hub on this machine), then allow the client.
   app.get('/oauth/authorize', oauthLimit, async (request, reply) => {
@@ -152,9 +172,9 @@ export async function oauthRoutes(app: FastifyInstance, context: Context) {
       }
       return reply.type('text/html').send(signInPage(new URL(request.url, publicUrl).toString()))
     }
-    const binder = binderFor(session.user.login, query)
-    if (!binder) return reply.code(403).type('text/html').send(`<p>@${escape(session.user.login)} ${query.resource && oauth.spaceOf(query.resource) ? 'isn’t in that binder' : 'isn’t in a binder on this hub yet'}.</p>`)
-    return reply.type('text/html').send(consentPage(query, check.client, binder.info, session.user))
+    const { choose, binders } = bindersFor(session.user.login, query)
+    if (!binders.length) return notIn(reply, session.user.login, query)
+    return reply.type('text/html').send(consentPage(query, check.client, binders, session.user, choose))
   })
 
   app.post('/oauth/authorize', oauthLimit, async (request, reply) => {
@@ -165,13 +185,21 @@ export async function oauthRoutes(app: FastifyInstance, context: Context) {
     if (query.deny) return backTo(reply, redirect, query.state, 'access_denied', 'The person didn’t allow it.')
     const session = await auth.session(request.cookies[sessionCookie])
     if (!session) return reply.code(400).type('text/html').send('<p>That permission form came from a browser that isn’t signed in. <a href="/">Sign in</a>, then connect again.</p>')
-    const binder = binderFor(session.user.login, query)
-    if (!binder) return reply.code(403).type('text/html').send(`<p>@${escape(session.user.login)} ${query.resource && oauth.spaceOf(query.resource) ? 'isn’t in that binder' : 'isn’t in a binder on this hub yet'}.</p>`)
+    const { choose, binders } = bindersFor(session.user.login, query)
+    if (!binders.length) return notIn(reply, session.user.login, query)
+    // Those ticked, of theirs. The page's own form says it offered the choice, and then nothing ticked is nothing
+    // allowed; one sent without it (from before there was a choice), by someone in one Binder alone, is for that one.
+    const sent = request.body as { binder?: unknown; choosing?: unknown } | undefined
+    const ticked = sent?.binder
+    const asked = (Array.isArray(ticked) ? ticked : ticked === undefined ? [] : [ticked]).filter((b): b is string => typeof b === 'string')
+    const picked = !choose ? binders : asked.length ? binders.filter((b) => asked.includes(b.id)) : !sent?.choosing && binders.length === 1 ? binders : []
+    if (!picked.length || (choose && asked.length > 0 && picked.length !== new Set(asked).size)) return reply.code(400).type('text/html').send(consentPage(query, check.client, binders, session.user, choose, asked.length ? 'You aren’t in one of those binders.' : 'Pick at least one binder.'))
     const code = await oauth.putCode({
       clientId: check.client.clientId,
       login: session.user.login,
       user: session.user,
-      space: binder.info.id,
+      space: picked[0].id,
+      ...(picked.length > 1 ? { spaces: picked.map((b) => b.id) } : {}),
       redirectUri: redirect,
       codeChallenge: query.code_challenge!,
       resource: query.resource,

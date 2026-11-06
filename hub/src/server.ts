@@ -69,10 +69,16 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
   const app = Fastify({ ...(options.logger ? { loggerInstance: options.logger } : { logger: false }), logController: new LogController({ disableRequestLogging: !options.logRequests }), bodyLimit: 4 * 1024 * 1024, trustProxy: trustedProxies() })
   await app.register(websocket)
   await app.register(cookie)
-  // OAuth's token, registration and revocation requests are form-encoded, as the spec says.
+  // OAuth's token, registration and revocation requests are form-encoded, as the spec says. A field sent more than once
+  // (the binders ticked on the consent page) is a list; OAuth's own fields are read only as one value.
   app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_request, body, done) => {
     try {
-      done(null, Object.fromEntries(new URLSearchParams(body as string)))
+      const fields: Record<string, string | string[]> = {}
+      for (const [key, value] of new URLSearchParams(body as string)) {
+        const had = fields[key]
+        fields[key] = had === undefined ? value : Array.isArray(had) ? [...had, value] : [had, value]
+      }
+      done(null, fields)
     } catch (error) {
       done(error as Error)
     }
