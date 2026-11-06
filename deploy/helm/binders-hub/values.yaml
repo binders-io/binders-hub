@@ -32,6 +32,9 @@ hubSecret:
   value: ""
   existingSecret: ""
   key: HUB_SECRET
+  # Or true when HUB_SECRET reaches the hub some other way: env, envFrom, or a vault agent your cluster injects. The
+  # chart then neither makes a Secret nor reads one. Without HUB_SECRET, the hub makes its own on its data volume.
+  fromEnvironment: false
 
 # More settings, as environment variables (see the top of hub/src/main.ts), e.g. HUB_ADMINS: "octocat".
 env:
@@ -71,6 +74,8 @@ service:
 ingress:
   enabled: false
   className: ""
+  # Labels for the Ingress alone, e.g. one your external-dns or ingress controller selects by.
+  labels: {}
   # Live updates and terminals are WebSockets, and pictures can be up to a few megabytes.
   annotations: {}
     # nginx.ingress.kubernetes.io/proxy-body-size: 8m
@@ -80,6 +85,18 @@ ingress:
   tls:
     enabled: true
     secretName: ""
+
+# Labels for everything the chart makes, pods included.
+commonLabels: {}
+
+# The hub's pod runs as this ServiceAccount: one the chart makes (create), one of yours (name), or the namespace's
+# default. Annotations go on the one it makes, e.g. eks.amazonaws.com/role-arn for an AWS role. The hub never calls
+# the Kubernetes API, so it gets no API token unless automount is true.
+serviceAccount:
+  create: false
+  name: ""
+  annotations: {}
+  automount: false
 
 resources: {}
 nodeSelector: {}

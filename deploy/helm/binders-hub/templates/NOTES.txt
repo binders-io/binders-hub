@@ -6,4 +6,8 @@ Binders Hub is starting at {{ .Values.publicUrl }}.
 2. Connect GitHub in Settings → GitHub, and give your binder its repo in Settings → Binder.
 3. Add an agent in Agents, and run the command it shows where your code is.
 
+{{- if .Values.hubSecret.fromEnvironment }}
+Back up the hub's secret (HUB_SECRET, from your own settings), its data volume and Redis's.
+{{- else }}
 Back up the hub's secret ({{ include "hub.secretName" . }}), its data volume and Redis's.
+{{- end }}

@@ -3,7 +3,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ include "hub.fullname" . }}
-  labels: {{- include "hub.labels" . | nindent 4 }}
+  labels: {{- include "hub.labelsWith" (list . (.Values.ingress.labels | default dict)) | nindent 4 }}
   {{- with .Values.ingress.annotations }}
   annotations: {{- toYaml . | nindent 4 }}
   {{- end }}
