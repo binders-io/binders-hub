@@ -5,12 +5,26 @@
 {{- else -}}{{ printf "%s-%s" .Release.Name .Chart.Name | trunc 63 | trimSuffix "-" }}{{- end -}}
 {{- end -}}
 
-{{- define "hub.labels" -}}
+{{- define "hub.ownLabels" -}}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
 app.kubernetes.io/name: {{ include "hub.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
+
+{{/* A resource's labels: the chart's own, then `extra`, then commonLabels. Called with (list . extra). */}}
+{{- define "hub.labelsWith" -}}
+{{- $ctx := index . 0 -}}
+{{- toYaml (merge (fromYaml (include "hub.ownLabels" $ctx)) (index . 1) ($ctx.Values.commonLabels | default dict)) -}}
+{{- end -}}
+
+{{- define "hub.labels" -}}{{ include "hub.labelsWith" (list . dict) }}{{- end -}}
+
+{{/* A pod's labels: what its selector picks, then `extra`, then commonLabels. Called with (list . extra). */}}
+{{- define "hub.podLabels" -}}
+{{- $ctx := index . 0 -}}
+{{- toYaml (merge (fromYaml (include "hub.selector" $ctx)) (index . 1) ($ctx.Values.commonLabels | default dict)) -}}
 {{- end -}}
 
 {{- define "hub.selector" -}}
@@ -37,4 +51,9 @@ imagePullSecrets:
 
 {{- define "hub.secretName" -}}
 {{- .Values.hubSecret.existingSecret | default (printf "%s-secret" (include "hub.fullname" .)) -}}
+{{- end -}}
+
+{{- define "hub.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create -}}{{ .Values.serviceAccount.name | default (include "hub.fullname" .) }}
+{{- else -}}{{ .Values.serviceAccount.name }}{{- end -}}
 {{- end -}}

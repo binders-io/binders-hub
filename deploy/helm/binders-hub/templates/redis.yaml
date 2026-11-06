@@ -3,8 +3,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: {{ include "hub.fullname" . }}-redis
-  labels: {{- include "hub.labels" . | nindent 4 }}
-    app.kubernetes.io/component: redis
+  labels: {{- include "hub.labelsWith" (list . (dict "app.kubernetes.io/component" "redis")) | nindent 4 }}
 spec:
   serviceName: {{ include "hub.fullname" . }}-redis
   replicas: 1
@@ -14,9 +13,7 @@ spec:
       app.kubernetes.io/component: redis
   template:
     metadata:
-      labels:
-        {{- include "hub.selector" . | nindent 8 }}
-        app.kubernetes.io/component: redis
+      labels: {{- include "hub.podLabels" (list . (dict "app.kubernetes.io/component" "redis")) | nindent 8 }}
     spec:
       securityContext:
         runAsUser: 999

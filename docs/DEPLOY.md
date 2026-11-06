@@ -59,6 +59,8 @@ Its [values.yaml](../deploy/helm/binders-hub/values.yaml) explains each setting:
 
 From a private registry: copy the image there, set `image.repository` (and `redis.image`, if Redis comes from there too), and name your pull Secret in `imagePullSecrets`, or have the chart make one from `imageCredentials`. Both pods use them.
 
+On a cluster with its own conventions: `commonLabels` go on everything the chart makes, and `ingress.labels` on the Ingress alone (for an external-dns that only picks labelled Ingresses, say). `serviceAccount` runs the hub as a ServiceAccount the chart makes, with your annotations, or as one of yours. When `HUB_SECRET` comes from your own settings (`envFrom`, or a vault agent the cluster injects), set `hubSecret.fromEnvironment: true` and the chart stays out of it.
+
 Use storage that only one node mounts at a time (`ReadWriteOnce`) and that survives the pod: the hub's notes are a Git repo, which doesn't belong on NFS shared by two writers.
 
 ## AWS: ECS on Fargate
