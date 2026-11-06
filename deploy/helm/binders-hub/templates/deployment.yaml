@@ -14,11 +14,15 @@ spec:
     matchLabels: {{- include "hub.selector" . | nindent 6 }}
   template:
     metadata:
-      labels: {{- include "hub.selector" . | nindent 8 }}
+      labels: {{- include "hub.podLabels" (list . dict) | nindent 8 }}
       {{- with .Values.podAnnotations }}
       annotations: {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
+      {{- with include "hub.serviceAccountName" . }}
+      serviceAccountName: {{ . }}
+      {{- end }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000
@@ -34,11 +38,13 @@ spec:
           env:
             - name: PUBLIC_URL
               value: {{ .Values.publicUrl | trimSuffix "/" | quote }}
+            {{- if not .Values.hubSecret.fromEnvironment }}
             - name: HUB_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ include "hub.secretName" . }}
                   key: {{ .Values.hubSecret.key }}
+            {{- end }}
             - name: REDIS_URL
               {{- if .Values.redis.enabled }}
               value: "redis://{{ include "hub.fullname" . }}-redis:6379"
