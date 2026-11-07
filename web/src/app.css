@@ -1727,3 +1727,28 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
 .jira-features span { min-width: 0; overflow-wrap: anywhere; }
 .jira-features em { display: block; font-style: normal; font-size: 12.5px; }
 .jira-import-take { display: flex; gap: 8px; align-items: center; }
+
+/* Ask: a question answered from the binders, the notes and cards it rests on numbered beside it */
+.ask { display: grid; gap: 22px; max-width: 760px; }
+.ask-form { display: grid; gap: 8px; }
+.ask-row { display: flex; gap: 8px; }
+.ask-row input { flex: 1; min-width: 0; height: 40px; padding: 0 12px; border-radius: var(--r-sm); border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font-size: 15px; outline: none; }
+.ask-row input:focus { border-color: var(--text); }
+.ask-row .button { height: 40px; }
+.ask-scope { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--muted); }
+.ask-result { display: grid; gap: 14px; }
+.ask-question { margin: 0; font: 800 17px/1.35 var(--display); text-wrap: balance; }
+.ask-answer { margin: 0; font-size: 15px; line-height: 1.6; white-space: pre-wrap; max-width: 68ch; }
+.ask-cite { display: inline-grid; place-items: center; min-width: 17px; height: 17px; margin: 0 1px 0 3px; padding: 0 4px; border-radius: 5px; background: var(--fill-1); border: 1px solid var(--line-strong); font-size: 10.5px; font-weight: 700; color: var(--text); vertical-align: 2px; text-decoration: none; font-variant-numeric: tabular-nums; }
+.ask-cite:hover, .ask-cite:focus-visible { background: var(--hover); }
+.ask-sources { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.ask-sources li { display: grid; grid-template-columns: 24px 1fr; gap: 10px; padding: 12px 14px; border-top: 1px solid var(--line); }
+.ask-sources li:first-child { border-top: 0; }
+.ask-sources li.shown { background: var(--fill-1); }
+.ask-n { font-size: 12px; font-weight: 700; color: var(--faint); padding-top: 1px; }
+.ask-source-title { display: inline-flex; align-items: center; gap: 5px; font-weight: 700; font-size: 13.5px; color: var(--text); }
+.ask-passage { margin: 4px 0 0; font-size: 13px; line-height: 1.5; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ask-how { display: inline-flex; align-items: center; gap: 5px; margin: 0; font-size: 12px; }
+@media (max-width: 520px) { .ask-row { flex-direction: column; } .ask-row .button { width: 100%; } }
+.brain-key { display: flex; gap: 6px; }
+.brain-key input { flex: 1; min-width: 0; }

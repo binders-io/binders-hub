@@ -21,6 +21,8 @@ import { Webhooks } from './webhooks.ts'
 import { GitHubPoller } from './poller.ts'
 import { OptionsStore, optionsFromEnv } from './options.ts'
 import { log as hubLog } from './logger.ts'
+import { BrainSettingsStore } from './brain/settings.ts'
+import { SpaceBrain } from './brain/brain.ts'
 
 // Everything comes from the environment (see README.md). GitHub is best set up from Settings, which makes a GitHub App
 // and keeps its keys here; the GITHUB_* variables set it up by hand instead, and win where both are set.
@@ -41,6 +43,8 @@ import { log as hubLog } from './logger.ts'
 //   WEB_DIR                 the web app, built (web/dist), for the hub to serve itself when Vite isn't in front of it
 //   LOG=1                   every request in the log, not only what goes wrong; LOG_LEVEL sets how much (info)
 //   CSP_ENFORCE             1 for browsers to enforce the content security policy; unset, they report what it would stop
+//   BRAIN_PROVIDER, BRAIN_MODEL, BRAIN_BASE_URL, BRAIN_API_KEY (or ANTHROPIC_API_KEY), EMBEDDINGS_BASE_URL, EMBEDDINGS_MODEL,
+//   EMBEDDINGS_API_KEY, BRAIN_SUMMARIZE   the hub's own models, for summaries and answers (see brain/settings.ts)
 const env = process.env
 const port = Number(env.PORT ?? 4400)
 const host = env.HOST ?? '127.0.0.1'
@@ -74,6 +78,8 @@ if (firstLog instanceof RedisLog) {
 
 // The hub's options, changed in Settings; an environment variable for one fixes it.
 const options = await new OptionsStore(kv, optionsFromEnv(env)).load()
+// The models the hub's brain uses, set in Settings under Brain; BRAIN_* and EMBEDDINGS_* fix them.
+const brainSettings = await new BrainSettingsStore(kv, sealer, env).load()
 
 /** The Binder people sign in to the hub through when none is named: the first with a GitHub App. */
 const signInThrough = () => spaces.all().find((s) => s.github.signIn())
@@ -156,6 +162,10 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   // Without webhooks reaching it, the hub asks GitHub instead (HUB_POLL: auto, on or off; HUB_POLL_SECONDS: how often).
   const poller = new GitHubPoller(hub, github, webhooks, { settings: () => ({ mode: options.get().pollMode, everyMs: options.get().pollSeconds * 1000 }) })
   poller.start()
+  // The brain: this binder's notes and cards indexed in its own store, kept up as they change.
+  // A personal binder is its person's alone: its passages aren't sent to an embeddings server the hub's admins chose.
+  const brain = new SpaceBrain({ id, hub, kv: jiraKv, settings: brainSettings, embeds: !info.personal })
+  brain.start()
   const notesDir = first ? notesRoot : dir('notes')
   const notes = new GitNotesSaver(hub, {
     dir: notesDir,
@@ -178,9 +188,10 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   const scheduler = new Scheduler(hub, actions)
   scheduler.start()
   const running: Space = {
-    id, hub, actions, webhooks, github, notes, poller, issues, jira, jiraIssues, filesDir: join(notesDir, 'files'),
+    id, hub, actions, webhooks, github, notes, poller, issues, jira, jiraIssues, filesDir: join(notesDir, 'files'), brain,
     stop: async () => {
       scheduler.stop()
+      brain.stop()
       poller.stop()
       await notes.stop()
       await issues.stop()
@@ -197,7 +208,7 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
 const spaces = new Spaces(kv, startSpace)
 await spaces.load({ id: space, name: env.HUB_NAME ?? space, members: [] })
 
-const app = await buildServer(spaces, { auth, options }, { publicUrl, logger: hubLog, logRequests: env.LOG === '1', webDir: env.WEB_DIR, enforceCsp: env.CSP_ENFORCE === '1' })
+const app = await buildServer(spaces, { auth, options, brain: brainSettings }, { publicUrl, logger: hubLog, logRequests: env.LOG === '1', webDir: env.WEB_DIR, enforceCsp: env.CSP_ENFORCE === '1' })
 await app.listen({ port, host })
 
 const githubOf = (s: Space) => {

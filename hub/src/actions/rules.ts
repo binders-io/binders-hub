@@ -148,6 +148,9 @@ export abstract class RuleService extends CardService {
     const run = work?.fromRun ? state().cards.find((c) => c.id === work.fromRun!.cardId) : undefined
     const wroteIt = state().agents.filter((a) => note.editors.includes(a.id)).map((a) => a.id)
     if (wroteIt.some((id) => id !== run?.agentId)) return { accepted: 0 }
+    // Words heard in a room (a conversation or meeting a phone or Mac sent), and the summary the hub wrote of them, are
+    // nobody's own: what comes of them waits for a person, whatever the rule allows.
+    if (note.captured && note.captured !== 'dictation') return { accepted: 0 }
     const limits = rule.accept
     const live = limits.agents.filter((id) => state().agents.some((a) => a.id === id && !a.revoked && worksIn(a, note.binderId, state().binders)))
     const made = () => state().cards.filter((c) => c.noteId === noteId && c.acceptedBy?.rule === rule.id)

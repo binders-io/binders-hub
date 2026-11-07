@@ -86,10 +86,10 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
     if (!reached.length) return refused(`@${person.user.login} isn’t in ${allowed.length > 1 ? 'any of the binders' : 'the binder'} this connection is for.`)
     const places = reached.flatMap((s) => {
       const space = spaces.get(s.info.id)
-      return space ? [{ id: s.info.id, name: s.info.name, role: s.role, hub: space.hub, actions: space.actions }] : []
+      return space ? [{ id: s.info.id, name: s.info.name, role: s.role, hub: space.hub, actions: space.actions, brain: space.brain }] : []
     })
     if (!places.length) return unauthorized(reply, request)
-    return serve(request, reply, personServer(places, { login: person.user.login, name: person.user.name }))
+    return serve(request, reply, personServer(places, { login: person.user.login, name: person.user.name }, context.brainSettings ? { settings: context.brainSettings, url: context.webUrl } : undefined))
   }
   // The hub's own, for an agent's token and a person's; and a binder's, for a person connecting to one binder.
   app.post('/mcp', mcp)

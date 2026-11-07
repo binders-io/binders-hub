@@ -1,6 +1,6 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence } from 'motion/react'
-import { AlertTriangle, Bot, FileText, LayoutDashboard, GitPullRequestArrow, Menu, Monitor, Moon, Rocket, Search, Settings as SettingsIcon, Sun, Workflow, X } from 'lucide-react'
+import { AlertTriangle, Bot, Brain, FileText, LayoutDashboard, GitPullRequestArrow, Menu, Monitor, Moon, Rocket, Search, Settings as SettingsIcon, Sun, Workflow, X } from 'lucide-react'
 import { isOnline, sameValues, useActions, useClock, useHub, type State } from './data/store'
 import { Kbd, PersonAvatar, usePhone } from './components/bits'
 import { Github } from './components/Github'
@@ -9,7 +9,7 @@ import { poppedOut } from './components/notesLayout'
 import { Palette } from './components/Palette'
 import { Toast } from './components/Toast'
 import { SideAgents } from './components/SideAgents'
-import { Account, AgentTerminal, Agents, ChangeSets, Delivery, Flow, Home, Notes, prefetchScreens, Settings, Work } from './lazyScreens'
+import { Account, AgentTerminal, Agents, Ask, ChangeSets, Delivery, Flow, Home, Notes, prefetchScreens, Settings, Work } from './lazyScreens'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { UIContext, type UI } from './ui'
 import { SignIn } from './screens/SignIn'
@@ -39,12 +39,13 @@ const nav: { route: Route; label: string; icon: typeof Workflow; key: string }[]
   { route: { screen: 'delivery' }, label: 'Delivery', icon: Rocket, key: '5' },
   { route: { screen: 'agents' }, label: 'Agents', icon: Bot, key: '6' },
   { route: { screen: 'settings' }, label: 'Settings', icon: SettingsIcon, key: '7' },
+  { route: { screen: 'ask' }, label: 'Ask', icon: Brain, key: '8' },
 ]
 
 /** A phone's tab bar: the screens used most, by a short name. The rest are in the menu. */
 const tabs: { screen: Route['screen']; label: string }[] = [{ screen: 'home', label: 'Home' }, { screen: 'flow', label: 'Work' }, { screen: 'notes', label: 'Notes' }, { screen: 'changes', label: 'Changes' }, { screen: 'agents', label: 'Agents' }]
 
-const titles: Record<Route['screen'], string> = { home: 'Home', flow: 'Work', notes: 'Notes', changes: 'Change sets', delivery: 'Delivery', work: 'Card', agents: 'Agents', terminal: 'Terminal', settings: 'Settings', account: 'Your account' }
+const titles: Record<Route['screen'], string> = { home: 'Home', flow: 'Work', notes: 'Notes', changes: 'Change sets', delivery: 'Delivery', work: 'Card', agents: 'Agents', terminal: 'Terminal', settings: 'Settings', account: 'Your account', ask: 'Ask' }
 
 type Theme = 'system' | 'light' | 'dark'
 
@@ -272,6 +273,7 @@ export default function App() {
                 {route.screen === 'terminal' && <AgentTerminal key={route.id} id={route.id} sid={route.sid} />}
                 {route.screen === 'settings' && <Settings />}
                 {route.screen === 'account' && <Account />}
+                {route.screen === 'ask' && <Ask />}
               </Suspense>
             </ErrorBoundary>
           </div>

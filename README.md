@@ -320,12 +320,36 @@ an agent is given only cards of its own. The connection loses a binder as soon a
 accepted on `/api`. A client that can’t sign in with OAuth can be given a person token on the account page (**Create a
 token**), for the binder it's made in, to put in its config as a Bearer token; it lasts until it’s stopped. A
 connection can read and write notes, make and comment on cards, assign them, and read change sets, debriefs and
-Challenges; taking work and finishing it stays with agents.
+Challenges, ask the brain a question and put captures in (`ask`, `capture`); taking work and finishing it stays with
+agents.
 
 The hub is the OAuth server for this: MCP clients discover it from a 401, register themselves, and exchange a code with
 PKCE (`/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke`, and the `.well-known` metadata). GitHub is
 only the identity provider, through the hub's OAuth App or a binder's GitHub App. `/mcp` still takes an agent's `bnd_…`
 token for runners; a person's `bnp_…` token is accepted there and at the address of any binder it was allowed.
+
+## The brain
+
+The hub can sum up what your phone and Mac capture, and answer questions from your binders. **Settings → Brain** (an
+admin's) picks its model: Claude, with the hub's Anthropic key, or a server of your own that speaks OpenAI's API (Ollama,
+LM Studio, vLLM), which keeps the words on your machines. An embeddings model is optional: with one, passages are found
+by what they mean as well as by their words.
+
+- **Captures.** A phone or Mac sends a dictation, a conversation it heard or a meeting, as words, never the sound, to
+  `POST /api/captures` with its app token. Each becomes a note in its binder's Dictations, Captures or Meetings folder.
+  A conversation or meeting gets a summary at the top when the hub has a model: what it was about, what was decided,
+  who said they'd do what. The folder's rules then apply, so a folder that Distills turns it into cards. Sent again with
+  the same `sourceId`, it gives back the note it made the first time.
+- **Ask.** The **Ask** screen, `POST /api/brain/ask` and the MCP tool `ask` answer a question from the notes and cards of
+  a binder, or every binder you're in, numbering the ones the answer rests on. Without a model, they give the passages
+  that match best.
+- **Each binder's own.** A binder's index is kept in its own store, and a question reaches only the binders you're in.
+  A personal binder's passages never go to the embeddings server. What a conversation or meeting turns into waits for
+  a person, even in a folder whose rule accepts work on its own: words heard in a room are nobody's own.
+- **Keys.** They're sealed, like GitHub's, and go only where they were meant to: a key saved in Settings is cleared when
+  the provider changes, and one set in the environment goes only to an address the environment sets too. `BRAIN_PROVIDER` (anthropic, openai or off), `BRAIN_MODEL`, `BRAIN_BASE_URL`,
+  `BRAIN_API_KEY` (or `ANTHROPIC_API_KEY`), `BRAIN_SUMMARIZE`, `EMBEDDINGS_BASE_URL`, `EMBEDDINGS_MODEL` and
+  `EMBEDDINGS_API_KEY` set it on the hub instead, and Settings shows what they fix.
 
 ## Tests
 

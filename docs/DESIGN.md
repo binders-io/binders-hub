@@ -361,7 +361,28 @@ waits on a person, another agent's words aren't passed on. Two agents get
 20 messages an hour between them before they're told to ask a person. An agent reaches only agents working in binders it works
 in, and a Challenge's reviewer and the author it's judging can't message each other.
 
-## The knowledge base
+## The brain (built)
+
+The hub's own model, for what needs no agent: summing up what a phone or Mac captured, and answering a question from the
+binders. Distill and every other piece of work stay with agents on runners; the brain only reads and sums up.
+
+- **Models** (`hub/src/brain/models.ts`). Claude through Anthropic's SDK by default (`claude-opus-5-5`, with Anthropic's
+  server-side fallback for a declined request), or any server that speaks OpenAI's chat API. Summaries come back in a
+  fixed shape (title, summary, points, decisions, follow-ups); answers cite their passages, through Claude's document
+  citations or `[n]` markers from other models. Embeddings from any server that speaks OpenAI's embeddings API. What's
+  sent is material, never instructions: transcripts are of people in a room, notes are anyone's in a binder.
+- **The index** (`hub/src/brain/index.ts`). Each binder's notes and cards, cut into passages at paragraph ends under
+  their headings, found by BM25 and, with an embeddings model, by vectors, the two lists joined by rank. It's held in
+  memory and kept in the binder's own store a source at a time, so one binder's never reaches another's.
+- **Keeping up** (`hub/src/brain/brain.ts`). Each binder's brain reads everything once, then follows its log, debounced;
+  a source whose words didn't change isn't read again, and a passage whose words didn't change keeps its vector. An
+  embeddings model that's down leaves the words indexed and tries again later.
+- **Captures.** A note in the binder's folder for its kind, with the transcript under its own heading and the summary
+  above it under another, so the hub writes the summary again without touching what people added. Its id comes from
+  the device's own id for it, so an outbox sending twice makes one note.
+- **Settings** (`hub/src/brain/settings.ts`). The hub's, an admin's, with the keys sealed; environment variables fix
+  them, as with the hub's options. A hosted brain, for people without a hub of their own, would be this same hub run
+  for them.
 
 A binder's notes are its team's shared knowledge, kept by the agents doing the work as much as by people.
 

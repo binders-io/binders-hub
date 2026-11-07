@@ -18,6 +18,8 @@ import { signInRoutes } from './routes/signIn.ts'
 import { stateRoutes } from './routes/state.ts'
 import { webRoutes } from './routes/web.ts'
 import { workRoutes } from './routes/work.ts'
+import { brainRoutes } from './routes/brain.ts'
+import type { BrainSettingsStore } from './brain/settings.ts'
 import type { Role, Space, Spaces } from './spaces.ts'
 
 export { installer } from './routes/machines.ts'
@@ -63,7 +65,7 @@ declare module 'fastify' {
  * the one a request names with x-binders-space, or the first the person may open. Who may open which is the
  * Binder's members; the hub's admins make Binders and may open all of them.
  */
-export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: OptionsStore }, options: ServerOptions) {
+export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: OptionsStore; brain?: BrainSettingsStore }, options: ServerOptions) {
   const context = makeContext(spaces, deps, options)
   const { auth, isAdmin, secure, signInSpace } = context
   const app = Fastify({ ...(options.logger ? { loggerInstance: options.logger } : { logger: false }), logController: new LogController({ disableRequestLogging: !options.logRequests }), bodyLimit: 4 * 1024 * 1024, trustProxy: trustedProxies() })
@@ -179,6 +181,7 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
   await personalRoutes(app, context)
   await machineRoutes(app, context)
   await jiraRoutes(app, context)
+  await brainRoutes(app, context)
   await oauthRoutes(app, context)
   await webRoutes(app, context)
 

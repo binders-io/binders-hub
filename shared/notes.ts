@@ -53,6 +53,11 @@ export interface Note {
   text: string
   /** The work items that came from it. */
   work?: WorkLink[]
+  /**
+   * What a phone or Mac captured it from, when it was: a dictation (the person's own words), or a conversation or meeting
+   * (anyone's words, heard in a room). Work that comes of a conversation or meeting is always read by a person first.
+   */
+  captured?: 'dictation' | 'conversation' | 'meeting' | 'note'
   /** The commit that saved it last, and its file in the notes repo. */
   commit?: string
   path?: string

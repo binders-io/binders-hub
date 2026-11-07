@@ -9,6 +9,8 @@ import { agentNamed, binderRepos, briefId, briefOf, goesBy, type Card, type File
 import type { Actions } from './actions.ts'
 import { Refused, type Hub } from './hub.ts'
 import { Refusal } from './auth.ts'
+import { ask, askText, type SpaceBrain } from './brain/brain.ts'
+import type { BrainSettingsStore } from './brain/settings.ts'
 
 // The hub's MCP server for a person's own terminal, not an agent's: signed in through OAuth, it reads and writes the
 // binders they're in as them. There is no work to take and hand back here: a person makes cards, comments, reads
@@ -25,6 +27,14 @@ export interface PersonPlace {
   role: 'owner' | 'admin' | 'member'
   hub: Hub
   actions: Actions
+  /** Its brain, to answer questions from and to put captures in. */
+  brain?: SpaceBrain
+}
+
+/** The hub's brain, as the server reaches it: its models, and where notes and cards are on the web. */
+export interface PersonBrain {
+  settings: BrainSettingsStore
+  url: (space: string, kind: 'note' | 'card', id: string) => string
 }
 
 export interface PersonSession {
@@ -47,6 +57,8 @@ How to work:
 4. get_change_set, get_debrief, get_challenge_set and get_challenge show what a card's work proposes, how it was
    explained, and what a second agent found wrong with it.
 5. propose_work_items is Distill: it reads a note and proposes cards, which the person accepts on the board.
+6. ask answers a question from the binders' notes and cards, citing them. capture puts a dictation, a conversation or a
+   meeting's transcript in a binder as a note, summed up when the hub has a model; its folder's rules then apply.
 
 Connected to several binders: list_binders gives each one's id. A tool that works in a binder takes it as binder; one
 given a card's, note's or change set's id finds it where it is, and takes binder too when that id is in more than one.
@@ -72,7 +84,7 @@ function oneFile<F extends { path: string; added: number; removed: number }>(fil
   return { path: found.path, added: found.added, removed: found.removed, part: n, parts, diff: diff.slice((n - 1) * partSize, n * partSize), ...(n < parts ? { next: `part ${n + 1} of ${parts}` } : {}) }
 }
 
-export function personServer(places: PersonPlace[], session: PersonSession) {
+export function personServer(places: PersonPlace[], session: PersonSession, brain?: PersonBrain) {
   const server = new McpServer({ name: 'binders', version: '0.1.0' }, { instructions })
   const login = session.login
   const actor = { kind: 'user' as const, login }
@@ -576,6 +588,44 @@ export function personServer(places: PersonPlace[], session: PersonSession) {
     const brief = await place.actions.addLesson(actor, repo, lesson)
     return text({ repo: brief.repo, lessons: brief.lessons?.length ?? 0 })
   }))
+
+
+  // The brain ----------------------------------------------------------------------------------------------------------
+
+  /** The notes and cards of one binder in a place, read once for a question. */
+  const keepIn = (place: PersonPlace, binderId: string) => {
+    const ids = new Set([...place.hub.state.notes.filter((n) => n.binderId === binderId).map((n) => `note:${n.id}`), ...place.hub.state.cards.filter((c) => c.binderId === binderId).map((c) => `card:${c.id}`)])
+    return (kind: 'note' | 'card', id: string) => ids.has(`${kind}:${id}`)
+  }
+
+  if (brain) {
+    server.registerTool('ask', {
+      description: 'Answers a question from the notes and cards in your binders (or the one named), citing them: the answer, then the notes and cards it rests on, with their ids for get_note and get_task. Without a model on the hub, the passages that match best.',
+      inputSchema: { question: z.string().max(2000), binder: z.string().optional() },
+    }, run(async ({ question, binder }: { question: string; binder?: string }) => {
+      const only = binder ? binderNamed(binder) : undefined
+      const asking = (only ? [only.place] : places).flatMap((place) => (place.brain ? [{
+        id: place.id,
+        name: only ? only.binder.name : place.name,
+        brain: place.brain,
+        url: (kind: 'note' | 'card', id: string) => brain.url(place.id, kind, id),
+        ...(only ? { keep: keepIn(place, only.binder.id) } : {}),
+      }] : []))
+      if (!asking.length) throw new Refused('These binders have no brain to ask.')
+      return text(askText(await ask(brain.settings, asking, question)))
+    }))
+
+    server.registerTool('capture', {
+      description: 'Puts something captured in a binder as a note: a dictation (your own words), a conversation, or a meeting’s transcript. It goes in the folder for its kind (Dictations, Captures, Meetings) unless one is named, and a conversation or meeting is summed up at the top when the hub has a model. The folder’s rules then apply, such as Distill.',
+      inputSchema: { binder: z.string(), kind: z.enum(['dictation', 'conversation', 'meeting']), text: z.string().max(400_000), title: z.string().max(300).optional(), folder: z.string().max(120).optional() },
+    }, run(async ({ binder, kind, text: words, title, folder }: { binder: string; kind: 'dictation' | 'conversation' | 'meeting'; text: string; title?: string; folder?: string }) => {
+      const spot = binderNamed(binder, 'write in')
+      if (!spot.place.brain) throw new Refused('That binder doesn’t take captures.')
+      if (!words.trim()) throw new Refused('A capture needs its words.')
+      const made = await spot.place.brain.capture(login, { kind, text: words, title }, { binderId: spot.binder.id, folder })
+      return text({ note: made.note.id, title: made.note.title, binder: idOf(spot.place, spot.binder.id), summarizing: made.summarizing, url: brain.url(spot.place.id, 'note', made.note.id) })
+    }))
+  }
 
   return server
 }

@@ -111,6 +111,16 @@ export const bodies = {
   reuse: z.looseObject({ from: maybe, accounts: z.array(text.max(100)).max(20).optional() }),
   briefAsk: z.looseObject({ agentId: maybe, refresh: flag }),
   lesson: z.looseObject({ text: maybe }),
+  brain: z.looseObject({
+    provider: z.enum(['off', 'anthropic', 'openai']).optional(), model: z.string().max(200).optional(), baseUrl: z.string().max(500).optional(), summarize: flag,
+    embeddingsBaseUrl: z.string().max(500).optional(), embeddingsModel: z.string().max(200).optional(), apiKey: z.string().max(500).optional(), embeddingsKey: z.string().max(500).optional(),
+  }),
+  brainAsk: z.looseObject({ question: text.max(2000), everywhere: flag }),
+  capture: z.looseObject({
+    kind: z.enum(['dictation', 'conversation', 'meeting', 'note']), text: text.max(400_000), title: z.string().max(300).nullish().transform((v) => v ?? undefined),
+    recordedAt: maybe, durationSeconds: z.number().nonnegative().max(7 * 24 * 3600).optional(), device: z.string().max(120).nullish().transform((v) => v ?? undefined),
+    speakers: z.array(text.max(80)).max(20).optional(), sourceId: z.string().max(200).optional(), binder: maybe, folder: z.string().max(120).nullish().transform((v) => v ?? undefined),
+  }),
 }
 
 /** A request's body as its route takes it, or what's wrong with it. */

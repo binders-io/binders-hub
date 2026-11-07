@@ -111,7 +111,7 @@ export function HubOptionsPanel({ part }: { part: 'access' | 'sync' }) {
   )
 }
 
-function Option({ title, detail, aside, children }: { title: string; detail: string; aside?: ReactNode; children: ReactNode }) {
+export function Option({ title, detail, aside, children }: { title: string; detail: string; aside?: ReactNode; children: ReactNode }) {
   return (
     <section className="option">
       <header>
@@ -124,7 +124,7 @@ function Option({ title, detail, aside, children }: { title: string; detail: str
   )
 }
 
-function Segmented<T extends string>({ id, value, choices, disabled, onChange }: { id: string; value: T; choices: [T, string][]; disabled: boolean; onChange: (value: T) => void }) {
+export function Segmented<T extends string>({ id, value, choices, disabled, onChange }: { id: string; value: T; choices: [T, string][]; disabled: boolean; onChange: (value: T) => void }) {
   return (
     <div className="segmented" role="radiogroup" id={id}>
       {choices.map(([choice, label]) => (

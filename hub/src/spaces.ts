@@ -1,3 +1,4 @@
+import type { SpaceBrain } from './brain/brain.ts'
 import type { Actions } from './actions.ts'
 import type { GitHubConnection } from './githubConnection.ts'
 import type { JiraConnection } from './jira.ts'
@@ -51,6 +52,8 @@ export interface Space {
   jiraIssues?: JiraSaver
   /** Where pictures put in its notes are kept. */
   filesDir?: string
+  /** Its brain: the index of its notes and cards, what's captured put in as notes, questions answered. */
+  brain?: SpaceBrain
   stop?: () => Promise<void>
 }
 

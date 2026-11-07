@@ -3,6 +3,7 @@ import { Refusal, type Auth } from '../auth.ts'
 import { GitHubError } from '../github.ts'
 import { Refused } from '../hub.ts'
 import type { OptionsStore } from '../options.ts'
+import type { BrainSettingsStore } from '../brain/settings.ts'
 import { readBody } from '../schemas.ts'
 import type { ServerOptions } from '../server.ts'
 import type { Spaces } from '../spaces.ts'
@@ -13,9 +14,10 @@ import { Terminals } from '../terminals.ts'
 
 export type Context = ReturnType<typeof makeContext>
 
-export function makeContext(spaces: Spaces, deps: { auth: Auth; options?: OptionsStore }, options: ServerOptions) {
+export function makeContext(spaces: Spaces, deps: { auth: Auth; options?: OptionsStore; brain?: BrainSettingsStore }, options: ServerOptions) {
   const { auth } = deps
   const hubOptions = deps.options
+  const brainSettings = deps.brain
   const secure = options.publicUrl.startsWith('https:')
   const callback = new URL('/auth/github/callback', options.publicUrl).toString()
   const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(options.publicUrl)
@@ -109,5 +111,8 @@ export function makeContext(spaces: Spaces, deps: { auth: Auth; options?: Option
     for (const repo of repos) if (typeof repo === 'string' && !known.has(repo.toLowerCase())) await mayLink(request, repo)
   }
 
-  return { spaces, auth, hubOptions, options, secure, callback, isLocal, terminals, backFor, sp, login, param, firstGitHub, isAdmin, mayManageGitHub, signInSpace, fail, act, bodyOf, mayLink, mayLinkAll }
+  /** A note's or card's address in the web app: the first Binder's at the hub's own, as its links have always been. */
+  const webUrl = (space: string, kind: 'note' | 'card', id: string) => `${options.publicUrl}${space === spaces.list()[0]?.id ? '' : `/${space}`}/#/${kind === 'note' ? 'notes' : 'work'}/${encodeURIComponent(id)}`
+
+  return { spaces, auth, hubOptions, brainSettings, webUrl, options, secure, callback, isLocal, terminals, backFor, sp, login, param, firstGitHub, isAdmin, mayManageGitHub, signInSpace, fail, act, bodyOf, mayLink, mayLinkAll }
 }

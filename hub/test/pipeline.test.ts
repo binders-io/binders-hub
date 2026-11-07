@@ -291,6 +291,19 @@ describe('work that went out with nobody reading it', () => {
     assert.equal(hub.state.cards.filter((c) => c.acceptedBy).length, 0)
   })
 
+  it('leaves what comes of a conversation a phone heard for a person to accept: its words are nobody’s own', async () => {
+    const { hub, scheduler, later, tools, clock, distillOf } = await ruled()
+    await hub.record({ kind: 'hub' }, { type: 'note.put', note: note('heard', 'heard', { folderId: 'scans', editedAt: clock.at.toISOString(), editors: ['ana'], captured: 'conversation', text: '# heard\n\none thing\n' }) })
+    later(2 * 60_000)
+    await scheduler.tick()
+    const distiller = await tools('distiller')
+    await distiller('claim_task', { id: distillOf('heard').id })
+    const proposed = await distiller('propose_work_items', { note: 'heard', items: [{ title: 'One', quote: 'one thing', size: 'S' }] })
+    assert.equal(proposed.value.proposed, 1)
+    assert.equal(proposed.value.accepted_without_a_person, undefined)
+    assert.equal(hub.state.cards.filter((c) => c.acceptedBy).length, 0)
+  })
+
   it('keeps to its limit and makes one card each, however many ask at once', async () => {
     const { hub, actions, scheduler, later, tools, put, distillOf } = await ruled()
     await put('both', 'ana')

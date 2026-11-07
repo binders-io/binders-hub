@@ -1,13 +1,14 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { ArrowUpRight } from 'lucide-react'
 import { call } from '../data/api'
-import { BookOpen, Check, Copy, Plug, Plus, RefreshCw, Server, ShieldCheck, Trash2, Bot, Users, X, } from 'lucide-react'
+import { BookOpen, Brain, Check, Copy, Plug, Plus, RefreshCw, Server, ShieldCheck, Trash2, Bot, Users, X, } from 'lucide-react'
 import { useHub, useStore } from '../data/store'
 import { ago } from '../components/bits'
 import type { Binder } from '../../../shared/notes.ts'
 import { attempt, toast } from '../components/Toast'
 import { GitHubSetup } from '../components/GitHubSetup'
 import { HubOptionsPanel } from '../components/HubOptionsPanel'
+import { BrainPanel } from '../components/BrainPanel'
 import { RepoInput } from '../components/RepoInput'
 import { RepoBriefs } from '../components/RepoBriefs'
 import { Github } from '../components/Github'
@@ -15,7 +16,7 @@ import { SpacePanel } from '../components/SpacePanel'
 import { PersonalGitHub } from '../components/PersonalGitHub'
 import { isPersonal } from '../components/PersonalRepo'
 
-type Part = 'binder' | 'github' | 'briefs' | 'access' | 'sync' | 'agents' | 'jira' | 'hub'
+type Part = 'binder' | 'github' | 'briefs' | 'access' | 'sync' | 'agents' | 'brain' | 'jira' | 'hub'
 
 const parts: { id: Part; label: string; icon: (props: { size?: number }) => ReactNode; detail: string }[] = [
   { id: 'binder', label: 'Binder', icon: Users, detail: 'This binder: its name, who’s in it, and its GitHub repo. Its cards are kept there as issues and its notes on a branch, and agents’ pull requests there come back to its cards.' },
@@ -24,6 +25,7 @@ const parts: { id: Part; label: string; icon: (props: { size?: number }) => Reac
   { id: 'access', label: 'Access', icon: ShieldCheck, detail: 'Who may sign in, and who may change how the hub works.' },
   { id: 'sync', label: 'Syncing', icon: RefreshCw, detail: 'How the hub follows GitHub, and when your notes are committed.' },
   { id: 'agents', label: 'Agents', icon: Bot, detail: 'Where agents connect. Each agent’s own settings are on the Agents page.' },
+  { id: 'brain', label: 'Brain', icon: Brain, detail: 'The hub’s own model: it sums up the conversations and meetings your phone and Mac send, and answers questions from the binders, citing the notes and cards it used. The same for every binder on this hub.' },
   { id: 'jira', label: 'Jira', icon: Plug, detail: 'Mirrors this binder’s cards into one Jira Cloud project: a card becomes an issue, its stage the issue’s status, and what people do there comes back: a status they change moves the card, a comment lands on it. The hub keeps the words; Jira’s copy is written, never read back.' },
   { id: 'hub', label: 'This hub', icon: Server, detail: 'Where the hub keeps things, and how this browser is connected to it.' },
 ]
@@ -78,6 +80,7 @@ export function Settings() {
         {part === 'access' && <HubOptionsPanel part="access" />}
         {part === 'sync' && <HubOptionsPanel part="sync" />}
         {part === 'agents' && <AgentsPart />}
+        {part === 'brain' && <BrainPanel />}
         {part === 'jira' && <JiraPart />}
         {part === 'hub' && <HubPart />}
       </div>
