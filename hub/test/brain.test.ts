@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net'
 import Anthropic from '@anthropic-ai/sdk'
 import { MemoryKV } from '../src/kv.ts'
 import { BrainIndex, passages, words } from '../src/brain/index.ts'
+import { firstWords } from '../src/brain/captures.ts'
 import { ClaudeModel, OpenAICompatibleEmbedder, OpenAICompatibleModel, BrainUnavailable } from '../src/brain/models.ts'
 
 /** A stand-in embeddings model: a vector per word it knows, so texts sharing a meaning-word come out near. */
@@ -35,6 +36,7 @@ describe('the brain’s index of a binder', () => {
     assert.ok(cut.every((p) => p.length <= 400 + 20), 'no passage runs much over the size')
     assert.ok(cut.slice(1).some((p) => p.startsWith('## Costs')), 'a passage under a heading starts with it')
     assert.deepEqual(words('The Invoices are PAID, twice!'), ['invoice', 'paid', 'twice'])
+    assert.equal(firstWords('**[00:00] You:** we need new tyres\n\n**[00:12] Speaker 2:** sam will book'), 'we need new tyres sam will book', 'a transcript’s marks aren’t a title')
   })
 
   it('finds passages by their words, best first, and forgets a removed note', async () => {

@@ -40,9 +40,9 @@ export function captureLine(capture: Capture, now = new Date()) {
   return parts.join(' · ')
 }
 
-/** A title for a capture with none: its first words. */
+/** A title for a capture with none: its first words, without a transcript's marks (who spoke, and when). */
 export function firstWords(text: string, most = 60) {
-  const line = text.replace(/\s+/g, ' ').trim()
+  const line = text.replace(/\*\*\[[^\]]*\][^*]*\*\*/g, ' ').replace(/[*_#`>]+/g, ' ').replace(/\s+/g, ' ').trim()
   if (line.length <= most) return line || 'Captured'
   const cut = line.slice(0, most)
   return `${cut.slice(0, Math.max(cut.lastIndexOf(' '), most / 2)).replace(/[,.;:!?-]+$/, '')}…`
