@@ -12,6 +12,11 @@ export interface Binder {
   name: string
   /** The GitHub repo its cards are kept in as issues, as "owner/name". */
   repo?: string
+  /**
+   * The repos its agents work in, as "owner/name": each agent works in all of them, or the ones it's limited to among
+   * them. None: any repo.
+   */
+  repos?: string[]
   /** Whether its cards are kept as issues in that repo: on unless turned off. */
   issues?: boolean
   /** Whether its notes are pushed to that repo, on their own branch (binders-notes unless named). */

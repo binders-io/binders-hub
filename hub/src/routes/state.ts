@@ -3,9 +3,12 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { slug } from '../../../shared/notes.ts'
 import { isChange } from '../log.ts'
+import { Refused } from '../hub.ts'
 import type { FastifyInstance } from 'fastify'
 import type { Change, Entry, Outgoing } from '../../../shared/state.ts'
 import type { Context } from './context.ts'
+
+const repoName = /^[\w.-]+\/[\w.-]+$/
 
 // The state, its changes and its live feed, and the pictures in notes.
 
@@ -31,10 +34,16 @@ export async function stateRoutes(app: FastifyInstance, context: Context) {
       // A tab's changes are its own: the log knows them by the tab and the person.
       const { hub } = sp(request)
       // A project's repo changes only to one the person can push to.
+      // Its agents' repos too, at most 500: each new one, only by someone who can push to it, as an agent's own repos.
       const vet = async (change: Change) => {
-        if (change.type !== 'binder.put' || !change.binder.repo) return
-        const before = hub.state.binders.find((b) => b.id === change.binder.id)?.repo
-        if (before?.toLowerCase() !== change.binder.repo.toLowerCase()) await mayLink(request, change.binder.repo, true)
+        if (change.type !== 'binder.put') return
+        const was = hub.state.binders.find((b) => b.id === change.binder.id)
+        if (change.binder.repo && was?.repo?.toLowerCase() !== change.binder.repo.toLowerCase()) await mayLink(request, change.binder.repo, true)
+        const repos = change.binder.repos
+        if (repos === undefined) return
+        if (!Array.isArray(repos) || repos.length > 500 || !repos.every((r) => typeof r === 'string' && repoName.test(r))) throw new Refused('A binder’s repos are a list of at most 500, each as owner/name.')
+        const known = new Set((was?.repos ?? []).map((r) => r.toLowerCase()))
+        for (const repo of repos) if (!known.has(repo.toLowerCase())) await mayLink(request, repo)
       }
       const versions = await hub.submit(request.user!.login, client, changes, vet)
       // A Binder goes by its one binder's name: renamed there (on the web or a Mac), it's renamed too.

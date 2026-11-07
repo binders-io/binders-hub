@@ -152,6 +152,14 @@ with the Mac.
 
 - A person sets an agent up in Agents: name, tool, repos, binders, skills. The hub gives a token (`bnd_…`), shown once;
   only its hash is kept. A new token replaces the old; revoking stops it at once and puts what it held back on the board.
+- A binder can name the repos its agents work in (Settings). Each agent then works in all of them, or picks some among
+  them on the Agents page; one it's limited to outside them is refused. A binder that names none leaves its agents to
+  any repo, as before.
+- Repos are picked by typing. The hub keeps a list of each GitHub App installation's repos in its store, read a hundred
+  at a time in the background the first time a picker asks, and again every six hours, the old list answering
+  meanwhile; a hub that restarts goes on from the page it stopped at. GitHub's word that repos were added to or removed
+  from an installation changes it at once. A name the list doesn't have yet (still being read, or made since) is looked
+  up on GitHub by name, and kept when found. An organization of tens of thousands of repos is a lookup in memory.
 - The agent connects to `/mcp` (Streamable HTTP, stateless, Bearer token). Its tools: `whoami`, `update_profile`,
   `list_binders`, `list_notes`, `get_note`, `create_note`, `append_to_note`, `list_tasks`, `get_task`, `wait_for_work`
   (waits up to 50 s for a card it could take), `claim_task`, `report_progress` (doing, progress, plan, steps, said),
@@ -259,9 +267,12 @@ with the Mac.
 A person's MCP client (Claude Code, Cursor, another) connects as the person, not as an agent: the hub is an OAuth 2.1
 authorization server for MCP, and GitHub only says who they are. A client discovers it from a 401, registers itself
 (`/oauth/register`), the person signs in with GitHub and allows it (`/oauth/authorize`), and it exchanges a code with
-PKCE for a person token that runs out and renews (`/oauth/token`, `/oauth/revoke`). The token is `bnp_…`, bound to one
-binder (`/<binder>/mcp`) and revocable from the account page. It's refused at any other binder's address, once the person
-leaves that binder, and on `/api`. It reads and writes notes, makes and comments on cards,
+PKCE for a person token that runs out and renews (`/oauth/token`, `/oauth/revoke`). The token is `bnp_…`, bound to the
+binders the person ticked on the consent page at the hub's `/mcp` (or the one binder a `/<binder>/mcp` address names),
+and revocable from the account page. Each call checks it against the binders the person is still in, and works in one
+binder: tools name it, or find it from the card, note or change set they're given, refusing an id found in more than one
+until told which; nothing moves or points across binders. It's refused at a binder's address it wasn't allowed, and on
+`/api`. It reads and writes notes, makes and comments on cards,
 assigns them, and reads change sets, debriefs and Challenges. It takes no work: that's an agent's, with its `bnd_…`
 token and runner. Replacing an agent's token doesn't touch a person's connection.
 

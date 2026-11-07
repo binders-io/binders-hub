@@ -401,6 +401,75 @@ describe('OAuth for MCP, kept to what was allowed', () => {
     }
   })
 
+  it('connects one client at the hub’s address to the binders its person picks, each kept apart', async () => {
+    const set = await setUpBinders()
+    try {
+      const client = await register(set.url, { client_name: 'Test terminal', redirect_uris: ['http://localhost:9999/cb'] }).then(json)
+      const verifier = randomBytes(32).toString('base64url')
+      const fields = { response_type: 'code', client_id: client.client_id, redirect_uri: 'http://localhost:9999/cb', code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256', state: 's', resource: 'http://hub.test/mcp' }
+      // The consent page offers the binders they're in, none ticked: Team C isn't theirs.
+      const page = await fetch(`${set.url}/oauth/authorize?${new URLSearchParams(fields)}`, { headers: { cookie: set.cookie } }).then((r) => r.text())
+      assert.match(page, /Team A/)
+      assert.match(page, /Team B/)
+      assert.doesNotMatch(page, /Team C/)
+      assert.doesNotMatch(page, / checked/)
+      const post = (binders: string[]) => {
+        const body = new URLSearchParams({ ...fields, choosing: '1' })
+        for (const b of binders) body.append('binder', b)
+        return fetch(`${set.url}/oauth/authorize`, { method: 'POST', redirect: 'manual', headers: { cookie: set.cookie, 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() })
+      }
+      const none = await post([])
+      assert.equal(none.status, 400)
+      assert.match(await none.text(), /Pick at least one binder/)
+      assert.equal((await post(['team-a', 'team-c'])).status, 400, 'not one of theirs')
+      const allowed = await post(['team-a', 'team-b'])
+      const code = new URL(allowed.headers.get('location')!).searchParams.get('code')!
+      const tokens = await fetch(`${set.url}/oauth/token`, form({ grant_type: 'authorization_code', code, client_id: client.client_id, code_verifier: verifier })).then(json)
+      const access = tokens.access_token as string
+      const call = (name: string, args: Record<string, unknown> = {}, path = '/mcp') => mcpCall(set.url, access, name, args, path)
+
+      const listed = (await call('list_binders')).value as { id: string; name: string }[]
+      assert.deepEqual(listed.map((b) => [b.id, b.name]), [['team-a', 'Team A'], ['team-b', 'Team B']])
+      // Every log calls its binder "main": that names neither here, and the answer says which there are.
+      const unclear = await call('create_note', { binder: 'main', text: '# Plan' })
+      assert.equal(unclear.error, true)
+      assert.match(unclear.text, /Yours: team-a \(Team A\), team-b \(Team B\)/)
+      const note = (await call('create_note', { binder: 'team-b', text: '# Plan for B' })).value as { id: string }
+      assert.equal(set.b.space.hub.state.notes.length, 1)
+      assert.equal(set.a.space.hub.state.notes.length, 0)
+      // Found where it is, without saying which binder.
+      assert.equal(((await call('get_note', { id: note.id })).value as { text: string }).text, '# Plan for B')
+      const card = (await call('create_task', { binder: 'Team A', title: 'Ship it' })).value as { id: string; binder_id: string }
+      assert.equal(card.binder_id, 'team-a')
+      assert.equal((await call('comment_task', { id: card.id, text: 'Soon' })).error, false)
+      // A title in both, moved within one: found in that one.
+      await call('create_note', { binder: 'team-a', text: '# Same' })
+      await call('create_note', { binder: 'team-b', text: '# Same' })
+      assert.equal((await call('get_note', { id: 'Same' })).error, true, 'in both: which?')
+      assert.equal((await call('move_note', { id: 'Same', binder: 'team-a' })).error, false)
+      // Nothing crosses from one to the other.
+      const moved = await call('move_note', { id: note.id, binder: 'team-a' })
+      assert.equal(moved.error, true)
+      assert.match(moved.text, /stays in its own Binder/)
+      const waits = await call('create_task', { binder: 'team-b', title: 'After', waits_for: [card.id] })
+      assert.equal(waits.error, true)
+      assert.equal(set.b.space.hub.state.cards.length, 0)
+      // At one binder's address, that one alone; at a binder it wasn't allowed, refused.
+      assert.deepEqual(((await call('list_binders', {}, '/team-a/mcp')).value as { id: string }[]).map((b) => b.id), ['main'])
+      assert.equal((await mcpStatus(set.url, access, '/team-c/mcp')).status, 403)
+      // Renewed, it reaches the same binders; the account page lists them.
+      const renewed = await renew(set.url, client.client_id, tokens.refresh_token).then(json)
+      assert.equal(((await mcpCall(set.url, renewed.access_token, 'list_binders')).value as unknown[]).length, 2)
+      const mine = await api(set.url, set.cookie)('GET', '/api/tokens')
+      assert.deepEqual(mine.body.tokens.find((t: { kind: string }) => t.kind === 'mcp').binders.map((b: { name: string }) => b.name), ['Team A', 'Team B'])
+      // Leaving one binder takes it out of the connection; the other stays.
+      set.b.info.members.splice(0, set.b.info.members.length, { login: 'ana', role: 'member' })
+      assert.deepEqual(((await mcpCall(set.url, renewed.access_token, 'list_binders')).value as { id: string }[]).map((b) => b.id), ['main'])
+    } finally {
+      await set.close()
+    }
+  })
+
   it('takes an MCP token on MCP only, and it can’t make itself a longer-lasting one', async () => {
     const set = await setUpBinders()
     try {

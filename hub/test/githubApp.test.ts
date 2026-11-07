@@ -143,6 +143,43 @@ describe('setting GitHub up from Settings', () => {
     const linked = await fetch(`${url}/api/changes`, { method: 'POST', headers: { cookie: octo, 'x-binders': '1', 'content-type': 'application/json' }, body: JSON.stringify({ client: 'tab-link', changes: [{ id: 'link-1', change: { type: 'binder.put', binder: { id: 'b-notes', name: 'Notes', repo: 'acme/notes' } } }] }) })
     assert.equal(linked.status, 200, await linked.clone().text())
     assert.equal(hub.state.binders.find((b) => b.id === 'b-notes')?.repo, 'acme/notes')
+    // An organization of thousands of repos: the picker finds one among them by name, from the list the hub keeps, and
+    // one GitHub hasn't listed yet through GitHub's search.
+    github.world.installationRepos = 2300
+    github.world.listedRepos = 1200
+    // (Read once already, when acme/notes was made and the organization had no others: read from the start.)
+    await connection.ownIndex.forget(7)
+    const before = github.calls.filter((c) => c.path.startsWith('/installation/repositories')).length
+    const pick = async (q: string) => json(await fetch(`${url}/api/github/repos?q=${encodeURIComponent(q)}`, { headers: { cookie: octo } }))
+    assert.equal((await pick('repo-1199')).repos[0].fullName, 'acme/repo-1199')
+    const pages = () => github.calls.filter((c) => c.path.startsWith('/installation/repositories')).length - before
+    await until(() => pages() === 13, 10_000)
+    const deep = await pick('repo-1199')
+    assert.equal(deep.repos[0].fullName, 'acme/repo-1199')
+    assert.equal(deep.reading, undefined)
+    const unlisted = await pick('repo-2299')
+    assert.deepEqual(unlisted.repos.map((r: { fullName: string }) => r.fullName), ['acme/repo-2299'])
+    assert.ok(github.calls.some((c) => c.path.startsWith('/search/repositories')))
+    const searches = github.calls.filter((c) => c.path.startsWith('/search/repositories')).length
+    assert.equal((await pick('repo-2299')).repos[0].fullName, 'acme/repo-2299')
+    assert.equal(github.calls.filter((c) => c.path.startsWith('/search/repositories')).length, searches, 'kept once found')
+    assert.equal((await pick('repo-1')).repos.length, 50, 'a page of suggestions, not the organization')
+    // GitHub says a repo was added to the installation: it's in the list at once.
+    const added = JSON.stringify({ action: 'added', installation: { id: 7 }, repositories_added: [{ full_name: 'acme/brand-new', private: true }], repositories_removed: [{ full_name: 'acme/repo-3' }] })
+    await fetch(`${url}/webhooks/github`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-github-event': 'installation_repositories', 'x-hub-signature-256': `sha256=${createHmac('sha256', 'app-hook-secret').update(added).digest('hex')}` }, body: added })
+    assert.deepEqual((await pick('brand-new')).repos.map((r: { fullName: string }) => r.fullName), ['acme/brand-new'])
+    assert.equal((await pick('acme/repo-3')).repos.some((r: { fullName: string }) => r.fullName === 'acme/repo-3'), false)
+
+    // The binder names the repos its agents work in; an agent picks among them, and nothing else.
+    const scoped = await fetch(`${url}/api/changes`, { method: 'POST', headers: { cookie: octo, 'x-binders': '1', 'content-type': 'application/json' }, body: JSON.stringify({ client: 'tab-link', changes: [{ id: 'repos-1', change: { type: 'binder.put', binder: { id: 'b-notes', name: 'Notes', repo: 'acme/notes', repos: ['acme/repo-5', 'acme/repo-6'] } } }] }) })
+    assert.equal(scoped.status, 200, await scoped.clone().text())
+    assert.deepEqual(hub.state.binders.find((b) => b.id === 'b-notes')?.repos, ['acme/repo-5', 'acme/repo-6'])
+    const agentCall = (body: unknown) => fetch(`${url}/api/agents`, { method: 'POST', headers: { cookie: octo, 'x-binders': '1', 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const outside = await json(await agentCall({ name: 'Outside', provider: 'claude', repos: ['acme/repo-9'], binders: ['b-notes'], skills: [] }))
+    assert.match(outside.error, /acme\/repo-9 isn’t among its binder’s repos/)
+    const inside = await json(await agentCall({ name: 'Inside', provider: 'claude', repos: ['acme/repo-6'], binders: ['b-notes'], skills: [] }))
+    assert.deepEqual(inside.agent.repos, ['acme/repo-6'])
+
     // Someone with no GitHub connected here, who doesn't run the binder: told to connect, or to ask one who does.
     const unconnected = await json(await call('POST', '/api/github/repos', { owner: 'acme', name: 'other' }))
     assert.match(unconnected.error, /Connect your GitHub to this binder first .*Or ask one of its owners or admins/)

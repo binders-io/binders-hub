@@ -114,7 +114,7 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   const linked = (repo: string) => {
     const same = (r?: string) => !!r && r.toLowerCase() === repo.toLowerCase()
     const state = started?.state
-    return !!state && (state.binders.some((b) => same(b.repo)) || state.agents.some((a) => !a.revoked && a.repos.some(same)))
+    return !!state && (state.binders.some((b) => same(b.repo) || !!b.repos?.some(same)) || state.agents.some((a) => !a.revoked && a.repos.some(same)))
   }
   const github = new GitHubConnection(log instanceof RedisLog ? new RedisKV(log.redis, id) : new MemoryKV(), sealer, endpoints, first ? manual : {}, first ? undefined : id, { id, binder: (other) => spaces.get(other)?.github, linked })
   await github.load()

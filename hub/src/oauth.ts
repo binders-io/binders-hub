@@ -25,8 +25,10 @@ export interface OAuthCode {
   clientId: string
   login: string
   user: User
-  /** The Binder the connection is for: the one whose /<binder>/mcp the client reached, or the person's first. */
+  /** The Binder the connection is for: the one whose /<binder>/mcp the client reached, or the first the person allowed. */
   space: string
+  /** Every Binder the person allowed it, when more than one. */
+  spaces?: string[]
   redirectUri: string
   codeChallenge: string
   resource?: string
@@ -224,7 +226,7 @@ export class OAuth {
       if (code.clientId !== client.clientId) throw new OAuthError('invalid_grant', 'That code was made for another client.')
       if (input.redirect_uri && input.redirect_uri !== code.redirectUri) throw new OAuthError('invalid_grant', 'That redirect URI isn’t the one the code was made for.')
       if (!input.code_verifier || !pkceMatches(input.code_verifier, code.codeChallenge)) throw new OAuthError('invalid_grant', 'The code verifier doesn’t match the challenge.')
-      const issued = await this.auth.issueOAuthPersonToken(code.user, client.clientName ?? 'An MCP client', client.clientId, code.space, code.scope || mcpScope)
+      const issued = await this.auth.issueOAuthPersonToken(code.user, client.clientName ?? 'An MCP client', client.clientId, code.space, code.scope || mcpScope, undefined, code.spaces)
       await this.keep(client)
       return { access_token: issued.token, token_type: 'Bearer', expires_in: issued.expiresIn, refresh_token: issued.refresh, scope: code.scope || mcpScope }
     }

@@ -76,23 +76,20 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
     if (!person && (await auth.stoppedByHand(token))) return setByHand(reply, 'This token was stopped. Take it out of this client’s settings to connect through the browser, or make a new one.')
     if (!person) return unauthorized(reply, request)
     const mine = spaces.forPerson(person.user.login, isAdmin(person.user.login))
-    // A connection is for the one binder the person allowed. It never moves to another, as every binder's log calls its
-    // binder the same: a client that was removed from this one would write in the next one without knowing.
+    // A connection is for the Binders the person allowed, and only while they're in them. It never moves to another, as
+    // every binder's log calls its binder the same: a client that was removed from one would write in the next one
+    // without knowing. Reached at one Binder's address, it works in that one alone.
     const refused = (message: string) => reply.code(403).send({ jsonrpc: '2.0', error: { code: -32002, message }, id: null })
-    if (named && named !== person.space) return refused(`This connection is for another binder. To use ${named}, connect to its address and allow it.`)
-    const target = mine.find((s) => s.info.id === person.space)
-    if (!target) return refused(`@${person.user.login} isn’t in the binder this connection is for.`)
-    const space = spaces.get(target.info.id)
-    if (!space) return unauthorized(reply, request)
-    // The binder as its log has it: a space's one binder is "main" (or "notes" for a personal one), whatever its address.
-    // A person's connection is for this binder, so the tools go by its id and name, as the board does.
-    const binder = space.hub.state.binders[0]
-    return serve(request, reply, personServer(space.hub, space.actions, {
-      binder: { id: binder?.id ?? target.info.id, name: binder?.name ?? target.info.name },
-      binders: [{ id: binder?.id ?? target.info.id, name: binder?.name ?? target.info.name, role: target.role }],
-      login: person.user.login,
-      name: person.user.name,
-    }))
+    const allowed = person.spaces ?? (person.space ? [person.space] : [])
+    if (named && !allowed.includes(named)) return refused(`This connection is for another binder. To use ${named}, connect to its address and allow it.`)
+    const reached = mine.filter((s) => (named ? s.info.id === named : allowed.includes(s.info.id)))
+    if (!reached.length) return refused(`@${person.user.login} isn’t in ${allowed.length > 1 ? 'any of the binders' : 'the binder'} this connection is for.`)
+    const places = reached.flatMap((s) => {
+      const space = spaces.get(s.info.id)
+      return space ? [{ id: s.info.id, name: s.info.name, role: s.role, hub: space.hub, actions: space.actions }] : []
+    })
+    if (!places.length) return unauthorized(reply, request)
+    return serve(request, reply, personServer(places, { login: person.user.login, name: person.user.name }))
   }
   // The hub's own, for an agent's token and a person's; and a binder's, for a person connecting to one binder.
   app.post('/mcp', mcp)
@@ -135,6 +132,8 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
       const event = String(request.headers['x-github-event'] ?? '')
       if (event === 'ping') return { ok: true }
       const payload = JSON.parse(raw.toString('utf8'))
+      // Repos added to or removed from one of its app's installations: the list its pickers search follows.
+      if (event === 'installation_repositories' || event === 'installation') await space.github.heardInstallation(event, payload).catch(() => undefined)
       const result = await space.webhooks.handle(event, payload)
       // Binders that use this one's app hear what it hears: each acts on its own repos.
       for (const other of spaces.all()) {

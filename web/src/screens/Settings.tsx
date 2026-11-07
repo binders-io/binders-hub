@@ -118,6 +118,9 @@ function Binders() {
               </div>
               <label className="field-label" htmlFor={`binder-repo-${binder.id}`}>GitHub repo</label>
               <RepoInput id={`binder-repo-${binder.id}`} single value={binder.repo ? [binder.repo] : []} placeholder="Pick the repo its cards go to…" onChange={(repos) => store.updateBinder(binder.id, { repo: repos[0] ?? '' })} />
+              <label className="field-label" htmlFor={`binder-repos-${binder.id}`}>Repos its agents work in</label>
+              <RepoInput id={`binder-repos-${binder.id}`} value={binder.repos ?? []} placeholder="Add repos… (none: any repo)" onChange={(repos) => store.updateBinder(binder.id, { repos })} />
+              <span className="field-hint">Each agent works in all of these, or the ones it’s limited to on the Agents page.</span>
               {binder.repo && <NotesRow binder={binder} status={issues?.[binder.id]?.notes} onChange={(fields) => store.updateBinder(binder.id, fields)} />}
               {binder.repo && <IssuesRow binderId={binder.id} repo={binder.repo} on={binder.issues !== false} status={issues?.[binder.id]} onChange={(on) => store.updateBinder(binder.id, { issues: on })} onSync={() => void attempt(() => call('POST', `/api/binders/${binder.id}/sync-issues`)).then(refresh)} />}
               <ReviewCommentsRow binderId={binder.id} on={binder.reviewComments === true} onChange={(on) => store.updateBinder(binder.id, { reviewComments: on })} />
@@ -214,8 +217,8 @@ function AgentsPart() {
   const mine = me.space ? new URL(`/${me.space}/mcp`, window.location.origin).toString() : me.mcpUrl
   return (
     <div className="copy-rows">
-      <CopyRow label="MCP for you, in this binder" value={mine} hint={`Add it in Claude Code with: claude mcp add --transport http binders ${mine}. It opens a browser to sign in with GitHub: no token to copy, and an agent’s token being replaced doesn’t touch it.`} />
-      <CopyRow label="MCP address for agents" value={me.mcpUrl} hint="With an agent’s token, from its Agents page." />
+      <CopyRow label="MCP for you, in the binders you pick" value={me.mcpUrl} hint={`Add it in Claude Code with: claude mcp add --transport http binders ${me.mcpUrl}. It opens a browser to sign in with GitHub and pick the binders it works in: no token to copy, and an agent’s token being replaced doesn’t touch it. Agents use this address too, with their own token.`} />
+      <CopyRow label="MCP for you, in this binder alone" value={mine} hint="The same, for this binder only." />
       <CopyRow label="The runner" value={runner} hint="Keeps an agent taking cards. Start the runner on an agent’s card shows the whole command." />
     </div>
   )

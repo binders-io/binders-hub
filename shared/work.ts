@@ -795,12 +795,43 @@ export function nextFor(state: WorkState & { binders: { id: string; repo?: strin
  * Whether an agent may take a card, as the board offers them: one meant for it, whatever its binders and repos (a
  * person's to give), or one meant for nobody in a binder and repo it works in.
  */
-export function mayTake(state: { binders: { id: string; repo?: string }[]; agents?: { id: string; revoked?: boolean }[]; schedules?: Schedule[] }, agent: Pick<Agent, 'id' | 'binders' | 'repos'>, card: Pick<Card, 'meantFor' | 'binderId' | 'distillRule' | 'acceptedBy' | 'scheduleId'>) {
+export function mayTake(state: { binders: { id: string; repo?: string; repos?: string[] }[]; agents?: { id: string; revoked?: boolean }[]; schedules?: Schedule[] }, agent: Pick<Agent, 'id' | 'binders' | 'repos'>, card: Pick<Card, 'meantFor' | 'binderId' | 'distillRule' | 'acceptedBy' | 'scheduleId'>) {
   const meant = meantForNow(state, card)
   if (meant) return meant === agent.id
   if (card.meantFor && pinned(state, card)) return false
-  const repo = state.binders.find((b) => b.id === card.binderId)?.repo
-  return worksIn(agent, card.binderId, state.binders) && (!agent.repos.length || !repo || agent.repos.some((r) => sameRepo(r, repo)))
+  const binder = state.binders.find((b) => b.id === card.binderId)
+  if (!worksIn(agent, card.binderId, state.binders)) return false
+  const theirs = binderRepos(binder)
+  return !agent.repos.length || !theirs.length || agent.repos.some((r) => theirs.some((t) => sameRepo(r, t)))
+}
+
+/** A binder's repos: the one its cards are kept in, and those its agents work in. */
+export function binderRepos(binder: { repo?: string; repos?: string[] } | undefined) {
+  const all = [...(binder?.repo ? [binder.repo] : []), ...(binder?.repos ?? [])]
+  return all.filter((r, i) => all.findIndex((x) => sameRepo(x, r)) === i)
+}
+
+/**
+ * The repos an agent may work in: those it's limited to; or else, when every binder it works in names its repos, all
+ * of those; or else any (an empty list).
+ */
+export function agentRepos(agent: Pick<Agent, 'repos' | 'binders'>, binders: { id: string; repo?: string; repos?: string[] }[]) {
+  if (agent.repos.length) return agent.repos
+  const mine = binders.filter((b) => worksIn(agent, b.id, binders))
+  if (!mine.length || mine.some((b) => !b.repos?.length)) return []
+  return binderRepos({ repos: mine.flatMap((b) => binderRepos(b)) })
+}
+
+/**
+ * Why an agent can't be limited to these repos, if it can't: each must be one of its binders' repos, when every
+ * binder it works in names them. Undefined when it can.
+ */
+export function outsideBinders(repos: string[], agent: Pick<Agent, 'binders'>, binders: { id: string; name: string; repo?: string; repos?: string[] }[]) {
+  const scope = agentRepos({ repos: [], binders: agent.binders }, binders)
+  if (!scope.length) return undefined
+  const outside = repos.filter((r) => !scope.some((s) => sameRepo(s, r)))
+  if (!outside.length) return undefined
+  return `${outside.join(', ')} ${outside.length === 1 ? 'isn’t' : 'aren’t'} among its binder’s repos: add ${outside.length === 1 ? 'it' : 'them'} to the binder in Settings first, or pick from ${scope.length === 1 ? scope[0] : 'its repos'}.`
 }
 
 /**

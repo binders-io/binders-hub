@@ -216,7 +216,9 @@ export async function signInRoutes(app: FastifyInstance, context: Context) {
       tokens: (await auth.personTokens(login)).map(({ space, ...t }) => {
         const id = space ?? spaces.list()[0]?.id
         const info = id && (space || theirs.has(id)) ? spaces.info(id) : undefined
-        return { ...t, binder: info ? { id: info.id, name: info.name, personal: !!info.personal } : undefined, current: t.id === request.personToken }
+        // A connection reaching several: each of them still theirs, by name.
+        const several = t.spaces && t.spaces.length > 1 ? t.spaces.flatMap((s) => (theirs.has(s) ? [spaces.info(s)] : [])).filter((x) => !!x).map((x) => ({ id: x!.id, name: x!.name })) : undefined
+        return { ...t, spaces: undefined, binder: info ? { id: info.id, name: info.name, personal: !!info.personal } : undefined, ...(several ? { binders: several } : {}), current: t.id === request.personToken }
       }),
     }
   })

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { atLeast, briefsSince } from '../../../shared/agents.ts'
 import { briefNoteText, briefText, briefTitle, docsFolderName, repoFolders } from '../../../shared/briefs.ts'
-import { briefId, briefMost, briefOf, lessonMost, lessonsKept, type Agent, type BriefAsk, type RepoBrief } from '../../../shared/work.ts'
+import { agentRepos, binderRepos, briefId, briefMost, briefOf, lessonMost, lessonsKept, type Agent, type BriefAsk, type RepoBrief } from '../../../shared/work.ts'
 import { Refused, type Actor } from '../hub.ts'
 import { ChallengeService } from './challenges.ts'
 import { looksSecret, tidy } from './base.ts'
@@ -22,7 +22,7 @@ export abstract class BriefService extends ChallengeService {
   /** The repos this binder works in: its projects', its agents', and its pull requests'. */
   knownRepos() {
     const all = [
-      ...this.hub.state.binders.map((b) => b.repo),
+      ...this.hub.state.binders.flatMap((b) => binderRepos(b)),
       ...this.hub.state.agents.filter((a) => !a.revoked).flatMap((a) => a.repos),
       ...this.hub.state.pulls.map((p) => p.repo),
       ...(this.hub.state.briefs ?? []).map((b) => b.repo),
@@ -40,9 +40,10 @@ export abstract class BriefService extends ChallengeService {
     return found
   }
 
-  /** Whether an agent works in a repo: one of its own, or any when it isn't limited to some. */
+  /** Whether an agent works in a repo: one of its own, or of its binders', or any when neither limits it. */
   worksInRepo(agent: Agent, repo: string) {
-    return !agent.repos.length || agent.repos.some((r) => briefId(r) === briefId(repo))
+    const open = agentRepos(agent, this.hub.state.binders)
+    return !open.length || open.some((r) => briefId(r) === briefId(repo))
   }
 
   private pending(ask: BriefAsk | undefined) {

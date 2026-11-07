@@ -40,7 +40,7 @@ export function Account() {
 }
 
 /** binder: the one it's registered to, whose GitHub App it signed in through; none when it signed in without one. */
-interface AppToken { id: string; app: string; at: string; binder?: { id: string; name: string; personal: boolean }; kind?: 'app' | 'mcp'; expiresAt?: string; clientId?: string }
+interface AppToken { id: string; app: string; at: string; binder?: { id: string; name: string; personal: boolean }; binders?: { id: string; name: string }[]; kind?: 'app' | 'mcp'; expiresAt?: string; clientId?: string }
 
 /** The tokens of each kind: an app signed in through the browser, or an MCP client signed in through OAuth. */
 function useTokens() {
@@ -108,8 +108,8 @@ function McpConnections() {
             <li key={t.id} className="ok">
               <span className="status-icon"><SquareTerminal size={12} /></span>
               <div>
-                <span className="row-title"><b>{t.app}</b>{t.binder && <BinderTag name={t.binder.name} />}</span>
-                <span>Connected {ago(t.at)} ago{t.binder ? `, to ${t.binder.name}` : ''}{t.expiresAt ? '. Its token renews itself until you stop it here' : ''}.</span>
+                <span className="row-title"><b>{t.app}</b>{(t.binders ?? (t.binder ? [t.binder] : [])).map((b) => <BinderTag key={b.id} name={b.name} />)}</span>
+                <span>Connected {ago(t.at)} ago{t.binders ? `, to ${t.binders.length} binders` : t.binder ? `, to ${t.binder.name}` : ''}{t.expiresAt ? '. Its token renews itself until you stop it here' : ''}.</span>
               </div>
               <button className="button" onClick={() => revoke(t.id)}>Disconnect</button>
             </li>

@@ -534,7 +534,7 @@ export class Auth {
    * A person token for an MCP client that signed in through OAuth: an access token that runs out, and a refresh token
    * that renews it (once: the client gets a new one each time). Only its hashes are kept, as for an agent's.
    */
-  async issueOAuthPersonToken(user: User, app: string, clientId: string, space: string, scope: string, renewing?: { id: string; at: string }) {
+  async issueOAuthPersonToken(user: User, app: string, clientId: string, space: string, scope: string, renewing?: { id: string; at: string }, spaces?: string[]) {
     const token = `bnp_${randomBytes(32).toString('base64url')}`
     const refresh = `bnr_${randomBytes(32).toString('base64url')}`
     const hash = sha(token)
@@ -543,9 +543,10 @@ export class Auth {
     const id = renewing?.id ?? randomBytes(9).toString('base64url')
     const at = renewing?.at ?? new Date().toISOString()
     const expiresAt = new Date(Date.now() + oauthAccessSeconds * 1000).toISOString()
-    const stored: StoredPersonToken = { id, user, app, space, at, kind: 'mcp', clientId, scope, expiresAt, refreshHash }
+    const several = spaces && spaces.length > 1 ? { spaces } : {}
+    const stored: StoredPersonToken = { id, user, app, space, ...several, at, kind: 'mcp', clientId, scope, expiresAt, refreshHash }
     await this.kv.set(`person-token:${hash}`, JSON.stringify(stored))
-    const kept: StoredRefresh = { id, user, app, space, clientId, scope, accessHash: hash, at, expiresAt: new Date(Date.now() + oauthRefreshSeconds * 1000).toISOString() }
+    const kept: StoredRefresh = { id, user, app, space, ...several, clientId, scope, accessHash: hash, at, expiresAt: new Date(Date.now() + oauthRefreshSeconds * 1000).toISOString() }
     await this.kv.set(`oauth-refresh:${refreshHash}`, JSON.stringify(kept), oauthRefreshSeconds)
     const mine = await this.personTokenList(user.login)
     await this.kv.set(`person-tokens-of:${user.login.toLowerCase()}`, JSON.stringify([...mine, { id, hash, app, at, kind: 'mcp' }]))
@@ -589,7 +590,7 @@ export class Auth {
     await this.kv.del(`person-token:${kept.accessHash}`)
     const mine = await this.personTokenList(kept.user.login)
     await this.kv.set(`person-tokens-of:${kept.user.login.toLowerCase()}`, JSON.stringify(mine.filter((t) => t.id !== kept.id)))
-    const issued = await this.issueOAuthPersonToken(kept.user, kept.app, kept.clientId, kept.space, kept.scope, { id: kept.id, at: kept.at })
+    const issued = await this.issueOAuthPersonToken(kept.user, kept.app, kept.clientId, kept.space, kept.scope, { id: kept.id, at: kept.at }, kept.spaces)
     const renewal: OAuthRenewal = { clientId: kept.clientId, login: kept.user.login, issued }
     await this.kv.set(`oauth-renewed:${hash}`, this.sealer.seal(JSON.stringify(renewal)), oauthRenewGraceSeconds)
     return renewal
@@ -627,7 +628,7 @@ export class Auth {
     await this.kv.set(`person-tokens-of:${stored.user.login.toLowerCase()}`, JSON.stringify(mine.filter((t) => t.id !== stored.id)))
   }
 
-  async personFor(token: string | undefined): Promise<{ user: User; token?: string; space?: string; id: string; kind: 'app' | 'mcp' } | undefined> {
+  async personFor(token: string | undefined): Promise<{ user: User; token?: string; space?: string; spaces?: string[]; id: string; kind: 'app' | 'mcp' } | undefined> {
     if (!token?.startsWith('bnp_')) return undefined
     const raw = await this.kv.get(`person-token:${sha(token)}`)
     if (!raw) return undefined
@@ -639,7 +640,7 @@ export class Auth {
     } catch {
       // Sealed with another secret: the token stands, its GitHub token doesn't.
     }
-    return { user: stored.user, token: githubToken, space: stored.space, id: stored.id, kind: stored.kind ?? 'app' }
+    return { user: stored.user, token: githubToken, space: stored.space, ...(stored.spaces ? { spaces: stored.spaces } : {}), id: stored.id, kind: stored.kind ?? 'app' }
   }
 
   /**
@@ -657,7 +658,7 @@ export class Auth {
       if (stored.expiresAt && Date.parse(stored.expiresAt) <= Date.now()) {
         if (!stored.refreshHash || !(await this.kv.get(`oauth-refresh:${stored.refreshHash}`))) return undefined
       }
-      return { id: t.id, app: t.app, at: t.at, space: stored.space, kind: stored.kind ?? 'app', expiresAt: stored.expiresAt, clientId: stored.clientId }
+      return { id: t.id, app: t.app, at: t.at, space: stored.space, spaces: stored.spaces, kind: stored.kind ?? 'app', expiresAt: stored.expiresAt, clientId: stored.clientId }
     }))
     return live.filter((t) => !!t)
   }
@@ -713,6 +714,8 @@ interface StoredRefresh {
   user: User
   app: string
   space: string
+  /** Every Binder the connection reaches, when it's more than one (space is the first). */
+  spaces?: string[]
   clientId: string
   scope: string
   /** The hash of the access token it was issued with, so revoking it stops that too. */
@@ -728,8 +731,10 @@ interface StoredPersonToken {
   app: string
   /** The GitHub token, encrypted with the hub's secret. */
   token?: string
-  /** The Binder whose GitHub App that token is for. */
+  /** The Binder whose GitHub App that token is for; for an MCP connection, the (first) Binder it reaches. */
   space?: string
+  /** Every Binder an MCP connection reaches, when its person allowed more than one. */
+  spaces?: string[]
   at: string
   /** What it was given to: an app signed in through the browser, or an MCP client signed in through OAuth. */
   kind?: 'app' | 'mcp'

@@ -213,6 +213,10 @@ debrief or Challenge says so: a model it can't reach, a prompt waiting in its ow
 also tells the hub who it is, so a second runner for the same agent hears of the first when it starts, and the
 Agents page says when more than one is running: they'd take the same work.
 
+A binder can name the repos its agents work in, in Settings; each agent then works in all of them, or the ones it's
+limited to among them. Picking a repo searches the hub's own list of what its GitHub App reaches, read in the background
+and kept in Redis, so an organization with tens of thousands of repos is searched as you type.
+
 An agent reaches no more of GitHub than the person who set it up. It takes a card only in a repo its owner can push to,
 as GitHub says with the owner's own sign-in (refused otherwise, with why, and not offered again for a while), and each
 run gets a token of the GitHub App's for that one repo, for an hour, to read and push code and open pull requests
@@ -299,24 +303,29 @@ To try it without a real agent: `cd hub && HUB_URL=http://localhost:5173 BINDERS
 
 An agent's token is for a runner, which has no browser. A person's terminal (Claude Code, Cursor or another MCP client)
 connects as the person instead, through OAuth, so there's no one-time pad to copy and replacing an agent's token doesn't
-break it. In a binder's **Settings → Agents**, copy the MCP address for you (`https://your-hub/<binder>/mcp`), then:
+break it. One address serves every binder:
 
 ```sh
-claude mcp add --transport http binders https://your-hub/<binder>/mcp
+claude mcp add --transport http binders https://your-hub/mcp
 ```
 
-The client opens a browser; sign in with GitHub and allow it. It gets a person token that runs out and renews itself,
-and the connection shows under **Your account → MCP connections**, where it can be stopped. A client that can’t sign in
-with OAuth can be given a person token there too (**Create a token**), to put in its config as a Bearer token; it lasts
-until it’s stopped. Either way the token is for that one binder and for MCP only: another binder needs a connection of
-its own, it stops working if you leave the binder, and it isn’t accepted on `/api`. It can read and write that
-binder's notes, make and comment on cards, assign them, and read change sets, debriefs and Challenges; taking work and
-finishing it stays with agents.
+The client opens a browser; sign in with GitHub, tick the binders it may work in, and allow it. It gets a person token
+that runs out and renews itself, and the connection shows under **Your account → MCP connections**, with its binders,
+where it can be stopped. To change which binders it reaches, connect it again. A binder's own address
+(`https://your-hub/<binder>/mcp`, in its **Settings → Agents**) connects to that binder alone.
+
+Each binder stays apart: every call works in one of them, named by its id from `list_binders`, or found by where the
+card, note or change set it names is; notes don't move between them, cards wait only for cards of their own binder, and
+an agent is given only cards of its own. The connection loses a binder as soon as you leave it, and the token isn't
+accepted on `/api`. A client that can’t sign in with OAuth can be given a person token on the account page (**Create a
+token**), for the binder it's made in, to put in its config as a Bearer token; it lasts until it’s stopped. A
+connection can read and write notes, make and comment on cards, assign them, and read change sets, debriefs and
+Challenges; taking work and finishing it stays with agents.
 
 The hub is the OAuth server for this: MCP clients discover it from a 401, register themselves, and exchange a code with
 PKCE (`/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke`, and the `.well-known` metadata). GitHub is
 only the identity provider, through the hub's OAuth App or a binder's GitHub App. `/mcp` still takes an agent's `bnd_…`
-token for runners; a person's `bnp_…` token is accepted there and at its own `/<binder>/mcp`.
+token for runners; a person's `bnp_…` token is accepted there and at the address of any binder it was allowed.
 
 ## Tests
 

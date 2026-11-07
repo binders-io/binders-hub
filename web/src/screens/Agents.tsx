@@ -1,9 +1,9 @@
-import { useState, type FormEvent } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import { AnimatePresence } from 'motion/react'
 import { Check, ChevronDown, Copy, KeyRound, Play, Plus, RotateCw, SquareTerminal, Trash2 } from 'lucide-react'
 import type { Agent, Provider } from '../data/model'
 import { isListening, isOnline, useStore, runnerPlaces, runnersOf } from '../data/store'
-import { asksOf, usualRules, defaultRunner, runnerShown, toolForProvider, type RunnerSettings } from '../../../shared/work.ts'
+import { agentRepos, asksOf, usualRules, defaultRunner, runnerShown, toolForProvider, type RunnerSettings } from '../../../shared/work.ts'
 import { accessNames, atLeast, restartSince, toolInfo, tools, type Access, type AgentTool } from '../../../shared/agents.ts'
 import { call } from '../data/api'
 import { ToolIcon } from '../components/ToolIcon'
@@ -200,6 +200,8 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
   const [skills, setSkills] = useState(agent?.skills.join(', ') ?? '')
   const runsOn = agent?.runsOn ?? ''
   const [binders, setBinders] = useState<string[]>(agent?.binders ?? [])
+  // What its binders limit it to, when they name their repos: it picks among those.
+  const scope = useMemo(() => agentRepos({ repos: [], binders }, state.binders), [binders, state.binders])
   const [runner, setRunner] = useState<RunnerSettings>(runnerShown(agent))
   const setRun = (fields: Partial<RunnerSettings>) => setRunner((r) => ({ ...r, ...fields }))
   // Who its commits are by: the hub's admins' choice when they fixed one for every agent, else this agent's.
@@ -252,8 +254,8 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
           {!tool.mcp && runner.tool !== 'custom' && <span className="field-hint">{tool.name} doesn’t get Binders’ tools for a run, so the runner hands it each card and note, and reports back what it prints.</span>}
         </fieldset>
         <Field label="Name"><input id="agent-name" autoFocus required value={name} onChange={(e) => setName(e.target.value)} placeholder={`${tool.name} · web`} /></Field>
-        <Field label="Repos it works in" hint="From GitHub as you type, as many as it works in. None: any repo." group htmlFor="agent-repos">
-          <RepoInput id="agent-repos" value={repos} onChange={setRepos} />
+        <Field label="Repos it works in" hint={scope.length ? `Among its binder’s ${scope.length} repo${scope.length === 1 ? '' : 's'} (Settings). None: all of them.` : 'From GitHub as you type, as many as it works in. None: any repo.'} group htmlFor="agent-repos">
+          <RepoInput id="agent-repos" value={repos} within={scope} onChange={setRepos} />
         </Field>
         <Field label="What it can do" hint="Comma separated. The agent can add to this itself.">
           <input id="agent-skills" value={skills} onChange={(e) => setSkills(e.target.value)} placeholder="TypeScript, React, Distill" />

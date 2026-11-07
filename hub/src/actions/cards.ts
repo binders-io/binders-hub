@@ -3,7 +3,7 @@ import type { Change } from '../../../shared/state.ts'
 import { isBlank, titleOf } from '../../../shared/notes.ts'
 import { checkTimeZone, defaultStaleHours, describeCron, parseCron, type Schedule, type ScheduleRun } from '../../../shared/schedule.ts'
 import { parseDiff } from '../../../shared/changeSet.ts'
-import { agentNamed, goesBy, worksIn, type Agent, type Card, type PlanStep, type Stage, type PullRequest } from '../../../shared/work.ts'
+import { agentNamed, goesBy, outsideBinders, worksIn, type Agent, type Card, type PlanStep, type Stage, type PullRequest } from '../../../shared/work.ts'
 import { parsePullRef } from '../github.ts'
 import { Refused, type Actor } from '../hub.ts'
 import { ActionsBase, checkedRunner } from './base.ts'
@@ -419,6 +419,12 @@ export abstract class CardService extends ActionsBase {
       toolModels: existing?.toolModels,
       runnerSeen: existing?.runnerSeen,
       restartAsked: existing?.restartAsked,
+    }
+    // Limited to repos among its binders' own, when they name theirs: only checked when its repos or binders change.
+    const reposChanged = (a: string[], b: string[] = []) => a.length !== b.length || a.some((r, i) => r.toLowerCase() !== b[i]?.toLowerCase())
+    if (reposChanged(agent.repos, existing?.repos) || reposChanged(agent.binders, existing?.binders)) {
+      const why = outsideBinders(agent.repos, agent, this.hub.state.binders)
+      if (why) throw new Refused(why)
     }
     // The hub's admins' choice of who commits, when they made one, is what's kept, whatever the form sent.
     const fixed = this.agentCommits()
