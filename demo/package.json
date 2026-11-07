@@ -12,7 +12,8 @@
     "hub": "node hub.ts",
     "shots": "npm run build --prefix ../web && node shoot.ts",
     "test": "node --test data.test.ts",
-    "typecheck": "../hub/node_modules/.bin/tsc --noEmit -p ."
+    "typecheck": "../hub/node_modules/.bin/tsc --noEmit -p .",
+    "record": "npm run build --prefix ../web && node record.ts"
   },
   "devDependencies": {
     "playwright": "^1.56.0"

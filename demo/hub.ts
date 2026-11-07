@@ -50,13 +50,16 @@ export async function startDemoHub(port: number, webDir = resolve(import.meta.di
   await app.listen({ port, host: '127.0.0.1' })
 
   // The agents show as listening, as they would with their runners on, for as long as this runs.
-  const hub = spaces.get(demoBinder.space)!.hub
+  const space = spaces.get(demoBinder.space)!
+  const hub = space.hub
   for (const agent of demoAgents) hub.touch(agent, 1)
   const listening = setInterval(() => { for (const agent of demoAgents) hub.touch(agent) }, 30_000)
 
   return {
     /** Harbor's hub, for a script that wants changes to land while a page is open. */
     hub,
+    /** The same hub's actions, so a script can drive an agent's turn as its runner would. */
+    actions: space.actions,
     url,
     /** The address to open, signed in or at the sign-in screen, which takes any name. */
     binder: `${url}/${demoBinder.space}/`,

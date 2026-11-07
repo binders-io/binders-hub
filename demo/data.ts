@@ -1,8 +1,9 @@
 import { patchLines, type Challenge, type Debrief, type Finding } from '../shared/changeSet.ts'
 import { runnerVersion, type AgentTool } from '../shared/agents.ts'
 import { briefNoteText, docsFolderName } from '../shared/briefs.ts'
+import type { Schedule } from '../shared/schedule.ts'
 import type { Change } from '../shared/state.ts'
-import type { Activity, Agent, Card, ChangeSet, FileDiff, Proposal, PullRequest, Run } from '../shared/work.ts'
+import type { Activity, Agent, Card, ChangeSet, Chat, FileDiff, FolderRule, Proposal, PullRequest, Run } from '../shared/work.ts'
 
 // Everything the demo hub shows, and all of it invented: Harbor, its people and its repos are the same made-up team the
 // Mac app's demo uses (Binders/App/DemoData.swift in binders-io/app). One piece of work runs through every screen:
@@ -40,6 +41,29 @@ Customers keep asking for a yearly price, and Priya wants it live before the spr
 
 - What happens to the beta customers' 20% discount?
 `
+
+// A note the team settled and locked, with a change an agent has proposed to it: the one place a note can't just be
+// edited, so the proposal is what people review.
+const termsText = `# Renewal terms
+
+What a customer agrees to when they pay for a year.
+
+## Renewals
+
+- An annual plan renews on the same day of the same month, a year later.
+- We email 30 days before it renews, once, and again if the card fails.
+- A failed card gets 14 days of grace before the plan drops to free.
+
+## Cancelling
+
+- Cancel any time from account settings; the plan runs to the end of the year paid for.
+- No refunds part way through a year, except where the law says otherwise.
+`
+
+const termsProposed = termsText.replace(
+  '- A failed card gets 14 days of grace before the plan drops to free.',
+  '- A failed card gets 14 days of grace before the plan drops to free.\n- Grace is counted from the first failed attempt, not the last retry.',
+)
 
 const webBrief = `## What it is
 
@@ -199,6 +223,9 @@ export function demoChanges(now = Date.now()): Change[] {
   const ago = (minutes: number) => new Date(now - minutes * 60_000).toISOString()
   const hours = 60
   const days = 24 * hours
+  // A time of day in this machine's zone, as cron has it: the demo's schedules read as the times a person would pick.
+  const at = (hour: number, minute = 0) => `${minute} ${hour} * * *`
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 
   const agent = (id: string, name: string, provider: Agent['provider'], tool: AgentTool, runsOn: string, owner: string, repos: string[], models: string[], skills: string[]): Agent => ({
     id, name, provider, owner, repos, binders: [], skills, runsOn, createdAt: ago(40 * days), lastSeen: ago(0), models,
@@ -382,6 +409,36 @@ export function demoChanges(now = Date.now()): Change[] {
     id: `p-${c.id}`, binderId: demoBinder.id, noteId: demoIds.note, title: c.title, quote: c.quote!, brief: c.brief, doneWhen: c.doneWhen, size: c.size, by: 'codex', state: 'accepted', cardId: c.id,
   }))
 
+  // The note on a timer, and the folder that distills what's finished in it: the hub working with nobody watching.
+  const schedules: Schedule[] = [
+    {
+      id: 's-plans', noteId: demoIds.note, binderId: demoBinder.id, agentId: 'claude-web', cron: at(9), tz, enabled: true, createdAt: ago(9 * days), createdBy: 'maya',
+      folderId: 'plans', staleHours: 24, lastRun: ago(2 * days), lastCardId: 'card-faq', lastDue: ago(2 * days), lastClaim: 'demo',
+      runs: [{ at: ago(2 * days), by: 'timer', cardId: 'card-faq' }, { at: ago(9 * days), by: 'timer', cardId: 'card-report' }],
+    },
+    {
+      id: 's-briefs', noteId: 'brief-web', binderId: demoBinder.id, agentId: 'claude-web', cron: at(7, 30), tz, enabled: true, createdAt: ago(6 * days), createdBy: 'maya',
+      staleHours: 24, lastRun: ago(2 * days), lastCardId: 'card-toggle', lastDue: ago(2 * days), lastClaim: 'demo',
+      runs: [{ at: ago(2 * days), by: 'timer', cardId: 'card-toggle' }],
+    },
+  ]
+
+  const rules: FolderRule[] = [
+    { id: 'rule-plans', binderId: demoBinder.id, folderId: 'plans', enabled: true, distill: true, agentId: 'codex', quietMinutes: 10, accept: { maxCards: 5, sizes: ['S', 'M'], agents: ['claude-web', 'claude-api'] }, changeSet: 'shared', since: ago(9 * days), createdAt: ago(9 * days), createdBy: 'maya' },
+  ]
+
+  const chats: Chat[] = [
+    {
+      id: `chat-${demoIds.note}-codex`, noteId: demoIds.note, agentId: 'codex',
+      messages: [
+        { at: ago(34), by: 'maya', text: 'The open question on the beta discount: what does the code actually do today?' },
+        { at: ago(33), by: 'codex', text: 'Beta customers get 20% off whatever plan they’re on, and the discount is applied after the interval is chosen, so an annual plan would get it too. Nothing in the terms says annual plans are different.' },
+        { at: ago(31), by: 'maya', text: 'Then keep the discount and drop the two months free for them. Add that to the note.' },
+        { at: ago(30), by: 'codex', text: 'Added under “What we’re doing”: beta customers keep their 20% and don’t also get the two months. The card that was blocked on it can go ahead.' },
+      ],
+    },
+  ]
+
   return [
     { type: 'binder.put', binder: { id: demoBinder.id, name: demoBinder.name, createdBy: 'maya', repo: demoBinder.repo } },
     { type: 'folder.put', folder: { id: 'plans', binderId: demoBinder.id, name: 'Plans' } },
@@ -390,6 +447,9 @@ export function demoChanges(now = Date.now()): Change[] {
     { type: 'folder.put', folder: { id: 'docs-harbor', binderId: demoBinder.id, name: demoBinder.repo, parentId: 'repo-docs' } },
     { type: 'folder.put', folder: { id: 'docs-api', binderId: demoBinder.id, name: api, parentId: 'repo-docs' } },
     { type: 'note.put', note: { id: demoIds.note, title: 'Annual plans', binderId: demoBinder.id, folderId: 'plans', commit: '3e1f9a2', path: 'harbor/plans/annual-plans.md', editedAt: ago(4 * days), editors: ['maya', 'priya'], text: noteText } },
+    { type: 'note.put', note: { id: 'renewal-terms', title: 'Renewal terms', binderId: demoBinder.id, folderId: 'plans', commit: 'b41d7e0', path: 'harbor/plans/renewal-terms.md', editedAt: ago(11 * days), editedBy: 'priya', editors: ['priya', 'maya'], text: termsText } },
+    { type: 'note.lock', id: 'renewal-terms', locked: { by: 'priya', at: ago(11 * days) } },
+    { type: 'noteProposal.put', proposal: { id: 'np-grace', noteId: 'renewal-terms', binderId: demoBinder.id, by: 'claude-api', at: ago(5), why: 'The retry job runs three times over two days, so “14 days” is counted from the last retry in the code. The note should say which.', base: termsText, text: termsProposed, state: 'open', comments: [{ by: 'priya', at: ago(3), text: 'Good catch. Say it plainly and I’ll accept it.' }] } },
     { type: 'note.put', note: { id: 'brief-web', title: 'Brief', binderId: demoBinder.id, folderId: 'docs-web', commit: 'a7c2d10', editedAt: ago(2 * days), editedBy: 'claude-web', editors: ['claude-web', 'maya'], text: briefNoteText(webBrief) } },
     { type: 'note.put', note: { id: 'brief-api', title: 'Brief', binderId: demoBinder.id, folderId: 'docs-api', commit: '5b08e4f', editedAt: ago(5 * days), editedBy: 'claude-api', editors: ['claude-api'], text: briefNoteText(apiBrief) } },
     { type: 'note.put', note: { id: 'brief-harbor', title: 'Brief', binderId: demoBinder.id, folderId: 'docs-harbor', commit: 'e40f2c8', editedAt: ago(8 * days), editedBy: 'codex', editors: ['codex'], text: briefNoteText(harborBrief) } },
@@ -414,5 +474,8 @@ export function demoChanges(now = Date.now()): Change[] {
     { type: 'env.put', environment: { id: 'staging', name: 'Staging', url: 'staging.harbor.example', version: 'v2.41.0', changeSetIds: ['cs-11', 'cs-10'], state: 'healthy', deployedAt: ago(40), needsApproval: false } },
     { type: 'env.put', environment: { id: 'production', name: 'Production', url: 'harbor.example', version: 'v2.40.2', changeSetIds: ['cs-10'], state: 'waiting', deployedAt: ago(2 * days), needsApproval: true } },
     ...[...runs].reverse().map((r): Change => ({ type: 'run.put', run: r })),
+    ...schedules.map((schedule): Change => ({ type: 'schedule.put', schedule })),
+    ...rules.map((rule): Change => ({ type: 'rule.put', rule })),
+    ...chats.flatMap((chat): Change[] => chat.messages.map((message) => ({ type: 'chat.say', id: chat.id, noteId: chat.noteId, agentId: chat.agentId, message }))),
   ]
 }

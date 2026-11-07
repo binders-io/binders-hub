@@ -15,6 +15,28 @@ it('holds together: everything named exists', () => {
   for (const card of s.cards) if (card.noteId) assert.ok(s.notes.some((n) => n.id === card.noteId), `${card.id}'s note`)
   assert.ok(s.cards.some((c) => c.id === demoIds.card))
   assert.ok(s.changeSets.some((c) => c.id === demoIds.set))
+  for (const schedule of s.schedules ?? []) {
+    assert.ok(s.notes.some((n) => n.id === schedule.noteId), `${schedule.id}'s note`)
+    if (schedule.agentId) assert.ok(s.agents.some((a) => a.id === schedule.agentId), `${schedule.id}'s agent`)
+    if (schedule.folderId) assert.ok(s.folders.some((f) => f.id === schedule.folderId), `${schedule.id}'s folder`)
+    if (schedule.lastCardId) assert.ok(s.cards.some((c) => c.id === schedule.lastCardId), `${schedule.id}'s last card`)
+  }
+  for (const rule of s.folderRules ?? []) {
+    assert.ok(s.folders.some((f) => f.id === rule.folderId), `${rule.id}'s folder`)
+    if (rule.agentId) assert.ok(s.agents.some((a) => a.id === rule.agentId), `${rule.id}'s agent`)
+  }
+  for (const chat of s.chats) {
+    assert.ok(s.notes.some((n) => n.id === chat.noteId), `${chat.id}'s note`)
+    assert.ok(s.agents.some((a) => a.id === chat.agentId), `${chat.id}'s agent`)
+    assert.ok(chat.messages.some((m) => m.by === chat.agentId), `${chat.id} has the agent's reply`)
+  }
+  for (const proposal of s.noteProposals ?? []) {
+    const note = s.notes.find((n) => n.id === proposal.noteId)
+    assert.ok(note, `${proposal.id}'s note`)
+    assert.ok(note.locked, `${proposal.id} is on a locked note`)
+    assert.equal(proposal.base, note.text, `${proposal.id} is proposed against the note as it is`)
+    assert.ok(s.agents.some((a) => a.id === proposal.by) || demoPeople.includes(proposal.by), `${proposal.id}'s author`)
+  }
 })
 
 it('is one piece of work: every change set and card comes from the one note', () => {
