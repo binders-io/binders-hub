@@ -19,6 +19,7 @@ import { stateRoutes } from './routes/state.ts'
 import { webRoutes } from './routes/web.ts'
 import { workRoutes } from './routes/work.ts'
 import { brainRoutes } from './routes/brain.ts'
+import { appLinkRoutes } from './routes/appLink.ts'
 import type { BrainSettingsStore } from './brain/settings.ts'
 import type { Role, Space, Spaces } from './spaces.ts'
 
@@ -182,6 +183,7 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
   await machineRoutes(app, context)
   await jiraRoutes(app, context)
   await brainRoutes(app, context)
+  await appLinkRoutes(app, context)
   await oauthRoutes(app, context)
   await webRoutes(app, context)
 

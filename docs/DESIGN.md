@@ -384,6 +384,24 @@ binders. Distill and every other piece of work stay with agents on runners; the 
   them, as with the hub's options. A hosted brain, for people without a hub of their own, would be this same hub run
   for them.
 
+## The hub as an iPhone's brain (phase 1, building)
+
+An iPhone chooses its brain: its Mac, or the hub. With the hub, it sends the very calls it sends a Mac over their link
+(the tools, the binders/* methods, binders/changed back), the same JSON-RPC in the same shapes, over a WebSocket at
+`/api/app/link` signed in with its app token (`hub/src/appLink.ts`). So every screen works with no Mac.
+
+- **Its binders** are every binder of every Binder the person is in, by name, each with an id of its Binder and its own
+  (`team/b1`), so a call always lands in the right one and nothing crosses between them.
+- **What it captures** goes to the person's own Binder: a conversation is kept once as a note there, summed up, and what
+  came of it (Filed in …) and its follow-ups (offered as cards) are kept in that Binder's store for the iPhone to ask.
+  A moment is sorted by the hub's model and done at once: a card, a note, or an answer from the binders.
+- **What the hub can't do yet** (the Manager, agents' sessions on a Mac, Auto) isn't in the features it lists, so the
+  iPhone hides those screens rather than half-work.
+- Times go without fractions of a second, writes the outbox may send twice are done once by their request id, and the
+  notices the iPhone reloads on (tasks, notes, meetings…) follow the logs of the Binders it reaches.
+
+## The knowledge base
+
 A binder's notes are its team's shared knowledge, kept by the agents doing the work as much as by people.
 
 **What every run reads first** (`shared/guide.ts`). Before an agent does anything in a binder, it's given three things. How Binders works, which the hub writes so it always matches this version. The binder's guide: one note the binder points to, up to 4,000 characters of it, since every run pays for them in tokens. And where to look, worked out from the binder as it is now, so it can't go stale. It's read fresh for each run, and a session carrying on only hears it again if it changed. It's only ever the binder's own. A runner adds it to a run's prompt, and to Claude Code's system prompt in a terminal its owner opens; any other agent gets it from `claim_task` or `get_binder_context`, which its tools' instructions tell it to read.

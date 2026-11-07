@@ -7,6 +7,7 @@ import type { KV } from '../kv.ts'
 import { log } from '../logger.ts'
 import { BrainIndex, type Hit, type IndexSource, type SourceKind } from './index.ts'
 import { captureNote, firstWords, withSummary, type Capture } from './captures.ts'
+import type { Summary } from './models.ts'
 import type { BrainSettingsStore } from './settings.ts'
 
 // A Binder's brain: the index of its notes and cards, kept up as they change, what's captured on a phone or Mac put in
@@ -62,6 +63,8 @@ function keyOf(change: Entry['change']): string | undefined {
 export class SpaceBrain {
   readonly id: string
   readonly index: BrainIndex
+  /** The Binder's own store, for what the brain keeps beside its index (what came of a phone's captures and moments). */
+  readonly kv: KV
   private hub: Hub
   private settings: BrainSettingsStore
   private quietMs: number
@@ -84,6 +87,7 @@ export class SpaceBrain {
     this.hub = options.hub
     this.settings = options.settings
     this.index = new BrainIndex(options.kv)
+    this.kv = options.kv
     this.quietMs = options.quietMs ?? 10_000
     this.retryMs = options.retryMs ?? 5 * 60_000
     this.embeds = options.embeds ?? true
@@ -244,7 +248,7 @@ export class SpaceBrain {
     if (!binder) throw new Refused(where.binderId ? `There’s no binder ${where.binderId} here.` : 'This Binder has no binder to put it in.')
     const id = where.sourceId ? `note-cap-${short(`${binder.id}\u0000${where.sourceId}`, 16)}` : `note-cap-${randomUUID().replace(/-/g, '').slice(0, 16)}`
     const already = state.notes.find((n) => n.id === id)
-    if (already) return { note: already, created: false, summarizing: false }
+    if (already) return { note: already, created: false, summarizing: false, written: Promise.resolve(undefined as Summary | undefined) }
     const folderName = (where.folder?.trim() || captureFolders[capture.kind]).replace(/[/\\]+/g, ' ').slice(0, 80)
     const changes: Entry['change'][] = []
     // Its id comes from its name, so two captures arriving at once make one folder; once made, it's found by that id
@@ -262,29 +266,34 @@ export class SpaceBrain {
     changes.push({ type: 'note.put', note })
     await this.hub.recordAll({ kind: 'user', login }, changes)
     const summarizing = this.wantsSummary(capture)
+    // Resolves with the summary once it's written (undefined without one), for whoever wants to say what came of it.
+    let written: Promise<Summary | undefined> = Promise.resolve(undefined)
     if (summarizing) {
       const chosen = capture.title?.trim() ? undefined : title
-      const work = summaryTurns.run(() => this.summarize(id, capture, chosen)).finally(() => this.summaries.delete(work))
+      written = summaryTurns.run(() => this.summarize(id, capture, chosen))
+      const work: Promise<void> = written.then(() => undefined).finally(() => this.summaries.delete(work))
       this.summaries.add(work)
     }
-    return { note: this.hub.state.notes.find((n) => n.id === id) ?? note, created: true, summarizing }
+    return { note: this.hub.state.notes.find((n) => n.id === id) ?? note, created: true, summarizing, written }
   }
 
   /**
    * Sums up a capture's note and puts the summary in it, as the hub, not its person: they didn't write it. A title the
    * hub chose (`chosen`) becomes the summary's, while the note still has it. A note locked meanwhile is left alone.
    */
-  private async summarize(id: string, capture: Capture, chosen?: string) {
+  private async summarize(id: string, capture: Capture, chosen?: string): Promise<Summary | undefined> {
     const model = this.settings.model()
-    if (!model || this.stopped) return
+    if (!model || this.stopped) return undefined
     try {
       const summary = await model.summarize({ kind: capture.kind, text: capture.text, title: capture.title, at: capture.recordedAt })
       const note = this.hub.state.notes.find((n) => n.id === id)
-      if (!note || note.locked) return
+      if (!note || note.locked) return summary
       const retitle = chosen !== undefined && note.title === chosen ? chosen : undefined
       await this.hub.record({ kind: 'hub' }, { type: 'note.edit', id, text: withSummary(note.text, summary, retitle), title: retitle ? summary.title : note.title, by: 'hub', at: new Date().toISOString() })
+      return summary
     } catch (err) {
       log.warn({ binder: this.id, note: id, why: err instanceof Error ? err.message : String(err) }, 'Summing up a capture failed')
+      return undefined
     }
   }
 
@@ -347,7 +356,7 @@ export interface AskResult {
  * Answers a question from the notes and cards of these Binders: the passages that best match it, by their words and,
  * with an embeddings model, by what they mean; then the model's answer, citing them. Without a model, the passages.
  */
-export async function ask(settings: BrainSettingsStore, places: AskPlace[], question: string, options: { most?: number } = {}): Promise<AskResult> {
+export async function ask(settings: BrainSettingsStore, places: AskPlace[], question: string, options: { most?: number; onSources?: (sources: AskSource[]) => void } = {}): Promise<AskResult> {
   const asked = question.trim().slice(0, 2000)
   if (!asked) throw new Refused('Ask a question.')
   const embedder = settings.embedder()
@@ -385,6 +394,7 @@ export async function ask(settings: BrainSettingsStore, places: AskPlace[], ques
     url: place.url(hit.kind, hit.id),
   }))
   const searchedBy = vector ? 'words and meaning' : 'words'
+  options.onSources?.(sources)
   const model = settings.model()
   if (!model || !sources.length) return { sources, searchedBy, ...(model ? { model: model.label } : {}) }
   try {
