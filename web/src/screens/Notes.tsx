@@ -54,6 +54,7 @@ export function Notes({ id }: { id: string }) {
   const { binder, setBinder } = useUI()
   // Notes from the sidebar opens the note you were last on in this binder, else its first.
   const last = lastNote(binder)
+  const phone = usePhone()
   const { askedBinder, noteId, noteBinder } = useHub((state) => pick(state, id, binder, last), sameValues)
   // A note opened from elsewhere (a link, search) takes you into its binder.
   useEffect(() => {
@@ -63,8 +64,9 @@ export function Notes({ id }: { id: string }) {
   useEffect(() => {
     if (!noteId || !noteBinder) return
     rememberNote(noteBinder, noteId)
-    if (!id) window.history.replaceState(null, '', href({ screen: 'notes', id: noteId }))
-  }, [noteId, noteBinder, id])
+    // On a phone Notes opens on the list, whose address it keeps: picking the note it remembers still goes to it.
+    if (!id && !phone) window.history.replaceState(null, '', href({ screen: 'notes', id: noteId }))
+  }, [noteId, noteBinder, id, phone])
   if (!noteId) {
     return (
       <div className="notes empty">
@@ -77,7 +79,7 @@ export function Notes({ id }: { id: string }) {
       </div>
     )
   }
-  return <NoteScreen key="note" noteId={noteId} />
+  return <NoteScreen key="note" noteId={noteId} listFirst={!id} />
 }
 
 /**
@@ -88,7 +90,7 @@ const sameShape = sameFields<Note>('id', 'binderId', 'folderId', 'title')
 
 const isDistill = (title: string) => title.startsWith('Distill “')
 
-function NoteScreen({ noteId }: { noteId: string }) {
+function NoteScreen({ noteId, listFirst }: { noteId: string; listFirst: boolean }) {
   const store = useActions()
   const { openItem } = useUI()
   const note = useHub((state) => state.notes.find((n) => n.id === noteId), sameShape)
@@ -114,7 +116,13 @@ function NoteScreen({ noteId }: { noteId: string }) {
   const [scheduling, setScheduling] = useState(false)
   // On a phone the notes list opens over the note, and goes once a note is picked.
   const phone = usePhone()
-  const [listFor, setListFor] = useState<string>()
+  const [listFor, setListFor] = useState<string | undefined>(phone && listFirst ? noteId : undefined)
+  // Notes from the tab bar is the list; a note picked from it, the note.
+  useEffect(() => {
+    if (phone) setListFor(listFirst ? noteId : undefined)
+    // Only when it goes between the two: the list's button opens and closes it in between.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listFirst, phone])
   const listOpen = phone && listFor !== undefined && listFor === noteId
   const [distiller, setDistiller] = useState('')
   const [side, setSide] = useState<'chat' | 'distill'>(() => {

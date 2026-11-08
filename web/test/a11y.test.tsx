@@ -39,7 +39,7 @@ afterEach(() => {
 })
 
 describe('axe', () => {
-  it.each(['#/home', '#/flow', '#/notes/n1', '#/changes', '#/delivery', '#/agents', '#/settings', '#/account', '#/work/c3'])('finds nothing on %s', async (hash) => {
+  it.each(['#/home', '#/flow', '#/notes/n1', '#/changes', '#/delivery', '#/agents', '#/settings', '#/account', '#/ask', '#/work/c3'])('finds nothing on %s', async (hash) => {
     await open(hash)
     expect(await violations()).toEqual([])
   })
@@ -120,6 +120,27 @@ describe('the palette', () => {
     fireEvent.keyDown(box, { key: 'Enter' })
     await waitFor(() => expect(asked).toEqual(['why did we pick Redis?']))
     expect(window.location.hash).toBe('#/ask')
+  })
+
+  it('answers on the Ask screen with its Markdown shown, its citations in place and its sources one row each', async () => {
+    const stand = vi.mocked(fetch).getMockImplementation()!
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } })
+      const source = (n: number) => ({ n, binder: 'b', binderName: 'Binder', kind: 'note', id: 'n1', title: 'A note', context: 'Plans', text: `Passage ${n} with **bold**.`, url: '#/notes/n1' })
+      if (url === '/api/brain/ask') return json({ answer: { text: '', parts: [{ text: 'It is **decided**', sources: [1] }, { text: ':\n\n- First\n', sources: [2] }] }, sources: [source(1), source(2)], searchedBy: 'words and meaning', model: 'stand-in' })
+      return stand(url, init)
+    }))
+    const box = await opened()
+    fireEvent.change(box, { target: { value: 'what was decided?' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    const heading = await screen.findByRole('heading', { name: 'what was decided?' })
+    const page = heading.closest('.ask-result') as HTMLElement
+    expect(page.querySelector('.ask-answer strong')?.textContent).toBe('decided')
+    expect(page.querySelector('.ask-answer')?.textContent).not.toContain('**')
+    expect(within(page).getAllByRole('button', { name: /^Source / }).map((b) => b.textContent)).toEqual(['1', '2'])
+    expect(page.querySelectorAll('.ask-sources > li').length).toBe(1)
+    expect(page.querySelectorAll('.ask-passage strong').length).toBe(2)
+    expect(await violations()).toEqual([])
   })
 
   it('keeps a title first for words that aren’t a question', async () => {
