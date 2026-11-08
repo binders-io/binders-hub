@@ -51,6 +51,14 @@ describe('axe', () => {
     expect(await violations()).toEqual([])
   })
 
+  it('finds nothing in the Claude Code dialog, which has the command with the hub in it', async () => {
+    await open('#/home')
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Claude Code' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Add the hub to Claude Code' })
+    expect(dialog.querySelector('pre')?.textContent).toBe(`claude mcp add --transport http --scope user binders-hub ${window.location.origin}/mcp`)
+    expect(await violations()).toEqual([])
+  })
+
   it('finds nothing with the GitHub pill up', async () => {
     standInHub(state, { ...me, github: { app, token: false } })
     await open('#/home')

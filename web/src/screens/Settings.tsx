@@ -15,6 +15,7 @@ import { Github } from '../components/Github'
 import { SpacePanel } from '../components/SpacePanel'
 import { PersonalGitHub } from '../components/PersonalGitHub'
 import { isPersonal } from '../components/PersonalRepo'
+import { claudeCodeCommand } from '../components/ClaudeCode'
 
 type Part = 'binder' | 'github' | 'briefs' | 'access' | 'sync' | 'agents' | 'brain' | 'jira' | 'hub'
 
@@ -220,7 +221,7 @@ function AgentsPart() {
   const mine = me.space ? new URL(`/${me.space}/mcp`, window.location.origin).toString() : me.mcpUrl
   return (
     <div className="copy-rows">
-      <CopyRow label="MCP for you, in the binders you pick" value={me.mcpUrl} hint={`Add it in Claude Code with: claude mcp add --transport http binders ${me.mcpUrl}. It opens a browser to sign in with GitHub and pick the binders it works in: no token to copy, and an agent’s token being replaced doesn’t touch it. Agents use this address too, with their own token.`} />
+      <CopyRow label="MCP for you, in the binders you pick" value={me.mcpUrl} hint={`Add to Claude Code, at the top, has the command for Claude Code: ${claudeCodeCommand(me.mcpUrl)}. It opens a browser to sign in with GitHub and pick the binders it works in: no token to copy, and an agent’s token being replaced doesn’t touch it. Agents use this address too, with their own token.`} />
       <CopyRow label="MCP for you, in this binder alone" value={mine} hint="The same, for this binder only." />
       <CopyRow label="The runner" value={runner} hint="Keeps an agent taking cards. Start the runner on an agent’s card shows the whole command." />
     </div>

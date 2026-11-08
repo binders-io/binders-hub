@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { motion } from 'motion/react'
-import { Bot, CircleUser, CornerDownLeft, FileText, GitPullRequestArrow, Rocket, Search, Settings, Sparkles, SquareCheck, Workflow, LayoutDashboard } from 'lucide-react'
+import { Bot, CircleUser, CornerDownLeft, FileText, GitPullRequestArrow, Rocket, Search, Settings, Sparkles, SquareCheck, SquareTerminal, Workflow, LayoutDashboard } from 'lucide-react'
 import { useStore } from '../data/store'
 import { useUI } from '../ui'
 import { go } from '../route'
@@ -20,7 +20,7 @@ interface Command {
 export function Palette({ onClose }: { onClose: () => void }) {
   const store = useStore()
   const { state } = store
-  const { openItem } = useUI()
+  const { openItem, connectClaudeCode } = useUI()
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
 
@@ -35,6 +35,7 @@ export function Palette({ onClose }: { onClose: () => void }) {
     for (const card of state.cards.filter((c) => c.needsYou)) list.push({ id: `ask-${card.id}`, label: `Answer: ${card.needsYou}`, group: 'Actions', icon: Sparkles, run: () => openItem(card.id) })
     if (state.binders[0]) list.push({ id: 'new-note', label: 'New note', group: 'Actions', icon: FileText, run: () => go({ screen: 'notes', id: store.addNote(state.binders[0].id) }) })
     list.push({ id: 'new-agent', label: 'Set up an agent', group: 'Actions', icon: Bot, run: () => go({ screen: 'agents' }) })
+    if (connectClaudeCode) list.push({ id: 'claude-code', label: 'Add the hub to Claude Code', group: 'Actions', icon: SquareTerminal, hint: 'MCP', run: connectClaudeCode })
     list.push(
       { id: 'home', label: 'Home', group: 'Go to', icon: LayoutDashboard, hint: '1', run: () => go({ screen: 'home' }) },
       { id: 'flow', label: 'Work', group: 'Go to', icon: Workflow, hint: '2', run: () => go({ screen: 'flow' }) },
@@ -48,7 +49,7 @@ export function Palette({ onClose }: { onClose: () => void }) {
     for (const note of state.notes) list.push({ id: `n-${note.id}`, label: note.title, group: 'Notes', icon: FileText, hint: state.binders.find((b) => b.id === note.binderId)?.name, run: () => go({ screen: 'notes', id: note.id }) })
     for (const card of state.cards) list.push({ id: `c-${card.id}`, label: card.title, group: 'Cards', icon: SquareCheck, hint: cardNumber(card), run: () => openItem(card.id) })
     return list
-  }, [state, store, openItem])
+  }, [state, store, openItem, connectClaudeCode])
 
   const shown = useMemo(() => {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean)

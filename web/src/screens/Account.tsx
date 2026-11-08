@@ -116,7 +116,7 @@ function McpConnections() {
           ))}
         </ul>
       ) : (
-        <p className="faint">None. A binder’s Settings → Agents has the address to add to Claude Code or another MCP client; it opens a browser to sign in with GitHub.</p>
+        <p className="faint">None. Add to Claude Code, at the top, has the command for Claude Code, and a binder’s Settings → Agents the address for another MCP client. Either opens a browser to sign in.</p>
       )}
       <div className="mcp-create">
         <button className="button" onClick={create} disabled={!here}>Create a token</button>

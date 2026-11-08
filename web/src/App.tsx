@@ -1,6 +1,6 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence } from 'motion/react'
-import { AlertTriangle, Bot, Brain, FileText, LayoutDashboard, GitPullRequestArrow, Menu, Monitor, Moon, Rocket, Search, Settings as SettingsIcon, Sun, Workflow, X } from 'lucide-react'
+import { AlertTriangle, Bot, Brain, FileText, LayoutDashboard, GitPullRequestArrow, Menu, Monitor, Moon, Rocket, Search, Settings as SettingsIcon, SquareTerminal, Sun, Workflow, X } from 'lucide-react'
 import { isOnline, sameValues, useActions, useClock, useHub, type State } from './data/store'
 import { Kbd, PersonAvatar, usePhone } from './components/bits'
 import { Github } from './components/Github'
@@ -17,6 +17,7 @@ import { go, href, useRoute, type Route } from './route'
 import { ContextMenuHost } from './components/ContextMenu'
 import { useModal } from './components/useModal'
 import { SwarmDialog } from './components/SwarmDialog'
+import { ClaudeCodeDialog } from './components/ClaudeCode'
 
 /** The binder you're in, remembered in this browser; one that's gone falls back to the first. */
 function useBinder(ids: string[]) {
@@ -132,13 +133,14 @@ export default function App() {
   usePageTitle(route, signedOut)
   const [binder, setBinder] = useBinder(useMemo(() => binders.map((b) => b.id), [binders]))
   const [splitting, setSplitting] = useState<string>()
+  const [claudeCode, setClaudeCode] = useState(false)
   // An agent going quiet changes the count with nothing else changing.
   useClock()
   const counts = useHub((state) => countsIn(state, binder), sameValues)
   const agents = useMemo(() => allAgents.filter((a) => !a.revoked), [allAgents])
 
   // A card opens full screen, with its whole way from the note to production.
-  const ui = useMemo<UI>(() => ({ openItem: (id: string) => go({ screen: 'work', id }), openPalette: () => setPalette(true), binder, setBinder, splitCard: (id: string) => setSplitting(id) }), [binder, setBinder])
+  const ui = useMemo<UI>(() => ({ openItem: (id: string) => go({ screen: 'work', id }), openPalette: () => setPalette(true), binder, setBinder, splitCard: (id: string) => setSplitting(id), connectClaudeCode: () => setClaudeCode(true) }), [binder, setBinder])
 
   // A new note in the binder you're looking at, opened.
   const newNote = useCallback(() => {
@@ -255,6 +257,7 @@ export default function App() {
             <span className={`live-pill ${connection === 'signed-out' ? 'offline' : connection}`}><i /> {connection === 'live' ? 'Live' : connection === 'connecting' ? 'Connecting' : 'Offline'}</span>
             <button type="button" className="icon-button topbar-search" onClick={() => setPalette(true)} aria-label="Search or run"><Search size={18} /></button>
             <div className="presence">
+              {me && <button type="button" className="cc-button" onClick={() => setClaudeCode(true)} title="The command that adds this hub to Claude Code"><SquareTerminal size={13} /> <span>Add to Claude Code</span></button>}
               {unlinked && <a className="gh-pill" href={href({ screen: 'account' })} aria-label="GitHub not connected" title="This binder’s GitHub App is set up, but you haven’t connected to it: you can’t link repos to agents, approve or merge as yourself until you do."><Github size={13} /> <span>GitHub not connected</span></a>}
               {me && <a className={`me${route.screen === 'account' ? ' on' : ''}${unlinked ? ' unlinked' : ''}`} href={href({ screen: 'account' })} aria-current={route.screen === 'account' ? 'page' : undefined} title={`Your account: signed in as ${me.user.login}${unlinked ? ', not connected to this binder’s GitHub' : me.github.token ? ', connected to this binder’s GitHub' : ''}`} aria-label="Your account"><PersonAvatar id={me.user.login} size={phone ? 34 : 38} /></a>}
             </div>
@@ -296,6 +299,7 @@ export default function App() {
         </nav>
 
         <AnimatePresence>{palette && <Palette key="palette" onClose={() => setPalette(false)} />}</AnimatePresence>
+        <AnimatePresence>{claudeCode && <ClaudeCodeDialog key="claude-code" onClose={() => setClaudeCode(false)} />}</AnimatePresence>
         {splitting && <SwarmDialog key={splitting} cardId={splitting} onClose={() => setSplitting(undefined)} />}
         <Toast />
         <ContextMenuHost />

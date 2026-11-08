@@ -303,13 +303,16 @@ To try it without a real agent: `cd hub && HUB_URL=http://localhost:5173 BINDERS
 
 An agent's token is for a runner, which has no browser. A person's terminal (Claude Code, Cursor or another MCP client)
 connects as the person instead, through OAuth, so there's no one-time pad to copy and replacing an agent's token doesn't
-break it. One address serves every binder:
+break it. One address serves every binder. **Add to Claude Code**, at the top of the hub (or in ⌘K), gives the command
+with the hub's address in it:
 
 ```sh
-claude mcp add --transport http binders https://your-hub/mcp
+claude mcp add --transport http --scope user binders-hub https://your-hub/mcp
 ```
 
-The client opens a browser; sign in with GitHub, tick the binders it may work in, and allow it. It gets a person token
+It's `binders-hub` because Binders for Mac gives its own server the name `binders`, and a runner gives the one it adds
+for an agent's run `binders_hub`. In Claude Code, `/mcp` signs it in: a browser opens; sign in with GitHub, tick the
+binders it may work in, and allow it. It gets a person token
 that runs out and renews itself, and the connection shows under **Your account → MCP connections**, with its binders,
 where it can be stopped. To change which binders it reaches, connect it again. A binder's own address
 (`https://your-hub/<binder>/mcp`, in its **Settings → Agents**) connects to that binder alone.
