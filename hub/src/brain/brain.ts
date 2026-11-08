@@ -9,6 +9,7 @@ import { BrainIndex, type Hit, type IndexSource, type SourceKind } from './index
 import { captureNote, firstWords, withSummary, withTranscript, type Capture } from './captures.ts'
 import { conversation, type Summary, type Turn } from './models.ts'
 import type { BrainSettingsStore } from './settings.ts'
+import type { VectorFiles } from './vectorFiles.ts'
 
 // A Binder's brain: the index of its notes and cards, kept up as they change, what's captured on a phone or Mac put in
 // as notes and summed up, and questions answered from it all. The index is the Binder's own, in its own store; a
@@ -67,6 +68,10 @@ export class SpaceBrain {
   readonly index: BrainIndex
   /** The Binder's own store, for what the brain keeps beside its index (what came of a phone's captures and moments). */
   readonly kv: KV
+  /** Where its vectors are kept for the long term; a personal Binder's passages have none. */
+  readonly files?: VectorFiles
+  /** Until what a rebuilt hub fetches back is here, nothing is sent to the embeddings model. */
+  private ready: Promise<void> = Promise.resolve()
   private hub: Hub
   private settings: BrainSettingsStore
   private quietMs: number
@@ -84,11 +89,12 @@ export class SpaceBrain {
   private stopped = false
   private summaries = new Set<Promise<void>>()
 
-  constructor(options: { id: string; hub: Hub; kv: KV; settings: BrainSettingsStore; quietMs?: number; retryMs?: number; embeds?: boolean }) {
+  constructor(options: { id: string; hub: Hub; kv: KV; settings: BrainSettingsStore; quietMs?: number; retryMs?: number; embeds?: boolean; files?: VectorFiles }) {
     this.id = options.id
     this.hub = options.hub
     this.settings = options.settings
-    this.index = new BrainIndex(options.kv)
+    this.files = options.files
+    this.index = new BrainIndex(options.kv, options.files)
     this.kv = options.kv
     this.quietMs = options.quietMs ?? 10_000
     this.retryMs = options.retryMs ?? 5 * 60_000
@@ -103,8 +109,9 @@ export class SpaceBrain {
     for (const note of this.hub.state.notes) this.due.add(`note:${note.id}`)
     for (const card of this.hub.state.cards) this.due.add(`card:${card.id}`)
     this.hub.on('entries', this.follow)
-    void this.index.keys().then((keys) => {
-      for (const key of keys) {
+    this.ready = this.files ? this.files.start().catch((err: unknown) => log.error({ err, binder: this.id }, 'Couldn’t read the kept embeddings')) : Promise.resolve()
+    void this.ready.then(() => this.index.keys()).then((keys) => {
+      for (const key of [...keys, ...(this.files?.keys() ?? [])]) {
         const cut = key.indexOf(':')
         if (!this.sourceFor(key.slice(0, cut) as SourceKind, key.slice(cut + 1))) this.due.add(key)
       }
@@ -150,6 +157,7 @@ export class SpaceBrain {
   private run(): Promise<void> {
     if (this.working) return this.working
     this.working = (async () => {
+      await this.ready
       const embedder = this.embeds ? this.settings.embedder() : undefined
       const vectorsUp = Date.now() >= this.vectorsDownUntil
       if (embedder && vectorsUp && this.settings.version !== this.seenVersion) {
@@ -167,7 +175,8 @@ export class SpaceBrain {
         const id = key.slice(cut + 1)
         const source = this.sourceFor(kind, id)
         try {
-          if (source) await this.index.put(source, vectorsFailed ? undefined : embed)
+          // With the model down, vectors can still come from their long-term home.
+          if (source) await this.index.put(source, vectorsFailed ? (embed && this.files ? { key: embed.key, embed: () => Promise.reject(new Error('The embeddings model is down.')) } : undefined) : embed)
           else await this.index.remove(kind, id)
         } catch (err) {
           // Its words are indexed; vectors are made when the embeddings model answers again.
@@ -375,12 +384,14 @@ export interface AskResult {
  * with an embeddings model, by what they mean; then the model's answer, citing them. Without a model, the passages.
  */
 /** The passages in these Binders that best match `query`: by its words and, with an embeddings model, by what it means. */
-async function find(settings: BrainSettingsStore, places: AskPlace[], query: string, most: number) {
+async function find(settings: BrainSettingsStore, places: AskPlace[], query: string, most: number, embedWithinMs?: number) {
   const embedder = settings.embedder()
   let vector: Float32Array | undefined
   if (embedder) {
     try {
-      ;[vector] = await embedder.embed([query], 'query')
+      const embedding = embedder.embed([query], 'query').then(([v]) => v)
+      // Searching as someone types can't wait on a slow model: its words are found at once, and it goes on without.
+      vector = embedWithinMs ? await Promise.race([embedding, new Promise<undefined>((done) => { setTimeout(() => done(undefined), embedWithinMs).unref?.() })]) : await embedding
     } catch (err) {
       log.warn({ why: err instanceof Error ? err.message : String(err) }, 'The brain couldn’t embed a question; finding by words')
     }
@@ -413,6 +424,14 @@ async function find(settings: BrainSettingsStore, places: AskPlace[], query: str
   const searchedBy: AskResult['searchedBy'] = vector ? 'words and meaning' : 'words'
   const passages = chosen.map(({ hit, place }) => ({ title: hit.title, text: hit.text, context: `${hit.kind === 'note' ? 'A note' : 'A card'} in ${place.name}${hit.context ? `: ${hit.context}` : ''}` }))
   return { sources, passages, searchedBy }
+}
+
+/** What ⌘K shows as someone types: the passages that match, with no model's answer. */
+export async function search(settings: BrainSettingsStore, places: AskPlace[], query: string) {
+  const asked = query.trim().slice(0, 500)
+  if (!asked) throw new Refused('Search for something.')
+  const { sources, searchedBy } = await find(settings, places, asked, 8, 2500)
+  return { sources, searchedBy }
 }
 
 export async function ask(settings: BrainSettingsStore, places: AskPlace[], question: string, options: { most?: number; onSources?: (sources: AskSource[]) => void } = {}): Promise<AskResult> {

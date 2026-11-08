@@ -131,6 +131,7 @@ export const bodies = {
     clock: z.array(z.object({ file: z.number().min(0), wall: z.number() })).max(20_000).optional(),
   }),
   brainAsk: z.looseObject({ question: text.max(2000), everywhere: flag }),
+  brainSearch: z.looseObject({ query: text.max(500), everywhere: flag }),
   capture: z.looseObject({
     kind: z.enum(['dictation', 'conversation', 'meeting', 'note']), text: text.max(400_000), title: z.string().max(300).nullish().transform((v) => v ?? undefined),
     recordedAt: maybe, durationSeconds: z.number().nonnegative().max(7 * 24 * 3600).optional(), device: z.string().max(120).nullish().transform((v) => v ?? undefined),

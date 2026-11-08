@@ -24,6 +24,8 @@ import { log as hubLog } from './logger.ts'
 import { BrainSettingsStore } from './brain/settings.ts'
 import { BrainMachines } from './brain/machines.ts'
 import { SpaceBrain } from './brain/brain.ts'
+import { VectorFiles, vectorBranch } from './brain/vectorFiles.ts'
+import type { Binder } from '../../shared/notes.ts'
 
 // Everything comes from the environment (see README.md). GitHub is best set up from Settings, which makes a GitHub App
 // and keeps its keys here; the GITHUB_* variables set it up by hand instead, and win where both are set.
@@ -168,22 +170,34 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   poller.start()
   // The brain: this binder's notes and cards indexed in its own store, kept up as they change.
   // A personal binder is its person's alone: its passages aren't sent to an embeddings server the hub's admins chose.
-  const brain = new SpaceBrain({ id, hub, kv: jiraKv, settings: brainSettings, embeds: !info.personal })
+  // Each binder's notes go to its own repo, on a branch of their own.
+  const pushTo = async (binder: Binder) => {
+    if (!binder.repo || binder.notes === false) return undefined
+    // A personal binder pushes with its person's own GitHub, connected through the OAuth App, when it is.
+    const own = info.personal ? await auth.personalToken(info.personal) : undefined
+    if (own) return { url: `${endpoints.webUrl}/${binder.repo}.git`, token: own, branch: binder.notesBranch || 'main', name: binder.repo }
+    const access = await github.gitAccess(binder.repo)
+    if (!access) throw new Error(`The hub can’t reach ${binder.repo}: install the GitHub App on it.`)
+    return { ...access, branch: binder.notesBranch || 'binders-notes', name: binder.repo }
+  }
+  // Its vectors outlive Redis: on the hub's disk, and in the binder's repo beside its notes, on a branch of their own.
+  const files = info.personal ? undefined : new VectorFiles({
+    dir: dir('embeddings'),
+    binders: () => hub.state.binders,
+    binderOf: (kind, item) => (kind === 'note' ? hub.state.notes : hub.state.cards).find((s) => s.id === item)?.binderId,
+    pushTo: async (binder) => {
+      const target = await pushTo(binder)
+      return target && { ...target, branch: vectorBranch }
+    },
+    author: gitAuthor,
+  })
+  const brain = new SpaceBrain({ id, hub, kv: jiraKv, settings: brainSettings, embeds: !info.personal, files })
   brain.start()
   const notesDir = first ? notesRoot : dir('notes')
   const notes = new GitNotesSaver(hub, {
     dir: notesDir,
     remote: first ? env.NOTES_REMOTE : undefined,
-    // Each binder's notes go to its own repo, on a branch of their own.
-    pushTo: async (binder) => {
-      if (!binder.repo || binder.notes === false) return undefined
-      // A personal binder pushes with its person's own GitHub, connected through the OAuth App, when it is.
-      const own = info.personal ? await auth.personalToken(info.personal) : undefined
-      if (own) return { url: `${endpoints.webUrl}/${binder.repo}.git`, token: own, branch: binder.notesBranch || 'main', name: binder.repo }
-      const access = await github.gitAccess(binder.repo)
-      if (!access) throw new Error(`The hub can’t reach ${binder.repo}: install the GitHub App on it.`)
-      return { ...access, branch: binder.notesBranch || 'binders-notes', name: binder.repo }
-    },
+    pushTo,
     timing: () => ({ quietMs: options.get().notesQuietSeconds * 1000, longestMs: options.get().notesLongestMinutes * 60_000 }),
     author: gitAuthor,
   })
@@ -196,6 +210,7 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
     stop: async () => {
       scheduler.stop()
       brain.stop()
+      await files?.stop()
       poller.stop()
       await notes.stop()
       await issues.stop()

@@ -29,6 +29,7 @@ the team already uses. GitHub first, with Jira and Confluence as the next adapte
 |---|---|---|
 | Work items | Issues, sub-issues and their blocked-by links, a Projects field for the column | Jira |
 | Notes | Markdown files in a repo, one commit per batch of edits | Confluence |
+| Embeddings | A file per note or card on a `binders-embeddings` branch of the repo, with no history | |
 | Pull requests, CI, CD | Pull requests, check runs, workflow runs, Deployments and Environments | GitHub stays, for Jira teams too |
 | Change sets | A tracking issue labelled `change-set` that lists its pull requests in merge order | |
 | Agents | The hub's registry, in Redis | |

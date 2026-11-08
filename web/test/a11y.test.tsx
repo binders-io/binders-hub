@@ -83,8 +83,53 @@ describe('the palette', () => {
   const opened = async () => {
     await open('#/home')
     fireEvent.keyDown(window, { key: 'k', metaKey: true })
-    return screen.findByRole('combobox', { name: 'Search notes, cards and actions' })
+    return screen.findByRole('combobox', { name: 'Search or ask your binders' })
   }
+
+  /** A hub whose search finds this passage, and which records what it was asked. */
+  const answering = () => {
+    const stand = vi.mocked(fetch).getMockImplementation()!
+    const asked: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } })
+      if (url === '/api/brain/search') return json({ sources: [{ n: 1, kind: 'note', id: 'n1', title: 'A note', text: '# Heading\n\nWords that mean the same.' }], searchedBy: 'words and meaning' })
+      if (url === '/api/brain/ask') {
+        asked.push((JSON.parse(String(init?.body)) as { question: string }).question)
+        return json({ sources: [], searchedBy: 'words' })
+      }
+      return stand(url, init)
+    }))
+    return asked
+  }
+
+  it('finds passages by what they mean, with their words under the title', async () => {
+    answering()
+    const box = await opened()
+    fireEvent.change(box, { target: { value: 'same meaning' } })
+    const option = await screen.findByRole('option', { name: /Words that mean the same/ })
+    expect(option.textContent).toContain('A note')
+    expect(option.textContent).not.toContain('#')
+    expect(await violations()).toEqual([])
+  })
+
+  it('puts Ask first for a question, and Enter asks it on the Ask screen', async () => {
+    const asked = answering()
+    const box = await opened()
+    fireEvent.change(box, { target: { value: 'why did we pick Redis?' } })
+    expect((await screen.findAllByRole('option'))[0].textContent).toContain('Ask: why did we pick Redis?')
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(asked).toEqual(['why did we pick Redis?']))
+    expect(window.location.hash).toBe('#/ask')
+  })
+
+  it('keeps a title first for words that aren’t a question', async () => {
+    answering()
+    const box = await opened()
+    fireEvent.change(box, { target: { value: 'login' } })
+    const options = await screen.findAllByRole('option')
+    expect(options[0].textContent).toContain('Fix the login')
+    expect(options.some((o) => o.textContent?.includes('Ask: login'))).toBe(true)
+  })
 
   it('says which option is chosen while focus stays in the box', async () => {
     const box = await opened()
@@ -108,11 +153,12 @@ describe('the palette', () => {
     expect(box.getAttribute('aria-expanded')).toBe('true')
   })
 
-  it('says how many it found, and when it found none', async () => {
+  it('says how many it found, and offers to ask when no title matches', async () => {
     const box = await opened()
     fireEvent.change(box, { target: { value: 'nothing like this' } })
-    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Nothing matches “nothing like this”.'))
-    expect(box.hasAttribute('aria-activedescendant')).toBe(false)
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('1 result'))
+    expect(screen.getByRole('option').textContent).toContain('Ask: nothing like this')
+    expect(box.getAttribute('aria-activedescendant')).toBe('palette-option-0')
   })
 
   it('closes on Escape', async () => {
@@ -126,7 +172,7 @@ describe('on a phone', () => {
   it('has search in the top bar, as the sidebar is behind a menu', async () => {
     vi.stubGlobal('matchMedia', (query: string) => ({ matches: query === phoneQuery, media: query, addEventListener() {}, removeEventListener() {} }))
     await open('#/home')
-    fireEvent.click(within(document.querySelector('.topbar') as HTMLElement).getByRole('button', { name: 'Search or run' }))
+    fireEvent.click(within(document.querySelector('.topbar') as HTMLElement).getByRole('button', { name: 'Search or ask' }))
     expect(await screen.findByRole('combobox')).toBeTruthy()
   })
 })

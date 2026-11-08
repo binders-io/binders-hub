@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { Refused } from '../hub.ts'
 import { bodies } from '../schemas.ts'
-import { ask, type AskPlace } from '../brain/brain.ts'
+import { ask, search, type AskPlace } from '../brain/brain.ts'
 import type { BrainSettings } from '../brain/settings.ts'
 import { candidates, isGateway, jobs, offers } from '../brain/autoPick.ts'
 import { runnerVersion } from '../../../shared/agents.ts'
@@ -15,6 +15,8 @@ import type { Context } from './context.ts'
 const captureLimit = { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }
 /** Each question reads every passage of a binder: a person asks a handful a minute. */
 const askLimit = { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }
+/** Searching as someone types in ⌘K: a request each time they pause. */
+const searchLimit = { config: { rateLimit: { max: 240, timeWindow: '1 minute' } } }
 
 export async function brainRoutes(app: FastifyInstance, context: Context) {
   const { spaces, brainSettings, brainMachines, sp, login, isAdmin, act, bodyOf, webUrl, param, options } = context
@@ -101,7 +103,8 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
   app.get('/api/brain', act(async (request) => {
     const view = brainSettings?.view()
     const admin = isAdmin(login(request))
-    const index = request.space?.brain ? await request.space.brain.index.stats() : undefined
+    const space = request.space?.brain
+    const index = space ? { ...await space.index.stats(), ...(space.files ? { kept: space.files.status() } : {}) } : undefined
     // Only admins see where the models are and how they're reached; everyone sees what answers.
     const brain = view && (admin ? view : {
       provider: view.provider, summarize: view.summarize, localOnly: view.localOnly, inUse: view.inUse, embeddingsInUse: view.embeddingsInUse,
@@ -117,17 +120,26 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
     return { brain: await brainSettings.set(bodyOf<Partial<BrainSettings> & Keys>(bodies.brain, request)), admin: true }
   }))
 
-  app.post('/api/brain/ask', askLimit, act(async (request) => {
-    if (!brainSettings) throw new Refused('This hub has no brain.')
-    const body = bodyOf<{ question: string; everywhere?: boolean }>(bodies.brainAsk, request)
-    const who = login(request)
+  const placesFor = (request: Parameters<typeof login>[0], everywhere?: boolean): AskPlace[] => {
     // Every binder they're in: as a member, even for a hub admin, who may open others but didn't ask about them.
-    const ids = body.everywhere ? spaces.forPerson(who, false).map((s) => s.info.id) : [sp(request).id]
-    const places: AskPlace[] = ids.flatMap((id) => {
+    const ids = everywhere ? spaces.forPerson(login(request), false).map((s) => s.info.id) : [sp(request).id]
+    return ids.flatMap((id) => {
       const space = spaces.get(id)
       return space?.brain ? [{ id, name: spaces.info(id)?.name ?? id, brain: space.brain, url: (kind, item) => webUrl(id, kind, item) }] : []
     })
-    return ask(brainSettings, places, body.question)
+  }
+
+  app.post('/api/brain/ask', askLimit, act(async (request) => {
+    if (!brainSettings) throw new Refused('This hub has no brain.')
+    const body = bodyOf<{ question: string; everywhere?: boolean }>(bodies.brainAsk, request)
+    return ask(brainSettings, placesFor(request, body.everywhere), body.question)
+  }))
+
+  // The passages that match, by their words and what they mean, with no model's answer: ⌘K's, as someone types.
+  app.post('/api/brain/search', searchLimit, act(async (request) => {
+    if (!brainSettings) throw new Refused('This hub has no brain.')
+    const body = bodyOf<{ query: string; everywhere?: boolean }>(bodies.brainSearch, request)
+    return search(brainSettings, placesFor(request, body.everywhere), body.query)
   }))
 
   app.post('/api/captures', captureLimit, act(async (request) => {

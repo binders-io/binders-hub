@@ -397,6 +397,8 @@ by what they mean as well as by their words.
 - **Ask.** The **Ask** screen, `POST /api/brain/ask` and the MCP tool `ask` answer a question from the notes and cards of
   a binder, or every binder you're in, numbering the ones the answer rests on. Without a model, they give the passages
   that match best.
+- **Search.** ⌘K finds notes and cards by title at once, and passages by their words and what they mean when typing pauses (`POST /api/brain/search`). Its Ask row takes what you typed to the Ask screen for a cited answer, and comes first when it reads as a question.
+- **Embeddings.** Notes and cards are cut into passages, and each goes to the embeddings model once its edits pause. Redis holds a working copy. The vectors are also written to the hub's disk, one file per note or card (a hash of each passage and its vector, none of its words), and pushed to the `binders-embeddings` branch of the binder's repo, which keeps no history. A binder with no repo, or with saving notes to it turned off, keeps them on the disk alone. A hub with an empty Redis takes vectors from these files before asking the model, and one with an empty disk fetches them back from the repo.
 - **Each binder's own.** A binder's index is kept in its own store, and a question reaches only the binders you're in.
   A personal binder's passages never go to the embeddings server. What a conversation or meeting turns into waits for
   a person, even in a folder whose rule accepts work on its own: words heard in a room are nobody's own.

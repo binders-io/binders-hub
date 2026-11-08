@@ -231,6 +231,8 @@ interface IndexStats {
   sources: number
   passages: number
   withVectors: number
+  /** Where the vectors are kept: its repo, or nothing filled in for the hub's disk alone. None for a personal binder, which has no vectors. */
+  kept?: { to?: string; branch?: string; at?: string; error?: string }
 }
 
 type Field = 'model' | 'baseUrl' | 'embeddingsBaseUrl' | 'embeddingsModel' | 'transcriptionBaseUrl' | 'transcriptionModel' | 'speechBaseUrl' | 'speechModel' | 'speechVoice'
@@ -494,7 +496,7 @@ export function BrainPanel() {
           {' '}{brain.speechInUse ? <>Reading answers out with <b className="mono">{brain.speechInUse}</b>.</> : ''}
           {brain.localOnly ? ' Local AI only: every model is on the hub’s own network.' : ''}
         </p>
-        {index && <p className="option-status num">This binder: {index.sources} note{index.sources === 1 ? '' : 's'} and cards read, in {index.passages} passages{brain.embeddingsInUse ? `, ${index.withVectors} of them found by meaning` : ''}.</p>}
+        {index && <p className="option-status num">This binder: {index.sources} note{index.sources === 1 ? '' : 's'} and cards read, in {index.passages} passages{brain.embeddingsInUse ? `, ${index.withVectors} of them found by meaning` : ''}.{brain.embeddingsInUse && index.kept && <> {index.kept.error ? `The embeddings couldn’t be saved to GitHub: ${index.kept.error}` : index.kept.to ? `The embeddings are saved in ${index.kept.to}, on ${index.kept.branch}, so a rebuilt hub gets them back.` : 'The embeddings are saved on the hub’s disk: give this binder a repo and they’re saved there too.'}</>}</p>}
       </Option>
 
       {admin && <>

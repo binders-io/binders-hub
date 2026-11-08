@@ -133,6 +133,14 @@ describe('the hub’s brain, as apps and terminals reach it', () => {
       assert.equal(answered.body.sources[0].n, 1)
       assert.ok(answered.body.sources.some((s: { kind: string; id: string; url: string }) => s.kind === 'card' && s.id === 'card-1' && s.url === 'http://hub.test/#/work/card-1'))
       assert.ok(set.model.asked[0].titles.includes('Van tyres'))
+      // What ⌘K shows as someone types: the passages, and the model isn't asked.
+      const before = set.model.asked.length
+      const searched = await you('POST', '/api/brain/search', { query: 'garage invoice' })
+      assert.equal(searched.status, 200)
+      assert.equal(searched.body.answer, undefined)
+      assert.equal(searched.body.sources[0].id, 'card-1')
+      assert.equal(set.model.asked.length, before)
+      assert.equal((await you('POST', '/api/brain/search', { query: ' ' })).status, 422)
       set.settings.useForTests(undefined)
       const bare = await you('POST', '/api/brain/ask', { question: 'garage invoice' })
       assert.equal(bare.body.answer, undefined)

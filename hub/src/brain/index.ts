@@ -5,6 +5,8 @@ import type { KV } from '../kv.ts'
 // its own, in its own store, so a search never reaches into another. A passage is found by its words (BM25, always)
 // and, when the hub has an embeddings model, by what it means; the two lists are joined by rank. Everything is held in
 // memory once read, and kept in the store a source at a time, so a note changing rewrites that note's passages alone.
+// The store is a working copy the hub can lose: vectors also go to a VectorStore (files in the binder's repo), which
+// gives them back before the model is asked.
 
 export type SourceKind = 'note' | 'card'
 
@@ -28,6 +30,14 @@ export interface Hit {
   /** Its place among the passages of its source, from 0. */
   part: number
   score: number
+}
+
+/** Where vectors are kept for the long term, each by a hash of what it was made from. */
+export interface VectorStore {
+  has(kind: SourceKind, id: string, embedKey: string): boolean
+  read(kind: SourceKind, id: string, embedKey: string): Promise<Map<string, Float32Array>>
+  write(kind: SourceKind, id: string, embedKey: string, vectors: { hash: string; vector: Float32Array }[]): Promise<void>
+  remove(kind: SourceKind, id: string): Promise<void>
 }
 
 interface Chunk {
@@ -133,11 +143,11 @@ function counted(text: string) {
   return { terms, length: list.length }
 }
 
-function packed(vector: Float32Array) {
+export function packed(vector: Float32Array) {
   return Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength).toString('base64')
 }
 
-function unpacked(text: string) {
+export function unpacked(text: string) {
   const bytes = Buffer.from(text, 'base64')
   const copy = new Uint8Array(bytes.byteLength)
   copy.set(bytes)
@@ -149,8 +159,14 @@ export function embeddingText(title: string, passage: string) {
   return `${title}\n\n${passage}`
 }
 
+/** What a vector is known by among a source's kept vectors: what it was made from. */
+export function vectorHash(title: string, passage: string) {
+  return createHash('sha256').update(embeddingText(title, passage)).digest('base64url').slice(0, 22)
+}
+
 export class BrainIndex {
   private kv: KV
+  private vectors?: VectorStore
   private sources = new Map<string, Stored>()
   /** Each word, and the passages it's in (by slot) with how often. */
   private postings = new Map<string, Map<number, number>>()
@@ -167,8 +183,9 @@ export class BrainIndex {
   /** Sources added or removed since the list of them was last kept. */
   private manifestChanged = false
 
-  constructor(kv: KV) {
+  constructor(kv: KV, vectors?: VectorStore) {
     this.kv = kv
+    this.vectors = vectors
   }
 
   /** Reads what's kept, once. */
@@ -257,13 +274,21 @@ export class BrainIndex {
     const key = sourceKey(source.kind, source.id)
     const hash = hashOf(source)
     const before = this.sources.get(key)
-    if (before && before.hash === hash && (!embed || before.embedKey === embed.key)) return false
+    if (before && before.hash === hash && (!embed || before.embedKey === embed.key)) {
+      // Indexed before its vectors had a long-term home: they get one now.
+      if (embed && !this.vectors?.has(source.kind, source.id, embed.key)) await this.keepVectors(source, embed.key, before.chunks.map((c) => ({ text: c.text, vector: c.vector })))
+      return false
+    }
     const texts = passages(source.text || source.title)
     const reusable = new Map<string, Float32Array>()
     if (before?.embedKey && (!embed || before.embedKey === embed.key)) for (const c of before.chunks) if (c.vector) reusable.set(c.text, c.vector)
     let failure: unknown
     let vectors: (Float32Array | undefined)[] = texts.map((t) => reusable.get(t))
     if (embed) {
+      if (this.vectors && vectors.some((v) => !v)) {
+        const kept = await this.vectors.read(source.kind, source.id, embed.key).catch(() => undefined)
+        if (kept?.size) vectors = vectors.map((v, i) => v ?? kept.get(vectorHash(source.title, texts[i])))
+      }
       const missing = texts.map((_, i) => (vectors[i] ? -1 : i)).filter((i) => i >= 0)
       if (missing.length) {
         try {
@@ -281,13 +306,21 @@ export class BrainIndex {
     this.hold(stored, texts.map((text, i) => ({ text, vector: vectors[i] })))
     if (!before) this.manifestChanged = true
     await this.keep(key, this.sources.get(key)!)
+    if (embed && !failure && complete) await this.keepVectors(source, embed.key, texts.map((text, i) => ({ text, vector: vectors[i] })))
     if (failure) throw failure
     return true
+  }
+
+  /** A source's vectors in their long-term home. Failing leaves them in the store, and they go again when it next changes. */
+  private async keepVectors(source: IndexSource, embedKey: string, chunks: { text: string; vector?: Float32Array }[]) {
+    if (!this.vectors || !chunks.length || chunks.some((c) => !c.vector)) return
+    await this.vectors.write(source.kind, source.id, embedKey, chunks.map((c) => ({ hash: vectorHash(source.title, c.text), vector: c.vector! }))).catch(() => undefined)
   }
 
   /** Forgets a source: the note or card is gone. */
   async remove(kind: SourceKind, id: string) {
     await this.load()
+    await this.vectors?.remove(kind, id).catch(() => undefined)
     const key = sourceKey(kind, id)
     if (!this.sources.has(key)) return
     this.drop(key)

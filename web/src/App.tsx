@@ -1,6 +1,6 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence } from 'motion/react'
-import { AlertTriangle, Bot, Brain, FileText, LayoutDashboard, GitPullRequestArrow, Menu, Monitor, Moon, Rocket, Search, Settings as SettingsIcon, SquareTerminal, Sun, Workflow, X } from 'lucide-react'
+import { AlertTriangle, Bot, FileText, LayoutDashboard, GitPullRequestArrow, Menu, Monitor, Moon, Rocket, Search, Settings as SettingsIcon, SquareTerminal, Sun, Workflow, X } from 'lucide-react'
 import { isOnline, sameValues, useActions, useClock, useHub, type State } from './data/store'
 import { Kbd, PersonAvatar, usePhone } from './components/bits'
 import { Github } from './components/Github'
@@ -40,7 +40,6 @@ const nav: { route: Route; label: string; icon: typeof Workflow; key: string }[]
   { route: { screen: 'delivery' }, label: 'Delivery', icon: Rocket, key: '5' },
   { route: { screen: 'agents' }, label: 'Agents', icon: Bot, key: '6' },
   { route: { screen: 'settings' }, label: 'Settings', icon: SettingsIcon, key: '7' },
-  { route: { screen: 'ask' }, label: 'Ask', icon: Brain, key: '8' },
 ]
 
 /** A phone's tab bar: the screens used most, by a short name. The rest are in the menu. */
@@ -134,13 +133,15 @@ export default function App() {
   const [binder, setBinder] = useBinder(useMemo(() => binders.map((b) => b.id), [binders]))
   const [splitting, setSplitting] = useState<string>()
   const [claudeCode, setClaudeCode] = useState(false)
+  // What ⌘K asked, for Ask to answer: not in the address, so a question stays out of the browser's history.
+  const [asked, setAsked] = useState<{ question: string; at: number }>()
   // An agent going quiet changes the count with nothing else changing.
   useClock()
   const counts = useHub((state) => countsIn(state, binder), sameValues)
   const agents = useMemo(() => allAgents.filter((a) => !a.revoked), [allAgents])
 
   // A card opens full screen, with its whole way from the note to production.
-  const ui = useMemo<UI>(() => ({ openItem: (id: string) => go({ screen: 'work', id }), openPalette: () => setPalette(true), binder, setBinder, splitCard: (id: string) => setSplitting(id), connectClaudeCode: () => setClaudeCode(true) }), [binder, setBinder])
+  const ui = useMemo<UI>(() => ({ openItem: (id: string) => go({ screen: 'work', id }), openPalette: () => setPalette(true), binder, setBinder, splitCard: (id: string) => setSplitting(id), connectClaudeCode: () => setClaudeCode(true), askQuestion: (question: string) => { setAsked({ question, at: Date.now() }); go({ screen: 'ask' }) } }), [binder, setBinder])
 
   // A new note in the binder you're looking at, opened.
   const newNote = useCallback(() => {
@@ -218,7 +219,7 @@ export default function App() {
         <aside ref={sidebar} className="sidebar" aria-label="Sidebar" {...(menuOpen ? { role: 'dialog', 'aria-modal': true, 'aria-label': 'Menu', tabIndex: -1 } : {})} onClick={(e) => { if ((e.target as HTMLElement).closest('a')) setMenu(false) }}>
           <BinderSwitcher binder={binder} onPick={setBinder} />
           <button className="search-button" onClick={() => setPalette(true)}>
-            <Search size={14} /> <span>Search or run</span> <Kbd>⌘K</Kbd>
+            <Search size={14} /> <span>Search or ask</span> <Kbd>⌘K</Kbd>
           </button>
           <nav className="nav" aria-label="Screens">
             {nav.map((n) => {
@@ -255,7 +256,7 @@ export default function App() {
             <button type="button" ref={menuButton} className="icon-button menu-button" onClick={() => setMenu(true)} aria-label="Menu" aria-expanded={menuOpen}><Menu size={19} /></button>
             <Title key={Title} className="topbar-title" ref={heading} tabIndex={-1}>{titles[route.screen]}</Title>
             <span className={`live-pill ${connection === 'signed-out' ? 'offline' : connection}`}><i /> {connection === 'live' ? 'Live' : connection === 'connecting' ? 'Connecting' : 'Offline'}</span>
-            <button type="button" className="icon-button topbar-search" onClick={() => setPalette(true)} aria-label="Search or run"><Search size={18} /></button>
+            <button type="button" className="icon-button topbar-search" onClick={() => setPalette(true)} aria-label="Search or ask"><Search size={18} /></button>
             <div className="presence">
               {me && <button type="button" className="cc-button" onClick={() => setClaudeCode(true)} title="The command that adds this hub to Claude Code"><SquareTerminal size={13} /> <span>Add to Claude Code</span></button>}
               {unlinked && <a className="gh-pill" href={href({ screen: 'account' })} aria-label="GitHub not connected" title="This binder’s GitHub App is set up, but you haven’t connected to it: you can’t link repos to agents, approve or merge as yourself until you do."><Github size={13} /> <span>GitHub not connected</span></a>}
@@ -277,7 +278,7 @@ export default function App() {
                 {route.screen === 'terminal' && <AgentTerminal key={route.id} id={route.id} sid={route.sid} />}
                 {route.screen === 'settings' && <Settings />}
                 {route.screen === 'account' && <Account />}
-                {route.screen === 'ask' && <Ask />}
+                {route.screen === 'ask' && <Ask asked={asked} />}
               </Suspense>
             </ErrorBoundary>
           </div>

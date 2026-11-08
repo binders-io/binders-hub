@@ -34,6 +34,13 @@ export interface PushTarget {
   name: string
 }
 
+/** The environment that lets git reach a target: GitHub's token as a header, never on git's command line. */
+export function pushEnv(target: PushTarget): Record<string, string> {
+  return target.token
+    ? { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `http.${new URL(target.url).origin}/.extraheader`, GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${target.token}`).toString('base64')}` }
+    : {}
+}
+
 export interface PushStatus {
   to?: string
   branch?: string
@@ -119,10 +126,7 @@ export class GitNotesSaver {
   }
 
   private pushRef(ref: string, target: PushTarget) {
-    const extra: Record<string, string> = target.token
-      ? { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `http.${new URL(target.url).origin}/.extraheader`, GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${target.token}`).toString('base64')}` }
-      : {}
-    return this.git({ env: extra }, 'push', '-q', target.url, `${ref}:refs/heads/${target.branch}`)
+    return this.git({ env: pushEnv(target) }, 'push', '-q', target.url, `${ref}:refs/heads/${target.branch}`)
   }
 
   private git(...args: string[]): Promise<{ stdout: string; stderr: string }>

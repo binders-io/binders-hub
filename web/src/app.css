@@ -242,7 +242,9 @@
 .palette-list h4 { margin: 8px 10px 4px; font: 700 10.5px/1 var(--body); letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); }
 .palette-list button { display: flex; align-items: center; gap: 11px; width: 100%; height: 38px; padding: 0 10px; border-radius: 8px; text-align: left; color: var(--muted); font-size: 13.5px; }
 .palette-list button span { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.palette-list button em { font-style: normal; font-size: 12px; color: var(--faint); }
+.palette-list button.with-detail { height: auto; min-height: 38px; padding-block: 7px; }
+.palette-list button small { display: block; margin-top: 2px; font-size: 12px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; }
+.palette-list button em { flex: none; max-width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: normal; font-size: 12px; color: var(--faint); }
 .palette-list button.on { background: var(--fill-2); color: var(--text); }
 .palette-list button.on svg:first-child { color: var(--text); }
 .palette-list .enter { color: var(--faint); }

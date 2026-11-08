@@ -7,6 +7,8 @@ export interface UI {
   openPalette: () => void
   /** Opens the dialog that splits a card for a swarm of agents. */
   splitCard?: (id: string) => void
+  /** Goes to Ask with this question, and asks it. */
+  askQuestion?: (question: string) => void
   /** Opens the dialog with the command that adds the hub to Claude Code. */
   connectClaudeCode?: () => void
   /** The binder the app shows, or 'all'. */

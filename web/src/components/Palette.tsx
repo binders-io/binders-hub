@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { motion } from 'motion/react'
-import { Bot, CircleUser, CornerDownLeft, FileText, GitPullRequestArrow, Rocket, Search, Settings, Sparkles, SquareCheck, SquareTerminal, Workflow, LayoutDashboard } from 'lucide-react'
+import { Bot, Brain, CircleUser, CornerDownLeft, FileText, GitPullRequestArrow, Rocket, Search, Settings, Sparkles, SquareCheck, SquareTerminal, Workflow, LayoutDashboard } from 'lucide-react'
 import { useStore } from '../data/store'
+import { call } from '../data/api'
 import { useUI } from '../ui'
 import { go } from '../route'
 import { cardNumber } from '../../../shared/work.ts'
@@ -13,14 +14,32 @@ interface Command {
   group: string
   icon: typeof Search
   hint?: string
+  /** A line under it: the words of a passage that matched. */
+  detail?: string
   run: () => void
 }
 
-/** ⌘K: every screen, note, change set and card, and the actions that matter right now. */
+interface Passage {
+  kind: 'note' | 'card'
+  id: string
+  title: string
+  context?: string
+  text: string
+}
+
+/** Words that open a question: Enter should ask it, not open the first title that happens to share a word. */
+const questionWords = /^(what|whats|what's|why|how|when|where|who|whose|which|did|does|do|is|are|was|were|can|could|should|would|will|has|have|had)\b/i
+const isQuestion = (text: string) => /\?\s*$/.test(text) || questionWords.test(text)
+
+/**
+ * ⌘K: every screen, note, change set and card, the actions that matter right now, and the passages that match by their
+ * words and what they mean. Its Ask row takes what you typed to Ask for a cited answer.
+ */
 export function Palette({ onClose }: { onClose: () => void }) {
   const store = useStore()
   const { state } = store
-  const { openItem, connectClaudeCode } = useUI()
+  const { openItem, connectClaudeCode, askQuestion } = useUI()
+  const [found, setFound] = useState<Passage[]>([])
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
 
@@ -51,10 +70,41 @@ export function Palette({ onClose }: { onClose: () => void }) {
     return list
   }, [state, store, openItem, connectClaudeCode])
 
+  // The passages come from the hub, when typing pauses. What was found stays until the next answer, so the list holds still.
+  const asked = query.trim()
+  useEffect(() => {
+    if (asked.length < 3) return
+    let current = true
+    const timer = window.setTimeout(() => {
+      void call<{ sources?: Passage[] }>('POST', '/api/brain/search', { query: asked }).then((r) => { if (current) setFound(r.sources ?? []) }, () => { if (current) setFound([]) })
+    }, 250)
+    return () => {
+      current = false
+      window.clearTimeout(timer)
+    }
+  }, [asked])
+
   const shown = useMemo(() => {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean)
-    return commands.filter((c) => words.every((w) => `${c.label} ${c.hint ?? ''} ${c.group}`.toLowerCase().includes(w))).slice(0, 12)
-  }, [commands, query])
+    const matching = commands.filter((c) => words.every((w) => `${c.label} ${c.hint ?? ''} ${c.group}`.toLowerCase().includes(w)))
+    if (!asked) return matching.slice(0, 12)
+    const titles = matching.slice(0, 8)
+    const askRow: Command[] = askQuestion ? [{ id: 'ask', label: `Ask: ${asked}`, group: 'Ask', icon: Brain, run: () => askQuestion(asked) }] : []
+    // A passage of something already listed by its title adds nothing but noise.
+    const listed = new Set(titles.map((c) => c.id))
+    const seen = new Set<string>()
+    const passages: Command[] = asked.length < 3 ? [] : found.flatMap((p) => {
+      const id = p.kind === 'note' ? `n-${p.id}` : `c-${p.id}`
+      if (listed.has(id) || seen.has(id)) return []
+      seen.add(id)
+      return [{
+        id: `p-${id}`, label: p.title, group: 'In your notes and cards', icon: p.kind === 'note' ? FileText : SquareCheck, hint: p.context,
+        detail: p.text.replace(/^#+\s*/gm, '').replace(/\s+/g, ' ').trim().slice(0, 140),
+        run: () => { if (p.kind === 'note') go({ screen: 'notes', id: p.id }); else openItem(p.id) },
+      }]
+    }).slice(0, 6)
+    return isQuestion(asked) || !titles.length ? [...askRow, ...titles, ...passages] : [...titles, ...askRow, ...passages]
+  }, [commands, query, asked, found, askQuestion, openItem])
 
   const run = (command?: Command) => {
     if (!command) return
@@ -81,7 +131,7 @@ export function Palette({ onClose }: { onClose: () => void }) {
         className="palette"
         role="dialog"
         aria-modal="true"
-        aria-label="Search or run a command"
+        aria-label="Search or ask"
         initial={{ opacity: 0, scale: 0.97, y: -8 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.98, y: -4 }}
@@ -93,12 +143,12 @@ export function Palette({ onClose }: { onClose: () => void }) {
             id="palette-query"
             autoFocus
             role="combobox"
-            aria-label="Search notes, cards and actions"
+            aria-label="Search or ask your binders"
             aria-expanded="true"
             aria-controls="palette-list"
             aria-autocomplete="list"
             aria-activedescendant={shown[index] ? `palette-option-${index}` : undefined}
-            placeholder="Search notes, cards and actions…"
+            placeholder="Search or ask your binders…"
             value={query}
             onChange={(event) => { setQuery(event.target.value); setIndex(0) }}
             onKeyDown={(event) => {
@@ -116,9 +166,9 @@ export function Palette({ onClose }: { onClose: () => void }) {
                 const Icon = command.icon
                 return (
                   // Focus stays in the box, which says which this is: Tab has nowhere to go but out.
-                  <button key={command.id} id={`palette-option-${at}`} tabIndex={-1} className={at === index ? 'on' : undefined} role="option" aria-selected={at === index} onMouseEnter={() => setIndex(at)} onClick={() => run(command)}>
+                  <button key={command.id} id={`palette-option-${at}`} tabIndex={-1} className={`${at === index ? 'on' : ''}${command.detail ? ' with-detail' : ''}`.trim() || undefined} role="option" aria-selected={at === index} onMouseEnter={() => setIndex(at)} onClick={() => run(command)}>
                     <Icon size={15} />
-                    <span>{command.label}</span>
+                    <span>{command.label}{command.detail && <small>{command.detail}</small>}</span>
                     {command.hint && <em>{command.hint}</em>}
                     {at === index && <CornerDownLeft size={13} className="enter" />}
                   </button>
