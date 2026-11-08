@@ -362,10 +362,16 @@ by what they mean as well as by their words.
     model, an embeddings model, Parakeet, Canary or the largest whisper, and a speech server's voice, else a Mac's
     own. When a better one appears later, it takes over. A job an admin set, even to off, stays theirs until they hand
     it back.
+  - **Models already downloaded.** The daemon also sees models that nothing serves yet:
+    - Hugging Face's, by the names of its model folders only. It never opens a file there or reads the token.
+    - LM Studio's, from `lms ls`.
+
+    For a job none of your machines serves, Settings offers "Use it". That starts mlx-audio for audio on a Mac (through
+    `uv`, so nothing needs installing), or LM Studio's server. The daemon starts it again whenever it restarts.
   - **Downloads.** For a job none of your machines can do, Settings offers one click to download a model into Ollama on
     a machine that has it. The model is sized to that machine: a chat model by its memory (`gpt-oss:120b` on a
     128 GB Spark), `embeddinggemma`, `lfm3-audio:2b` for writing down and reading out, and `phonon:en` for a Mac's
-    voice. Progress shows as it goes, and the job uses the model once it's there. The daemon only ever pulls a
+    voice. On a Mac with mlx-audio, audio comes from Hugging Face instead: Parakeet v3 and Kokoro. Progress shows as it goes, and the job uses the model once it's there. The daemon only ever pulls a
     model's name through Ollama's own API. A transcript with no times never replaces the iPhone's timed one.
 - **Ask.** The **Ask** screen, `POST /api/brain/ask` and the MCP tool `ask` answer a question from the notes and cards of
   a binder, or every binder you're in, numbering the ones the answer rests on. Without a model, they give the passages

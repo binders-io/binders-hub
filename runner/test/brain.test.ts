@@ -2,7 +2,10 @@ import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { detect, nearby, probe, pull, relay, say, voiceNames } from '../src/brain.ts'
+import { detect, hfCache, isAudio, mlxAudioCommand, nearby, onDisk, probe, pull, relay, repoOf, say, voiceNames } from '../src/brain.ts'
+import { mkdtemp, mkdir as makeDir, writeFile as write } from 'node:fs/promises'
+import { tmpdir as tempDir } from 'node:os'
+import { join as joinPath } from 'node:path'
 import { plistFor, unitFor } from '../src/daemon.ts'
 
 describe('the brain daemon', () => {
@@ -108,6 +111,30 @@ describe('the brain daemon', () => {
     // Only a model's name, and only into an Ollama it found.
     assert.equal((await pull({ id: 'p2', model: 'x; rm -rf ~' }, [ollama!], () => {})).ok, false)
     assert.equal((await pull({ id: 'p3', model: 'qwen3:8b' }, [{ url, kind: 'vllm', models: [] }], () => {})).error, 'this machine has no Ollama to download into')
+  })
+
+  it('finds models downloaded from Hugging Face by their folders’ names alone, and knows how to run mlx-audio here', async () => {
+    assert.equal(repoOf('models--mlx-community--Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit'), 'mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit')
+    assert.equal(repoOf('datasets--someone--speech'), undefined)
+    assert.equal(hfCache({ HF_HOME: '/data/hf' }), '/data/hf/hub')
+    assert.equal(hfCache({ HF_HUB_CACHE: '/cache', HF_HOME: '/data/hf' }), '/cache')
+    const cache = await mkdtemp(joinPath(tempDir(), 'hf-cache-'))
+    await makeDir(joinPath(cache, 'models--mlx-community--Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit'))
+    await makeDir(joinPath(cache, 'models--mlx-community--parakeet-tdt-0.6b-v3'))
+    await write(joinPath(cache, 'version.txt'), '1')
+    const before = process.env.HF_HUB_CACHE
+    process.env.HF_HUB_CACHE = cache
+    try {
+      const names = (await onDisk()).filter((m) => m.source === 'hf').map((m) => m.name).sort()
+      assert.deepEqual(names, ['mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit', 'mlx-community/parakeet-tdt-0.6b-v3'])
+    } finally {
+      if (before === undefined) delete process.env.HF_HUB_CACHE
+      else process.env.HF_HUB_CACHE = before
+    }
+    assert.ok(isAudio('mlx-community/Kokoro-82M-bf16') && isAudio('Qwen/Qwen3-ASR-0.6B') && !isAudio('Qwen/Qwen3-32B'))
+    assert.deepEqual(mlxAudioCommand((c) => (c === 'uvx' ? '/u/.local/bin/uvx' : undefined)), ['/u/.local/bin/uvx', ['--from', 'mlx-audio', 'mlx_audio.server', '--host', '127.0.0.1', '--port', '8939']])
+    assert.deepEqual(mlxAudioCommand((c) => (c === 'mlx_audio.server' ? '/bin/mlx_audio.server' : '/u/uvx'))![0], '/bin/mlx_audio.server')
+    assert.equal(mlxAudioCommand(() => undefined), undefined)
   })
 })
 

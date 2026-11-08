@@ -249,8 +249,8 @@ describe('machines of yours serving the brain’s models', () => {
     const mac = { id: 'm-mac', name: 'studio-mac', addedBy: 'boss', addedAt: '', online: true, platform: 'darwin arm64', facts: { memoryGb: 36 }, servers: ollama() }
     // The Spark's chat model is bigger than what's there: chat has a pick, so it's not offered.
     assert.deepEqual(offers([spark], ['embeddings', 'transcription', 'speech']), [
-      { jobs: ['embeddings'], machine: 'm-spark', model: 'embeddinggemma', size: 'about 620 MB' },
-      { jobs: ['transcription', 'speech'], machine: 'm-spark', model: 'lfm3-audio:2b', size: 'about 2 GB' },
+      { action: 'pull', source: 'ollama', jobs: ['embeddings'], machine: 'm-spark', model: 'embeddinggemma', size: 'about 620 MB' },
+      { action: 'pull', source: 'ollama', jobs: ['transcription', 'speech'], machine: 'm-spark', model: 'lfm3-audio:2b', size: 'about 2 GB' },
     ])
     // Nothing for chat at all: sized to the machine with the most memory.
     const empty = { ...spark, servers: [{ ...ollama()[0], models: ['nomic-embed-text'] }] }
@@ -303,6 +303,50 @@ describe('machines of yours serving the brain’s models', () => {
     } finally {
       stop.abort()
       await new Promise<void>((done) => ollama.close(() => done()))
+      await set.close()
+    }
+  })
+
+  it('offers to serve what’s already downloaded before downloading anything, and on a Mac, audio from Hugging Face', () => {
+    const mac = { id: 'm-mac', name: 'studio-mac', addedBy: 'boss', addedAt: '', online: true, platform: 'darwin arm64', facts: { memoryGb: 64 }, runtimes: ['mlx-audio', 'lmstudio', 'hf'],
+      servers: [{ url: 'http://127.0.0.1:11434/v1', kind: 'ollama', version: '0.40.13', models: ['gemma4:26b'] }],
+      onDisk: [{ name: 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice', source: 'hf' }, { name: 'mlx-community/whisper-large-v3-turbo-asr-fp16', source: 'hf' }, { name: 'nomic-ai/nomic-embed-text-v1.5-GGUF', source: 'lmstudio' }] }
+    assert.deepEqual(offers([mac], ['embeddings', 'transcription', 'speech']), [
+      { action: 'serve', runtime: 'mlx-audio', jobs: ['transcription', 'speech'], machine: 'm-mac', model: 'mlx-community/whisper-large-v3-turbo-asr-fp16', models: { transcription: 'mlx-community/whisper-large-v3-turbo-asr-fp16', speech: 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice' } },
+      { action: 'serve', runtime: 'lmstudio', jobs: ['embeddings'], machine: 'm-mac', model: 'nomic-ai/nomic-embed-text-v1.5-GGUF', models: { embeddings: 'nomic-ai/nomic-embed-text-v1.5-GGUF' } },
+    ])
+    // Nothing on disk for audio: Parakeet and Kokoro from Hugging Face, for mlx-audio.
+    assert.deepEqual(offers([{ ...mac, onDisk: [] }], ['transcription', 'speech']).map((o) => [o.action, o.source, o.model]), [['pull', 'hf', 'mlx-community/parakeet-tdt-0.6b-v3'], ['pull', 'hf', 'mlx-community/Kokoro-82M-bf16']])
+  })
+
+  it('starts a runtime on a machine to serve what’s on it, and uses it once it serves', async () => {
+    const set = await setUp()
+    try {
+      const boss = api(set.url, await signIn(set.url, 'boss'))
+      const { machine, token } = await set.machines.add('boss', 'studio-mac', 'studio-mac')
+      const { WebSocket } = await import('ws')
+      const socket = new WebSocket(`${set.url.replace('http', 'ws')}/api/brain/machine`)
+      const asked: string[] = []
+      const tts = 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice'
+      socket.on('open', () => socket.send(JSON.stringify({ type: 'hello', token, platform: 'darwin arm64', servers: [], runtimes: ['mlx-audio', 'hf'], onDisk: [{ name: tts, source: 'hf' }] })))
+      socket.on('message', (raw) => {
+        const message = JSON.parse(String(raw)) as { type: string; id: string; runtime?: string }
+        if (message.type !== 'serve') return
+        asked.push(message.runtime!)
+        socket.send(JSON.stringify({ type: 'progress', id: message.id, status: 'starting mlx-audio', completed: 0, total: 0 }))
+        socket.send(JSON.stringify({ type: 'servers', servers: [{ url: 'http://127.0.0.1:8939/v1', kind: 'mlx-audio', models: [tts] }] }))
+        socket.send(JSON.stringify({ type: 'reply', id: message.id, ok: true }))
+      })
+      await until(() => set.machines.get(machine.id)?.online === true)
+      const listed = await boss('GET', '/api/brain/machines')
+      const offer = listed.body.offers.find((o: { action: string }) => o.action === 'serve')
+      assert.deepEqual([offer.runtime, offer.models.speech], ['mlx-audio', tts])
+      assert.equal((await boss('POST', `/api/brain/machines/${machine.id}/serve`, { runtime: 'mlx-audio', job: 'speech' })).status, 200)
+      await until(() => set.settings.view().speechInUse === `${tts} on studio-mac`)
+      assert.deepEqual(asked, ['mlx-audio'])
+      assert.equal((await boss('POST', `/api/brain/machines/${machine.id}/serve`, { runtime: 'lmstudio', job: 'chat' })).status, 422, 'only what it can run')
+      socket.close()
+    } finally {
       await set.close()
     }
   })

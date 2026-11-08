@@ -76,13 +76,20 @@ interface Machine {
   downloads?: Download[]
 }
 
-/** A model the hub offers to download, for jobs none of your machines can do. */
+/** What the hub offers for jobs none of your machines serves: a model already there to serve, or one to download. */
 interface Offer {
+  action: 'serve' | 'pull'
   jobs: Job[]
   machine: string
   model: string
-  size: string
+  models?: Partial<Record<Job, string>>
+  size?: string
+  source?: 'ollama' | 'hf'
+  runtime?: 'mlx-audio' | 'lmstudio'
 }
+
+/** A model's name as people know it: without its publisher. */
+const shortName = (model: string) => model.split('/').pop() ?? model
 
 /** How far a download has got, in words: "42% of 20 GB", or what Ollama says it's doing. */
 function progressOf(d: Download) {
@@ -310,15 +317,28 @@ export function BrainPanel() {
     }
     const offer = offered.find((o) => o.jobs.includes(job))
     if (!offer) return null
-    const on = machines.find((m) => m.id === offer.machine)
+    const on = machines.find((m) => m.id === offer.machine)?.name ?? 'your machine'
     const also = offer.jobs.filter((j) => j !== job)
+    const alsoWords = also.length ? ` It also ${also.includes('speech') ? 'reads answers out' : also.includes('transcription') ? 'writes down audio' : also.includes('embeddings') ? 'finds by meaning' : 'answers'}.` : ''
+    if (offer.action === 'serve') {
+      const model = offer.models?.[job] ?? offer.model
+      const serve = async () => {
+        if (await attempt(() => call('POST', `/api/brain/machines/${offer.machine}/serve`, { runtime: offer.runtime, job }))) loadMachines()
+      }
+      return (
+        <div className="model-download">
+          <p className="option-status">{shortName(model)} is already on {on}, with nothing serving it yet.{alsoWords}</p>
+          <button type="button" className="button" onClick={() => void serve()}>Use it, with {offer.runtime === 'mlx-audio' ? 'mlx-audio' : 'LM Studio'}</button>
+        </div>
+      )
+    }
     const pull = async () => {
-      if (await attempt(() => call('POST', `/api/brain/machines/${offer.machine}/pull`, { model: offer.model, job }))) loadMachines()
+      if (await attempt(() => call('POST', `/api/brain/machines/${offer.machine}/pull`, { model: offer.model, job, source: offer.source }))) loadMachines()
     }
     return (
       <div className="model-download">
-        <p className="option-status">None of your machines has a model for this yet.{also.length ? ` This one also ${also.includes('speech') ? 'reads answers out' : also.includes('transcription') ? 'writes down audio' : 'does more'}.` : ''}</p>
-        <button type="button" className="button" onClick={() => void pull()}><DownloadIcon size={13} aria-hidden="true" /> Download {offer.model} on {on?.name ?? 'your machine'} ({offer.size})</button>
+        <p className="option-status">None of your machines has a model for this yet.{alsoWords}</p>
+        <button type="button" className="button" onClick={() => void pull()}><DownloadIcon size={13} aria-hidden="true" /> Download {shortName(offer.model)} on {on}{offer.size ? ` (${offer.size})` : ''}</button>
       </div>
     )
   }

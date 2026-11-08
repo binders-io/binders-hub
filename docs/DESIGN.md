@@ -417,6 +417,9 @@ An iPhone chooses its brain: its Mac, or the hub. With the hub, it sends the ver
   - Each job no admin set is chosen by the hub from the machines linked now (`hub/src/brain/autoPick.ts`), by model
     name: `autoJobs` are the hub's choices, chosen again when a better model appears or their machine is removed;
     `ownJobs` are an admin's, never chosen for them until handed back.
+  - Offers come in order. First, a runtime to start for models already on a machine (`serve`): mlx-audio for Hugging
+    Face audio models on a Mac, or LM Studio's server. The daemon lists Hugging Face's cache by folder name only. Then
+    downloads (`pull`).
   - Downloads: `offers()` picks, for each open job no machine serves, a model and the machine with Ollama to pull it
     on. The daemon pulls through Ollama's `/api/pull` (a checked model name only), sends progress, then what it serves
     now, so the job is chosen with the new model. **Local AI only** refuses any of them that isn't on the hub's own network (loopback,

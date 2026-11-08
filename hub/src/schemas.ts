@@ -120,7 +120,8 @@ export const bodies = {
     machine: z.string().max(40).optional(), embeddingsMachine: z.string().max(40).optional(), transcriptionMachine: z.string().max(40).optional(), speechMachine: z.string().max(40).optional(),
   }),
   machine: z.looseObject({ name: text.max(60) }),
-  pull: z.looseObject({ model: z.string().min(1).max(160), job: z.enum(['chat', 'embeddings', 'transcription', 'speech']) }),
+  pull: z.looseObject({ model: z.string().min(1).max(200), job: z.enum(['chat', 'embeddings', 'transcription', 'speech']), source: z.enum(['ollama', 'hf']).optional() }),
+  serve: z.looseObject({ runtime: z.enum(['mlx-audio', 'lmstudio']), job: z.enum(['chat', 'embeddings', 'transcription', 'speech']) }),
   chooseJobs: z.looseObject({ jobs: z.array(z.enum(['chat', 'embeddings', 'transcription', 'speech'])).min(1).max(4) }),
   speak: z.looseObject({ text: text.max(4000) }),
   audioCapture: z.looseObject({

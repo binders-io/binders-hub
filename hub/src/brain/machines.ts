@@ -36,6 +36,9 @@ export interface MachineInfo {
   seenAt?: string
   /** What it said about itself: its memory, for the size of model to offer it. */
   facts?: { memoryGb?: number }
+  /** Models downloaded on it that nothing serves yet (Hugging Face's, LM Studio's), and what could serve them there. */
+  onDisk?: { name: string; source: string }[]
+  runtimes?: string[]
 }
 
 /** A model being downloaded on a machine, as the hub asked: where it's got to. */
@@ -281,6 +284,8 @@ export class BrainMachines {
     if (typeof message.platform === 'string') machine.platform = message.platform.slice(0, 40)
     if (typeof message.version === 'string') machine.version = message.version.slice(0, 40)
     if (typeof message.host === 'string' && message.host.trim()) machine.host = message.host.trim().slice(0, 120)
+    if (Array.isArray(message.onDisk)) machine.onDisk = (message.onDisk as { name?: unknown; source?: unknown }[]).slice(0, 300).flatMap((m) => (typeof m?.name === 'string' && m.name ? [{ name: m.name.slice(0, 200), source: String(m.source ?? '').slice(0, 20) }] : []))
+    if (Array.isArray(message.runtimes)) machine.runtimes = (message.runtimes as unknown[]).slice(0, 10).map((r) => String(r).slice(0, 20))
     const facts = message.facts as { memoryGb?: unknown } | undefined
     if (facts && typeof facts === 'object') machine.facts = { ...(Number(facts.memoryGb) > 0 ? { memoryGb: Math.min(4096, Math.round(Number(facts.memoryGb))) } : {}) }
     machine.seenAt = new Date().toISOString()
@@ -344,18 +349,20 @@ export class BrainMachines {
    * A model downloaded into Ollama on a machine, for a job: started now, and followed as it goes (list() says where it
    * has got to). Once it's there, the machine says what it serves, and the job is chosen again with it.
    */
-  pull(id: string, model: string, job: string) {
+  pull(id: string, model: string, job: string, source: 'ollama' | 'hf' = 'ollama') {
     const machine = this.get(id)
     if (!machine) throw new Refused('No such machine.')
     if (!machine.online) throw new Refused(`${machine.name} isn’t linked to the hub right now.`)
-    if (!machine.servers?.some((s) => s.kind === 'ollama')) throw new Refused(`${machine.name} has no Ollama to download into.`)
-    if (!/^[a-z0-9][a-z0-9._-]{0,80}(\/[a-z0-9][a-z0-9._-]{0,80})?(:[a-z0-9][a-z0-9._-]{0,60})?$/i.test(model)) throw new Refused('That isn’t a model’s name.')
+    if (source === 'ollama' && !machine.servers?.some((s) => s.kind === 'ollama')) throw new Refused(`${machine.name} has no Ollama to download into.`)
+    if (source === 'hf' && !machine.runtimes?.includes('hf')) throw new Refused(`${machine.name} has nothing to download from Hugging Face with.`)
+    const named = source === 'hf' ? /^[\w.-]{1,96}\/[\w.-]{1,96}$/ : /^[a-z0-9][a-z0-9._-]{0,80}(\/[a-z0-9][a-z0-9._-]{0,80})?(:[a-z0-9][a-z0-9._-]{0,60})?$/i
+    if (!named.test(model)) throw new Refused('That isn’t a model’s name.')
     const already = [...this.downloads.values()].find((d) => d.machine === id && d.model === model && !d.done && !d.error)
     if (already) return already
     const key = randomUUID()
     const download: Download & { machine: string } = { machine: id, model, job, status: 'starting', completed: 0, total: 0, at: new Date().toISOString() }
     this.downloads.set(key, download)
-    void this.ask(id, { type: 'pull', model }, undefined, key, 12 * 3_600_000).then((reply) => {
+    void this.ask(id, { type: 'pull', model, source }, undefined, key, 12 * 3_600_000).then((reply) => {
       download.at = new Date().toISOString()
       if (reply.ok) download.done = true
       else download.error = reply.error ?? 'it stopped'
@@ -364,6 +371,30 @@ export class BrainMachines {
       download.error = err.message
     })
     return download
+  }
+
+  /**
+   * A runtime started on a machine to serve the models already downloaded there: mlx-audio for audio on a Mac, or LM
+   * Studio's server. Followed like a download, as its first start can take minutes.
+   */
+  serve(id: string, runtime: 'mlx-audio' | 'lmstudio', job: string) {
+    const machine = this.get(id)
+    if (!machine) throw new Refused('No such machine.')
+    if (!machine.online) throw new Refused(`${machine.name} isn’t linked to the hub right now.`)
+    if (!machine.runtimes?.includes(runtime)) throw new Refused(`${machine.name} can’t run ${runtime}.`)
+    const key = randomUUID()
+    const label = runtime === 'mlx-audio' ? 'mlx-audio' : 'LM Studio'
+    const task: Download & { machine: string } = { machine: id, model: label, job, status: 'starting', completed: 0, total: 0, at: new Date().toISOString() }
+    this.downloads.set(key, task)
+    void this.ask(id, { type: 'serve', runtime }, undefined, key, 20 * 60_000).then((reply) => {
+      task.at = new Date().toISOString()
+      if (reply.ok) task.done = true
+      else task.error = reply.error ?? 'it didn’t start'
+    }, (err: Error) => {
+      task.at = new Date().toISOString()
+      task.error = err.message
+    })
+    return task
   }
 
   /** The machine's name, for labels. */

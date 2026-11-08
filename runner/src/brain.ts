@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { hostname, tmpdir, totalmem } from 'node:os'
+import { existsSync, readFileSync } from 'node:fs'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { homedir, hostname, tmpdir, totalmem } from 'node:os'
 import { join } from 'node:path'
 import { runnerVersion } from '../../shared/agents.ts'
 
@@ -28,6 +28,138 @@ export interface Server {
 /** What the hub weighs when it offers a model to download here: how much memory this machine has. */
 export function facts() {
   return { memoryGb: Math.round(totalmem() / 1024 ** 3) }
+}
+
+/** A model downloaded on this machine that no server here serves yet: from Hugging Face, or in LM Studio. */
+export interface OnDisk {
+  name: string
+  source: 'hf' | 'lmstudio'
+}
+
+/** Where Hugging Face keeps what it downloads: its hub cache, as its own tools find it. */
+export function hfCache(env: Record<string, string | undefined> = process.env) {
+  return env.HF_HUB_CACHE ?? join(env.HF_HOME ?? join(homedir(), '.cache', 'huggingface'), 'hub')
+}
+
+/** A model's Hugging Face name from its folder in the cache: models--mlx-community--Kokoro-82M-bf16. */
+export function repoOf(folder: string) {
+  if (!folder.startsWith('models--')) return undefined
+  const [org, ...name] = folder.slice('models--'.length).split('--')
+  return org && name.length ? `${org}/${name.join('--')}` : undefined
+}
+
+/** Where a command is: on the PATH, or one of the usual places (uv's, LM Studio's, Homebrew's). */
+export function which(command: string, env: Record<string, string | undefined> = process.env) {
+  const places = [...(env.PATH ?? '').split(':'), join(homedir(), '.local', 'bin'), join(homedir(), '.lmstudio', 'bin'), '/opt/homebrew/bin', '/usr/local/bin']
+  for (const place of places) {
+    if (place && existsSync(join(place, command))) return join(place, command)
+  }
+  return undefined
+}
+
+/**
+ * The models downloaded here: the names of Hugging Face's model folders (only their names: never a file in them, and
+ * never its token), and LM Studio's list.
+ */
+export async function onDisk(): Promise<OnDisk[]> {
+  const found: OnDisk[] = []
+  const folders = await readdir(hfCache()).catch(() => [] as string[])
+  for (const folder of folders) {
+    const repo = repoOf(folder)
+    if (repo) found.push({ name: repo, source: 'hf' })
+  }
+  const lms = which('lms')
+  if (lms) {
+    const { code, out } = await run(lms, ['ls', '--json'], 15_000)
+    if (code === 0) {
+      try {
+        const listed = JSON.parse(out) as { modelKey?: string; path?: string; id?: string }[]
+        for (const m of Array.isArray(listed) ? listed : []) {
+          const name = String(m.modelKey ?? m.id ?? m.path ?? '')
+          if (name) found.push({ name, source: 'lmstudio' })
+        }
+      } catch { /* an LM Studio that says it otherwise: none from it */ }
+    }
+  }
+  return found.slice(0, 300)
+}
+
+/** What can serve models found on disk here: mlx-audio for audio on Apple Silicon (through uv), and LM Studio's server. */
+export function runtimes(): string[] {
+  const out: string[] = []
+  if (process.platform === 'darwin' && process.arch === 'arm64' && (which('mlx_audio.server') || which('uvx') || which('uv'))) out.push('mlx-audio')
+  if (which('lms')) out.push('lmstudio')
+  if (which('hf') || which('uvx') || which('uv')) out.push('hf')
+  return out
+}
+
+/** Where the daemon runs mlx-audio, on this machine only. */
+export const mlxAudioUrl = 'http://127.0.0.1:8939/v1'
+const servingFile = () => join(process.env.BINDERS_HOME ?? join(homedir(), '.binders'), 'brain-serving.json')
+
+/** The command line that runs mlx-audio's server here: its own, or uv's for it. */
+export function mlxAudioCommand(find: (command: string) => string | undefined = which): [string, string[]] | undefined {
+  const own = find('mlx_audio.server')
+  if (own) return [own, ['--host', '127.0.0.1', '--port', '8939']]
+  const uvx = find('uvx')
+  if (uvx) return [uvx, ['--from', 'mlx-audio', 'mlx_audio.server', '--host', '127.0.0.1', '--port', '8939']]
+  const uv = find('uv')
+  if (uv) return [uv, ['tool', 'run', '--from', 'mlx-audio', 'mlx_audio.server', '--host', '127.0.0.1', '--port', '8939']]
+  return undefined
+}
+
+let mlxAudio: ReturnType<typeof spawn> | undefined
+
+/** Whether something answers at an address: any answer at all. */
+async function answers(url: string) {
+  return fetch(url, { signal: AbortSignal.timeout(1500) }).then(() => true, () => false)
+}
+
+/**
+ * A runtime started to serve what's on disk, as the hub asked, and kept: mlx-audio (its first start fetches it through
+ * uv, which takes a few minutes) or LM Studio's server. Started again whenever the daemon starts.
+ */
+export async function startServing(runtime: string, note: (status: string) => void = () => {}): Promise<{ ok: boolean; error?: string }> {
+  if (runtime === 'lmstudio') {
+    const lms = which('lms')
+    if (!lms) return { ok: false, error: 'LM Studio isn’t on this machine' }
+    note('starting LM Studio’s server')
+    const { code } = await run(lms, ['server', 'start'], 120_000)
+    if (code !== 0) return { ok: false, error: 'LM Studio’s server didn’t start' }
+  } else if (runtime === 'mlx-audio') {
+    if (!(await answers(`${mlxAudioUrl}/models`))) {
+      const command = mlxAudioCommand()
+      if (!command || process.platform !== 'darwin') return { ok: false, error: 'mlx-audio needs a Mac with Apple silicon, and uv (or mlx-audio) on it' }
+      note('starting mlx-audio (the first time, uv fetches it: a few minutes)')
+      mlxAudio?.kill()
+      mlxAudio = spawn(command[0], command[1], { stdio: 'ignore' })
+      mlxAudio.on('exit', () => { mlxAudio = undefined })
+      let up = false
+      for (let i = 0; i < 600 && !up; i++) {
+        await sleep(1000)
+        up = await answers(`${mlxAudioUrl}/models`)
+        if (!mlxAudio) break
+      }
+      if (!up) return { ok: false, error: 'mlx-audio didn’t start' }
+    }
+  } else {
+    return { ok: false, error: `${runtime} isn’t something this daemon runs` }
+  }
+  // Kept, so it's started again with the daemon.
+  const kept = new Set(await readFile(servingFile(), 'utf8').then((t) => JSON.parse(t) as string[], () => []))
+  kept.add(runtime)
+  await mkdir(join(servingFile(), '..'), { recursive: true }).catch(() => {})
+  await writeFile(servingFile(), JSON.stringify([...kept]))
+  return { ok: true }
+}
+
+/** The runtimes the hub asked for before, started again. */
+async function startKept(log: (line: string) => void) {
+  const kept = await readFile(servingFile(), 'utf8').then((t) => JSON.parse(t) as string[], () => [])
+  for (const runtime of kept) {
+    const started = await startServing(runtime)
+    if (!started.ok) log(`Couldn’t start ${runtime} again: ${started.error}.`)
+  }
 }
 
 /** Where model servers usually listen on a machine, and what usually listens there. */
@@ -67,6 +199,11 @@ export function nearby(address: string) {
   }
   if (host.includes(':')) return host === '::1' || /^f[cd]/.test(host) || /^fe[89ab]/.test(host)
   return !host.includes('.')
+}
+
+/** A speech or transcription model, by its name: what mlx-audio serves. */
+export function isAudio(name: string) {
+  return /whisper|parakeet|canary|moonshine|voxtral|qwen\d*-asr|kokoro|tts|csm|dia-|orpheus|chatterbox|outetts|spark-tts|vibevoice|sesame/i.test(name)
 }
 
 /** One server, if it answers OpenAI's model list: what it is and which models it has. */
@@ -127,6 +264,10 @@ export async function detect(extra: string[] = [], only = false): Promise<Server
     return true
   })
   const found = (await Promise.all(candidates.map(([u, kind]) => probe(u, kind)))).filter((s): s is Server => Boolean(s))
+  if (!only && (await answers(`${mlxAudioUrl}/models`))) {
+    const audio = (await onDisk()).filter((m) => m.source === 'hf' && isAudio(m.name)).map((m) => m.name)
+    found.push({ url: mlxAudioUrl, kind: 'mlx-audio', models: audio })
+  }
   const spoken = only ? [] : await voices()
   if (spoken.length) found.push({ url: sayServer, kind: 'say', models: spoken })
   return found
@@ -219,6 +360,21 @@ export async function pull(message: { id?: unknown; model?: unknown }, servers: 
   return { type: 'reply', id, ok: true, status: 200 }
 }
 
+/** A Hugging Face model downloaded with its own tool (hf, or through uv), as the hub asked: for mlx-audio to serve. */
+export async function hfDownload(message: { id?: unknown; model?: unknown }, progress: (status: string) => void): Promise<Reply> {
+  const id = String(message.id ?? '')
+  const repo = String(message.model ?? '')
+  if (!/^[\w.-]{1,96}\/[\w.-]{1,96}$/.test(repo)) return { type: 'reply', id, ok: false, error: `${repo} isn’t a Hugging Face model’s name` }
+  const hf = which('hf')
+  const uvx = which('uvx')
+  const command: [string, string[]] | undefined = hf ? [hf, ['download', repo]] : uvx ? [uvx, ['--from', 'huggingface-hub', 'hf', 'download', repo]] : undefined
+  if (!command) return { type: 'reply', id, ok: false, error: 'this machine has neither hf nor uv to download with' }
+  progress('downloading')
+  const ticking = setInterval(() => progress('downloading'), 5000)
+  const { code } = await run(command[0], command[1], 6 * 3_600_000).finally(() => clearInterval(ticking))
+  return code === 0 ? { type: 'reply', id, ok: true, status: 200 } : { type: 'reply', id, ok: false, error: 'the download didn’t finish' }
+}
+
 /** Words read out by one of macOS's voices, as WAV. */
 export async function say(message: { id?: unknown; text?: unknown; voice?: unknown }, servers: Server[]): Promise<Reply> {
   const id = String(message.id ?? '')
@@ -298,6 +454,15 @@ export async function serve(options: { hub: string; token: string; name?: string
   const url = `${options.hub.replace(/\/+$/, '').replace(/^http/, 'ws')}/api/brain/machine`
   let servers = await detect(options.extra, options.only)
   let failures = 0
+  /** The link up now, if one is: for news that comes in between (a runtime started again). */
+  let live: WebSocket | undefined
+  // What the hub asked to be served before, started again beside the link (mlx-audio's first start can take minutes).
+  if (!options.only) {
+    void startKept(log).then(async () => {
+      servers = await detect(options.extra, options.only)
+      if (live?.readyState === WebSocket.OPEN) live.send(JSON.stringify({ type: 'servers', servers, onDisk: await onDisk(), runtimes: runtimes() }))
+    })
+  }
   const describe = () => (servers.length ? servers.map((s) => `${s.kind} at ${s.url} (${s.models.length} ${s.kind === 'say' ? 'voices' : 'models'})`).join(', ') : 'no model servers yet')
   log(`Serving ${describe()}.`)
   while (!options.signal?.aborted) {
@@ -307,7 +472,11 @@ export async function serve(options: { hub: string; token: string; name?: string
       const stop = () => socket.close(1000)
       options.signal?.addEventListener('abort', stop, { once: true })
       socket.addEventListener('open', () => {
-        socket.send(JSON.stringify({ type: 'hello', token: options.token, name: options.name ?? hostname(), host: options.host ?? hostname(), version: runnerVersion, platform: `${process.platform} ${process.arch}`, servers, facts: facts() }))
+        live = socket
+        void (async () => {
+          const disk = options.only ? [] : await onDisk()
+          socket.send(JSON.stringify({ type: 'hello', token: options.token, name: options.name ?? hostname(), host: options.host ?? hostname(), version: runnerVersion, platform: `${process.platform} ${process.arch}`, servers, facts: facts(), onDisk: disk, runtimes: options.only ? [] : runtimes() }))
+        })()
         looking = setInterval(async () => {
           const now = await detect(options.extra, options.only)
           if (JSON.stringify(now) === JSON.stringify(servers)) return
@@ -329,14 +498,30 @@ export async function serve(options: { hub: string; token: string; name?: string
           return
         }
         const send = (value: unknown) => socket.readyState === WebSocket.OPEN && socket.send(JSON.stringify(value))
+        if (message.type === 'serve') {
+          const runtime = String(message.runtime ?? '')
+          log(`Starting ${runtime} to serve what's on disk, as the hub asked.`)
+          const started = await startServing(runtime, (status) => send({ type: 'progress', id: message.id, status, completed: 0, total: 0 }))
+          if (started.ok) {
+            servers = await detect(options.extra, options.only)
+            send({ type: 'servers', servers, onDisk: await onDisk(), runtimes: runtimes() })
+          } else log(`Couldn’t start ${runtime}: ${started.error}.`)
+          send({ type: 'reply', id: message.id, ok: started.ok, ...(started.error ? { error: started.error } : {}) })
+          return
+        }
         if (message.type === 'pull') {
-          log(`Downloading ${String(message.model)} into Ollama, as the hub asked.`)
-          const reply = await pull(message, servers, (status, completed, total) => send({ type: 'progress', id: message.id, status, completed, total }))
+          const fromHf = message.source === 'hf'
+          log(`Downloading ${String(message.model)} ${fromHf ? 'from Hugging Face' : 'into Ollama'}, as the hub asked.`)
+          const reply = fromHf
+            ? await hfDownload(message, (status) => send({ type: 'progress', id: message.id, status, completed: 0, total: 0 }))
+            : await pull(message, servers, (status, completed, total) => send({ type: 'progress', id: message.id, status, completed, total }))
+          // A Hugging Face audio model is served by mlx-audio: started, if it isn't already.
+          if (reply.ok && fromHf) await startServing('mlx-audio')
           log(reply.ok ? `Downloaded ${String(message.model)}.` : `Couldn’t download ${String(message.model)}: ${reply.error}.`)
           // What's served now, the new model with it, before the hub hears it's done.
           if (reply.ok) {
             servers = await detect(options.extra, options.only)
-            send({ type: 'servers', servers })
+            send({ type: 'servers', servers, ...(options.only ? {} : { onDisk: await onDisk(), runtimes: runtimes() }) })
           }
           send(reply)
           return
@@ -345,6 +530,7 @@ export async function serve(options: { hub: string; token: string; name?: string
         if (reply) send(reply)
       })
       socket.addEventListener('close', (event) => {
+        if (live === socket) live = undefined
         clearInterval(looking)
         options.signal?.removeEventListener('abort', stop)
         done({ code: event.code, reason: event.reason })

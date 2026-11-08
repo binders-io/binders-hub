@@ -28,13 +28,19 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
     const machines = admin(request, 'see its machines').list()
     // For each job no machine can do, a model to download, on a machine with Ollama: none while one is downloading.
     const downloading = new Set(machines.flatMap((m) => (m.downloads ?? []).filter((d) => !d.done && !d.error).map((d) => `${m.id} ${d.model}`)))
-    const offered = brainSettings ? offers(machines, brainSettings.openJobs()).filter((o) => !downloading.has(`${o.machine} ${o.model}`)) : []
+    const offered = brainSettings ? offers(machines, brainSettings.openJobs()).filter((o) => !downloading.has(`${o.machine} ${o.action === 'serve' ? (o.runtime === 'mlx-audio' ? 'mlx-audio' : 'LM Studio') : o.model}`)) : []
     return { machines, offers: offered }
   }))
   app.post('/api/brain/machines/:id/pull', act(async (request) => {
     const machines = admin(request, 'download models')
-    const { model, job } = bodyOf<{ model: string; job: string }>(bodies.pull, request)
-    return { download: machines.pull(param(request, 'id'), model, job) }
+    const { model, job, source } = bodyOf<{ model: string; job: string; source?: 'ollama' | 'hf' }>(bodies.pull, request)
+    return { download: machines.pull(param(request, 'id'), model, job, source ?? 'ollama') }
+  }))
+  // A runtime started on a machine, to serve the models already downloaded there.
+  app.post('/api/brain/machines/:id/serve', act(async (request) => {
+    const machines = admin(request, 'serve models')
+    const { runtime, job } = bodyOf<{ runtime: 'mlx-audio' | 'lmstudio'; job: string }>(bodies.serve, request)
+    return { task: machines.serve(param(request, 'id'), runtime, job) }
   }))
   const installLine = (token: string) => `curl -fsSL ${options.publicUrl.replace(/\/+$/, '')}/install | sh -s -- add --token ${token}`
   app.post('/api/brain/machines', act(async (request) => {

@@ -19,7 +19,7 @@ export interface Pick {
 }
 
 const embedding = /embed|(^|[^a-z])bge|(^|[^a-z])e5([^a-z]|$)|(^|[^a-z])gte([^a-z]|$)|minilm|mxbai|arctic-embed|jina-emb|retriev/i
-const transcription = /whisper|parakeet|canary|wav2vec|sensevoice|moonshine/i
+const transcription = /whisper|parakeet|canary|wav2vec|sensevoice|moonshine|voxtral|(^|[^a-z])asr([^a-z]|$)/i
 const speech = /kokoro|(^|[^a-z])tts([^a-z]|$)|piper|orpheus|xtts|melo|parler|chatterbox|outetts|sesame|csm-|zonos|phonon/i
 /** Audio models that both write down and read out: Liquid's LFM audio. */
 const audioBoth = /lfm\d*-audio/i
@@ -102,14 +102,22 @@ export function bestPicks(machines: MachineView[]): Partial<Record<Job, Pick>> {
   return best
 }
 
-/** A model the hub offers to download for a job none of your machines can do. */
+/**
+ * What the hub offers for a job none of your machines serves: a runtime started to serve a model already downloaded on
+ * one ("serve"), or a model downloaded ("pull": into Ollama, or from Hugging Face for mlx-audio).
+ */
 export interface Offer {
-  /** The jobs it would do: an audio model can do two. */
+  action: 'serve' | 'pull'
+  /** The jobs it would do: an audio model, or a runtime serving several models, can do two. */
   jobs: Job[]
   machine: string
+  /** The model, for the first of its jobs; `models` says which for each when they differ. */
   model: string
+  models?: Partial<Record<Job, string>>
   /** Its download, roughly: "about 20 GB". */
-  size: string
+  size?: string
+  source?: 'ollama' | 'hf'
+  runtime?: 'mlx-audio' | 'lmstudio'
 }
 
 /** Chat models by the memory of the machine they'd run on: the biggest that fits well. */
@@ -138,16 +146,42 @@ function atLeast(version: string | undefined, wanted: string) {
  */
 export function offers(machines: MachineView[], open: Job[]): Offer[] {
   const picks = bestPicks(machines)
-  const wanted = open.filter((job) => !picks[job])
+  const out: Offer[] = []
+  let wanted = open.filter((job) => !picks[job])
+  // First, what's already downloaded on a machine and only needs serving: mlx-audio for audio on a Mac, LM Studio for
+  // its own models. One runtime serves every model it can there: one offer, for each job it covers.
+  for (const machine of machines.filter((m) => m.online)) {
+    for (const runtime of ['mlx-audio', 'lmstudio'] as const) {
+      if (!machine.runtimes?.includes(runtime)) continue
+      const models: Partial<Record<Job, string>> = {}
+      for (const job of wanted) {
+        const fits = (machine.onDisk ?? []).filter((m) => (runtime === 'mlx-audio' ? m.source === 'hf' && (job === 'speech' || job === 'transcription') : m.source === 'lmstudio' && (job === 'chat' || job === 'embeddings')) && jobsOf(m.name, '').includes(job))
+        const best = fits.sort((a, b) => scoreOf(job, '', b.name) - scoreOf(job, '', a.name))[0]
+        if (best) models[job] = best.name
+      }
+      const jobs = Object.keys(models) as Job[]
+      if (!jobs.length) continue
+      out.push({ action: 'serve', runtime, jobs, machine: machine.id, model: models[jobs[0]]!, models })
+      wanted = wanted.filter((job) => !jobs.includes(job))
+    }
+  }
   const withOllama = machines.filter((m) => m.online && m.servers?.some((s) => s.kind === 'ollama'))
     .sort((a, b) => (b.facts?.memoryGb ?? 0) - (a.facts?.memoryGb ?? 0))
+  // A Mac that runs mlx-audio gets audio models from Hugging Face: Parakeet, as the Binders app uses, and Kokoro.
+  const audioMac = machines.find((m) => m.online && m.runtimes?.includes('mlx-audio') && m.runtimes.includes('hf'))
+  if (audioMac) {
+    for (const [job, model, size] of [['transcription', 'mlx-community/parakeet-tdt-0.6b-v3', 'about 1.2 GB'], ['speech', 'mlx-community/Kokoro-82M-bf16', 'about 200 MB']] as const) {
+      if (!wanted.includes(job)) continue
+      out.push({ action: 'pull', source: 'hf', jobs: [job], machine: audioMac.id, model, size })
+      wanted = wanted.filter((j) => j !== job)
+    }
+  }
   const biggest = withOllama[0]
-  if (!biggest) return []
-  const out: Offer[] = []
+  if (!biggest) return out
   const add = (job: Job, machine: string, model: string, size: string) => {
-    const same = out.find((o) => o.machine === machine && o.model === model)
+    const same = out.find((o) => o.action === 'pull' && o.machine === machine && o.model === model)
     if (same) same.jobs.push(job)
-    else out.push({ jobs: [job], machine, model, size })
+    else out.push({ action: 'pull', source: 'ollama', jobs: [job], machine, model, size })
   }
   for (const job of wanted) {
     if (job === 'chat') {
