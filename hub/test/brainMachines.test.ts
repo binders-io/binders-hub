@@ -318,10 +318,13 @@ describe('machines of yours serving the brain’s models', () => {
       servers: [{ url: 'say:', kind: 'say', models: ['Karen', 'Samantha'] }, { url: 'http://models.binders/v1', kind: 'binders', models: ['beshkenadze/kitten-tts-g2p', 'mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16', 'mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit', 'mlx-community/Kokoro-82M-bf16'] }] }
     const all = candidates([mac])
     assert.deepEqual(all.speech.map((c) => [c.model || c.voice, c.state]), [
-      ['mlx-community/Kokoro-82M-bf16', 'on-demand'], ['mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit', 'on-demand'], ['mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16', 'on-demand'], ['Samantha', 'voice'],
+      ['mlx-community/Kokoro-82M-bf16', 'on-demand'], ['mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit', 'on-demand'], ['Samantha', 'voice'],
     ])
     assert.equal(all.speech[0].machineName, 'Mac.helfei.com')
     assert.equal(bestPicks([mac]).speech?.model, 'mlx-community/Kokoro-82M-bf16')
+    // Each reads in one voice, always, and says which it has: Qwen's CustomVoice changes voice on every request without.
+    assert.deepEqual(all.speech.map((c) => c.voice), ['af_heart', 'Aiden', 'Samantha'])
+    assert.deepEqual([all.speech[1].voices?.slice(0, 2), all.speech[2].voices], [['Aiden', 'Ryan'], ['Karen', 'Samantha']])
     // Nothing to write down with: Parakeet from Hugging Face, on a Mac with a way to download it.
     assert.deepEqual(offers([mac], ['transcription']).map((o) => [o.action, o.source, o.model]), [['pull', 'hf', 'mlx-community/parakeet-tdt-0.6b-v3']])
   })
@@ -346,7 +349,8 @@ describe('machines of yours serving the brain’s models', () => {
       })
       await until(() => set.machines.get(machine.id)?.online === true)
       assert.equal((await boss('POST', `/api/brain/machines/${machine.id}/serve`, { runtime: 'mlx-audio', job: 'speech' })).status, 200)
-      await until(() => set.settings.view().speechInUse === `${tts} on studio-mac`)
+      // In one voice: Qwen's CustomVoice gets one of its speakers, rather than a different one each time.
+      await until(() => set.settings.view().speechInUse === `${tts}, Aiden on studio-mac`)
       assert.deepEqual(asked, ['mlx-audio'])
       assert.equal((await boss('POST', `/api/brain/machines/${machine.id}/serve`, { runtime: 'lmstudio', job: 'chat' })).status, 422, 'only what it can run')
       socket.close()

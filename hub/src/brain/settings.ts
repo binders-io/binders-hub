@@ -3,7 +3,7 @@ import type { Sealer } from '../secrets.ts'
 import { Refusal } from '../auth.ts'
 import { ClaudeModel, OpenAICompatibleEmbedder, OpenAICompatibleModel, OpenAICompatibleSpeaker, OpenAICompatibleTranscriber, type BrainModel, type Embedder, type Speaker, type Transcriber, type Via } from './models.ts'
 import { sayServer, type BrainMachines, type MachineView } from './machines.ts'
-import { bestPicks, candidates, scoreOf, type Job } from './autoPick.ts'
+import { bestPicks, candidates, defaultVoice, scoreOf, type Job } from './autoPick.ts'
 
 // Which models the hub's brain uses, set by an admin in Settings, under Brain, and kept in the hub's store with its
 // keys sealed. An environment variable set for one fixes it, as with the hub's other options:
@@ -513,7 +513,8 @@ export class BrainSettingsStore {
     const speech = server('speech', 'speech')
     if (typeof speech === 'string') made.speechNeeds = speech
     else if (speech?.base === sayServer && speech.machine && this.machines) made.speaker = this.machines.speaker(speech.machine, now.speechVoice || speech.model)
-    else if (speech) made.speaker = new OpenAICompatibleSpeaker({ baseURL: speech.base, model: speech.model, voice: now.speechVoice || undefined, apiKey: speech.key, via: speech.via })
+    // One voice, always: a model that has several (Qwen's CustomVoice) picks another for each request without one.
+    else if (speech) made.speaker = new OpenAICompatibleSpeaker({ baseURL: speech.base, model: speech.model, voice: now.speechVoice || defaultVoice(speech.model) || undefined, apiKey: speech.key, via: speech.via })
     this.made = made
   }
 

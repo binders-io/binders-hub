@@ -125,6 +125,19 @@ interface Candidate {
   voice?: string
   kind: string
   state: 'running' | 'on-demand' | 'voice'
+  /** For speech: the voices it can read in, when they're known. */
+  voices?: string[]
+}
+
+/** Where each of Qwen's CustomVoice speakers is from: Aiden and Ryan speak English natively. */
+const qwenAccents: Record<string, string> = { Aiden: 'English', Ryan: 'English', Vivian: 'Chinese', Serena: 'Chinese', Uncle_Fu: 'Chinese', Dylan: 'Beijing', Eric: 'Sichuan', Ono_Anna: 'Japanese', Sohee: 'Korean' }
+
+/** A voice as people would name it: Kokoro's af_heart is "Heart (American, female)"; Qwen's Aiden, "Aiden (English)". */
+function voiceLabel(voice: string) {
+  const kokoro = /^([ab])([fm])_([a-z]+)$/.exec(voice)
+  if (kokoro) return `${kokoro[3][0].toUpperCase()}${kokoro[3].slice(1)} (${kokoro[1] === 'a' ? 'American' : 'British'}, ${kokoro[2] === 'f' ? 'female' : 'male'})`
+  if (qwenAccents[voice]) return `${voice.replace('_', ' ')} (${qwenAccents[voice]})`
+  return voice
 }
 
 /** A model's name as people know it: without its publisher. */
@@ -373,6 +386,21 @@ export function BrainPanel() {
     )
   }
 
+  /** The voice answers are read out in, for a model with several: one, always, chosen here. */
+  const voicePicker = () => {
+    const current = (choices.speech ?? []).find((c) => isInUse('speech', c))
+    if (!current?.voices?.length) return null
+    const value = brain.speechVoice || current.voice || current.voices[0]
+    return (
+      <label className="field">
+        <span className="field-label">Voice {note('speechVoice')}</span>
+        <select id="brain-speechVoice" value={value} disabled={off('speechVoice')} onChange={(e) => void save({ speechVoice: e.target.value }, 'speechVoice')}>
+          {(current.voices.includes(value) ? current.voices : [value, ...current.voices]).map((v) => <option key={v} value={v}>{voiceLabel(v)}</option>)}
+        </select>
+      </label>
+    )
+  }
+
   /** Every model on your machines this job can be done with, best first: each with its machine, its state, and Use. */
   const list = (job: Job) => {
     const all = choices[job] ?? []
@@ -513,6 +541,7 @@ export function BrainPanel() {
 
         <Option title="Reading answers out" detail="Optional. A speech model reads the hub’s answers out on phones.">
           {inUse('speech')}
+          {voicePicker()}
           {list('speech')}
           {download('speech')}
           {byAddress('speech')}

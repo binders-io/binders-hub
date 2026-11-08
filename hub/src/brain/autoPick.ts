@@ -24,6 +24,33 @@ const speech = /kokoro|(^|[^a-z])tts([^a-z]|$)|piper|orpheus|xtts|melo|parler|ch
 /** Audio models that both write down and read out: Liquid's LFM audio. */
 const audioBoth = /lfm\d*-audio/i
 const notChat = /rerank|guard|moderation|(^|[^a-z])clip|siglip|ocr|nougat|layout|(^|[^a-z])vae|diffusion|flux|sdxl|(^|[^a-z])sd-|stable-diffusion|image|video|music|latentsync|ace-step/i
+/**
+ * Speech models that need more than words to speak in one voice: Qwen's Base clones a voice from a sample of it, and its
+ * VoiceDesign makes one from a description. Without either, each request comes out in a different voice.
+ */
+const needsSample = /tts.*[-_](base|voice-?design)([-_]|$)/i
+
+/** Kokoro's voices, the most natural first; its name says how each sounds (American or British, female or male). */
+export const kokoroVoices = ['af_heart', 'af_bella', 'af_nicole', 'af_sarah', 'am_michael', 'am_fenrir', 'am_puck', 'am_adam', 'bf_emma', 'bf_isabella', 'bm_george', 'bm_lewis']
+/** The speakers of Qwen's CustomVoice models: Aiden and Ryan speak English natively, the others with their own accents. */
+export const qwenSpeakers = ['Aiden', 'Ryan', 'Vivian', 'Serena', 'Uncle_Fu', 'Dylan', 'Eric', 'Ono_Anna', 'Sohee']
+
+/** The voices a speech model has, when they're known: Kokoro's, Qwen CustomVoice's, or a Mac's own (`voices`). */
+export function voicesOf(model: string, kind: string, voices: string[] = []): string[] | undefined {
+  if (kind === 'say') return voices.length ? voices : undefined
+  if (/kokoro/i.test(`${model} ${kind}`)) return kokoroVoices
+  if (/tts.*custom/i.test(model)) return qwenSpeakers
+  return undefined
+}
+
+/** The voice a speech model reads in when none is chosen: one voice, always, so it doesn't change between sentences. */
+export function defaultVoice(model: string, kind = '') {
+  if (/kokoro/i.test(`${model} ${kind}`)) return 'af_heart'
+  if (/tts.*custom/i.test(model)) return 'Aiden'
+  if (/phonon/i.test(model)) return 'default'
+  return ''
+}
+
 /** Helpers that come with speech models but aren't one: words to sounds, voice activity, codecs. */
 const helper = /g2p|phonemi[sz]|(^|[^a-z])vad([^a-z]|$)|silero|tokenizer|codec/i
 
@@ -91,7 +118,7 @@ export function jobsOf(model: string, kind: string): Job[] {
 /** Which job a model is for, by its name and its server. */
 export function jobOf(model: string, kind: string): Job | undefined {
   if (kind === 'say') return 'speech'
-  if (helper.test(model)) return undefined
+  if (helper.test(model) || needsSample.test(model)) return undefined
   if (kind === 'kokoro' || speech.test(model)) return 'speech'
   if (transcription.test(model)) return 'transcription'
   if (embedding.test(model)) return 'embeddings'
@@ -141,6 +168,8 @@ export interface Candidate extends Pick {
   machineName: string
   kind: string
   state: 'running' | 'on-demand' | 'voice'
+  /** For speech: the voices it can read in, when they're known, for Settings to offer. */
+  voices?: string[]
 }
 
 /** Every model your linked machines can do each job with, best first. */
@@ -155,7 +184,7 @@ export function candidates(machines: MachineView[]): Record<Job, Candidate[]> {
       if (server.url === sayServer) {
         const voice = macVoice(server.models)
         // A Mac's own voices: one row, the voice it'd read in.
-        if (voice) out.speech.push({ ...base, url: sayServer, model: '', voice, score: 1, kind: 'say', state: 'voice' })
+        if (voice) out.speech.push({ ...base, url: sayServer, model: '', voice, voices: server.models.slice(0, 200), score: 1, kind: 'say', state: 'voice' })
         continue
       }
       // Downloaded models (the daemon's, Ollama's, LM Studio's) load when they're used: running only when the daemon says
@@ -169,8 +198,9 @@ export function candidates(machines: MachineView[]): Record<Job, Candidate[]> {
         for (const job of jobsOf(model, server.kind)) {
           const state = runningHere(model) ? 'running' : 'on-demand'
           const score = job === 'chat' ? 1 + chatSize(model, server.kind, machine.facts?.memoryGb) : scoreOf(job, server.url, model)
-          const voice = job === 'speech' ? (/kokoro/i.test(`${model} ${server.kind}`) ? 'af_heart' : /phonon/i.test(model) ? 'default' : '') : undefined
-          out[job].push({ ...base, url: server.url, model, ...(voice !== undefined ? { voice } : {}), score, kind: server.kind, state })
+          const voice = job === 'speech' ? defaultVoice(model, server.kind) : undefined
+          const voices = job === 'speech' ? voicesOf(model, server.kind) : undefined
+          out[job].push({ ...base, url: server.url, model, ...(voice !== undefined ? { voice } : {}), ...(voices ? { voices } : {}), score, kind: server.kind, state })
         }
       }
     }
