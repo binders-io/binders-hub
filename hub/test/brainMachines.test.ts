@@ -16,6 +16,7 @@ import { BrainSettingsStore } from '../src/brain/settings.ts'
 import { BrainMachines } from '../src/brain/machines.ts'
 import { SpaceBrain } from '../src/brain/brain.ts'
 import { BrainUnavailable } from '../src/brain/models.ts'
+import { offers } from '../src/brain/autoPick.ts'
 import { joinMachine, serve } from '../../runner/src/brain.ts'
 import { oneSpace, seed } from './helpers.ts'
 
@@ -241,4 +242,69 @@ describe('machines of yours serving the brain’s models', () => {
       await set.close()
     }
   })
+
+  it('offers a model sized to the machine for each job none can do: one download for two jobs, once', () => {
+    const ollama = (version = '0.40.13') => [{ url: 'http://127.0.0.1:11434/v1', kind: 'ollama', version, models: ['qwen3:8b'] }]
+    const spark = { id: 'm-spark', name: 'spark-1', addedBy: 'boss', addedAt: '', online: true, platform: 'linux arm64', facts: { memoryGb: 128 }, servers: ollama() }
+    const mac = { id: 'm-mac', name: 'studio-mac', addedBy: 'boss', addedAt: '', online: true, platform: 'darwin arm64', facts: { memoryGb: 36 }, servers: ollama() }
+    // The Spark's chat model is bigger than what's there: chat has a pick, so it's not offered.
+    assert.deepEqual(offers([spark], ['embeddings', 'transcription', 'speech']), [
+      { jobs: ['embeddings'], machine: 'm-spark', model: 'embeddinggemma', size: 'about 620 MB' },
+      { jobs: ['transcription', 'speech'], machine: 'm-spark', model: 'lfm3-audio:2b', size: 'about 2 GB' },
+    ])
+    // Nothing for chat at all: sized to the machine with the most memory.
+    const empty = { ...spark, servers: [{ ...ollama()[0], models: ['nomic-embed-text'] }] }
+    assert.equal(offers([empty], ['chat'])[0].model, 'gpt-oss:120b')
+    assert.equal(offers([{ ...empty, facts: { memoryGb: 36 } }], ['chat'])[0].model, 'gpt-oss:20b')
+    // A Mac's own voice, where its Ollama can run it; an older Ollama gets the audio model.
+    assert.deepEqual(offers([spark, mac], ['speech']).map((o) => [o.machine, o.model]), [['m-mac', 'phonon:en']])
+    assert.deepEqual(offers([{ ...mac, servers: ollama('0.40.2') }], ['speech']).map((o) => o.model), ['lfm3-audio:2b'])
+    // No Ollama anywhere: nothing to offer.
+    assert.deepEqual(offers([{ ...spark, servers: [{ url: 'http://127.0.0.1:8000/v1', kind: 'vllm', models: [] }] }], ['embeddings']), [])
+  })
+
+  it('downloads a model it offered into a machine’s Ollama, and uses it once it’s there', async () => {
+    const set = await setUp()
+    const models = ['llama-3.3-70b-instruct']
+    const ollama: Server = createServer((request, response) => {
+      request.resume()
+      request.on('end', () => {
+        response.writeHead(200, { 'content-type': 'application/json' })
+        if (request.url === '/api/version') return response.end(JSON.stringify({ version: '0.40.13' }))
+        if (request.url === '/v1/models') return response.end(JSON.stringify({ data: models.map((id) => ({ id })) }))
+        if (request.url === '/api/pull') {
+          response.write('{"status":"downloading","total":1000,"completed":500}\n')
+          return setTimeout(() => {
+            models.push('embeddinggemma')
+            response.end('{"status":"success"}\n')
+          }, 30)
+        }
+        response.end('{}')
+      })
+    })
+    await new Promise<void>((done) => ollama.listen(0, '127.0.0.1', done))
+    const stop = new AbortController()
+    try {
+      const boss = api(set.url, await signIn(set.url, 'boss'))
+      const { token } = await set.machines.add('boss', 'spark-1', 'spark-1')
+      void serve({ hub: set.url, token, extra: [`http://127.0.0.1:${(ollama.address() as AddressInfo).port}/v1`], only: true, host: 'spark-1', signal: stop.signal, log: () => {} })
+      await until(() => set.settings.get().autoJobs.includes('chat'))
+      const listed = await boss('GET', '/api/brain/machines')
+      const offer = listed.body.offers.find((o: { jobs: string[] }) => o.jobs.includes('embeddings'))
+      assert.deepEqual([offer.model, offer.machine], ['embeddinggemma', listed.body.machines[0].id])
+      assert.equal(listed.body.machines[0].facts.memoryGb > 0, true)
+      const started = await boss('POST', `/api/brain/machines/${offer.machine}/pull`, { model: 'embeddinggemma', job: 'embeddings' })
+      assert.equal(started.status, 200)
+      await until(() => set.settings.view().embeddingsInUse === 'embeddinggemma on spark-1')
+      const after = await boss('GET', '/api/brain/machines')
+      assert.equal(after.body.machines[0].downloads[0].done, true)
+      assert.ok(!after.body.offers.some((o: { jobs: string[] }) => o.jobs.includes('embeddings')), 'no longer offered')
+      assert.equal((await boss('POST', `/api/brain/machines/${offer.machine}/pull`, { model: 'x; rm -rf ~', job: 'chat' })).status, 422)
+    } finally {
+      stop.abort()
+      await new Promise<void>((done) => ollama.close(() => done()))
+      await set.close()
+    }
+  })
 })
+

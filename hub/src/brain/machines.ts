@@ -14,6 +14,8 @@ import { BrainUnavailable, type Speaker } from './models.ts'
 export interface MachineServer {
   /** Its address on the machine, e.g. http://127.0.0.1:11434/v1; "say:" for macOS's voices. */
   url: string
+  /** Ollama's version, when it's Ollama. */
+  version?: string
   /** What it is, as the daemon could tell: ollama, lmstudio, vllm, nim, kokoro, openai (anything else that speaks OpenAI's API), say. */
   kind: string
   /** The models it lists, or the voices, for say. */
@@ -32,10 +34,26 @@ export interface MachineInfo {
   version?: string
   servers?: MachineServer[]
   seenAt?: string
+  /** What it said about itself: its memory, for the size of model to offer it. */
+  facts?: { memoryGb?: number }
+}
+
+/** A model being downloaded on a machine, as the hub asked: where it's got to. */
+export interface Download {
+  model: string
+  /** The job it's for: chat, embeddings, transcription or speech. */
+  job: string
+  status: string
+  completed: number
+  total: number
+  done?: boolean
+  error?: string
+  at: string
 }
 
 export interface MachineView extends MachineInfo {
   online: boolean
+  downloads?: Download[]
 }
 
 interface Kept extends MachineInfo {
@@ -74,7 +92,7 @@ function clean(servers: unknown): MachineServer[] {
     const server = s as Partial<MachineServer>
     const url = String(server.url ?? '').slice(0, 300)
     if (!url) return []
-    return [{ url, kind: String(server.kind ?? 'openai').slice(0, 20), models: Array.isArray(server.models) ? server.models.slice(0, 300).map((m) => String(m).slice(0, 200)) : [] }]
+    return [{ url, kind: String(server.kind ?? 'openai').slice(0, 20), models: Array.isArray(server.models) ? server.models.slice(0, 300).map((m) => String(m).slice(0, 200)) : [], ...(typeof server.version === 'string' && server.version ? { version: server.version.slice(0, 40) } : {}) }]
   })
 }
 
@@ -84,6 +102,8 @@ export class BrainMachines {
   private live = new Map<string, WebSocket>()
   private waiting = new Map<string, Waiting>()
   private listeners: (() => void)[] = []
+  /** Downloads asked for, by the id of the request: where each has got to. Kept a while once done. */
+  private downloads = new Map<string, Download & { machine: string }>()
 
   constructor(kv: KV) {
     this.kv = kv
@@ -118,7 +138,12 @@ export class BrainMachines {
   }
 
   list(): MachineView[] {
-    return this.machines.map(({ tokenHash: _t, ...info }) => ({ ...info, online: this.live.has(info.id) }))
+    const recent = Date.now() - 10 * 60_000
+    for (const [key, download] of this.downloads) if ((download.done || download.error) && Date.parse(download.at) < recent) this.downloads.delete(key)
+    return this.machines.map(({ tokenHash: _t, ...info }) => {
+      const downloads = [...this.downloads.values()].filter((d) => d.machine === info.id).map(({ machine: _m, ...d }) => d)
+      return { ...info, online: this.live.has(info.id), ...(downloads.length ? { downloads } : {}) }
+    })
   }
 
   get(id: string): MachineView | undefined {
@@ -220,6 +245,15 @@ export class BrainMachines {
         return
       }
       if (message.type === 'servers') return void (await this.heard(id, message))
+      if (message.type === 'progress') {
+        const download = this.downloads.get(String(message.id ?? ''))
+        if (!download) return
+        download.status = String(message.status ?? '').slice(0, 80)
+        download.completed = Number(message.completed) || 0
+        download.total = Number(message.total) || 0
+        download.at = new Date().toISOString()
+        return
+      }
       if (message.type === 'reply') {
         const key = String(message.id ?? '')
         const waiting = this.waiting.get(key)
@@ -247,6 +281,8 @@ export class BrainMachines {
     if (typeof message.platform === 'string') machine.platform = message.platform.slice(0, 40)
     if (typeof message.version === 'string') machine.version = message.version.slice(0, 40)
     if (typeof message.host === 'string' && message.host.trim()) machine.host = message.host.trim().slice(0, 120)
+    const facts = message.facts as { memoryGb?: unknown } | undefined
+    if (facts && typeof facts === 'object') machine.facts = { ...(Number(facts.memoryGb) > 0 ? { memoryGb: Math.min(4096, Math.round(Number(facts.memoryGb))) } : {}) }
     machine.seenAt = new Date().toISOString()
     await this.save()
     this.changed()
@@ -257,18 +293,17 @@ export class BrainMachines {
   }
 
   /** One request to a machine, answered by it, or a plain reason why not. */
-  private ask(id: string, request: Record<string, unknown>, signal?: AbortSignal | null): Promise<Reply> {
+  private ask(id: string, request: Record<string, unknown>, signal?: AbortSignal | null, key = randomUUID(), most = longest): Promise<Reply> {
     const socket = this.live.get(id)
     if (!this.machines.some((m) => m.id === id)) return Promise.reject(new BrainUnavailable('That machine was removed from the hub.'))
     if (!socket || socket.readyState !== socket.OPEN) return Promise.reject(new BrainUnavailable(`${this.nameOf(id)} isn’t linked to the hub right now. Is it on, with the Binders daemon running?`))
-    const key = randomUUID()
     return new Promise<Reply>((resolve, reject) => {
       const fail = (error: Error) => {
         if (!this.waiting.delete(key)) return
         clearTimeout(timer)
         reject(error)
       }
-      const timer = setTimeout(() => fail(new BrainUnavailable(`${this.nameOf(id)} didn’t answer in time.`)), longest)
+      const timer = setTimeout(() => fail(new BrainUnavailable(`${this.nameOf(id)} didn’t answer in time.`)), most)
       this.waiting.set(key, { resolve, reject, timer })
       signal?.addEventListener('abort', () => fail(signal.reason instanceof Error ? signal.reason : new BrainUnavailable(`${this.nameOf(id)} took too long.`)), { once: true })
       socket.send(JSON.stringify({ ...request, id: key }))
@@ -303,6 +338,32 @@ export class BrainMachines {
         return { audio: Buffer.from(reply.body, 'base64'), mime: reply.headers?.['content-type'] ?? 'audio/wav' }
       },
     }
+  }
+
+  /**
+   * A model downloaded into Ollama on a machine, for a job: started now, and followed as it goes (list() says where it
+   * has got to). Once it's there, the machine says what it serves, and the job is chosen again with it.
+   */
+  pull(id: string, model: string, job: string) {
+    const machine = this.get(id)
+    if (!machine) throw new Refused('No such machine.')
+    if (!machine.online) throw new Refused(`${machine.name} isn’t linked to the hub right now.`)
+    if (!machine.servers?.some((s) => s.kind === 'ollama')) throw new Refused(`${machine.name} has no Ollama to download into.`)
+    if (!/^[a-z0-9][a-z0-9._-]{0,80}(\/[a-z0-9][a-z0-9._-]{0,80})?(:[a-z0-9][a-z0-9._-]{0,60})?$/i.test(model)) throw new Refused('That isn’t a model’s name.')
+    const already = [...this.downloads.values()].find((d) => d.machine === id && d.model === model && !d.done && !d.error)
+    if (already) return already
+    const key = randomUUID()
+    const download: Download & { machine: string } = { machine: id, model, job, status: 'starting', completed: 0, total: 0, at: new Date().toISOString() }
+    this.downloads.set(key, download)
+    void this.ask(id, { type: 'pull', model }, undefined, key, 12 * 3_600_000).then((reply) => {
+      download.at = new Date().toISOString()
+      if (reply.ok) download.done = true
+      else download.error = reply.error ?? 'it stopped'
+    }, (err: Error) => {
+      download.at = new Date().toISOString()
+      download.error = err.message
+    })
+    return download
   }
 
   /** The machine's name, for labels. */

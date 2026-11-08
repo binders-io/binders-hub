@@ -1778,3 +1778,8 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
 .auto-pick { display: grid; gap: 4px; justify-items: start; }
 .auto-pick .option-status { color: var(--muted); }
 .auto-pick svg { color: var(--green); vertical-align: -1px; margin-right: 3px; }
+.model-download { display: grid; gap: 6px; justify-items: start; width: min(600px, 100%); }
+.model-download .option-status svg { vertical-align: -1px; margin-right: 3px; }
+.model-download .progress { width: 100%; }
+.model-download .progress span { display: block; height: 100%; border-radius: inherit; background: var(--green); transition: width 0.4s ease; }
+@media (prefers-reduced-motion: reduce) { .model-download .progress span { transition: none; } }

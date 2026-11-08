@@ -20,7 +20,9 @@ export interface Pick {
 
 const embedding = /embed|(^|[^a-z])bge|(^|[^a-z])e5([^a-z]|$)|(^|[^a-z])gte([^a-z]|$)|minilm|mxbai|arctic-embed|jina-emb|retriev/i
 const transcription = /whisper|parakeet|canary|wav2vec|sensevoice|moonshine/i
-const speech = /kokoro|(^|[^a-z])tts([^a-z]|$)|piper|orpheus|xtts|melo|parler|chatterbox|outetts|sesame|csm-|zonos/i
+const speech = /kokoro|(^|[^a-z])tts([^a-z]|$)|piper|orpheus|xtts|melo|parler|chatterbox|outetts|sesame|csm-|zonos|phonon/i
+/** Audio models that both write down and read out: Liquid's LFM audio. */
+const audioBoth = /lfm\d*-audio/i
 const notChat = /rerank|guard|moderation|(^|[^a-z])clip|siglip|ocr|nougat|layout|(^|[^a-z])vae|diffusion|flux|sdxl|(^|[^a-z])sd-|stable-diffusion/i
 
 /** Billions of parameters, from a model's name: qwen3:32b, Llama-3.3-70B-Instruct, gpt-oss-120b, mixtral-8x7b. */
@@ -29,6 +31,13 @@ export function sizeOf(model: string) {
   if (experts) return Number(experts[1]) * Number(experts[2])
   const plain = /(\d+(?:\.\d+)?)b(?![a-z])/i.exec(model)
   return plain ? Number(plain[1]) : 0
+}
+
+/** Which jobs a model is for: most do one, an audio model like LFM3-Audio both writing down and reading out. */
+export function jobsOf(model: string, kind: string): Job[] {
+  if (kind !== 'say' && audioBoth.test(model)) return ['transcription', 'speech']
+  const job = jobOf(model, kind)
+  return job ? [job] : []
 }
 
 /** Which job a model is for, by its name and its server. */
@@ -81,13 +90,80 @@ export function bestPicks(machines: MachineView[]): Partial<Record<Job, Pick>> {
         continue
       }
       for (const model of server.models) {
-        const job = jobOf(model, server.kind)
-        if (job === 'chat') offer('chat', { machine: machine.id, url: server.url, model, score: 1 + sizeOf(model) })
-        else if (job === 'embeddings') offer('embeddings', { machine: machine.id, url: server.url, model, score: 1 + sizeOf(model) })
-        else if (job === 'transcription') offer('transcription', { machine: machine.id, url: server.url, model, score: hearing(model) })
-        else if (job === 'speech') offer('speech', { machine: machine.id, url: server.url, model, voice: /kokoro/i.test(`${model} ${server.kind}`) ? 'af_heart' : '', score: 2 })
+        for (const job of jobsOf(model, server.kind)) {
+          if (job === 'chat') offer('chat', { machine: machine.id, url: server.url, model, score: 1 + sizeOf(model) })
+          else if (job === 'embeddings') offer('embeddings', { machine: machine.id, url: server.url, model, score: 1 + sizeOf(model) })
+          else if (job === 'transcription') offer('transcription', { machine: machine.id, url: server.url, model, score: hearing(model) })
+          else if (job === 'speech') offer('speech', { machine: machine.id, url: server.url, model, voice: /kokoro/i.test(`${model} ${server.kind}`) ? 'af_heart' : /phonon/i.test(model) ? 'default' : '', score: 2 })
+        }
       }
     }
   }
   return best
 }
+
+/** A model the hub offers to download for a job none of your machines can do. */
+export interface Offer {
+  /** The jobs it would do: an audio model can do two. */
+  jobs: Job[]
+  machine: string
+  model: string
+  /** Its download, roughly: "about 20 GB". */
+  size: string
+}
+
+/** Chat models by the memory of the machine they'd run on: the biggest that fits well. */
+const chatByMemory: [number, string, string][] = [
+  [96, 'gpt-oss:120b', 'about 65 GB'],
+  [40, 'qwen3:32b', 'about 20 GB'],
+  [20, 'gpt-oss:20b', 'about 14 GB'],
+  [10, 'qwen3:8b', 'about 5 GB'],
+  [0, 'qwen3:4b', 'about 2.5 GB'],
+]
+
+/** Whether an Ollama version is at least this one. */
+function atLeast(version: string | undefined, wanted: string) {
+  const have = (version ?? '').split('.').map(Number)
+  const need = wanted.split('.').map(Number)
+  for (let i = 0; i < need.length; i++) {
+    if ((have[i] ?? 0) !== need[i]) return (have[i] ?? 0) > need[i]
+  }
+  return true
+}
+
+/**
+ * What to download for each open job no machine can do, into Ollama on a machine that has it: a chat model sized to the
+ * machine with the most memory; EmbeddingGemma; LFM3-Audio for writing down (and reading out); Phonon for a Mac's voice.
+ * One download that does two jobs is offered once.
+ */
+export function offers(machines: MachineView[], open: Job[]): Offer[] {
+  const picks = bestPicks(machines)
+  const wanted = open.filter((job) => !picks[job])
+  const withOllama = machines.filter((m) => m.online && m.servers?.some((s) => s.kind === 'ollama'))
+    .sort((a, b) => (b.facts?.memoryGb ?? 0) - (a.facts?.memoryGb ?? 0))
+  const biggest = withOllama[0]
+  if (!biggest) return []
+  const out: Offer[] = []
+  const add = (job: Job, machine: string, model: string, size: string) => {
+    const same = out.find((o) => o.machine === machine && o.model === model)
+    if (same) same.jobs.push(job)
+    else out.push({ jobs: [job], machine, model, size })
+  }
+  for (const job of wanted) {
+    if (job === 'chat') {
+      const [, model, size] = chatByMemory.find(([gb]) => (biggest.facts?.memoryGb ?? 8) >= gb)!
+      add('chat', biggest.id, model, size)
+    } else if (job === 'embeddings') {
+      add('embeddings', biggest.id, 'embeddinggemma', 'about 620 MB')
+    } else if (job === 'transcription') {
+      add('transcription', biggest.id, 'lfm3-audio:2b', 'about 2 GB')
+    } else {
+      // A Mac's own voice model, light and Apache-licensed, where its Ollama can run it; else the audio model.
+      const mac = withOllama.find((m) => /darwin arm64/.test(m.platform ?? '') && atLeast(m.servers?.find((s) => s.kind === 'ollama')?.version, '0.40.9'))
+      if (mac) add('speech', mac.id, 'phonon:en', 'about 104 MB')
+      else add('speech', biggest.id, 'lfm3-audio:2b', 'about 2 GB')
+    }
+  }
+  return out
+}
+

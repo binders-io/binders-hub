@@ -2,7 +2,7 @@ import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { detect, nearby, probe, relay, say, voiceNames } from '../src/brain.ts'
+import { detect, nearby, probe, pull, relay, say, voiceNames } from '../src/brain.ts'
 import { plistFor, unitFor } from '../src/daemon.ts'
 
 describe('the brain daemon', () => {
@@ -76,4 +76,38 @@ describe('the brain daemon', () => {
     assert.doesNotMatch(unit, /--workspace/)
     assert.match(plistFor(saved), /<string>brain<\/string>/)
   })
+
+  it('knows Ollama by its version, and downloads into it as the hub asks, saying how far it has got', async () => {
+    const pulled: string[] = []
+    const server: Server = createServer((request, response) => {
+      let body = ''
+      request.on('data', (chunk) => { body += chunk })
+      request.on('end', () => {
+        if (request.url === '/api/version') return response.end(JSON.stringify({ version: '0.40.13' }))
+        if (request.url === '/v1/models') return response.end(JSON.stringify({ data: [{ id: 'gemma4:26b' }] }))
+        if (request.url === '/api/pull') {
+          pulled.push(JSON.parse(body).model)
+          response.writeHead(200, { 'content-type': 'application/x-ndjson' })
+          response.write('{"status":"pulling manifest"}\n{"status":"downloading","total":100,"completed":40}\n')
+          return setTimeout(() => response.end('{"status":"downloading","total":100,"completed":100}\n{"status":"success"}\n'), 20)
+        }
+        response.writeHead(404)
+        response.end()
+      })
+    })
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+    closers.push(() => new Promise<void>((done) => server.close(() => done())))
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`
+    const ollama = await probe(url, 'openai')
+    assert.deepEqual(ollama, { url, kind: 'ollama', models: ['gemma4:26b'], version: '0.40.13' })
+    const steps: [string, number, number][] = []
+    const done = await pull({ id: 'p1', model: 'embeddinggemma' }, [ollama!], (status, completed, total) => steps.push([status, completed, total]))
+    assert.deepEqual([done.ok, pulled], [true, ['embeddinggemma']])
+    assert.deepEqual(steps.at(-1), ['success', 0, 0])
+    assert.ok(steps.some(([status]) => status === 'pulling manifest'))
+    // Only a model's name, and only into an Ollama it found.
+    assert.equal((await pull({ id: 'p2', model: 'x; rm -rf ~' }, [ollama!], () => {})).ok, false)
+    assert.equal((await pull({ id: 'p3', model: 'qwen3:8b' }, [{ url, kind: 'vllm', models: [] }], () => {})).error, 'this machine has no Ollama to download into')
+  })
 })
+

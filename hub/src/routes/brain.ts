@@ -3,6 +3,7 @@ import { Refused } from '../hub.ts'
 import { bodies } from '../schemas.ts'
 import { ask, type AskPlace } from '../brain/brain.ts'
 import type { BrainSettings } from '../brain/settings.ts'
+import { offers } from '../brain/autoPick.ts'
 import type { Capture } from '../brain/captures.ts'
 import type { Context } from './context.ts'
 
@@ -23,7 +24,18 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
     if (!isAdmin(login(request))) throw new Refused(`Only the hub’s admins can ${what}.`)
     return brainMachines
   }
-  app.get('/api/brain/machines', act(async (request) => ({ machines: admin(request, 'see its machines').list() })))
+  app.get('/api/brain/machines', act(async (request) => {
+    const machines = admin(request, 'see its machines').list()
+    // For each job no machine can do, a model to download, on a machine with Ollama: none while one is downloading.
+    const downloading = new Set(machines.flatMap((m) => (m.downloads ?? []).filter((d) => !d.done && !d.error).map((d) => `${m.id} ${d.model}`)))
+    const offered = brainSettings ? offers(machines, brainSettings.openJobs()).filter((o) => !downloading.has(`${o.machine} ${o.model}`)) : []
+    return { machines, offers: offered }
+  }))
+  app.post('/api/brain/machines/:id/pull', act(async (request) => {
+    const machines = admin(request, 'download models')
+    const { model, job } = bodyOf<{ model: string; job: string }>(bodies.pull, request)
+    return { download: machines.pull(param(request, 'id'), model, job) }
+  }))
   const installLine = (token: string) => `curl -fsSL ${options.publicUrl.replace(/\/+$/, '')}/install | sh -s -- add --token ${token}`
   app.post('/api/brain/machines', act(async (request) => {
     const machines = admin(request, 'add a machine')

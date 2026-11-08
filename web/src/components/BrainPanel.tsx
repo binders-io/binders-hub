@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Check, Copy, Sparkles } from 'lucide-react'
+import { Check, Copy, Download as DownloadIcon, Sparkles } from 'lucide-react'
 import { call } from '../data/api'
 import { attempt, toast } from './Toast'
 import { Option, Segmented } from './HubOptionsPanel'
@@ -56,6 +56,16 @@ interface MachineServer {
   models: string[]
 }
 
+interface Download {
+  model: string
+  job: Job
+  status: string
+  completed: number
+  total: number
+  done?: boolean
+  error?: string
+}
+
 interface Machine {
   id: string
   name: string
@@ -63,6 +73,23 @@ interface Machine {
   platform?: string
   servers?: MachineServer[]
   seenAt?: string
+  downloads?: Download[]
+}
+
+/** A model the hub offers to download, for jobs none of your machines can do. */
+interface Offer {
+  jobs: Job[]
+  machine: string
+  model: string
+  size: string
+}
+
+/** How far a download has got, in words: "42% of 20 GB", or what Ollama says it's doing. */
+function progressOf(d: Download) {
+  if (d.error) return `Couldn’t download it: ${d.error}.`
+  if (d.done) return 'Downloaded. The hub is choosing it now.'
+  if (d.total > 0) return `${Math.floor((d.completed / d.total) * 100)}% of ${(d.total / 1024 ** 3).toFixed(d.total > 10 * 1024 ** 3 ? 0 : 1)} GB`
+  return d.status ? `${d.status.charAt(0).toUpperCase()}${d.status.slice(1)}…` : 'Starting…'
 }
 
 type Role = 'embeddings' | 'transcription' | 'speech'
@@ -201,6 +228,7 @@ export function BrainPanel() {
   const [transcriptionKey, setTranscriptionKey] = useState('')
   const [speechKey, setSpeechKey] = useState('')
   const [machines, setMachines] = useState<Machine[]>([])
+  const [offered, setOffered] = useState<Offer[]>([])
   /** A job switched to a machine of yours, before one is chosen for it. */
   const [onMachine, setOnMachine] = useState<Partial<Record<Role, boolean>>>({})
   /** A job the hub chose, opened to choose another. */
@@ -214,14 +242,23 @@ export function BrainPanel() {
     }).catch(() => {})
   }, [])
 
-  // Your machines, an admin's: looked at again now and then, so one just set up shows as linked.
-  const loadMachines = () => void call<{ machines: Machine[] }>('GET', '/api/brain/machines').then((r) => setMachines(r.machines)).catch(() => {})
+  // Your machines, an admin's: looked at again now and then, so one just set up shows as linked, and often while a model
+  // downloads. A finished download changes what the brain uses, so the brain is read again then too.
+  const loadMachines = () => void call<{ machines: Machine[]; offers?: Offer[] }>('GET', '/api/brain/machines').then((r) => {
+    setMachines((before) => {
+      const finished = r.machines.some((m) => (m.downloads ?? []).some((d) => d.done && !before.find((b) => b.id === m.id)?.downloads?.find((x) => x.model === d.model)?.done))
+      if (finished) void call<{ brain: BrainView }>('GET', '/api/brain').then((b) => setBrain(b.brain)).catch(() => {})
+      return r.machines
+    })
+    setOffered(r.offers ?? [])
+  }).catch(() => {})
+  const downloading = machines.some((m) => (m.downloads ?? []).some((d) => !d.done && !d.error))
   useEffect(() => {
     if (!admin) return
     loadMachines()
-    const again = window.setInterval(loadMachines, 8000)
+    const again = window.setInterval(loadMachines, downloading ? 2000 : 8000)
     return () => window.clearInterval(again)
-  }, [admin])
+  }, [admin, downloading])
 
   if (!brain) return null
 
@@ -257,6 +294,35 @@ export function BrainPanel() {
       <button type="button" className="text-button" onClick={() => setChanging((now) => ({ ...now, [job]: true }))}>Choose another</button>
     </div>
   )
+  /** A download for this job: one under way (with how far it's got), or one the hub offers, a click away. */
+  const download = (job: Job) => {
+    for (const machine of machines) {
+      const going = (machine.downloads ?? []).find((d) => d.job === job || offered.some((o) => o.model === d.model && o.jobs.includes(job)))
+      if (going && !(going.done && brain.autoJobs?.includes(job))) {
+        const share = going.total > 0 ? going.completed / going.total : 0
+        return (
+          <div className="model-download">
+            <p className="option-status"><DownloadIcon size={12} aria-hidden="true" /> {going.model} on {machine.name}: {progressOf(going)}</p>
+            {!going.done && !going.error && <div className="progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(share * 100)}><span style={{ width: `${Math.max(2, share * 100)}%` }} /></div>}
+          </div>
+        )
+      }
+    }
+    const offer = offered.find((o) => o.jobs.includes(job))
+    if (!offer) return null
+    const on = machines.find((m) => m.id === offer.machine)
+    const also = offer.jobs.filter((j) => j !== job)
+    const pull = async () => {
+      if (await attempt(() => call('POST', `/api/brain/machines/${offer.machine}/pull`, { model: offer.model, job }))) loadMachines()
+    }
+    return (
+      <div className="model-download">
+        <p className="option-status">None of your machines has a model for this yet.{also.length ? ` This one also ${also.includes('speech') ? 'reads answers out' : also.includes('transcription') ? 'writes down audio' : 'does more'}.` : ''}</p>
+        <button type="button" className="button" onClick={() => void pull()}><DownloadIcon size={13} aria-hidden="true" /> Download {offer.model} on {on?.name ?? 'your machine'} ({offer.size})</button>
+      </div>
+    )
+  }
+
   /** Handing a job back, when your machines have models and the job is someone's choice. */
   const letHub = (job: Job) => machines.some((m) => m.online && m.servers?.length) && !brain.autoJobs?.includes(job)
     ? <button type="button" className="text-button" onClick={() => void chooseForMe(job)}>Let the hub choose from your machines</button>
@@ -321,6 +387,7 @@ export function BrainPanel() {
         <Machines machines={machines} onChange={loadMachines} />
 
         <Option title="The hub’s model" detail="Sums up the conversations and meetings phones and Macs send, and answers questions from the binders, citing the notes and cards it used. Claude runs at Anthropic with the hub’s key; a server of your own, such as Ollama, LM Studio or vLLM, keeps the words on your machines." aside={note('provider')}>
+          {download('chat')}
           {chosenForYou('chat') ? chosen('chat') : <>
           <Segmented id="brain-provider" value={brain.provider} disabled={off('provider')} onChange={(provider) => void save({ provider }, 'provider')}
             choices={[['off', 'Off'], ['anthropic', 'Claude'], ['openai', 'A server of your own'], ['machine', 'A machine of yours']]} />
@@ -347,6 +414,7 @@ export function BrainPanel() {
         </Option>
 
         <Option title="Finding by meaning" detail="Optional. An embeddings model finds the passages that mean what a question asks, even in other words. Any server that speaks OpenAI’s embeddings API works: Ollama, LM Studio, OpenAI or Voyage. Without one, the brain finds passages by their words.">
+          {download('embeddings')}
           {chosenForYou('embeddings') ? chosen('embeddings') : <>
           {where('embeddings')}
           {usesMachine('embeddings') ? picker('embeddings') : <>
@@ -359,6 +427,7 @@ export function BrainPanel() {
         </Option>
 
         <Option title="Writing down audio" detail="Optional. With a transcription model, phones send the hub what they record and the hub writes it down, with a bigger model than a phone can run; the voices the phone told apart keep their names. The audio isn’t kept. Any server that speaks OpenAI’s transcription API works: a whisper.cpp or faster-whisper server, a Parakeet server, or OpenAI.">
+          {download('transcription')}
           {chosenForYou('transcription') ? chosen('transcription') : <>
           {where('transcription')}
           {usesMachine('transcription') ? picker('transcription') : <>
@@ -371,6 +440,7 @@ export function BrainPanel() {
         </Option>
 
         <Option title="Reading answers out" detail="Optional. A speech model reads the hub’s answers out on phones, in a voice you choose. Any server that speaks OpenAI’s speech API works: Kokoro, a Piper gateway, or OpenAI; and a Mac of yours reads them out in macOS’s own voices.">
+          {download('speech')}
           {chosenForYou('speech') ? chosen('speech') : <>
           {where('speech')}
           {usesMachine('speech') ? <>

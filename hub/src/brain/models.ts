@@ -498,7 +498,7 @@ export class OpenAICompatibleSpeaker implements Speaker {
   constructor(options: { baseURL: string; model: string; voice?: string; apiKey?: string; via?: Via }) {
     this.base = options.baseURL
     this.model = options.model
-    this.voice = options.voice || 'alloy'
+    this.voice = options.voice || (hostOf(options.baseURL) === 'api.openai.com' ? 'alloy' : '')
     this.apiKey = options.apiKey
     this.via = options.via
     this.label = `${options.model}${options.voice ? `, ${options.voice}` : ''} ${options.via ? `on ${options.via.name}` : `(${hostOf(options.baseURL)})`}`
@@ -511,7 +511,7 @@ export class OpenAICompatibleSpeaker implements Speaker {
       response = await (this.via?.fetch ?? fetch)(at(this.base, 'audio/speech'), {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) },
-        body: JSON.stringify({ model: this.model, input: text.slice(0, 4000), voice: this.voice, response_format: 'mp3' }),
+        body: JSON.stringify({ model: this.model, input: text.slice(0, 4000), ...(this.voice ? { voice: this.voice } : {}), response_format: 'mp3' }),
         signal: AbortSignal.timeout(120_000),
       })
     } catch (err) {

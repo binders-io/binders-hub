@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { hostname, tmpdir } from 'node:os'
+import { hostname, tmpdir, totalmem } from 'node:os'
 import { join } from 'node:path'
 import { runnerVersion } from '../../shared/agents.ts'
 
@@ -21,6 +21,13 @@ export interface Server {
   kind: string
   /** The models it lists, or the voices, for say. */
   models: string[]
+  /** Ollama's version, when it's Ollama: which models it can pull and serve. */
+  version?: string
+}
+
+/** What the hub weighs when it offers a model to download here: how much memory this machine has. */
+export function facts() {
+  return { memoryGb: Math.round(totalmem() / 1024 ** 3) }
 }
 
 /** Where model servers usually listen on a machine, and what usually listens there. */
@@ -74,7 +81,10 @@ export async function probe(address: string, kind: string, timeoutMs = 1500): Pr
     // vLLM says it's vLLM; NIM, NVIDIA's.
     const owner = String(body.data[0]?.owned_by ?? '').toLowerCase()
     const named = owner === 'vllm' ? 'vllm' : owner.includes('nvidia') ? 'nim' : kind
-    return { url: base, kind: named, models }
+    // Ollama, wherever it listens, says so at its own /api/version: it's the one that pulls models.
+    const version = await fetch(`${base.replace(/\/v1$/, '')}/api/version`, { signal: AbortSignal.timeout(timeoutMs) })
+      .then(async (r) => (r.ok ? String(((await r.json()) as { version?: unknown }).version ?? '') : ''), () => '')
+    return version ? { url: base, kind: 'ollama', models, version } : { url: base, kind: named, models }
   } catch {
     return undefined
   }
@@ -157,6 +167,56 @@ export async function relay(message: { id?: unknown; method?: unknown; url?: unk
   } catch {
     return { type: 'reply', id, ok: false, error: `the server at ${new URL(url).host} didn’t answer` }
   }
+}
+
+/** A model Ollama can be asked to pull: a name and a tag, nothing that could be read as anything else. */
+export const pullable = /^[a-z0-9][a-z0-9._-]{0,80}(\/[a-z0-9][a-z0-9._-]{0,80})?(:[a-z0-9][a-z0-9._-]{0,60})?$/i
+
+/**
+ * A model downloaded into Ollama on this machine, as the hub asked: through Ollama's own API, never a command line, with
+ * what it's done told as it goes. Only a model name; only to the Ollama this machine found.
+ */
+export async function pull(message: { id?: unknown; model?: unknown }, servers: Server[], progress: (status: string, completed: number, total: number) => void): Promise<Reply> {
+  const id = String(message.id ?? '')
+  const model = String(message.model ?? '')
+  const ollama = servers.find((s) => s.kind === 'ollama')
+  if (!ollama) return { type: 'reply', id, ok: false, error: 'this machine has no Ollama to download into' }
+  if (!pullable.test(model)) return { type: 'reply', id, ok: false, error: `${model} isn’t a model’s name` }
+  let response: Response
+  try {
+    response = await fetch(`${ollama.url.replace(/\/v1$/, '')}/api/pull`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model, name: model, stream: true }), signal: AbortSignal.timeout(12 * 3_600_000) })
+  } catch {
+    return { type: 'reply', id, ok: false, error: 'Ollama didn’t answer' }
+  }
+  if (!response.ok || !response.body) return { type: 'reply', id, ok: false, error: `Ollama answered ${response.status}` }
+  let last = 0
+  let failed = ''
+  let finished = false
+  let rest = ''
+  const decoder = new TextDecoder()
+  for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+    rest += decoder.decode(chunk, { stream: true })
+    const lines = rest.split('\n')
+    rest = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.trim()) continue
+      let step: { status?: string; completed?: number; total?: number; error?: string }
+      try {
+        step = JSON.parse(line)
+      } catch {
+        continue
+      }
+      if (step.error) failed = step.error
+      if (step.status === 'success') finished = true
+      // Told now and then, not for every chunk.
+      if (Date.now() - last > 1000 || step.status === 'success') {
+        last = Date.now()
+        progress(String(step.status ?? ''), Number(step.completed) || 0, Number(step.total) || 0)
+      }
+    }
+  }
+  if (failed || !finished) return { type: 'reply', id, ok: false, error: failed || 'the download stopped before it finished' }
+  return { type: 'reply', id, ok: true, status: 200 }
 }
 
 /** Words read out by one of macOS's voices, as WAV. */
@@ -247,7 +307,7 @@ export async function serve(options: { hub: string; token: string; name?: string
       const stop = () => socket.close(1000)
       options.signal?.addEventListener('abort', stop, { once: true })
       socket.addEventListener('open', () => {
-        socket.send(JSON.stringify({ type: 'hello', token: options.token, name: options.name ?? hostname(), host: options.host ?? hostname(), version: runnerVersion, platform: `${process.platform} ${process.arch}`, servers }))
+        socket.send(JSON.stringify({ type: 'hello', token: options.token, name: options.name ?? hostname(), host: options.host ?? hostname(), version: runnerVersion, platform: `${process.platform} ${process.arch}`, servers, facts: facts() }))
         looking = setInterval(async () => {
           const now = await detect(options.extra, options.only)
           if (JSON.stringify(now) === JSON.stringify(servers)) return
@@ -268,8 +328,21 @@ export async function serve(options: { hub: string; token: string; name?: string
           log(`Linked to the hub as ${String(message.name ?? 'a machine')}.`)
           return
         }
+        const send = (value: unknown) => socket.readyState === WebSocket.OPEN && socket.send(JSON.stringify(value))
+        if (message.type === 'pull') {
+          log(`Downloading ${String(message.model)} into Ollama, as the hub asked.`)
+          const reply = await pull(message, servers, (status, completed, total) => send({ type: 'progress', id: message.id, status, completed, total }))
+          log(reply.ok ? `Downloaded ${String(message.model)}.` : `Couldn’t download ${String(message.model)}: ${reply.error}.`)
+          // What's served now, the new model with it, before the hub hears it's done.
+          if (reply.ok) {
+            servers = await detect(options.extra, options.only)
+            send({ type: 'servers', servers })
+          }
+          send(reply)
+          return
+        }
         const reply = message.type === 'http' ? await relay(message, servers) : message.type === 'say' ? await say(message, servers) : undefined
-        if (reply && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(reply))
+        if (reply) send(reply)
       })
       socket.addEventListener('close', (event) => {
         clearInterval(looking)

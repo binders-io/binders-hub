@@ -372,6 +372,18 @@ export class BrainSettingsStore {
 
   private picking: Promise<unknown> = Promise.resolve()
 
+  /** The jobs open to the hub's choosing: no admin set them, and they're unset or the hub's own choice. */
+  openJobs(): Job[] {
+    const now = this.get()
+    const own = new Set(now.ownJobs)
+    const auto = new Set(now.autoJobs)
+    return (['chat', 'embeddings', 'transcription', 'speech'] as Job[]).filter((job) => {
+      if (own.has(job) || jobFields[job].some((name) => name in this.fixed.fields)) return false
+      if (job === 'chat') return now.provider === 'off' || (auto.has('chat') && now.provider === 'machine')
+      return (!now[`${job}BaseUrl`] && !now[`${job}Machine`]) || auto.has(job)
+    })
+  }
+
   /** Jobs an admin hands back: cleared, and chosen by the hub from your machines from now on. */
   async letHubChoose(jobs: Job[]) {
     const fields: Record<string, string> = {}

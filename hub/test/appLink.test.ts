@@ -309,4 +309,26 @@ describe('the hub as an iPhone’s brain', () => {
       await set.close()
     }
   })
+
+  it('keeps the iPhone’s timed transcript when the hub’s model gives back words with no times', async () => {
+    const untimed: Transcriber = { label: 'words only (test)', transcribe: async () => ({ text: 'so the van needs new tyres', segments: [{ start: 0, end: 0, text: 'so the van needs new tyres' }] }) }
+    const set = await setUp({ transcriber: untimed })
+    const phone = await link(set.url, set.token)
+    try {
+      const id = 'C4C4C4C4-0000-4000-8000-000000000004'
+      await phone.request('binders/conversation', { id, started: '2026-11-07T12:00:00Z', ended: '2026-11-07T12:00:10Z', device: 'iPhone', speakers: { 'Speaker 1': 'You', 'Speaker 2': 'Sam' },
+        segments: [{ start: 0, end: 4, text: 'so the van needs new tires before the trip', speaker: 'Speaker 1' }, { start: 4, end: 9, text: 'and sam said he would book the garage for tuesday morning and we agreed to split the cost', speaker: 'Speaker 2' }] })
+      await until(async () => ((await phone.request('binders/outcomes', { ids: [id] })).result as { outcomes: { state: string }[] }).outcomes[0]?.state === 'filed')
+      await set.own.brain.summariesWritten()
+      const sent = await fetch(`${set.url}/api/app/audio`, { method: 'POST', headers: { authorization: `Bearer ${set.token}`, 'content-type': 'audio/mp4', 'x-binders-capture': encodeURIComponent(JSON.stringify({ id })) }, body: Buffer.from('audio') })
+      assert.equal(sent.status, 202)
+      await new Promise((done) => setTimeout(done, 150))
+      const note = set.own.hub.state.notes.find((n) => n.captured === 'conversation')!
+      assert.match(note.text, /\*\*\[00:04\] Sam:\*\* and sam said/, 'who said what, and when, as the iPhone had it')
+    } finally {
+      phone.close()
+      await set.close()
+    }
+  })
 })
+

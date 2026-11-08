@@ -721,7 +721,12 @@ export class AppLinkSession {
       const names = meta.speakers ?? {}
       const capture = await this.ledgerGet<{ space: string; note: string }>(`app:capture:${id.toLowerCase()}`)
       if (capture) {
-        // The iPhone's transcript was filed first: the hub's goes in its place.
+        // The iPhone's transcript was filed first: the hub's goes in its place, when it has the times the iPhone's has.
+        // A model that gave back words with no times would lose who said what, and when.
+        if (!heard.segments.some((s) => s.end > s.start)) {
+          log.info('The hub’s transcript had no times; the iPhone’s stays')
+          return
+        }
         const space = this.deps.spaces.get(capture.space)
         const text = transcriptMarkdown(segments, names)
         if (!space?.brain || !text) return

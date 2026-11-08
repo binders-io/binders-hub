@@ -362,6 +362,11 @@ by what they mean as well as by their words.
     model, an embeddings model, Parakeet, Canary or the largest whisper, and a speech server's voice, else a Mac's
     own. When a better one appears later, it takes over. A job an admin set, even to off, stays theirs until they hand
     it back.
+  - **Downloads.** For a job none of your machines can do, Settings offers one click to download a model into Ollama on
+    a machine that has it. The model is sized to that machine: a chat model by its memory (`gpt-oss:120b` on a
+    128 GB Spark), `embeddinggemma`, `lfm3-audio:2b` for writing down and reading out, and `phonon:en` for a Mac's
+    voice. Progress shows as it goes, and the job uses the model once it's there. The daemon only ever pulls a
+    model's name through Ollama's own API. A transcript with no times never replaces the iPhone's timed one.
 - **Ask.** The **Ask** screen, `POST /api/brain/ask` and the MCP tool `ask` answer a question from the notes and cards of
   a binder, or every binder you're in, numbering the ones the answer rests on. Without a model, they give the passages
   that match best.

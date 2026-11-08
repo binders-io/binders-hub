@@ -416,7 +416,10 @@ An iPhone chooses its brain: its Mac, or the hub. With the hub, it sends the ver
     same host joining again is the same machine.
   - Each job no admin set is chosen by the hub from the machines linked now (`hub/src/brain/autoPick.ts`), by model
     name: `autoJobs` are the hub's choices, chosen again when a better model appears or their machine is removed;
-    `ownJobs` are an admin's, never chosen for them until handed back. **Local AI only** refuses any of them that isn't on the hub's own network (loopback,
+    `ownJobs` are an admin's, never chosen for them until handed back.
+  - Downloads: `offers()` picks, for each open job no machine serves, a model and the machine with Ollama to pull it
+    on. The daemon pulls through Ollama's `/api/pull` (a checked model name only), sends progress, then what it serves
+    now, so the job is chosen with the new model. **Local AI only** refuses any of them that isn't on the hub's own network (loopback,
   private and VPN ranges, `.local`, `.internal` and one-word names) and Claude with it.
 - **What the hub can't do yet** (the Manager, agents' sessions on a Mac, Auto) isn't in the features it lists, so the
   iPhone hides those screens rather than half-work.
