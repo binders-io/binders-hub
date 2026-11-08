@@ -420,6 +420,11 @@ An iPhone chooses its brain: its Mac, or the hub. With the hub, it sends the ver
   - Each job no admin set is chosen by the hub from the machines linked now (`hub/src/brain/autoPick.ts`), by model
     name: `autoJobs` are the hub's choices, chosen again when a better model appears or their machine is removed;
     `ownJobs` are an admin's, never chosen for them until handed back.
+  - Downloaded models are served on demand (`runner/src/engines.ts`). The daemon lists them as one server at
+    `http://models.binders/v1` (kind `binders`). It routes each request by the `model` its JSON or multipart form
+    names, starting the engine that runs it (TensorFold, mlx-lm, mlx-audio, vLLM) on a free port from 8941. Engines it
+    started run one big model at a time, are stopped after twenty idle minutes, and are never found again by the port
+    scan.
   - Offers come in order. First, a runtime to start for models already on a machine (`serve`): mlx-audio for Hugging
     Face audio models on a Mac, or LM Studio's server. The daemon lists Hugging Face's cache by folder name only. Then
     downloads (`pull`).

@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createWriteStream } from 'node:fs'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
-import { homedir, totalmem } from 'node:os'
+import { freemem, homedir, totalmem } from 'node:os'
 import { join } from 'node:path'
 
 // What serves the models downloaded on this machine, when the hub asks for one, as Ollama does for its own: the daemon
@@ -193,6 +193,13 @@ async function freePort(from = 8941): Promise<number> {
   throw new Error('no free port for an engine')
 }
 
+/** Memory free for a model now, in GB: Linux's own estimate of what can be had without swapping; else what's free. */
+export async function freeGb() {
+  const info = await readFile('/proc/meminfo', 'utf8').catch(() => '')
+  const available = /^MemAvailable:\s+(\d+)\s+kB/m.exec(info)
+  return available ? Number(available[1]) / 1024 ** 2 : freemem() / 1024 ** 3
+}
+
 /** An engine installed once, with uv, while others wait for the same install. */
 function installOnce(spec: EngineSpec, find: Find, log: (line: string) => void): Promise<boolean> {
   const going = installing.get(spec.id)
@@ -238,6 +245,13 @@ export async function engineAddress(model: string, served: Map<string, EngineId>
   if (!run) {
     // One big model at a time: what else this daemon started for one model goes first.
     if (spec.perModel) for (const [other, r] of running) if (specs[r.id].perModel) stop(other)
+    // On Linux, memory is what's free now (a model you serve yourself may hold most of it); a Mac's is shared, and pages.
+    const need = memoryOf(model)
+    if (spec.perModel && need && process.platform === 'linux') {
+      await new Promise((done) => setTimeout(done, 1000))
+      const free = await freeGb()
+      if (need > free) return { error: `${model} needs about ${need} GB, and ${Math.floor(free)} GB is free on this machine now` }
+    }
     const port = await freePort()
     let command = spec.command(find, port, model)
     if (!command && spec.install && (await installOnce(spec, find, log))) command = spec.command(find, port, model)

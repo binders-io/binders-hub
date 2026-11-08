@@ -364,6 +364,18 @@ by what they mean as well as by their words.
     model, an embeddings model, Parakeet, Canary or the largest whisper, and a speech server's voice, else a Mac's
     own. When a better one appears later, it takes over. A job an admin set, even to off, stays theirs until they hand
     it back.
+  - **Every model downloaded on the machine, served when asked for**, as Ollama serves its own. The daemon offers the
+    hub one more server per machine: every downloaded model an engine there can run, and that fits its memory. When a
+    request names one, the daemon starts its engine and passes the request on:
+    - TensorFold, if it's installed, for chat models: one model a process, on a Mac (MLX) and on Linux with an NVIDIA GPU.
+    - mlx-lm on a Mac for chat models: one process, loading the model each request names. Installed with uv.
+    - mlx-audio on a Mac for speech and transcription models, the same way. Installed with uv, with its server's packages.
+    - vLLM on Linux, when it's installed and TensorFold isn't.
+
+    It runs one big model at a time and, on Linux, only when there's the free memory for it. It stops what it started
+    after twenty idle minutes and never touches a server you started. Each engine's output is in
+    `~/.binders/logs/<engine>.log`. Settings shows, for each machine, how many models it loads when asked, what's
+    running, and why the rest can't run there (made for NVIDIA GPUs, too big, GGUF, speech on Linux…).
   - **Models already downloaded.** The daemon also sees models that nothing serves yet:
     - Hugging Face's, by the names of its model folders only. It looks in the cache your shell set (`HF_HOME` and
       `HF_HUB_CACHE`, which the service keeps) and the usual one. It never opens a file there or reads the token.
