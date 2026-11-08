@@ -22,14 +22,18 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
     const admin = isAdmin(login(request))
     const index = request.space?.brain ? await request.space.brain.index.stats() : undefined
     // Only admins see where the models are and how they're reached; everyone sees what answers.
-    const brain = view && (admin ? view : { provider: view.provider, summarize: view.summarize, inUse: view.inUse, embeddingsInUse: view.embeddingsInUse })
+    const brain = view && (admin ? view : {
+      provider: view.provider, summarize: view.summarize, localOnly: view.localOnly, inUse: view.inUse, embeddingsInUse: view.embeddingsInUse,
+      transcriptionInUse: view.transcriptionInUse, speechInUse: view.speechInUse,
+    })
     return { brain, admin, ...(index ? { index } : {}) }
   }))
 
   app.patch('/api/brain', act(async (request) => {
     if (!brainSettings) throw new Refused('This hub has no brain to set up.')
     if (!isAdmin(login(request))) throw new Refused('Only the hub’s admins can set up its brain.')
-    return { brain: await brainSettings.set(bodyOf<Partial<BrainSettings> & { apiKey?: string; embeddingsKey?: string }>(bodies.brain, request)), admin: true }
+    type Keys = { apiKey?: string; embeddingsKey?: string; transcriptionKey?: string; speechKey?: string }
+    return { brain: await brainSettings.set(bodyOf<Partial<BrainSettings> & Keys>(bodies.brain, request)), admin: true }
   }))
 
   app.post('/api/brain/ask', askLimit, act(async (request) => {

@@ -6,7 +6,7 @@ import { Refused, type Hub } from '../hub.ts'
 import type { KV } from '../kv.ts'
 import { log } from '../logger.ts'
 import { BrainIndex, type Hit, type IndexSource, type SourceKind } from './index.ts'
-import { captureNote, firstWords, withSummary, type Capture } from './captures.ts'
+import { captureNote, firstWords, withSummary, withTranscript, type Capture } from './captures.ts'
 import type { Summary } from './models.ts'
 import type { BrainSettingsStore } from './settings.ts'
 
@@ -28,7 +28,7 @@ const short = (text: string, length = 12) => createHash('sha256').update(text).d
  * Summaries the hub writes, two at a time across every Binder: a phone's outbox sending a day of conversations, or a
  * meeting hours long, waits its turn rather than calling the model dozens of times at once.
  */
-class Turns {
+export class Turns {
   private running = 0
   private waiting: (() => void)[] = []
   private most: number
@@ -50,6 +50,8 @@ class Turns {
 }
 
 const summaryTurns = new Turns(2)
+/** A transcription server is usually one GPU: one recording at a time, the rest in line. */
+export const transcriptionTurns = new Turns(1)
 
 function keyOf(change: Entry['change']): string | undefined {
   const c = change as { type: string; id?: string; note?: { id: string }; card?: { id: string } }
@@ -295,6 +297,22 @@ export class SpaceBrain {
       log.warn({ binder: this.id, note: id, why: err instanceof Error ? err.message : String(err) }, 'Summing up a capture failed')
       return undefined
     }
+  }
+
+  /**
+   * A captured note's transcript, written down again by the hub's transcription model: put in place of the device's,
+   * and summed up again, as the hub. A note locked meanwhile, or one that's gone, is left alone.
+   */
+  async rewriteTranscript(id: string, capture: Capture): Promise<{ rewritten: boolean; written: Promise<Summary | undefined> }> {
+    const none = { rewritten: false, written: Promise.resolve(undefined as Summary | undefined) }
+    const note = this.hub.state.notes.find((n) => n.id === id)
+    if (!note || note.locked || this.stopped) return none
+    await this.hub.record({ kind: 'hub' }, { type: 'note.edit', id, text: withTranscript(note.text, capture.text), title: note.title, by: 'hub', at: new Date().toISOString() })
+    if (!this.wantsSummary(capture)) return { ...none, rewritten: true }
+    const written = summaryTurns.run(() => this.summarize(id, capture))
+    const work: Promise<void> = written.then(() => undefined).finally(() => this.summaries.delete(work))
+    this.summaries.add(work)
+    return { rewritten: true, written }
   }
 
   /** For tests: waits for the summaries being written. */

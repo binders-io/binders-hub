@@ -8,7 +8,8 @@ import type { Space, Spaces } from './spaces.ts'
 import { personalId } from './spaces.ts'
 import { Refused } from './hub.ts'
 import { Refusal } from './auth.ts'
-import { ask, type AskPlace, type AskSource } from './brain/brain.ts'
+import { ask, transcriptionTurns, type AskPlace, type AskSource } from './brain/brain.ts'
+import { speakersByOverlap, transcriptMarkdown, type SaidBy } from './brain/captures.ts'
 import type { BrainSettingsStore } from './brain/settings.ts'
 import type { SourceKind } from './brain/index.ts'
 import { log } from './logger.ts'
@@ -65,7 +66,36 @@ interface Outcome {
   sources?: string[]
   /** Kept for Undo: what it made. */
   made?: { space: string; kind: 'card' | 'note'; id: string }
+  /** Its audio is being written down on the hub, and nothing is filed yet: the iPhone's own transcript may still come. */
+  transcribing?: boolean
   at: string
+}
+
+/** What the iPhone sends with a conversation's audio (as the X-Binders-Capture header): when, from where, and its voices. */
+export interface AudioCapture {
+  id: string
+  started?: string
+  ended?: string
+  device?: string
+  /** The voices as the iPhone told them apart: each one's turns, in seconds from the start of the audio. */
+  turns?: { start: number; end: number; speaker: string }[]
+  /** The iPhone's label for a voice → the name to show: "Speaker 1" → "You". */
+  speakers?: Record<string, string>
+  /**
+   * Where each stretch of the file was heard: seconds into the file → seconds since `started` on the wall clock. The
+   * iPhone records only speech, so a minute into the file can be an hour into the conversation; its transcript's times
+   * are on the clock, and the hub's are put there too.
+   */
+  clock?: { file: number; wall: number }[]
+  language?: string
+}
+
+/** A time in a recording's file, on the clock its `clock` gives (the file's own time without one). */
+export function onTheClock(seconds: number, clock: { file: number; wall: number }[] = []) {
+  if (!clock.length) return seconds
+  let span = clock[0]
+  for (const stretch of clock) if (stretch.file <= seconds) span = stretch
+  return Math.max(0, span.wall + seconds - span.file)
 }
 
 interface Suggestion {
@@ -217,8 +247,15 @@ export class AppLinkSession {
   }
 
   features() {
-    const model = Boolean(this.deps.settings?.model())
-    return ['conversation', 'outcomes', 'dedupe', 'askProgress', 'folders', 'todosAreCards', 'approvals', ...(model ? ['suggestions', 'moment'] : [])]
+    const settings = this.deps.settings
+    const model = Boolean(settings?.model())
+    return [
+      'conversation', 'outcomes', 'dedupe', 'askProgress', 'folders', 'todosAreCards', 'approvals',
+      ...(model ? ['suggestions', 'moment'] : []),
+      // It writes down what the iPhone sends as audio (POST /api/app/audio), and reads answers out (binders/speak).
+      ...(settings?.transcriber() ? ['transcribes'] : []),
+      ...(settings?.speaker() ? ['speaks'] : []),
+    ]
   }
 
   private async call(method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -238,6 +275,8 @@ export class AppLinkSession {
         return { text: String(params.text ?? ''), model: '', used_model: false }
       case 'binders/dictation':
         return this.dictation(params)
+      case 'binders/speak':
+        return this.speak(params)
       case 'binders/conversation':
         return this.conversation(params)
       case 'binders/outcomes':
@@ -595,7 +634,7 @@ export class AppLinkSession {
   }
 
   private outcomeShape(outcome: Outcome) {
-    const { made: _made, at: _at, ...shown } = outcome
+    const { made: _made, at: _at, transcribing: _t, ...shown } = outcome
     return shown
   }
 
@@ -622,17 +661,12 @@ export class AppLinkSession {
     const id = String(params.id ?? '')
     if (!id) throw new Refused('A conversation needs its id.')
     const already = await this.ledgerGet<Outcome>(`app:outcome:${id.toLowerCase()}`)
-    if (already) return { id }
-    const segments = (Array.isArray(params.segments) ? params.segments : []) as { start?: number; text?: string; speaker?: string }[]
+    if (already && !already.transcribing) return { id }
+    const segments = (Array.isArray(params.segments) ? params.segments : []) as { start?: number; end?: number; text?: string; speaker?: string }[]
     const names = (params.speakers && typeof params.speakers === 'object' ? params.speakers : {}) as Record<string, string>
-    const lines: string[] = []
-    for (const segment of segments) {
-      const said = String(segment.text ?? '').trim()
-      if (!said) continue
-      const who = names[String(segment.speaker ?? '')] || String(segment.speaker ?? 'Someone')
-      const seconds = Math.max(0, Math.round(Number(segment.start) || 0))
-      lines.push(`**[${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}] ${who}:** ${said}`)
-    }
+    const said: SaidBy[] = segments.map((s) => ({ start: Number(s.start) || 0, end: Number(s.end) || Number(s.start) || 0, text: String(s.text ?? ''), ...(s.speaker ? { speaker: String(s.speaker) } : {}) }))
+    const transcript = transcriptMarkdown(said, names)
+    const lines = transcript ? transcript.split('\n\n') : []
     const words = lines.join(' ').split(/\s+/).length
     const place = this.own()
     const at = new Date().toISOString()
@@ -662,6 +696,59 @@ export class AppLinkSession {
       appEvents.emit('changed', this.login, ['meetings'])
     }).catch((err) => log.warn({ err }, 'Saying what came of a capture failed'))
     return { id }
+  }
+
+  /**
+   * A conversation's audio, sent by the iPhone when the hub has a transcription model: written down here (one at a time),
+   * with the voices the iPhone told apart, then filed as a conversation; or, when the iPhone's own transcript got here
+   * first, put in its note in place of that. The audio isn't kept.
+   */
+  async audio(meta: AudioCapture, audio: Uint8Array, mime: string) {
+    const transcriber = this.deps.settings?.transcriber()
+    if (!transcriber) throw new Refused('Your hub has no transcription model.')
+    const id = meta.id
+    const key = `app:outcome:${id.toLowerCase()}`
+    const already = await this.ledgerGet<Outcome>(key)
+    const filed = await this.ledgerGet<{ space: string; note: string }>(`app:capture:${id.toLowerCase()}`)
+    if (!already && !filed) {
+      await this.setOutcome({ id, state: 'writing', line: 'Writing it down on your hub…', title: 'Writing it down', settled: false, transcribing: true, at: new Date().toISOString() })
+    }
+    const done = transcriptionTurns.run(async () => {
+      const heard = await transcriber.transcribe(audio, mime, meta.language)
+      // Voices by the file's own times (the iPhone's turns are on them), then every time on the clock.
+      const clock = [...(meta.clock ?? [])].sort((a, b) => a.file - b.file)
+      const segments = speakersByOverlap(heard.segments, meta.turns ?? []).map((s) => ({ ...s, start: onTheClock(s.start, clock), end: onTheClock(s.end, clock) }))
+      const names = meta.speakers ?? {}
+      const capture = await this.ledgerGet<{ space: string; note: string }>(`app:capture:${id.toLowerCase()}`)
+      if (capture) {
+        // The iPhone's transcript was filed first: the hub's goes in its place.
+        const space = this.deps.spaces.get(capture.space)
+        const text = transcriptMarkdown(segments, names)
+        if (!space?.brain || !text) return
+        const speakers = [...new Set(segments.map((s) => names[s.speaker ?? ''] || s.speaker).filter((s): s is string => Boolean(s)))]
+        await space.brain.rewriteTranscript(capture.note, { kind: 'conversation', text, recordedAt: meta.started, device: meta.device, speakers })
+        appEvents.emit('changed', this.login, ['meetings'])
+        return
+      }
+      await this.conversation({ id, segments, speakers: names, started: meta.started, ended: meta.ended, device: meta.device ?? 'iPhone' })
+    })
+    void done.catch(async (err) => {
+      log.warn({ why: err instanceof Error ? err.message : String(err) }, 'Writing down a capture’s audio failed')
+      // Nothing filed and nothing else coming: say so. When the iPhone's transcript is filed, that stays as it is.
+      const now = await this.ledgerGet<Outcome>(key)
+      if (now?.transcribing) await this.setOutcome({ id, state: 'failed', line: `Not written down: ${err instanceof Error ? err.message : 'the hub’s transcription failed'}`, title: 'Not written down', settled: true, at: new Date().toISOString() })
+    })
+    return { id, done }
+  }
+
+  /** Words read out by the hub's speech model, for the iPhone to play. */
+  private async speak(params: Record<string, unknown>) {
+    const speaker = this.deps.settings?.speaker()
+    if (!speaker) throw new Refused('Your hub has no speech model.')
+    const text = String(params.text ?? '').trim().slice(0, 4000)
+    if (!text) throw new Refused('Nothing to say.')
+    const { audio, mime } = await speaker.speak(text)
+    return { audio: audio.toString('base64'), mime }
   }
 
   private async suggestions() {

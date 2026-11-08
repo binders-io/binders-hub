@@ -156,7 +156,8 @@ describe('the hub’s brain, as apps and terminals reach it', () => {
       assert.ok(!(await set.kv.get('brain'))!.includes('sk-test-not-a-real-key'), 'kept sealed')
       await set.brain.caughtUp()
       const seen = await you('GET', '/api/brain')
-      assert.deepEqual(Object.keys(seen.body.brain).sort(), ['inUse', 'provider', 'summarize'])
+      // What answers, and whether it all stays on the hub's own network: never where the models are or how they're reached.
+      assert.deepEqual(Object.keys(seen.body.brain).sort(), ['inUse', 'localOnly', 'provider', 'summarize'])
       assert.equal(seen.body.index.sources >= 1, true)
       const chosen = await boss('PATCH', '/api/brain', { provider: 'openai' })
       assert.equal(chosen.body.brain.needs, 'The address of the server.')

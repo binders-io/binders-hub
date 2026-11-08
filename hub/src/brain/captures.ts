@@ -1,7 +1,7 @@
-import type { CaptureKind, Summary } from './models.ts'
+import type { CaptureKind, Summary, TimedText } from './models.ts'
 
 // What a phone or Mac sends the hub when it captured something: a dictation, a conversation it heard, or a meeting,
-// as words (never the sound). Each becomes a note in a binder's inbox folder, with the transcript under a heading of
+// as words, or as its sound when the hub has a transcription model (written down, then let go: the hub keeps no audio). Each becomes a note in a binder's inbox folder, with the transcript under a heading of
 // its own, and the brain's summary above it when the hub has a model. The summary is the hub's to write again: it sits
 // under its own heading, and the words people add elsewhere in the note are never touched.
 
@@ -84,4 +84,59 @@ export function withSummary(markdown: string, summary: Summary, retitleFrom?: st
   const transcript = text.indexOf(`\n${transcriptHeading}\n`)
   if (transcript >= 0) return `${text.slice(0, transcript + 1)}${block}\n\n${text.slice(transcript + 1)}`
   return `${text.replace(/\n+$/, '')}\n\n${block}\n`
+}
+
+/** A stretch of a transcript and who said it: the device's label for the voice ("Speaker 1"), when it told voices apart. */
+export interface SaidBy extends TimedText {
+  speaker?: string
+}
+
+/** A transcript as a note keeps it: "**[02:15] Ana:** what was said", one stretch a paragraph, names as the device gave them. */
+export function transcriptMarkdown(segments: SaidBy[], names: Record<string, string> = {}) {
+  const lines: string[] = []
+  for (const segment of segments) {
+    const said = segment.text.trim()
+    if (!said) continue
+    const label = segment.speaker ?? ''
+    const who = (names[label] || label || 'Someone').replace(/[*\n]+/g, ' ').trim().slice(0, 80) || 'Someone'
+    const seconds = Math.max(0, Math.round(segment.start || 0))
+    lines.push(`**[${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}] ${who}:** ${said}`)
+  }
+  return lines.join('\n\n')
+}
+
+/**
+ * Who said each stretch the hub wrote down: the voice whose turns (as the device told voices apart) overlap it most,
+ * or the nearest turn when none overlaps. Without turns, nobody is named.
+ */
+export function speakersByOverlap(segments: TimedText[], turns: { start: number; end: number; speaker: string }[]): SaidBy[] {
+  if (!turns.length) return segments.map((s) => ({ ...s }))
+  return segments.map((segment) => {
+    const end = Math.max(segment.end, segment.start)
+    let best: string | undefined
+    let most = 0
+    for (const turn of turns) {
+      const overlap = Math.min(end, turn.end) - Math.max(segment.start, turn.start)
+      if (overlap > most) {
+        most = overlap
+        best = turn.speaker
+      }
+    }
+    if (!best) {
+      const middle = (segment.start + end) / 2
+      best = turns.reduce((near, turn) => (Math.abs((turn.start + turn.end) / 2 - middle) < Math.abs((near.start + near.end) / 2 - middle) ? turn : near)).speaker
+    }
+    return { ...segment, speaker: best }
+  })
+}
+
+/** A captured note with its transcript put in again (written down better): what's under its heading, and nothing else. */
+export function withTranscript(markdown: string, transcript: string) {
+  const start = markdown.indexOf(`\n${transcriptHeading}\n`)
+  if (start < 0) return `${markdown.replace(/\n+$/, '')}\n\n${transcriptHeading}\n\n${transcript.trim()}\n`
+  const bodyStart = start + 1 + transcriptHeading.length
+  const rest = markdown.slice(bodyStart)
+  const next = rest.search(/\n## /)
+  const after = next >= 0 ? rest.slice(next) : ''
+  return `${markdown.slice(0, bodyStart)}\n\n${transcript.trim()}\n${after ? `${after.replace(/^\n?/, '\n')}` : ''}`
 }

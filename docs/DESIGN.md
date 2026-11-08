@@ -395,6 +395,17 @@ An iPhone chooses its brain: its Mac, or the hub. With the hub, it sends the ver
 - **What it captures** goes to the person's own Binder: a conversation is kept once as a note there, summed up, and what
   came of it (Filed in …) and its follow-ups (offered as cards) are kept in that Binder's store for the iPhone to ask.
   A moment is sorted by the hub's model and done at once: a card, a note, or an answer from the binders.
+- **Audio, when the hub has a transcription model** (it lists `transcribes`): the iPhone sends a conversation's audio to
+  `POST /api/app/audio`, described in the X-Binders-Capture header with the voices it told apart. The hub writes it down
+  one recording at a time, names each stretch for the voice whose turns overlap it most, and files it as a
+  conversation; when the iPhone's own transcript was filed first, the hub's goes in its place under the note's
+  Transcript heading and the summary is written again. An outcome that only says "Writing it down on your hub…" never
+  stops the iPhone's own transcript from being filed. The audio isn't kept.
+- **Speech, when it has a speech model** (it lists `speaks`): `binders/speak` gives the answer's audio, base64, for the
+  iPhone to play.
+- **Models are per job** (`hub/src/brain/settings.ts`): the chat model, embeddings, transcription and speech each have
+  their own server and sealed key. **Local AI only** refuses any of them that isn't on the hub's own network (loopback,
+  private and VPN ranges, `.local`, `.internal` and one-word names) and Claude with it.
 - **What the hub can't do yet** (the Manager, agents' sessions on a Mac, Auto) isn't in the features it lists, so the
   iPhone hides those screens rather than half-work.
 - Times go without fractions of a second, writes the outbox may send twice are done once by their request id, and the

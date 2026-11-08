@@ -15,7 +15,7 @@ import { IssuesSaver } from '../src/savers/issues.ts'
 import { Spaces } from '../src/spaces.ts'
 import { BrainSettingsStore } from '../src/brain/settings.ts'
 import { SpaceBrain } from '../src/brain/brain.ts'
-import type { BrainModel } from '../src/brain/models.ts'
+import type { BrainModel, Speaker, Transcriber } from '../src/brain/models.ts'
 import { seed } from './helpers.ts'
 
 const talk = 'so the van needs new tyres before the trip and sam said he would book the garage for tuesday morning and we agreed to split the cost between the two teams'
@@ -29,12 +29,25 @@ function standInModel(): BrainModel {
   }
 }
 
+/** A transcription model standing in: the same two stretches, written better than the iPhone did ("tyres"). */
+function standInTranscriber(heard: { mime: string; bytes: number }[] = []): Transcriber {
+  return {
+    label: 'stand-in transcriber (test)',
+    transcribe: async (audio, mime) => {
+      heard.push({ mime, bytes: audio.length })
+      return { text: talk, segments: [{ start: 0.2, end: 3.8, text: 'so the van needs new tyres before the trip' }, { start: 4.1, end: 9.5, text: 'and sam said he would book the garage for tuesday morning and we agreed to split the cost between the two teams' }] }
+    },
+  }
+}
+
+const standInSpeaker: Speaker = { label: 'stand-in voice (test)', speak: async (text) => ({ audio: Buffer.from(`spoken:${text}`), mime: 'audio/mpeg' }) }
+
 /** A hub with a team Binder and the person's own, each with its brain, and an app token for the person. */
-async function setUp() {
+async function setUp(voice: { transcriber?: Transcriber; speaker?: Speaker } = {}) {
   const kv = new MemoryKV()
   const sealer = new Sealer('test-secret')
   const settings = await new BrainSettingsStore(kv, sealer, {}).load()
-  settings.useForTests(standInModel())
+  settings.useForTests(standInModel(), undefined, voice.transcriber, voice.speaker)
   const github = new GitHubConnection(kv, sealer, { webUrl: 'http://unused', apiUrl: 'http://unused' }, {})
   const auth = new Auth(kv, sealer, { github: () => github.signIn(), allowed: () => ({ users: [], orgs: [] }), devLogin: () => true })
   const make = async (id: string, binder: { id: string; name: string }) => {
@@ -216,6 +229,83 @@ describe('the hub as an iPhone’s brain', () => {
       const status = await new Promise<number>((done) => refused.once('unexpected-response', (_req, res) => done(res.statusCode ?? 0)))
       assert.equal(status, 401)
     } finally {
+      await set.close()
+    }
+  })
+
+  it('writes down a conversation’s audio with its own model and the iPhone’s voices, in place of the iPhone’s transcript when that came first, and reads answers out', async () => {
+    const heard: { mime: string; bytes: number }[] = []
+    const set = await setUp({ transcriber: standInTranscriber(heard), speaker: standInSpeaker })
+    const phone = await link(set.url, set.token)
+    try {
+      const hello = (await phone.request('binders/hello', { name: 'iPhone', protocol: 1 })).result as { features: string[] }
+      assert.ok(hello.features.includes('transcribes') && hello.features.includes('speaks'))
+      const send = (body: Buffer, described: unknown, token = set.token) => fetch(`${set.url}/api/app/audio`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'audio/mp4', 'x-binders-capture': encodeURIComponent(JSON.stringify(described)) },
+        body,
+      })
+      const voices = { turns: [{ start: 0, end: 4, speaker: 'Speaker 1' }, { start: 4, end: 10, speaker: 'Speaker 2' }], speakers: { 'Speaker 1': 'You', 'Speaker 2': 'Sam' } }
+      const outcome = async (id: string) => ((await phone.request('binders/outcomes', { ids: [id] })).result as { outcomes: { state: string; line: string }[] }).outcomes[0]
+
+      // Audio alone: written down on the hub, voices named from the iPhone's turns, filed in the person's own Binder.
+      const first = 'A1A1A1A1-0000-4000-8000-000000000001'
+      // A minute of quiet between the two voices, left out of the file: Sam's turn starts 4 s into it, 64 s on the clock.
+      const clock = [{ file: 0, wall: 0 }, { file: 4, wall: 64 }]
+      const sent = await send(Buffer.from('fake m4a bytes'), { id: first, started: '2026-11-07T10:00:00Z', ended: '2026-11-07T10:01:10Z', device: 'iPhone', ...voices, clock })
+      assert.equal(sent.status, 202)
+      assert.equal((await outcome(first)).line === 'Writing it down on your hub…' || (await outcome(first)).state === 'filed', true)
+      await until(async () => (await outcome(first))?.state === 'filed')
+      await set.own.brain.summariesWritten()
+      const filed = set.own.hub.state.notes.find((n) => n.captured === 'conversation')!
+      assert.match(filed.text, /\*\*\[00:00\] You:\*\* so the van needs new tyres/)
+      assert.match(filed.text, /\*\*\[01:04\] Sam:\*\* and sam said/)
+      assert.deepEqual(heard[0], { mime: 'audio/mp4', bytes: 14 })
+
+      // The iPhone's own transcript first (a word wrong), then the audio: the hub's words go in its place, summary kept.
+      const second = 'B2B2B2B2-0000-4000-8000-000000000002'
+      await phone.request('binders/conversation', { id: second, started: '2026-11-07T11:00:00Z', ended: '2026-11-07T11:00:10Z', device: 'iPhone', speakers: { 'Speaker 1': 'You' },
+        segments: [{ start: 0, end: 9, text: 'so the van needs new tires before the trip and sam said he would book the garage for tuesday morning and we agreed to split the cost between the two teams', speaker: 'Speaker 1' }] })
+      await until(async () => (await outcome(second))?.state === 'filed')
+      await set.own.brain.summariesWritten()
+      assert.equal((await send(Buffer.from('more bytes'), { id: second, ...voices })).status, 202)
+      const rewritten = () => set.own.hub.state.notes.find((n) => n.captured === 'conversation' && n.id !== filed.id)!
+      await until(() => /new tyres/.test(rewritten().text))
+      await set.own.brain.summariesWritten()
+      assert.doesNotMatch(rewritten().text, /new tires/)
+      assert.match(rewritten().text, /## Summary/)
+      assert.equal(set.own.hub.state.notes.filter((n) => n.captured === 'conversation').length, 2)
+
+      // Only an app's token, and the recording described.
+      assert.equal((await send(Buffer.from('x'), { id: 'x' }, 'nope')).status, 401)
+      const undescribed = await fetch(`${set.url}/api/app/audio`, { method: 'POST', headers: { authorization: `Bearer ${set.token}`, 'content-type': 'audio/mp4' }, body: Buffer.from('x') })
+      assert.equal(undescribed.status, 422)
+
+      // Answers read out, over the link and on their own.
+      const spoken = (await phone.request('binders/speak', { text: 'Tomatoes along the south wall.' })).result as { audio: string; mime: string }
+      assert.equal(Buffer.from(spoken.audio, 'base64').toString(), 'spoken:Tomatoes along the south wall.')
+      assert.equal(spoken.mime, 'audio/mpeg')
+      const plain = await fetch(`${set.url}/api/brain/speak`, { method: 'POST', headers: { authorization: `Bearer ${set.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ text: 'Hello' }) })
+      assert.equal(plain.headers.get('content-type'), 'audio/mpeg')
+      assert.equal(Buffer.from(await plain.arrayBuffer()).toString(), 'spoken:Hello')
+    } finally {
+      phone.close()
+      await set.close()
+    }
+  })
+
+  it('says it can’t write down audio or speak without those models', async () => {
+    const set = await setUp()
+    const phone = await link(set.url, set.token)
+    try {
+      const hello = (await phone.request('binders/hello', { name: 'iPhone', protocol: 1 })).result as { features: string[] }
+      assert.ok(!hello.features.includes('transcribes') && !hello.features.includes('speaks'))
+      const sent = await fetch(`${set.url}/api/app/audio`, { method: 'POST', headers: { authorization: `Bearer ${set.token}`, 'content-type': 'audio/mp4', 'x-binders-capture': encodeURIComponent(JSON.stringify({ id: 'C3' })) }, body: Buffer.from('x') })
+      assert.equal(sent.status, 422)
+      const spoken = await phone.request('binders/speak', { text: 'Hello' })
+      assert.match((spoken.error as { message: string }).message, /no speech model/)
+    } finally {
+      phone.close()
       await set.close()
     }
   })

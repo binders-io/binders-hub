@@ -335,11 +335,20 @@ admin's) picks its model: Claude, with the hub's Anthropic key, or a server of y
 LM Studio, vLLM), which keeps the words on your machines. An embeddings model is optional: with one, passages are found
 by what they mean as well as by their words.
 
-- **Captures.** A phone or Mac sends a dictation, a conversation it heard or a meeting, as words, never the sound, to
+- **Captures.** A phone or Mac sends a dictation, a conversation it heard or a meeting, as words, to
   `POST /api/captures` with its app token. Each becomes a note in its binder's Dictations, Captures or Meetings folder.
   A conversation or meeting gets a summary at the top when the hub has a model: what it was about, what was decided,
   who said they'd do what. The folder's rules then apply, so a folder that Distills turns it into cards. Sent again with
   the same `sourceId`, it gives back the note it made the first time.
+- **Audio.** With a transcription model (any server that speaks OpenAI's transcription API: whisper.cpp,
+  faster-whisper, a Parakeet server, OpenAI), the iPhone sends a conversation's audio to `POST /api/app/audio` and the
+  hub writes it down with a bigger model than a phone can run, keeping the names of the voices the phone told apart. When
+  the phone's own transcript got there first, the hub's goes in its place and the summary is written again. The audio
+  isn't kept.
+- **Speech.** With a speech model (OpenAI's speech API: Kokoro, a Piper gateway, OpenAI), `POST /api/brain/speak` and the
+  iPhone's `binders/speak` read answers out.
+- **Local AI only.** A switch that keeps every model on the hub's own network (this machine, private ranges, VPN ranges
+  such as 100.64/10, `.local` and one-word names): Claude and any outside address are refused.
 - **Ask.** The **Ask** screen, `POST /api/brain/ask` and the MCP tool `ask` answer a question from the notes and cards of
   a binder, or every binder you're in, numbering the ones the answer rests on. Without a model, they give the passages
   that match best.
@@ -348,8 +357,10 @@ by what they mean as well as by their words.
   a person, even in a folder whose rule accepts work on its own: words heard in a room are nobody's own.
 - **Keys.** They're sealed, like GitHub's, and go only where they were meant to: a key saved in Settings is cleared when
   the provider changes, and one set in the environment goes only to an address the environment sets too. `BRAIN_PROVIDER` (anthropic, openai or off), `BRAIN_MODEL`, `BRAIN_BASE_URL`,
-  `BRAIN_API_KEY` (or `ANTHROPIC_API_KEY`), `BRAIN_SUMMARIZE`, `EMBEDDINGS_BASE_URL`, `EMBEDDINGS_MODEL` and
-  `EMBEDDINGS_API_KEY` set it on the hub instead, and Settings shows what they fix.
+  `BRAIN_API_KEY` (or `ANTHROPIC_API_KEY`), `BRAIN_SUMMARIZE`, `EMBEDDINGS_BASE_URL`, `EMBEDDINGS_MODEL`,
+  `EMBEDDINGS_API_KEY`, `TRANSCRIPTION_BASE_URL`, `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_API_KEY`, `SPEECH_BASE_URL`,
+  `SPEECH_MODEL`, `SPEECH_VOICE`, `SPEECH_API_KEY` and `BRAIN_LOCAL_ONLY` set it on the hub instead, and Settings shows
+  what they fix.
 
 ## Tests
 

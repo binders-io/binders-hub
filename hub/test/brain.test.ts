@@ -6,7 +6,8 @@ import Anthropic from '@anthropic-ai/sdk'
 import { MemoryKV } from '../src/kv.ts'
 import { BrainIndex, passages, words } from '../src/brain/index.ts'
 import { firstWords } from '../src/brain/captures.ts'
-import { ClaudeModel, OpenAICompatibleEmbedder, OpenAICompatibleModel, BrainUnavailable } from '../src/brain/models.ts'
+import { ClaudeModel, OpenAICompatibleEmbedder, OpenAICompatibleModel, OpenAICompatibleSpeaker, OpenAICompatibleTranscriber, BrainUnavailable } from '../src/brain/models.ts'
+import { speakersByOverlap, withTranscript } from '../src/brain/captures.ts'
 
 /** A stand-in embeddings model: a vector per word it knows, so texts sharing a meaning-word come out near. */
 function standInEmbedder(key = 'stand-in|v1') {
@@ -152,6 +153,48 @@ describe('the brain’s settings', () => {
     // A server of your own can be chosen before its address is given.
     assert.equal((await none.set({ provider: 'openai' })).needs, 'The address of the server.')
   })
+
+  it('keeps every model on the hub’s own network with local AI only, and sets up transcription and speech', async () => {
+    const { BrainSettingsStore, onOwnNetwork } = await import('../src/brain/settings.ts')
+    const { Sealer } = await import('../src/secrets.ts')
+    for (const near of ['http://localhost:8080', 'http://127.0.0.1:1', 'http://192.168.1.20/v1', 'http://10.2.3.4', 'http://172.20.0.5', 'http://100.64.0.2:8000', 'http://gpu-box:9000', 'http://mac.local', 'http://[::1]:8000', 'http://[fd00::1]/v1']) {
+      assert.ok(onOwnNetwork(near), near)
+    }
+    for (const far of ['https://api.openai.com/v1', 'http://8.8.8.8', 'http://172.32.0.1', 'https://models.example.com']) assert.ok(!onOwnNetwork(far), far)
+    const store = await new BrainSettingsStore(new MemoryKV(), new Sealer('s'), { ANTHROPIC_API_KEY: 'env-anthropic' }).load()
+    await store.set({ provider: 'anthropic' })
+    assert.ok(store.model(), 'Claude, with local AI only off')
+    const local = await store.set({ localOnly: true })
+    assert.equal(store.model(), undefined)
+    assert.match(local.needs ?? '', /Local AI only is on, and Claude runs at Anthropic/)
+    assert.match((await store.set({ provider: 'openai', baseUrl: 'https://models.example.com/v1', model: 'm' })).needs ?? '', /isn’t on the hub’s own network/)
+    assert.equal((await store.set({ baseUrl: 'http://10.0.0.5:8000/v1' })).inUse, 'm (10.0.0.5:8000)')
+    // Transcription and speech: each its own server, its key sealed, refused outside the network while local only.
+    const voice = await store.set({ transcriptionBaseUrl: 'http://gpu-box:8080/v1', transcriptionModel: 'whisper-large-v3', transcriptionKey: 'tk', speechBaseUrl: 'https://voices.example.com/v1', speechModel: 'kokoro' })
+    assert.equal(voice.transcriptionInUse, 'whisper-large-v3 (gpu-box:8080)')
+    assert.equal(voice.transcriptionKeySet, true)
+    assert.ok(store.transcriber())
+    assert.match(voice.speechNeeds ?? '', /isn’t on the hub’s own network/)
+    assert.equal(store.speaker(), undefined)
+    const off = await store.set({ localOnly: false, speechVoice: 'af_heart' })
+    assert.equal(off.speechInUse, 'kokoro, af_heart (voices.example.com)')
+    assert.equal(JSON.stringify(off).includes('tk'), false, 'a key is never shown')
+    // A key the environment sets for transcription goes only to the address it sets too.
+    const fixed = await new BrainSettingsStore(new MemoryKV(), new Sealer('s'), { TRANSCRIPTION_API_KEY: 'env-tk' }).load()
+    assert.match((await fixed.set({ transcriptionBaseUrl: 'http://elsewhere.test/v1', transcriptionModel: 'w' })).transcriptionNeeds ?? '', /TRANSCRIPTION_BASE_URL/)
+    await assert.rejects(fixed.set({ transcriptionKey: 'other' }), /TRANSCRIPTION_API_KEY/)
+  })
+})
+
+describe('transcripts written down again', () => {
+  it('names each stretch for the voice whose turns overlap it most, and puts a better transcript in place of the old', () => {
+    const named = speakersByOverlap([{ start: 0, end: 3, text: 'a' }, { start: 3.5, end: 6, text: 'b' }, { start: 20, end: 21, text: 'c' }], [{ start: 0, end: 3.2, speaker: 'S1' }, { start: 3.2, end: 7, speaker: 'S2' }])
+    assert.deepEqual(named.map((s) => s.speaker), ['S1', 'S2', 'S2'])
+    const note = '# Van\n\n_Conversation_\n\n## Summary\n\nThey talked.\n\n## Transcript\n\n**[00:00] You:** new tires\n'
+    const again = withTranscript(note, '**[00:00] You:** new tyres')
+    assert.equal(again, '# Van\n\n_Conversation_\n\n## Summary\n\nThey talked.\n\n## Transcript\n\n**[00:00] You:** new tyres\n')
+    assert.match(withTranscript('# Van\n\n## Transcript\n\nold\n\n## Notes\n\nmine\n', 'new'), /## Transcript\n\nnew\n\n## Notes\n\nmine/)
+  })
 })
 
 describe('the models the hub calls', () => {
@@ -223,5 +266,43 @@ describe('the models the hub calls', () => {
     assert.deepEqual([...v].map((x) => Math.round(x * 10) / 10), [0.6, 0.8], 'vectors come back at length one')
     assert.equal(server.seen.at(-1)?.headers.authorization, 'Bearer local-key')
     assert.equal(server.seen.at(-1)?.body.input_type, undefined, 'only Voyage is told documents from questions')
+  })
+
+  it('writes down audio and reads words out with servers of your own', async () => {
+    const seen: { path: string; type: string; body: Buffer; authorization?: string }[] = []
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = []
+      request.on('data', (chunk: Buffer) => chunks.push(chunk))
+      request.on('end', () => {
+        seen.push({ path: request.url ?? '', type: String(request.headers['content-type'] ?? ''), body: Buffer.concat(chunks), authorization: request.headers.authorization })
+        if (request.url === '/v1/audio/transcriptions') {
+          response.writeHead(200, { 'content-type': 'application/json' })
+          response.end(JSON.stringify({ text: 'Hello there. Book it.', segments: [{ start: 0, end: 1.5, text: ' Hello there.' }, { start: 1.5, end: 2.5, text: ' Book it.' }] }))
+        } else if (request.url === '/v1/audio/speech') {
+          response.writeHead(200, { 'content-type': 'audio/mpeg' })
+          response.end(Buffer.from('mp3 bytes'))
+        } else {
+          response.writeHead(401)
+          response.end()
+        }
+      })
+    })
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+    closers.push(() => new Promise<void>((done) => server.close(() => done())))
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`
+    const heard = await new OpenAICompatibleTranscriber({ baseURL: url, model: 'whisper-large-v3', apiKey: 'tk' }).transcribe(new Uint8Array([1, 2, 3]), 'audio/mp4', 'en')
+    assert.deepEqual(heard.segments.map((s) => s.text), ['Hello there.', 'Book it.'])
+    const form = seen[0].body.toString('latin1')
+    assert.match(seen[0].type, /^multipart\/form-data/)
+    assert.match(form, /name="model"\r\n\r\nwhisper-large-v3/)
+    assert.match(form, /name="response_format"\r\n\r\nverbose_json/)
+    assert.match(form, /name="language"\r\n\r\nen/)
+    assert.match(form, /filename="audio.m4a"/)
+    assert.equal(seen[0].authorization, 'Bearer tk')
+    const spoken = await new OpenAICompatibleSpeaker({ baseURL: url, model: 'kokoro', voice: 'af_heart' }).speak('Hi [1].')
+    assert.equal(spoken.audio.toString(), 'mp3 bytes')
+    assert.equal(spoken.mime, 'audio/mpeg')
+    assert.deepEqual(JSON.parse(seen[1].body.toString()), { model: 'kokoro', input: 'Hi [1].', voice: 'af_heart', response_format: 'mp3' })
+    await assert.rejects(new OpenAICompatibleSpeaker({ baseURL: `${url}/nowhere`, model: 'k' }).speak('x'), BrainUnavailable)
   })
 })

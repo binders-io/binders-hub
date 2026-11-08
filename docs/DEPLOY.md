@@ -61,7 +61,7 @@ From a private registry: copy the image there, set `image.repository` (and `redi
 
 On a cluster with its own conventions: `commonLabels` go on everything the chart makes, and `ingress.labels` on the Ingress alone (for an external-dns that only picks labelled Ingresses, say). `serviceAccount` runs the hub as a ServiceAccount the chart makes, with your annotations, or as one of yours. When `HUB_SECRET` comes from your own settings (`envFrom`, or a vault agent the cluster injects), set `hubSecret.fromEnvironment: true` and the chart stays out of it.
 
-The hub's brain is set in **Settings → Brain**. To set it on the cluster instead, put `BRAIN_PROVIDER` and `BRAIN_MODEL` in `env` and its key (`BRAIN_API_KEY`, or `ANTHROPIC_API_KEY` for Claude) in a Secret you pass with `envFrom`.
+The hub's brain is set in **Settings → Brain**. To set it on the cluster instead, put `BRAIN_PROVIDER` and `BRAIN_MODEL` in `env` and its key (`BRAIN_API_KEY`, or `ANTHROPIC_API_KEY` for Claude) in a Secret you pass with `envFrom`. Transcription and speech take `TRANSCRIPTION_BASE_URL` and `TRANSCRIPTION_MODEL`, and `SPEECH_BASE_URL`, `SPEECH_MODEL` and `SPEECH_VOICE`, with their keys (`TRANSCRIPTION_API_KEY`, `SPEECH_API_KEY`) in the Secret; `BRAIN_LOCAL_ONLY=1` keeps every model on the cluster's own network.
 
 Use storage that only one node mounts at a time (`ReadWriteOnce`) and that survives the pod: the hub's notes are a Git repo, which doesn't belong on NFS shared by two writers.
 

@@ -404,3 +404,99 @@ export class OpenAICompatibleEmbedder implements Embedder {
     return out
   }
 }
+
+/** A stretch of a transcript, timed from the start of the audio, in seconds. */
+export interface TimedText {
+  start: number
+  end: number
+  text: string
+}
+
+export interface Transcriber {
+  readonly label: string
+  /** The words in a recording, with when each stretch was said. */
+  transcribe(audio: Uint8Array, mime: string, language?: string): Promise<{ text: string; segments: TimedText[] }>
+}
+
+export interface Speaker {
+  readonly label: string
+  /** Words read out, as audio the apps can play. */
+  speak(text: string): Promise<{ audio: Buffer; mime: string }>
+}
+
+const audioNames: [RegExp, string][] = [[/wav/, 'wav'], [/m4a|mp4|aac/, 'm4a'], [/mpeg|mp3/, 'mp3'], [/webm/, 'webm'], [/ogg|opus/, 'ogg'], [/flac/, 'flac'], [/caf/, 'caf']]
+
+/** Transcription from a server that speaks OpenAI's transcription API: whisper.cpp, faster-whisper, a Parakeet server, OpenAI. */
+export class OpenAICompatibleTranscriber implements Transcriber {
+  readonly label: string
+  private base: string
+  private model: string
+  private apiKey?: string
+
+  constructor(options: { baseURL: string; model: string; apiKey?: string }) {
+    this.base = options.baseURL
+    this.model = options.model
+    this.apiKey = options.apiKey
+    this.label = `${options.model} (${hostOf(options.baseURL)})`
+  }
+
+  async transcribe(audio: Uint8Array, mime: string, language?: string) {
+    const what = `The transcription server at ${hostOf(this.base)}`
+    const form = new FormData()
+    const name = audioNames.find(([test]) => test.test(mime))?.[1] ?? 'wav'
+    const bytes = new Uint8Array(audio.byteLength)
+    bytes.set(audio)
+    form.append('file', new Blob([bytes], { type: mime || 'audio/wav' }), `audio.${name}`)
+    form.append('model', this.model)
+    form.append('response_format', 'verbose_json')
+    form.append('timestamp_granularities[]', 'segment')
+    if (language) form.append('language', language)
+    let response: Response
+    try {
+      response = await fetch(at(this.base, 'audio/transcriptions'), { method: 'POST', headers: this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}, body: form, signal: AbortSignal.timeout(15 * 60_000) })
+    } catch {
+      throw new BrainUnavailable(`The hub couldn’t reach ${what}.`)
+    }
+    if (response.status === 401 || response.status === 403) throw new BrainUnavailable(`${what} refused the hub’s key.`)
+    if (!response.ok) throw new BrainUnavailable(`${what} answered ${response.status}.`)
+    const body = (await response.json().catch(() => ({}))) as { text?: string; segments?: { start?: number; end?: number; text?: string }[] }
+    const segments = (body.segments ?? []).map((s) => ({ start: Number(s.start) || 0, end: Number(s.end) || Number(s.start) || 0, text: String(s.text ?? '').trim() })).filter((s) => s.text)
+    const text = String(body.text ?? segments.map((s) => s.text).join(' ')).trim()
+    return { text, segments: segments.length ? segments : text ? [{ start: 0, end: 0, text }] : [] }
+  }
+}
+
+/** Speech from a server that speaks OpenAI's speech API: Kokoro, Piper behind a gateway, OpenAI. */
+export class OpenAICompatibleSpeaker implements Speaker {
+  readonly label: string
+  private base: string
+  private model: string
+  private voice: string
+  private apiKey?: string
+
+  constructor(options: { baseURL: string; model: string; voice?: string; apiKey?: string }) {
+    this.base = options.baseURL
+    this.model = options.model
+    this.voice = options.voice || 'alloy'
+    this.apiKey = options.apiKey
+    this.label = `${options.model}${options.voice ? `, ${options.voice}` : ''} (${hostOf(options.baseURL)})`
+  }
+
+  async speak(text: string) {
+    const what = `The speech server at ${hostOf(this.base)}`
+    let response: Response
+    try {
+      response = await fetch(at(this.base, 'audio/speech'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) },
+        body: JSON.stringify({ model: this.model, input: text.slice(0, 4000), voice: this.voice, response_format: 'mp3' }),
+        signal: AbortSignal.timeout(120_000),
+      })
+    } catch {
+      throw new BrainUnavailable(`The hub couldn’t reach ${what}.`)
+    }
+    if (response.status === 401 || response.status === 403) throw new BrainUnavailable(`${what} refused the hub’s key.`)
+    if (!response.ok) throw new BrainUnavailable(`${what} answered ${response.status}.`)
+    return { audio: Buffer.from(await response.arrayBuffer()), mime: response.headers.get('content-type')?.split(';')[0] || 'audio/mpeg' }
+  }
+}
