@@ -256,6 +256,37 @@ describe('what’s kept in the browser', () => {
     expect(JSON.parse(window.localStorage.getItem(keys.cache)!).version).toBe(1)
   })
 
+  it('clears each Binder’s cache of the old shape, leaving waiting changes alone', () => {
+    window.localStorage.setItem('binders-hub-cache-v3:other', '{}')
+    window.localStorage.setItem('binders-hub-outbox-v3:other:tab', '[]')
+    startingSync(emptyState())
+    expect(window.localStorage.getItem('binders-hub-cache-v3:other')).toBeNull()
+    expect(window.localStorage.getItem('binders-hub-outbox-v3:other:tab')).toBe('[]')
+  })
+
+  it('gives the Binder you’re in the room when there’s none left, at the cost of other Binders’ caches and nothing else', () => {
+    const storage = window.localStorage
+    const set = storage.setItem.bind(storage)
+    storage.setItem('binders-hub-cache-v4:other', 'x'.repeat(10))
+    storage.setItem('binders-hub-outbox-v3:other:tab', '[]')
+    // A browser with room only once the other Binder's cache has gone.
+    const full = vi.spyOn(Object.getPrototypeOf(storage) as Storage, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+      if (storage.getItem('binders-hub-cache-v4:other') !== null) throw new DOMException('Full', 'QuotaExceededError')
+      set(key, value)
+    })
+    rememberCache(start({ version: 12 }))
+    full.mockRestore()
+    expect(JSON.parse(storage.getItem(keys.cache)!).version).toBe(12)
+    expect(storage.getItem('binders-hub-cache-v4:other')).toBeNull()
+    expect(storage.getItem('binders-hub-outbox-v3:other:tab')).toBe('[]')
+  })
+
+  it('carries on when even that isn’t enough', () => {
+    const full = vi.spyOn(Object.getPrototypeOf(window.localStorage) as Storage, 'setItem').mockImplementation(() => { throw new DOMException('Full', 'QuotaExceededError') })
+    expect(() => rememberCache(start())).not.toThrow()
+    full.mockRestore()
+  })
+
   it('brings back waiting changes and the last state after a reload', () => {
     remember(queue(start({ version: 7 }), edit('n1', 'offline'), new Set()))
     const back = startingSync(emptyState())

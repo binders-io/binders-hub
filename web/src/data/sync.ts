@@ -22,8 +22,9 @@ export interface Sync {
 
 // Bumped when what's kept changes shape, so an older browser cache is left behind, not read wrong. Each Binder's own.
 export const keys = { cache: `binders-hub-cache-v4:${space}`, outbox: `binders-hub-outbox-v3:${space}`, client: 'binders-hub-client' }
-/** The cache before diffs' lines were left out of it: too big to keep, and in the way of what replaces it. */
-const oldCache = `binders-hub-cache-v3:${space}`
+const cachePrefix = 'binders-hub-cache-'
+/** Each Binder's cache from before diffs' lines were left out of it: all in the way of what replaces them. */
+const oldCaches = `${cachePrefix}v3:`
 
 function read<T>(key: string): T | undefined {
   try {
@@ -64,7 +65,7 @@ const outboxKey = `${keys.outbox}:${clientId}`
 
 export function startingSync(seed: HubState): Sync {
   try {
-    window.localStorage.removeItem(oldCache)
+    for (const key of Object.keys(window.localStorage)) if (key.startsWith(oldCaches)) window.localStorage.removeItem(key)
   } catch {
     // Blocked storage: nothing to clear.
   }
@@ -83,8 +84,23 @@ export function startingSync(seed: HubState): Sync {
 /** What's waiting for the hub: written at once, as it's the only copy. */
 export const rememberOutbox = (sync: Sync) => write(outboxKey, sync.pending)
 
-/** The hub's state, to start from next time: all of it, so it's written now and then. The hub has it if this is behind. */
-export const rememberCache = (sync: Sync) => write(keys.cache, { version: sync.version, confirmed: sync.confirmed })
+/**
+ * The hub's state, to start from next time: all of it, so it's written now and then. The hub has it if this is behind.
+ * Every Binder at this address shares the browser's room for it. When there's none left, the one you're in gets it.
+ */
+export function rememberCache(sync: Sync) {
+  try {
+    const text = JSON.stringify({ version: sync.version, confirmed: sync.confirmed })
+    try {
+      window.localStorage.setItem(keys.cache, text)
+    } catch {
+      for (const key of Object.keys(window.localStorage)) if (key.startsWith(cachePrefix) && key !== keys.cache) window.localStorage.removeItem(key)
+      window.localStorage.setItem(keys.cache, text)
+    }
+  } catch {
+    // Private windows, blocked storage, or more than a browser keeps: this tab still works, and starts from the hub next time.
+  }
+}
 
 export function remember(sync: Sync) {
   rememberCache(sync)
