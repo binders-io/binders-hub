@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir, hostname, tmpdir, totalmem } from 'node:os'
 import { join } from 'node:path'
 import { runnerVersion } from '../../shared/agents.ts'
@@ -33,10 +33,17 @@ export function facts() {
   return { memoryGb: Math.round(totalmem() / 1024 ** 3) }
 }
 
-/** A model downloaded on this machine that no server here serves yet: from Hugging Face, or in LM Studio. */
+/** A model downloaded on this machine that no server here serves yet: from Hugging Face, in LM Studio, or a folder of models. */
 export interface OnDisk {
+  /** Its Hugging Face name; LM Studio's; or, from a folder of models, its path. */
   name: string
-  source: 'hf' | 'lmstudio'
+  source: 'hf' | 'lmstudio' | 'dir'
+}
+
+/** Where models were looked for, and how many were found there: for people to see whether theirs are. */
+export interface Looked {
+  where: string
+  count: number
 }
 
 /** Where Hugging Face keeps what it downloads: its hub cache, as its own tools find it. */
@@ -60,31 +67,65 @@ export function which(command: string, env: Record<string, string | undefined> =
   return undefined
 }
 
+/** Folders people keep models in by hand, one model a folder: in their home, and the machine's usual places. */
+const modelFolders = (home: string, machineWide: boolean) => [join(home, 'models'), join(home, 'Models'), ...(machineWide ? ['/models', '/data/models'] : [])]
+
 /**
- * The models downloaded here: the names of Hugging Face's model folders (only their names: never a file in them, and
- * never its token), and LM Studio's list.
+ * The models downloaded here, and where they were looked for: Hugging Face's caches (the one the shell set, and the
+ * usual one) by their model folders' names, folders of models by their folders' names, and LM Studio's list. Only names:
+ * never a file in them, and never Hugging Face's token.
  */
-export async function onDisk(): Promise<OnDisk[]> {
-  const found: OnDisk[] = []
-  const folders = await readdir(hfCache()).catch(() => [] as string[])
-  for (const folder of folders) {
-    const repo = repoOf(folder)
-    if (repo) found.push({ name: repo, source: 'hf' })
+export async function lookOnDisk(env: Record<string, string | undefined> = process.env, place: { home?: string; lmStudio?: boolean } = {}): Promise<{ models: OnDisk[]; looked: Looked[] }> {
+  // A home given (a test's) is the only one looked in: never the machine's own, nor LM Studio, nor its usual places.
+  const home = place.home ?? homedir()
+  const own = place.home === undefined
+  const shown = (path: string) => path.replace(home, '~')
+  const models: OnDisk[] = []
+  const looked: Looked[] = []
+  const caches = [...new Set([env.HF_HUB_CACHE, env.HF_HOME && join(env.HF_HOME, 'hub'), join(home, '.cache', 'huggingface', 'hub')].filter((c): c is string => Boolean(c)))]
+  for (const cache of caches) {
+    const folders = await readdir(cache).catch(() => undefined)
+    if (!folders) continue
+    const repos = folders.map(repoOf).filter((r): r is string => Boolean(r))
+    for (const repo of repos) if (!models.some((m) => m.name === repo)) models.push({ name: repo, source: 'hf' })
+    looked.push({ where: shown(cache), count: repos.length })
   }
-  const lms = which('lms')
+  // ~/models and ~/Models are one folder on a Mac: each looked in once.
+  const seen = new Set<string>()
+  for (const folder of modelFolders(home, own)) {
+    const real = await realpath(folder).catch(() => undefined)
+    if (!real || seen.has(real)) continue
+    seen.add(real)
+    const entries = await readdir(folder, { withFileTypes: true }).catch(() => undefined)
+    if (!entries) continue
+    const dirs = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).slice(0, 100)
+    for (const dir of dirs) models.push({ name: join(folder, dir.name), source: 'dir' })
+    looked.push({ where: shown(folder), count: dirs.length })
+  }
+  const lms = own && place.lmStudio !== false ? which('lms') : undefined
   if (lms) {
     const { code, out } = await run(lms, ['ls', '--json'], 15_000)
     if (code === 0) {
       try {
         const listed = JSON.parse(out) as { modelKey?: string; path?: string; id?: string }[]
+        let count = 0
         for (const m of Array.isArray(listed) ? listed : []) {
           const name = String(m.modelKey ?? m.id ?? m.path ?? '')
-          if (name) found.push({ name, source: 'lmstudio' })
+          if (name) {
+            models.push({ name, source: 'lmstudio' })
+            count++
+          }
         }
+        looked.push({ where: 'LM Studio', count })
       } catch { /* an LM Studio that says it otherwise: none from it */ }
     }
   }
-  return found.slice(0, 300)
+  return { models: models.slice(0, 300), looked }
+}
+
+/** The models downloaded here (lookOnDisk's, without where it looked). */
+export async function onDisk(env: Record<string, string | undefined> = process.env, place: { home?: string; lmStudio?: boolean } = {}): Promise<OnDisk[]> {
+  return (await lookOnDisk(env, place)).models
 }
 
 /** What can serve models found on disk here: mlx-audio for audio on Apple Silicon (through uv), and LM Studio's server. */
@@ -315,7 +356,7 @@ export async function detect(extra: string[] = [], only = false): Promise<Server
   // One server answers at /v1 and at its root alike: kept once, as /v1, which the hub's model classes add their paths to.
   const found = answered.filter((s) => !(s.url.match(/:\d+$/) && answered.some((o) => o.url === `${s.url}/v1`)))
   if (!only && (await answers(`${mlxAudioUrl}/models`))) {
-    const audio = (await onDisk()).filter((m) => m.source === 'hf' && isAudio(m.name)).map((m) => m.name)
+    const audio = (await onDisk()).filter((m) => (m.source === 'hf' || m.source === 'dir') && isAudio(m.name)).map((m) => m.name)
     found.push({ url: mlxAudioUrl, kind: 'mlx-audio', models: audio })
   }
   const spoken = only ? [] : await voices()
@@ -480,6 +521,15 @@ export function foundLines(servers: Server[]) {
   })
 }
 
+/** What's downloaded here and nothing serves, and where it looked: for binders add to say. */
+export function diskLines(disk: { models: OnDisk[]; looked: Looked[] }) {
+  const lines: string[] = []
+  const audio = disk.models.filter((m) => isAudio(m.name)).map((m) => m.name.split('/').pop())
+  if (audio.length) lines.push(`  Downloaded here for speech and transcription: ${audio.slice(0, 8).join(', ')}${audio.length > 8 ? `, and ${audio.length - 8} more` : ''}. Settings → Brain offers to use them.`)
+  if (disk.looked.length) lines.push(`  Looked for downloaded models in ${disk.looked.map((l) => `${l.where} (${l.count})`).join(', ')}.`)
+  return lines
+}
+
 /** Who the machine's token is, as the hub says: for binders add. */
 export async function machineIdentity(hub: string, token: string): Promise<{ name: string; id?: string }> {
   let response: Response
@@ -548,8 +598,8 @@ export async function serve(options: { hub: string; token: string; name?: string
       socket.addEventListener('open', () => {
         live = socket
         void (async () => {
-          const disk = options.only ? [] : await onDisk()
-          socket.send(JSON.stringify({ type: 'hello', token: options.token, name: options.name ?? hostname(), host: options.host ?? hostname(), version: runnerVersion, platform: `${process.platform} ${process.arch}`, servers, facts: facts(), onDisk: disk, runtimes: options.only ? [] : runtimes() }))
+          const disk = options.only ? { models: [], looked: [] } : await lookOnDisk()
+          socket.send(JSON.stringify({ type: 'hello', token: options.token, name: options.name ?? hostname(), host: options.host ?? hostname(), version: runnerVersion, platform: `${process.platform} ${process.arch}`, servers, facts: facts(), onDisk: disk.models, looked: disk.looked, runtimes: options.only ? [] : runtimes() }))
         })()
         const lookAgain = async () => {
           const now = await detect(options.extra, options.only)

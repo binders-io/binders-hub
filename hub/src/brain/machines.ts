@@ -42,6 +42,8 @@ export interface MachineInfo {
   /** Models downloaded on it that nothing serves yet (Hugging Face's, LM Studio's), and what could serve them there. */
   onDisk?: { name: string; source: string }[]
   runtimes?: string[]
+  /** Where it looked for downloaded models, and how many it found in each. */
+  looked?: { where: string; count: number }[]
 }
 
 /** A model being downloaded on a machine, as the hub asked: where it's got to. */
@@ -290,6 +292,7 @@ export class BrainMachines {
     if (typeof message.host === 'string' && message.host.trim()) machine.host = message.host.trim().slice(0, 120)
     if (Array.isArray(message.onDisk)) machine.onDisk = (message.onDisk as { name?: unknown; source?: unknown }[]).slice(0, 300).flatMap((m) => (typeof m?.name === 'string' && m.name ? [{ name: m.name.slice(0, 200), source: String(m.source ?? '').slice(0, 20) }] : []))
     if (Array.isArray(message.runtimes)) machine.runtimes = (message.runtimes as unknown[]).slice(0, 10).map((r) => String(r).slice(0, 20))
+    if (Array.isArray(message.looked)) machine.looked = (message.looked as { where?: unknown; count?: unknown }[]).slice(0, 12).map((l) => ({ where: String(l?.where ?? '').slice(0, 200), count: Math.max(0, Number(l?.count) || 0) }))
     const facts = message.facts as { memoryGb?: unknown } | undefined
     if (facts && typeof facts === 'object') machine.facts = { ...(Number(facts.memoryGb) > 0 ? { memoryGb: Math.min(4096, Math.round(Number(facts.memoryGb))) } : {}) }
     machine.seenAt = new Date().toISOString()

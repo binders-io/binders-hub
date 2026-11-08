@@ -365,10 +365,14 @@ by what they mean as well as by their words.
     own. When a better one appears later, it takes over. A job an admin set, even to off, stays theirs until they hand
     it back.
   - **Models already downloaded.** The daemon also sees models that nothing serves yet:
-    - Hugging Face's, by the names of its model folders only. It never opens a file there or reads the token.
+    - Hugging Face's, by the names of its model folders only. It looks in the cache your shell set (`HF_HOME` and
+      `HF_HUB_CACHE`, which the service keeps) and the usual one. It never opens a file there or reads the token.
+    - Folders of models in `~/models` and `/models`, also by name.
     - LM Studio's, from `lms ls`.
 
-    For a job none of your machines serves, Settings offers "Use it". That starts mlx-audio for audio on a Mac (through
+    It says which it found, and where it looked, both in `binders add` and in Settings.
+
+    When one would do better than what's in use (Kokoro over a Mac's own voices), Settings offers "Use it". That starts mlx-audio for audio on a Mac (through
     `uv`, so nothing needs installing), or LM Studio's server. The daemon starts it again whenever it restarts.
   - **Downloads.** For a job none of your machines can do, Settings offers one click to download a model into Ollama on
     a machine that has it. The model is sized to that machine: a chat model by its memory (`gpt-oss:120b` on a

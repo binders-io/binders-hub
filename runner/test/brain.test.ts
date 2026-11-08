@@ -2,7 +2,7 @@ import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { detect, hfCache, isAudio, listening, mlxAudioCommand, nearby, newer, onDisk, probe, pull, relay, repoOf, say, voiceNames } from '../src/brain.ts'
+import { detect, diskLines, hfCache, isAudio, listening, lookOnDisk, mlxAudioCommand, nearby, newer, onDisk, probe, pull, relay, repoOf, say, voiceNames } from '../src/brain.ts'
 import { mkdtemp, mkdir as makeDir, writeFile as write } from 'node:fs/promises'
 import { tmpdir as tempDir } from 'node:os'
 import { join as joinPath } from 'node:path'
@@ -42,7 +42,7 @@ describe('the brain daemon', () => {
     const server = await standIn()
     assert.deepEqual(await probe(server.url, 'openai'), { url: server.url, kind: 'vllm', models: ['meta/llama-3.1-8b'] })
     assert.equal(await probe('http://127.0.0.1:9/v1', 'openai', 300), undefined)
-    const found = await detect([`${server.url}/`])
+    const found = await detect([`${server.url}/`], true)
     assert.ok(found.some((s) => s.url === server.url), 'the one it was told of, without its slash')
     assert.deepEqual(voiceNames('Albert              en_US    # Hello! My name is Albert.\nAmélie              fr_CA    # Bonjour !\nGood News           en_US    # Hello!\nnonsense\n'), ['Albert', 'Amélie', 'Good News'])
   })
@@ -122,15 +122,10 @@ describe('the brain daemon', () => {
     await makeDir(joinPath(cache, 'models--mlx-community--Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit'))
     await makeDir(joinPath(cache, 'models--mlx-community--parakeet-tdt-0.6b-v3'))
     await write(joinPath(cache, 'version.txt'), '1')
-    const before = process.env.HF_HUB_CACHE
-    process.env.HF_HUB_CACHE = cache
-    try {
-      const names = (await onDisk()).filter((m) => m.source === 'hf').map((m) => m.name).sort()
-      assert.deepEqual(names, ['mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit', 'mlx-community/parakeet-tdt-0.6b-v3'])
-    } finally {
-      if (before === undefined) delete process.env.HF_HUB_CACHE
-      else process.env.HF_HUB_CACHE = before
-    }
+    // A home of its own: the machine's own folders are never looked in by a test.
+    const home = await mkdtemp(joinPath(tempDir(), 'home-'))
+    const names = (await onDisk({ HF_HUB_CACHE: cache }, { home })).filter((m) => m.source === 'hf').map((m) => m.name).sort()
+    assert.deepEqual(names, ['mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit', 'mlx-community/parakeet-tdt-0.6b-v3'])
     assert.ok(isAudio('mlx-community/Kokoro-82M-bf16') && isAudio('Qwen/Qwen3-ASR-0.6B') && !isAudio('Qwen/Qwen3-32B'))
     assert.deepEqual(mlxAudioCommand((c) => (c === 'uvx' ? '/u/.local/bin/uvx' : undefined)), ['/u/.local/bin/uvx', ['--from', 'mlx-audio', 'mlx_audio.server', '--host', '127.0.0.1', '--port', '8939']])
     assert.deepEqual(mlxAudioCommand((c) => (c === 'mlx_audio.server' ? '/bin/mlx_audio.server' : '/u/uvx'))![0], '/bin/mlx_audio.server')
@@ -159,6 +154,22 @@ describe('the brain daemon', () => {
     const found = await detect([`${tensorfold}/v1`, plain], true)
     assert.deepEqual(found.map((s) => s.url), [`${tensorfold}/v1`, plain])
     assert.ok(newer('0.14.0', '0.13.2') && !newer('0.13.0', '0.13.0') && !newer('0.9.9', '0.13.0'))
+  })
+
+  it('looks in the Hugging Face cache the shell set as well as the usual one, and says where it looked', async () => {
+    const custom = await mkdtemp(joinPath(tempDir(), 'hf-home-'))
+    await makeDir(joinPath(custom, 'hub', 'models--hexgrad--Kokoro-82M'), { recursive: true })
+    await makeDir(joinPath(custom, 'hub', 'models--Qwen--Qwen3-TTS-12Hz-1.7B-CustomVoice'), { recursive: true })
+    // The usual cache, under a home of the test's own, as well as the one the shell set.
+    const home = await mkdtemp(joinPath(tempDir(), 'home-'))
+    await makeDir(joinPath(home, '.cache', 'huggingface', 'hub', 'models--mlx-community--whisper-large-v3-turbo'), { recursive: true })
+    await makeDir(joinPath(home, 'models', 'my-voice'), { recursive: true })
+    const disk = await lookOnDisk({ HF_HOME: custom }, { home })
+    assert.deepEqual(disk.looked.map((l) => l.count), [2, 1, 1])
+    assert.deepEqual(disk.looked.slice(1).map((l) => l.where), [joinPath('~', '.cache', 'huggingface', 'hub'), joinPath('~', 'models')])
+    assert.deepEqual(disk.models.map((m) => [m.name.replace(home, '~'), m.source]).sort(), [['Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice', 'hf'], ['hexgrad/Kokoro-82M', 'hf'], ['mlx-community/whisper-large-v3-turbo', 'hf'], [joinPath('~', 'models', 'my-voice'), 'dir']].sort())
+    const said = diskLines({ models: [{ name: 'hexgrad/Kokoro-82M', source: 'hf' }, { name: 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice', source: 'hf' }], looked: [{ where: '~/.cache/huggingface/hub', count: 2 }] })
+    assert.deepEqual(said, ['  Downloaded here for speech and transcription: Kokoro-82M, Qwen3-TTS-12Hz-1.7B-CustomVoice. Settings → Brain offers to use them.', '  Looked for downloaded models in ~/.cache/huggingface/hub (2).'])
   })
 })
 

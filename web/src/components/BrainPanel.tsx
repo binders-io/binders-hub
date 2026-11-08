@@ -75,6 +75,20 @@ interface Machine {
   servers?: MachineServer[]
   seenAt?: string
   downloads?: Download[]
+  onDisk?: { name: string; source: string }[]
+  looked?: { where: string; count: number }[]
+}
+
+/** A speech or transcription model, by its name: what people look for on their machines first. */
+const audioModel = (name: string) => /whisper|parakeet|canary|moonshine|voxtral|asr|kokoro|tts|csm|orpheus|chatterbox|outetts|vibevoice|phonon|lfm\d*-audio/i.test(name)
+
+/** What a machine has downloaded that nothing serves yet, in words: its audio models by name, and how many more. */
+function diskLine(m: Machine) {
+  const all = m.onDisk ?? []
+  if (!all.length) return m.looked?.length ? `No downloaded models found in ${m.looked.map((l) => l.where).join(', ')}.` : ''
+  const audio = all.filter((d) => audioModel(d.name)).map((d) => shortName(d.name))
+  const rest = all.length - audio.length
+  return `Downloaded: ${[...audio.slice(0, 6), ...(audio.length > 6 ? [`${audio.length - 6} more for speech`] : [])].join(', ')}${audio.length && rest ? ', and ' : ''}${rest ? `${rest} other model${rest === 1 ? '' : 's'}` : ''}. Looked in ${(m.looked ?? []).map((l) => l.where).join(', ') || 'the usual places'}.`
 }
 
 /** What the hub offers for jobs none of your machines serves: a model already there to serve, or one to download. */
@@ -195,6 +209,7 @@ function Machines({ machines, onChange }: { machines: Machine[]; onChange: () =>
               <div>
                 <b>{m.name}</b> <span className="machine-state">{m.online ? 'Linked' : m.seenAt ? 'Away' : 'Not linked yet'}{m.platform ? ` · ${m.platform}` : ''}</span>
                 <span className="machine-serves">{m.servers?.length ? m.servers.map(serverLabel).join(' · ') : m.seenAt ? 'No model servers found on it yet.' : 'Waiting for it to link.'}</span>
+                {diskLine(m) && <span className="machine-serves">{diskLine(m)}</span>}
               </div>
               {removing === m.id
                 ? <span className="machine-confirm">Remove {m.name}? <button type="button" className="button" onClick={() => void remove(m.id)}>Remove</button> <button type="button" className="button" onClick={() => setRemoving(undefined)}>Keep</button></span>

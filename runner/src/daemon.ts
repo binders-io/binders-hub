@@ -3,7 +3,7 @@ import { chmod, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/pr
 import { homedir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
-import { detect, foundLines, joinMachine } from './brain.ts'
+import { detect, diskLines, foundLines, joinMachine, lookOnDisk } from './brain.ts'
 import { heldIn } from './held.ts'
 import { serviceEnv } from './network.ts'
 import { launcherFor, stopTreeArgs, taskName, taskXml } from './windows.ts'
@@ -442,6 +442,7 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
       if (brain) {
         console.log(`✓ ${me.name} ${existing ? 'is serving this machine’s models to the hub again' : 'is serving this machine’s models to the hub'}, in the background.`)
         for (const line of foundLines(await detect(serve))) console.log(line)
+        for (const line of diskLines(await lookOnDisk())) console.log(line)
         console.log('  Your hub uses the best of them for each job you haven’t set yourself: see Settings → Brain.')
       }
       else console.log(`✓ ${me.name} ${existing ? 'restarted' : 'is running'} in the background, in ${workspace}.`)

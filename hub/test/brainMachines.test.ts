@@ -362,5 +362,15 @@ describe('machines of yours serving the brain’s models', () => {
     assert.deepEqual([bestPicks([mac, spark]).chat?.machine, bestPicks([mac, spark]).chat?.model], ['m-spark', 'GLM-5.3'])
     assert.equal(bestPicks([mac]).chat?.model, 'gemma4:26b', 'an Ollama model with no size counts as small')
   })
+
+  it('offers a voice already on a Mac over its own voices, which are in use until a model is', () => {
+    const mac = { id: 'm-mac', name: 'helders-macbook-pro', addedBy: 'boss', addedAt: '', online: true, platform: 'darwin arm64', facts: { memoryGb: 64 }, runtimes: ['mlx-audio', 'hf'],
+      servers: [{ url: 'say:', kind: 'say', models: ['Samantha'] }], onDisk: [{ name: 'hexgrad/Kokoro-82M', source: 'hf' }, { name: '/Users/me/models/qwen3-tts', source: 'dir' }] }
+    const offered = offers([mac], ['speech'])
+    assert.deepEqual(offered.map((o) => [o.action, o.runtime, o.models?.speech]), [['serve', 'mlx-audio', 'hexgrad/Kokoro-82M']])
+    // Once mlx-audio serves it, it's in use, and nothing's offered.
+    const serving = { ...mac, servers: [...mac.servers, { url: 'http://127.0.0.1:8939/v1', kind: 'mlx-audio', models: ['hexgrad/Kokoro-82M'] }] }
+    assert.deepEqual(offers([serving], ['speech']), [])
+  })
 })
 

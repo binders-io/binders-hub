@@ -161,19 +161,23 @@ export function offers(machines: MachineView[], open: Job[]): Offer[] {
   const out: Offer[] = []
   let wanted = open.filter((job) => !picks[job])
   // First, what's already downloaded on a machine and only needs serving: mlx-audio for audio on a Mac, LM Studio for
-  // its own models. One runtime serves every model it can there: one offer, for each job it covers.
+  // its own models. Offered when it would do better than what's in use: Kokoro or Qwen on disk over a Mac's own voices.
+  // One runtime serves every model it can there: one offer, for each job it covers.
+  const taken = new Set<Job>()
   for (const machine of machines.filter((m) => m.online)) {
     for (const runtime of ['mlx-audio', 'lmstudio'] as const) {
       if (!machine.runtimes?.includes(runtime)) continue
       const models: Partial<Record<Job, string>> = {}
-      for (const job of wanted) {
-        const fits = (machine.onDisk ?? []).filter((m) => (runtime === 'mlx-audio' ? m.source === 'hf' && (job === 'speech' || job === 'transcription') : m.source === 'lmstudio' && (job === 'chat' || job === 'embeddings')) && jobsOf(m.name, '').includes(job))
+      for (const job of open) {
+        if (taken.has(job)) continue
+        const fits = (machine.onDisk ?? []).filter((m) => (runtime === 'mlx-audio' ? (m.source === 'hf' || m.source === 'dir') && (job === 'speech' || job === 'transcription') : m.source === 'lmstudio' && (job === 'chat' || job === 'embeddings')) && jobsOf(m.name, '').includes(job))
         const best = fits.sort((a, b) => scoreOf(job, '', b.name) - scoreOf(job, '', a.name))[0]
-        if (best) models[job] = best.name
+        if (best && scoreOf(job, '', best.name) > (picks[job]?.score ?? 0)) models[job] = best.name
       }
       const jobs = Object.keys(models) as Job[]
       if (!jobs.length) continue
       out.push({ action: 'serve', runtime, jobs, machine: machine.id, model: models[jobs[0]]!, models })
+      for (const job of jobs) taken.add(job)
       wanted = wanted.filter((job) => !jobs.includes(job))
     }
   }
