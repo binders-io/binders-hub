@@ -349,6 +349,14 @@ by what they mean as well as by their words.
   iPhone's `binders/speak` read answers out.
 - **Local AI only.** A switch that keeps every model on the hub's own network (this machine, private ranges, VPN ranges
   such as 100.64/10, `.local` and one-word names): Claude and any outside address are refused.
+- **Your machines.** Any of those jobs can be served by a machine of yours: a Mac, or a GPU box such as a DGX Spark.
+  An admin adds it in Settings → Brain → Machines, which gives a one-line install
+  (`curl -fsSL <hub>/install | sh -s -- add --token bnw_…`). That sets up the Binders daemon there in the background
+  (launchd on a Mac, systemd on Linux; Node 22 or newer). The daemon finds the model servers on its machine (Ollama,
+  LM Studio, vLLM or NIM, MLX, whisper or Parakeet, Kokoro, plus `--serve` for others) and, on a Mac, macOS's voices.
+  It links to the hub and makes the requests the hub sends to those servers only, so the hub can't reach anything
+  else through it. The brain's prompts and parsing stay on the hub. Each job then picks a machine, a server on it and a
+  model.
 - **Ask.** The **Ask** screen, `POST /api/brain/ask` and the MCP tool `ask` answer a question from the notes and cards of
   a binder, or every binder you're in, numbering the ones the answer rests on. Without a model, they give the passages
   that match best.

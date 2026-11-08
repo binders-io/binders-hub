@@ -404,7 +404,14 @@ An iPhone chooses its brain: its Mac, or the hub. With the hub, it sends the ver
 - **Speech, when it has a speech model** (it lists `speaks`): `binders/speak` gives the answer's audio, base64, for the
   iPhone to play.
 - **Models are per job** (`hub/src/brain/settings.ts`): the chat model, embeddings, transcription and speech each have
-  their own server and sealed key. **Local AI only** refuses any of them that isn't on the hub's own network (loopback,
+  their own server and sealed key, or are served by one of your machines (`hub/src/brain/machines.ts`,
+  `runner/src/brain.ts`).
+  - The machine's daemon links over `/api/brain/machine`, saying who it is first with its `bnw_` token, as a runner
+    does.
+  - It says which servers it found, and the hub's model classes use a fetch that goes through it.
+  - It reaches only the servers it found (and only on its own network) and passes nothing else on. macOS's voices
+    are `say:`.
+  - A machine that's away, removed or not linked says so in the job's needs. **Local AI only** refuses any of them that isn't on the hub's own network (loopback,
   private and VPN ranges, `.local`, `.internal` and one-word names) and Claude with it.
 - **What the hub can't do yet** (the Manager, agents' sessions on a Mac, Auto) isn't in the features it lists, so the
   iPhone hides those screens rather than half-work.

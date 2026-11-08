@@ -112,12 +112,14 @@ export const bodies = {
   briefAsk: z.looseObject({ agentId: maybe, refresh: flag }),
   lesson: z.looseObject({ text: maybe }),
   brain: z.looseObject({
-    provider: z.enum(['off', 'anthropic', 'openai']).optional(), model: z.string().max(200).optional(), baseUrl: z.string().max(500).optional(), summarize: flag,
+    provider: z.enum(['off', 'anthropic', 'openai', 'machine']).optional(), model: z.string().max(200).optional(), baseUrl: z.string().max(500).optional(), summarize: flag,
     embeddingsBaseUrl: z.string().max(500).optional(), embeddingsModel: z.string().max(200).optional(), apiKey: z.string().max(500).optional(), embeddingsKey: z.string().max(500).optional(),
     transcriptionBaseUrl: z.string().max(500).optional(), transcriptionModel: z.string().max(200).optional(), transcriptionKey: z.string().max(500).optional(),
     speechBaseUrl: z.string().max(500).optional(), speechModel: z.string().max(200).optional(), speechVoice: z.string().max(200).optional(), speechKey: z.string().max(500).optional(),
     localOnly: flag,
+    machine: z.string().max(40).optional(), embeddingsMachine: z.string().max(40).optional(), transcriptionMachine: z.string().max(40).optional(), speechMachine: z.string().max(40).optional(),
   }),
+  machine: z.looseObject({ name: text.max(60) }),
   speak: z.looseObject({ text: text.max(4000) }),
   audioCapture: z.looseObject({
     id: z.string().min(1).max(100).regex(/^[A-Za-z0-9-]+$/), started: maybe, ended: maybe, device: z.string().max(120).nullish().transform((v) => v ?? undefined),

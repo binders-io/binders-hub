@@ -21,6 +21,7 @@ import { workRoutes } from './routes/work.ts'
 import { brainRoutes } from './routes/brain.ts'
 import { appLinkRoutes } from './routes/appLink.ts'
 import type { BrainSettingsStore } from './brain/settings.ts'
+import type { BrainMachines } from './brain/machines.ts'
 import type { Role, Space, Spaces } from './spaces.ts'
 
 export { installer } from './routes/machines.ts'
@@ -66,7 +67,7 @@ declare module 'fastify' {
  * the one a request names with x-binders-space, or the first the person may open. Who may open which is the
  * Binder's members; the hub's admins make Binders and may open all of them.
  */
-export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: OptionsStore; brain?: BrainSettingsStore }, options: ServerOptions) {
+export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: OptionsStore; brain?: BrainSettingsStore; machines?: BrainMachines }, options: ServerOptions) {
   const context = makeContext(spaces, deps, options)
   const { auth, isAdmin, secure, signInSpace } = context
   const app = Fastify({ ...(options.logger ? { loggerInstance: options.logger } : { logger: false }), logController: new LogController({ disableRequestLogging: !options.logRequests }), bodyLimit: 4 * 1024 * 1024, trustProxy: trustedProxies() })
@@ -121,8 +122,9 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
   // Who's asking, for everything under /api.
   app.addHook('onRequest', async (request, reply) => {
     if (!request.url.startsWith('/api/')) return
-    // A runner's live link says who it is in its first message: its agent's token.
-    if (request.url.split('?')[0] === '/api/runner/live') return
+    // A runner's live link says who it is in its first message: its agent's token. So does a brain machine's, and its
+    // who-am-I takes the machine's own token.
+    if (['/api/runner/live', '/api/brain/machine', '/api/brain/machine/me'].includes(request.url.split('?')[0])) return
     // An app's person token. A browser only sends this header when a page sets it, and no other site's page may (no
     // CORS here), so it needs no x-binders header.
     const bearer = /^Bearer\s+(.+)$/i.exec(request.headers.authorization ?? '')?.[1]

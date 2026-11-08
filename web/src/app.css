@@ -1754,3 +1754,24 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
 @media (max-width: 520px) { .ask-row { flex-direction: column; } .ask-row .button { width: 100%; } }
 .brain-key { display: flex; gap: 6px; }
 .brain-key input { flex: 1; min-width: 0; }
+
+/* Your machines (Settings → Brain): what each serves, whether it's linked, and the line that sets one up. */
+.machine-list { list-style: none; margin: 4px 0 0; padding: 0; display: grid; border: 1px solid var(--line); border-radius: var(--r); }
+.machine-list li { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--line); }
+.machine-list li:first-child { border-top: 0; }
+.machine-list li > div { display: grid; gap: 2px; min-width: 0; flex: 1; font-size: 13px; }
+.machine-list li > .button, .machine-confirm { margin-left: auto; flex: none; }
+.machine-confirm { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.machine-dot { width: 8px; height: 8px; flex: none; margin-top: 5px; border-radius: 50%; background: var(--fill-3); }
+.machine-dot.on { background: var(--green); }
+.machine-state { font-size: 12px; color: var(--faint); }
+.machine-serves { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.machine-add { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.machine-add input { flex: 1 1 200px; min-width: 0; height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--bg); color: var(--text); font: inherit; font-size: 13.5px; }
+.machine-add input:focus { outline: none; border-color: var(--text); }
+.machine-install { display: grid; gap: 8px; padding: 12px; border-radius: var(--r); background: var(--fill-1); }
+.machine-install p { margin: 0; font-size: 12.5px; color: var(--muted); }
+.machine-line { display: flex; align-items: flex-start; gap: 8px; }
+.machine-line code { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; user-select: all; }
+.machine-pick { display: grid; gap: 10px; width: min(520px, 100%); }
+.machine-add, .machine-install, .machine-list { justify-self: stretch; width: min(600px, 100%); }

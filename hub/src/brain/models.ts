@@ -256,21 +256,34 @@ export class ClaudeModel implements BrainModel {
   }
 }
 
+/** One of your machines a server is reached through (machines.ts): its name, and the fetch that goes by it. */
+export interface Via {
+  name: string
+  fetch: typeof fetch
+}
+
+/** How a server is named in words: by its host, and the machine it's on when it's reached through one. */
+function serverName(base: string, via?: Via) {
+  return via ? `${hostOf(base)} on ${via.name}` : hostOf(base)
+}
+
 /** Joins a base address and a path, whether or not the base ends in a slash. */
 function at(base: string, path: string) {
   return `${base.replace(/\/+$/, '')}/${path}`
 }
 
-async function post(url: string, apiKey: string | undefined, body: unknown, timeoutMs: number, what: string) {
+async function post(url: string, apiKey: string | undefined, body: unknown, timeoutMs: number, what: string, via?: Via) {
   let response: Response
   try {
-    response = await fetch(url, {
+    response = await (via?.fetch ?? fetch)(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
     })
-  } catch {
+  } catch (err) {
+    // A machine that's away says so itself.
+    if (err instanceof BrainUnavailable) throw err
     throw new BrainUnavailable(`The hub couldn’t reach ${what}.`)
   }
   if (response.status === 401 || response.status === 403) throw new BrainUnavailable(`${what} refused the hub’s key.`)
@@ -301,12 +314,14 @@ export class OpenAICompatibleModel implements BrainModel {
   private base: string
   private model: string
   private apiKey?: string
+  private via?: Via
 
-  constructor(options: { baseURL: string; model: string; apiKey?: string }) {
+  constructor(options: { baseURL: string; model: string; apiKey?: string; via?: Via }) {
     this.base = options.baseURL
     this.model = options.model
     this.apiKey = options.apiKey
-    this.label = `${options.model} (${hostOf(options.baseURL)})`
+    this.via = options.via
+    this.label = options.via ? `${options.model} on ${options.via.name}` : `${options.model} (${hostOf(options.baseURL)})`
   }
 
   private async chat(system: string, user: string, json: boolean) {
@@ -315,7 +330,7 @@ export class OpenAICompatibleModel implements BrainModel {
       stream: false,
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
       ...(json ? { response_format: { type: 'json_object' } } : {}),
-    }, 300_000, `The model server at ${hostOf(this.base)}`) as { choices?: { message?: { content?: string } }[] }
+    }, 300_000, `The model server at ${serverName(this.base, this.via)}`, this.via) as { choices?: { message?: { content?: string } }[] }
     // Thinking models put their reasoning first, between tags: it isn't the answer.
     return (body.choices?.[0]?.message?.content ?? '').replace(/<think>[\s\S]*?<\/think>/g, '').trim()
   }
@@ -381,12 +396,14 @@ export class OpenAICompatibleEmbedder implements Embedder {
   private base: string
   private model: string
   private apiKey?: string
+  private via?: Via
 
-  constructor(options: { baseURL: string; model: string; apiKey?: string }) {
+  constructor(options: { baseURL: string; model: string; apiKey?: string; via?: Via }) {
     this.base = options.baseURL
     this.model = options.model
     this.apiKey = options.apiKey
-    this.label = `${options.model} (${hostOf(options.baseURL)})`
+    this.via = options.via
+    this.label = options.via ? `${options.model} on ${options.via.name}` : `${options.model} (${hostOf(options.baseURL)})`
     this.key = `${hostOf(options.baseURL)}|${options.model}`
   }
 
@@ -396,7 +413,7 @@ export class OpenAICompatibleEmbedder implements Embedder {
     const voyage = hostOf(this.base).endsWith('voyageai.com')
     for (let start = 0; start < texts.length; start += 64) {
       const batch = texts.slice(start, start + 64).map((t) => t.slice(0, 8000) || ' ')
-      const body = await post(at(this.base, 'embeddings'), this.apiKey, { model: this.model, input: batch, ...(voyage ? { input_type: use } : {}) }, 120_000, `The embeddings server at ${hostOf(this.base)}`) as { data?: { embedding?: number[]; index?: number }[] }
+      const body = await post(at(this.base, 'embeddings'), this.apiKey, { model: this.model, input: batch, ...(voyage ? { input_type: use } : {}) }, 120_000, `The embeddings server at ${serverName(this.base, this.via)}`, this.via) as { data?: { embedding?: number[]; index?: number }[] }
       const data = [...(body.data ?? [])].sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
       if (data.length !== batch.length || data.some((d) => !Array.isArray(d.embedding) || !d.embedding.length)) throw new BrainUnavailable('The embeddings server gave back something other than one vector per text.')
       for (const d of data) out.push(unit(d.embedding!))
@@ -432,16 +449,18 @@ export class OpenAICompatibleTranscriber implements Transcriber {
   private base: string
   private model: string
   private apiKey?: string
+  private via?: Via
 
-  constructor(options: { baseURL: string; model: string; apiKey?: string }) {
+  constructor(options: { baseURL: string; model: string; apiKey?: string; via?: Via }) {
     this.base = options.baseURL
     this.model = options.model
     this.apiKey = options.apiKey
-    this.label = `${options.model} (${hostOf(options.baseURL)})`
+    this.via = options.via
+    this.label = options.via ? `${options.model} on ${options.via.name}` : `${options.model} (${hostOf(options.baseURL)})`
   }
 
   async transcribe(audio: Uint8Array, mime: string, language?: string) {
-    const what = `The transcription server at ${hostOf(this.base)}`
+    const what = `The transcription server at ${serverName(this.base, this.via)}`
     const form = new FormData()
     const name = audioNames.find(([test]) => test.test(mime))?.[1] ?? 'wav'
     const bytes = new Uint8Array(audio.byteLength)
@@ -453,8 +472,9 @@ export class OpenAICompatibleTranscriber implements Transcriber {
     if (language) form.append('language', language)
     let response: Response
     try {
-      response = await fetch(at(this.base, 'audio/transcriptions'), { method: 'POST', headers: this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}, body: form, signal: AbortSignal.timeout(15 * 60_000) })
-    } catch {
+      response = await (this.via?.fetch ?? fetch)(at(this.base, 'audio/transcriptions'), { method: 'POST', headers: this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}, body: form, signal: AbortSignal.timeout(15 * 60_000) })
+    } catch (err) {
+      if (err instanceof BrainUnavailable) throw err
       throw new BrainUnavailable(`The hub couldn’t reach ${what}.`)
     }
     if (response.status === 401 || response.status === 403) throw new BrainUnavailable(`${what} refused the hub’s key.`)
@@ -473,26 +493,29 @@ export class OpenAICompatibleSpeaker implements Speaker {
   private model: string
   private voice: string
   private apiKey?: string
+  private via?: Via
 
-  constructor(options: { baseURL: string; model: string; voice?: string; apiKey?: string }) {
+  constructor(options: { baseURL: string; model: string; voice?: string; apiKey?: string; via?: Via }) {
     this.base = options.baseURL
     this.model = options.model
     this.voice = options.voice || 'alloy'
     this.apiKey = options.apiKey
-    this.label = `${options.model}${options.voice ? `, ${options.voice}` : ''} (${hostOf(options.baseURL)})`
+    this.via = options.via
+    this.label = `${options.model}${options.voice ? `, ${options.voice}` : ''} ${options.via ? `on ${options.via.name}` : `(${hostOf(options.baseURL)})`}`
   }
 
   async speak(text: string) {
-    const what = `The speech server at ${hostOf(this.base)}`
+    const what = `The speech server at ${serverName(this.base, this.via)}`
     let response: Response
     try {
-      response = await fetch(at(this.base, 'audio/speech'), {
+      response = await (this.via?.fetch ?? fetch)(at(this.base, 'audio/speech'), {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) },
         body: JSON.stringify({ model: this.model, input: text.slice(0, 4000), voice: this.voice, response_format: 'mp3' }),
         signal: AbortSignal.timeout(120_000),
       })
-    } catch {
+    } catch (err) {
+      if (err instanceof BrainUnavailable) throw err
       throw new BrainUnavailable(`The hub couldn’t reach ${what}.`)
     }
     if (response.status === 401 || response.status === 403) throw new BrainUnavailable(`${what} refused the hub’s key.`)

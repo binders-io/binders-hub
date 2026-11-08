@@ -1,7 +1,8 @@
 import type { KV } from '../kv.ts'
 import type { Sealer } from '../secrets.ts'
 import { Refusal } from '../auth.ts'
-import { ClaudeModel, OpenAICompatibleEmbedder, OpenAICompatibleModel, OpenAICompatibleSpeaker, OpenAICompatibleTranscriber, type BrainModel, type Embedder, type Speaker, type Transcriber } from './models.ts'
+import { ClaudeModel, OpenAICompatibleEmbedder, OpenAICompatibleModel, OpenAICompatibleSpeaker, OpenAICompatibleTranscriber, type BrainModel, type Embedder, type Speaker, type Transcriber, type Via } from './models.ts'
+import { sayServer, type BrainMachines } from './machines.ts'
 
 // Which models the hub's brain uses, set by an admin in Settings, under Brain, and kept in the hub's store with its
 // keys sealed. An environment variable set for one fixes it, as with the hub's other options:
@@ -16,6 +17,8 @@ import { ClaudeModel, OpenAICompatibleEmbedder, OpenAICompatibleModel, OpenAICom
 //   SPEECH_BASE_URL, SPEECH_MODEL, SPEECH_VOICE, SPEECH_API_KEY   speech (OpenAI's speech API: Kokoro and the like), so
 //                           the hub can answer out loud
 //   BRAIN_LOCAL_ONLY        1: every model on the hub's own network, never a cloud provider
+// Each job can also be served by one of your machines (machines.ts): a Mac or a GPU box running the Binders daemon, which
+// reaches the model servers on itself for the hub. Those are chosen in Settings only, as the machines are added there.
 // Off, the hub still finds passages by their words; with a model it sums up what's captured and answers questions;
 // with embeddings it also finds passages by what they mean.
 //
@@ -23,7 +26,7 @@ import { ClaudeModel, OpenAICompatibleEmbedder, OpenAICompatibleModel, OpenAICom
 // to Anthropic's own), and one saved in Settings is cleared when the provider changes, so it never follows to a server
 // it wasn't for. Without a key the hub makes no Claude client at all, rather than send whatever else the SDK finds.
 
-export type BrainProvider = 'off' | 'anthropic' | 'openai'
+export type BrainProvider = 'off' | 'anthropic' | 'openai' | 'machine'
 
 export interface BrainSettings {
   provider: BrainProvider
@@ -40,6 +43,14 @@ export interface BrainSettings {
   speechVoice: string
   /** Every model on the hub's own network: no cloud provider, and no address outside it. */
   localOnly: boolean
+  /**
+   * The machine each job is served by, when it's one of yours: its id. The job's address is then a server on that
+   * machine (http://127.0.0.1:11434/v1, say), or "say:" for macOS's voices. Empty: the hub reaches the address itself.
+   */
+  machine: string
+  embeddingsMachine: string
+  transcriptionMachine: string
+  speechMachine: string
 }
 
 /** What Settings shows: the settings, whether each key is set (never the key), and what the environment fixes. */
@@ -71,6 +82,7 @@ export const defaultModel = 'claude-opus-5-5'
 const defaults: BrainSettings = {
   provider: 'off', model: '', baseUrl: '', summarize: true, embeddingsBaseUrl: '', embeddingsModel: '',
   transcriptionBaseUrl: '', transcriptionModel: '', speechBaseUrl: '', speechModel: '', speechVoice: '', localOnly: false,
+  machine: '', embeddingsMachine: '', transcriptionMachine: '', speechMachine: '',
 }
 
 const variables = {
@@ -86,6 +98,10 @@ const variables = {
   speechModel: 'SPEECH_MODEL',
   speechVoice: 'SPEECH_VOICE',
   localOnly: 'BRAIN_LOCAL_ONLY',
+  machine: 'BRAIN_MACHINE',
+  embeddingsMachine: 'EMBEDDINGS_MACHINE',
+  transcriptionMachine: 'TRANSCRIPTION_MACHINE',
+  speechMachine: 'SPEECH_MACHINE',
   apiKey: 'BRAIN_API_KEY',
   embeddingsKey: 'EMBEDDINGS_API_KEY',
   transcriptionKey: 'TRANSCRIPTION_API_KEY',
@@ -137,8 +153,14 @@ function checkedUrl(value: unknown, what: string) {
 function checked(fields: Partial<BrainSettings>): Partial<BrainSettings> {
   const out: Partial<BrainSettings> = {}
   if (fields.provider !== undefined) {
-    if (!['off', 'anthropic', 'openai'].includes(fields.provider)) throw new Refusal('The brain is off, Anthropic, or a server that speaks OpenAI’s API.')
+    if (!['off', 'anthropic', 'openai', 'machine'].includes(fields.provider)) throw new Refusal('The brain is off, Anthropic, a server that speaks OpenAI’s API, or one of your machines.')
     out.provider = fields.provider
+  }
+  for (const name of ['machine', 'embeddingsMachine', 'transcriptionMachine', 'speechMachine'] as const) {
+    if (fields[name] === undefined) continue
+    const id = String(fields[name]).trim()
+    if (id && !/^m-[a-z0-9]{1,32}$/.test(id)) throw new Refusal('That isn’t one of your machines.')
+    out[name] = id
   }
   if (fields.model !== undefined) {
     const model = String(fields.model).trim()
@@ -154,7 +176,8 @@ function checked(fields: Partial<BrainSettings>): Partial<BrainSettings> {
     out.embeddingsModel = model
   }
   if (fields.transcriptionBaseUrl !== undefined) out.transcriptionBaseUrl = checkedUrl(fields.transcriptionBaseUrl, 'The transcription server')
-  if (fields.speechBaseUrl !== undefined) out.speechBaseUrl = checkedUrl(fields.speechBaseUrl, 'The speech server')
+  // macOS's voices on one of your machines go by "say:".
+  if (fields.speechBaseUrl !== undefined) out.speechBaseUrl = String(fields.speechBaseUrl).trim() === sayServer ? sayServer : checkedUrl(fields.speechBaseUrl, 'The speech server')
   for (const name of ['transcriptionModel', 'speechModel', 'speechVoice'] as const) {
     if (fields[name] === undefined) continue
     const value = String(fields[name]).trim()
@@ -300,6 +323,12 @@ export class BrainSettingsStore {
       if (rest.model === undefined) next.model = ''
       if (apiKey === undefined) delete next.apiKey
     }
+    const before2 = this.get()
+    if (checkedFields.machine !== undefined && checkedFields.machine !== before2.machine && apiKey === undefined) delete next.apiKey
+    for (const role of ['embeddings', 'transcription', 'speech'] as const) {
+      const changed = checkedFields[`${role}Machine`]
+      if (changed !== undefined && changed !== before2[`${role}Machine`] && fields[`${role}Key`] === undefined) delete next[`${role}Key`]
+    }
     for (const [name, value] of [['apiKey', apiKey], ['embeddingsKey', embeddingsKey], ['transcriptionKey', transcriptionKey], ['speechKey', speechKey]] as const) {
       if (value === undefined) continue
       const key = value.trim()
@@ -329,6 +358,12 @@ export class BrainSettingsStore {
       if (now.localOnly && !(baseURL && onOwnNetwork(baseURL))) made.needs = 'Local AI only is on, and Claude runs at Anthropic: choose a server of your own.'
       else if (!key.key) made.needs = 'Its Anthropic key.'
       else made.model = new ClaudeModel({ model: now.model || defaultModel, apiKey: key.key, baseURL })
+    } else if (now.provider === 'machine') {
+      const via = this.via(now.machine)
+      if (typeof via === 'string') made.needs = via
+      else if (!now.baseUrl) made.needs = 'A server on that machine.'
+      else if (!now.model) made.needs = 'The name of the model on it.'
+      else made.model = new OpenAICompatibleModel({ baseURL: now.baseUrl, model: now.model, apiKey: key.key, via })
     } else if (now.provider === 'openai') {
       if (!now.baseUrl) made.needs = 'The address of the server.'
       else if (!now.model) made.needs = 'The name of the model on the server.'
@@ -337,9 +372,20 @@ export class BrainSettingsStore {
       else made.model = new OpenAICompatibleModel({ baseURL: now.baseUrl, model: now.model, apiKey: key.key })
     }
     // A server for a job: its address and model given, its key only where it was meant to go, on the network allowed.
-    const server = (name: 'embeddings' | 'transcription' | 'speech', what: string): { base: string; model: string; key?: string } | string | undefined => {
+    const server = (name: 'embeddings' | 'transcription' | 'speech', what: string): { base: string; model: string; key?: string; via?: Via; machine?: string } | string | undefined => {
       const base = now[`${name}BaseUrl`]
       const model = now[`${name}Model`]
+      const machine = now[`${name}Machine`]
+      if (machine) {
+        // On one of your machines: on its own network by being there.
+        const via = this.via(machine)
+        if (typeof via === 'string') return via
+        if (!base) return `A ${what} server on that machine.`
+        if (base === sayServer) return name === 'speech' ? { base, model, via, machine, key: undefined } : `macOS’s voices don’t do ${what}.`
+        if (!model) return `The name of the ${what} model.`
+        return { base, model, via, machine, key: this.serverKey(`${name}Key`).key }
+      }
+      if (base === sayServer) return 'macOS’s voices are reached through one of your machines.'
       if (!base && !model) return undefined
       if (!base) return `The address of the ${what} server.`
       if (!model) return `The name of the ${what} model.`
@@ -350,14 +396,36 @@ export class BrainSettingsStore {
     }
     const embeddings = server('embeddings', 'embeddings')
     if (typeof embeddings === 'string') made.embeddingsNeeds = embeddings
-    else if (embeddings) made.embedder = new OpenAICompatibleEmbedder({ baseURL: embeddings.base, model: embeddings.model, apiKey: embeddings.key })
+    else if (embeddings) made.embedder = new OpenAICompatibleEmbedder({ baseURL: embeddings.base, model: embeddings.model, apiKey: embeddings.key, via: embeddings.via })
     const transcription = server('transcription', 'transcription')
     if (typeof transcription === 'string') made.transcriptionNeeds = transcription
-    else if (transcription) made.transcriber = new OpenAICompatibleTranscriber({ baseURL: transcription.base, model: transcription.model, apiKey: transcription.key })
+    else if (transcription) made.transcriber = new OpenAICompatibleTranscriber({ baseURL: transcription.base, model: transcription.model, apiKey: transcription.key, via: transcription.via })
     const speech = server('speech', 'speech')
     if (typeof speech === 'string') made.speechNeeds = speech
-    else if (speech) made.speaker = new OpenAICompatibleSpeaker({ baseURL: speech.base, model: speech.model, voice: now.speechVoice || undefined, apiKey: speech.key })
+    else if (speech?.base === sayServer && speech.machine && this.machines) made.speaker = this.machines.speaker(speech.machine, now.speechVoice || speech.model)
+    else if (speech) made.speaker = new OpenAICompatibleSpeaker({ baseURL: speech.base, model: speech.model, voice: now.speechVoice || undefined, apiKey: speech.key, via: speech.via })
     this.made = made
+  }
+
+  private machines?: BrainMachines
+
+  /** What each job needs, said again: a machine was added or removed. */
+  refresh() {
+    this.changed()
+  }
+
+  /** The hub's machines, for the jobs served by one of them. */
+  useMachines(machines: BrainMachines) {
+    this.machines = machines
+    this.changed()
+  }
+
+  /** How a job reaches one of your machines, or why it can't. */
+  private via(id: string): Via | string {
+    if (!id) return 'Choose one of your machines.'
+    if (!this.machines) return 'This hub has no machines.'
+    if (!this.machines.get(id)) return 'That machine was removed from the hub.'
+    return { name: this.machines.name(id), fetch: this.machines.fetchVia(id) }
   }
 
   /** The model to sum up and answer with, when there is one. */

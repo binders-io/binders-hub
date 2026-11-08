@@ -22,6 +22,7 @@ import { GitHubPoller } from './poller.ts'
 import { OptionsStore, optionsFromEnv } from './options.ts'
 import { log as hubLog } from './logger.ts'
 import { BrainSettingsStore } from './brain/settings.ts'
+import { BrainMachines } from './brain/machines.ts'
 import { SpaceBrain } from './brain/brain.ts'
 
 // Everything comes from the environment (see README.md). GitHub is best set up from Settings, which makes a GitHub App
@@ -80,6 +81,9 @@ if (firstLog instanceof RedisLog) {
 const options = await new OptionsStore(kv, optionsFromEnv(env)).load()
 // The models the hub's brain uses, set in Settings under Brain; BRAIN_* and EMBEDDINGS_* fix them.
 const brainSettings = await new BrainSettingsStore(kv, sealer, env).load()
+// Machines of yours serving the brain's models (a Mac, a DGX Spark), linked through the Binders daemon.
+const brainMachines = await new BrainMachines(kv).load()
+brainSettings.useMachines(brainMachines)
 
 /** The Binder people sign in to the hub through when none is named: the first with a GitHub App. */
 const signInThrough = () => spaces.all().find((s) => s.github.signIn())
@@ -208,7 +212,7 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
 const spaces = new Spaces(kv, startSpace)
 await spaces.load({ id: space, name: env.HUB_NAME ?? space, members: [] })
 
-const app = await buildServer(spaces, { auth, options, brain: brainSettings }, { publicUrl, logger: hubLog, logRequests: env.LOG === '1', webDir: env.WEB_DIR, enforceCsp: env.CSP_ENFORCE === '1' })
+const app = await buildServer(spaces, { auth, options, brain: brainSettings, machines: brainMachines }, { publicUrl, logger: hubLog, logRequests: env.LOG === '1', webDir: env.WEB_DIR, enforceCsp: env.CSP_ENFORCE === '1' })
 await app.listen({ port, host })
 
 const githubOf = (s: Space) => {

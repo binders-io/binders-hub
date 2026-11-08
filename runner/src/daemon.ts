@@ -43,6 +43,10 @@ export interface Saved {
   addedAt: string
   /** The proxy and certificate settings of the shell that set it up, which a service doesn't otherwise get. */
   network?: Record<string, string>
+  /** A brain machine (a bnw_ token): it serves this machine's model servers to the hub, and has no workspace. */
+  kind?: 'brain'
+  /** The model servers it was told of, besides the usual places it looks. */
+  serve?: string[]
 }
 
 /**
@@ -117,6 +121,7 @@ const bootout = (name: string) => Promise.all(domains().map((d) => run('launchct
 
 /** What the service runs: this Node, the runner file, and where to find the agent's token. */
 function command(s: Saved) {
+  if (s.kind === 'brain') return [process.execPath, runnerFile(), 'brain', '--hub', s.hub, '--token-file', tokenOf(s.name), '--name', s.name, ...(s.serve?.length ? ['--serve', s.serve.join(',')] : [])]
   return [process.execPath, runnerFile(), '--hub', s.hub, '--workspace', s.workspace, '--token-file', tokenOf(s.name), '--name', s.name]
 }
 
@@ -408,10 +413,15 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
   switch (sub) {
     case 'add': {
       const token = String(f.token ?? process.env.BINDERS_TOKEN ?? '')
-      if (!/^bnd_/.test(token)) throw new Error('binders add needs the agent’s token: --token bnd_… (from its Start the runner on the Agents page).')
+      if (!/^bn[dw]_/.test(token)) throw new Error('binders add needs the agent’s token: --token bnd_… (from its Start the runner on the Agents page), or a brain machine’s, bnw_… (Settings → Brain → Machines).')
       const hub = String(f.hub ?? process.env.BINDERS_URL ?? '').replace(/\/$/, '')
       if (!/^https?:\/\//.test(hub)) throw new Error('binders add needs the hub: --hub https://…')
-      const workspace = home(String(f.workspace ?? process.cwd()))
+      // A brain machine: no workspace, and the servers it was told of besides the usual places.
+      const brain = token.startsWith('bnw_')
+      // It links with Node's own WebSocket, from Node 22.
+      if (brain && typeof WebSocket === 'undefined') throw new Error(`Serving models to the hub needs Node 22 or newer; this is ${process.version}. brew upgrade node, or https://nodejs.org`)
+      const serve = typeof f.serve === 'string' ? f.serve.split(',').map((u) => u.trim()).filter(Boolean) : []
+      const workspace = brain ? homedir() : home(String(f.workspace ?? process.cwd()))
       if (!(await stat(workspace).then((x) => x.isDirectory(), () => false))) throw new Error(`${workspace} isn’t a folder.`)
       const me = await whoami(hub, token)
       const existing = (await saved()).find((s) => (me.id && s.agentId === me.id) || (s.agent === me.name && s.hub === hub))
@@ -419,17 +429,18 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
       if (!existing) for (let n = 2; (await saved()).some((s) => s.name === name); n++) name = `${slug(me.name)}-${n}`
       const network = serviceEnv()
       const carried = Object.keys(network)
-      const s: Saved = { name, agent: me.name, ...(me.id ? { agentId: me.id } : {}), hub, workspace, addedAt: existing?.addedAt ?? new Date().toISOString(), ...(carried.length ? { network } : {}) }
+      const s: Saved = { name, agent: me.name, ...(me.id ? { agentId: me.id } : {}), hub, workspace, addedAt: existing?.addedAt ?? new Date().toISOString(), ...(carried.length ? { network } : {}), ...(brain ? { kind: 'brain' as const, ...(serve.length ? { serve } : {}) } : {}) }
       await mkdir(agentsDir(), { recursive: true, mode: 0o700 })
       await writeFile(tokenOf(name), token, { mode: 0o600 })
       await chmod(tokenOf(name), 0o600)
       await writeFile(join(agentsDir(), `${name}.json`), JSON.stringify(s, null, 2))
       await install(s)
-      console.log(`✓ ${me.name} ${existing ? 'restarted' : 'is running'} in the background, in ${workspace}.`)
+      if (brain) console.log(`✓ ${me.name} ${existing ? 'restarted' : 'is serving this machine’s models to the hub'}, in the background. Choose what it serves in Settings → Brain.`)
+      else console.log(`✓ ${me.name} ${existing ? 'restarted' : 'is running'} in the background, in ${workspace}.`)
       console.log(`  binders list · binders logs ${name} -f · binders restart ${name} · binders remove ${name}`)
       if (carried.length) console.log(`  It keeps this shell's ${carried.join(', ')}. To change them, run binders add again.`)
       if (platform === 'windows') console.log('  It starts each time you log in to Windows, not before.')
-      if (platform === 'mac' && workspace.startsWith(join(homedir(), 'Documents'))) console.log('  macOS may ask once whether node may use your Documents folder: allow it, or the agent can’t read its code.')
+      if (!brain && platform === 'mac' && workspace.startsWith(join(homedir(), 'Documents'))) console.log('  macOS may ask once whether node may use your Documents folder: allow it, or the agent can’t read its code.')
       return 0
     }
     case 'list':
@@ -443,7 +454,7 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
         const st = await status(s)
         const since = st.pid ? await run('ps', ['-o', 'etime=', '-p', String(st.pid)]).then((r) => r.stdout.trim(), () => '') : ''
         const log = await stat(logOf(s.name)).then((x) => ago(Date.now() - x.mtimeMs), () => '')
-        return [s.name, st.running ? 'running' : st.loaded ? 'stopped' : 'off', st.pid ? String(st.pid) : '-', since || '-', log ? `${log} ago` : '-', s.workspace.replace(homedir(), '~'), s.agent]
+        return [s.name, st.running ? 'running' : st.loaded ? 'stopped' : 'off', st.pid ? String(st.pid) : '-', since || '-', log ? `${log} ago` : '-', s.kind === 'brain' ? '(serves models)' : s.workspace.replace(homedir(), '~'), s.agent]
       }))
       const head = ['NAME', 'STATE', 'PID', 'UP', 'LAST LOG', 'WORKSPACE', 'AGENT']
       const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)))
@@ -481,6 +492,10 @@ export const usage = `binders: Binders agents on this machine. Cards kept runnin
   binders add --token bnd_… [--workspace DIR] [--hub URL] [--name NAME]
                          set an agent up and keep it running in the background (at login, after a crash), with
                          the proxy and certificate settings of this shell
+  binders add --token bnw_… [--serve URL,URL]
+                         serve this machine's model servers (Ollama, LM Studio, vLLM or NIM, MLX, whisper, Kokoro)
+                         and, on a Mac, its voices to the hub's brain, in the background; --serve adds servers it
+                         doesn't find on its own. Its token is from Settings → Brain → Machines
   binders list           every agent here: running or not, its process, how long up, its last log, its folder
   binders logs NAME [-f] what it's been doing (-f: follow)
   binders restart NAME   stop and start it (--all: every one)

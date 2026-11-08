@@ -15,7 +15,39 @@ const captureLimit = { config: { rateLimit: { max: 120, timeWindow: '1 minute' }
 const askLimit = { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }
 
 export async function brainRoutes(app: FastifyInstance, context: Context) {
-  const { spaces, brainSettings, sp, login, isAdmin, act, bodyOf, webUrl } = context
+  const { spaces, brainSettings, brainMachines, sp, login, isAdmin, act, bodyOf, webUrl, param, options } = context
+
+  // Your machines serving the brain's models: an admin's to add and remove, with the line that sets the daemon up on one.
+  const admin = (request: Parameters<typeof login>[0], what: string) => {
+    if (!brainMachines) throw new Refused('This hub has no machines.')
+    if (!isAdmin(login(request))) throw new Refused(`Only the hub’s admins can ${what}.`)
+    return brainMachines
+  }
+  app.get('/api/brain/machines', act(async (request) => ({ machines: admin(request, 'see its machines').list() })))
+  app.post('/api/brain/machines', act(async (request) => {
+    const machines = admin(request, 'add a machine')
+    const { name } = bodyOf<{ name: string }>(bodies.machine, request)
+    const { machine, token } = await machines.add(login(request), name)
+    brainSettings?.refresh()
+    return { machine, token, install: `curl -fsSL ${options.publicUrl.replace(/\/+$/, '')}/install | sh -s -- add --token ${token}` }
+  }))
+  app.delete('/api/brain/machines/:id', act(async (request) => {
+    await admin(request, 'remove a machine').remove(param(request, 'id'))
+    // What it served says it needs a machine now.
+    brainSettings?.refresh()
+    return { ok: true }
+  }))
+  // The daemon's own: who its token is (binders add asks), and its live link, which says who it is first.
+  app.get('/api/brain/machine/me', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
+    const token = /^Bearer\s+(.+)$/i.exec(request.headers.authorization ?? '')?.[1]
+    const machine = await brainMachines?.who(token)
+    if (!machine) return reply.code(401).send({ error: 'This hub doesn’t know that token.' })
+    return { id: machine.id, name: machine.name }
+  })
+  app.get('/api/brain/machine', { websocket: true }, (socket) => {
+    if (!brainMachines) return socket.close(4004, 'This hub has no machines.')
+    brainMachines.link(socket)
+  })
 
   app.get('/api/brain', act(async (request) => {
     const view = brainSettings?.view()
