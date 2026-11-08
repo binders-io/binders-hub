@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Check, Copy } from 'lucide-react'
+import { Check, Copy, Sparkles } from 'lucide-react'
 import { call } from '../data/api'
 import { attempt, toast } from './Toast'
 import { Option, Segmented } from './HubOptionsPanel'
@@ -43,7 +43,12 @@ interface BrainView {
   embeddingsMachine?: string
   transcriptionMachine?: string
   speechMachine?: string
+  /** The jobs the hub chose itself from your machines, and those an admin set. */
+  autoJobs?: Job[]
+  ownJobs?: Job[]
 }
+
+type Job = 'chat' | 'embeddings' | 'transcription' | 'speech'
 
 interface MachineServer {
   url: string
@@ -127,34 +132,31 @@ function MachinePicker({ id, machines, machine, baseUrl, model, voices, disabled
   )
 }
 
-/** Your machines: add one (its line, shown once), see what each serves and whether it's linked, remove one. */
+/** Your machines: one line that adds any of them; what each serves and whether it's linked; removing one. */
 function Machines({ machines, onChange }: { machines: Machine[]; onChange: () => void }) {
-  const [name, setName] = useState('')
-  const [added, setAdded] = useState<{ name: string; install: string }>()
+  const [command, setCommand] = useState<{ install: string; expiresAt: string }>()
   const [removing, setRemoving] = useState<string>()
-  const add = async () => {
-    const result = await attempt(() => call<{ machine: Machine; install: string }>('POST', '/api/brain/machines', { name: name.trim() }))
-    if (!result) return
-    setAdded({ name: result.machine.name, install: result.install })
-    setName('')
-    onChange()
+  const getCommand = async () => {
+    const result = await attempt(() => call<{ install: string; expiresAt: string }>('POST', '/api/brain/machines/command', {}))
+    if (result) setCommand(result)
   }
   const remove = async (id: string) => {
     if (!(await attempt(() => call('DELETE', `/api/brain/machines/${id}`)))) return
     setRemoving(undefined)
     onChange()
   }
-  const copy = (text: string) => void navigator.clipboard.writeText(text).then(() => toast('Copied. Run it in a terminal on the machine.'), () => toast('Couldn’t copy it: select it and copy it yourself.'))
+  const copy = (text: string) => void navigator.clipboard.writeText(text).then(() => toast('Copied. Paste it in a terminal on each machine.'), () => toast('Couldn’t copy it: select it and copy it yourself.'))
+  const until = command ? new Date(command.expiresAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : ''
   return (
-    <Option title="Your machines" detail="Optional. A Mac, or a GPU box such as a DGX Spark, serving the models it runs to this hub: Ollama, LM Studio, vLLM or NIM, MLX, a whisper or Parakeet server, Kokoro and, on a Mac, macOS’s own voices. The Binders daemon on it finds them and links to the hub, and reaches nothing else. Then choose “A machine of yours” for any job below.">
+    <Option title="Your machines" detail="A Mac, or a GPU box such as a DGX Spark, giving the hub the models it runs: Ollama, LM Studio, vLLM or NIM, MLX, a whisper or Parakeet server, Kokoro and, on a Mac, macOS’s own voices. Run one line on it; the hub finds its models and uses the best of them for each job you haven’t set yourself.">
       {machines.length > 0 && (
         <ul className="machine-list">
           {machines.map((m) => (
             <li key={m.id}>
               <span className={`machine-dot${m.online ? ' on' : ''}`} aria-hidden="true" />
               <div>
-                <b>{m.name}</b> <span className="machine-state">{m.online ? 'Linked' : m.seenAt ? 'Away' : 'Not set up yet'}{m.platform ? ` · ${m.platform}` : ''}</span>
-                <span className="machine-serves">{m.servers?.length ? m.servers.map(serverLabel).join(' · ') : m.seenAt ? 'No model servers found on it yet.' : 'Run its line on the machine.'}</span>
+                <b>{m.name}</b> <span className="machine-state">{m.online ? 'Linked' : m.seenAt ? 'Away' : 'Not linked yet'}{m.platform ? ` · ${m.platform}` : ''}</span>
+                <span className="machine-serves">{m.servers?.length ? m.servers.map(serverLabel).join(' · ') : m.seenAt ? 'No model servers found on it yet.' : 'Waiting for it to link.'}</span>
               </div>
               {removing === m.id
                 ? <span className="machine-confirm">Remove {m.name}? <button type="button" className="button" onClick={() => void remove(m.id)}>Remove</button> <button type="button" className="button" onClick={() => setRemoving(undefined)}>Keep</button></span>
@@ -163,17 +165,17 @@ function Machines({ machines, onChange }: { machines: Machine[]; onChange: () =>
           ))}
         </ul>
       )}
-      <div className="machine-add">
-        <input id="machine-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Spark 1, Studio Mac…" maxLength={60} aria-label="The machine’s name" onKeyDown={(e) => e.key === 'Enter' && name.trim() && void add()} />
-        <button type="button" className="button" disabled={!name.trim()} onClick={() => void add()}>Add a machine</button>
-      </div>
-      {added && (
+      {command ? (
         <div className="machine-install">
-          <p>Run this in a terminal on {added.name}, as yourself, not with sudo. It installs the Binders daemon, which keeps running in the background (launchd on a Mac, systemd on Linux). The token in it is shown this once.</p>
+          <p>Paste this in a terminal on each machine, as yourself, not with sudo: a Mac, or Linux such as a DGX Spark. It installs the Binders daemon, which runs in the background and joins under the machine’s own name. It works on as many machines as you like until {until}.</p>
           <div className="machine-line">
-            <code>{added.install}</code>
-            <button type="button" className="button" onClick={() => copy(added.install)}><Copy size={13} /> Copy</button>
+            <code>{command.install}</code>
+            <button type="button" className="button" onClick={() => copy(command.install)}><Copy size={13} /> Copy</button>
           </div>
+        </div>
+      ) : (
+        <div className="machine-add">
+          <button type="button" className="button" onClick={() => void getCommand()}>{machines.length ? 'Add more machines' : 'Add your machines'}</button>
         </div>
       )}
     </Option>
@@ -201,6 +203,8 @@ export function BrainPanel() {
   const [machines, setMachines] = useState<Machine[]>([])
   /** A job switched to a machine of yours, before one is chosen for it. */
   const [onMachine, setOnMachine] = useState<Partial<Record<Role, boolean>>>({})
+  /** A job the hub chose, opened to choose another. */
+  const [changing, setChanging] = useState<Partial<Record<Job, boolean>>>({})
 
   useEffect(() => {
     void call<{ brain: BrainView; admin: boolean; index?: IndexStats }>('GET', '/api/brain').then((r) => {
@@ -239,6 +243,25 @@ export function BrainPanel() {
         onBlur={(e) => e.target.value.trim() !== (brain[key] ?? '') && void save({ [key]: e.target.value.trim() }, key)} />
     </label>
   )
+  const chosenForYou = (job: Job) => Boolean(brain.autoJobs?.includes(job)) && !changing[job]
+  const chooseForMe = async (job: Job) => {
+    const result = await attempt(() => call<{ brain: BrainView }>('POST', '/api/brain/choose', { jobs: [job] }))
+    if (!result) return
+    setBrain(result.brain)
+    setChanging((now) => ({ ...now, [job]: false }))
+  }
+  const inUseFor: Record<Job, string | undefined> = { chat: brain.inUse, embeddings: brain.embeddingsInUse, transcription: brain.transcriptionInUse, speech: brain.speechInUse }
+  const chosen = (job: Job) => (
+    <div className="auto-pick">
+      <p className="option-status"><Sparkles size={12} aria-hidden="true" /> Chosen for you: <b className="mono">{inUseFor[job] ?? 'a model on your machines'}</b>. When a better one appears on your machines, the hub moves to it.</p>
+      <button type="button" className="text-button" onClick={() => setChanging((now) => ({ ...now, [job]: true }))}>Choose another</button>
+    </div>
+  )
+  /** Handing a job back, when your machines have models and the job is someone's choice. */
+  const letHub = (job: Job) => machines.some((m) => m.online && m.servers?.length) && !brain.autoJobs?.includes(job)
+    ? <button type="button" className="text-button" onClick={() => void chooseForMe(job)}>Let the hub choose from your machines</button>
+    : null
+
   /** Whether a job is on one of your machines: chosen, or being chosen. */
   const usesMachine = (role: Role) => Boolean(brain[`${role}Machine`]) || Boolean(onMachine[role])
   const where = (role: Role) => (
@@ -298,6 +321,7 @@ export function BrainPanel() {
         <Machines machines={machines} onChange={loadMachines} />
 
         <Option title="The hub’s model" detail="Sums up the conversations and meetings phones and Macs send, and answers questions from the binders, citing the notes and cards it used. Claude runs at Anthropic with the hub’s key; a server of your own, such as Ollama, LM Studio or vLLM, keeps the words on your machines." aside={note('provider')}>
+          {chosenForYou('chat') ? chosen('chat') : <>
           <Segmented id="brain-provider" value={brain.provider} disabled={off('provider')} onChange={(provider) => void save({ provider }, 'provider')}
             choices={[['off', 'Off'], ['anthropic', 'Claude'], ['openai', 'A server of your own'], ['machine', 'A machine of yours']]} />
           {brain.provider === 'anthropic' && <>
@@ -314,6 +338,8 @@ export function BrainPanel() {
             <MachinePicker id="brain" machines={machines} machine={brain.machine ?? ''} baseUrl={brain.baseUrl ?? ''} model={brain.model ?? ''} disabled={off('provider')}
               onPick={(pick) => void save({ provider: 'machine', ...pick }, 'provider')} />
           )}
+          {letHub('chat')}
+          </>}
         </Option>
 
         <Option title="Summing up" detail="A conversation or meeting sent to the hub gets a summary at the top of its note: what it was about, what was decided, and who said they’d do what. Distill can then turn the note into cards." aside={note('summarize')}>
@@ -321,24 +347,31 @@ export function BrainPanel() {
         </Option>
 
         <Option title="Finding by meaning" detail="Optional. An embeddings model finds the passages that mean what a question asks, even in other words. Any server that speaks OpenAI’s embeddings API works: Ollama, LM Studio, OpenAI or Voyage. Without one, the brain finds passages by their words.">
+          {chosenForYou('embeddings') ? chosen('embeddings') : <>
           {where('embeddings')}
           {usesMachine('embeddings') ? picker('embeddings') : <>
             {field('embeddingsBaseUrl', 'Its address', 'http://localhost:11434/v1')}
             {field('embeddingsModel', 'Model', 'nomic-embed-text')}
             {keyField('embeddingsKey', embeddingsKey, setEmbeddingsKey, brain.embeddingsKeySet, 'None needed for most servers on your own machines')}
           </>}
+          {letHub('embeddings')}
+          </>}
         </Option>
 
         <Option title="Writing down audio" detail="Optional. With a transcription model, phones send the hub what they record and the hub writes it down, with a bigger model than a phone can run; the voices the phone told apart keep their names. The audio isn’t kept. Any server that speaks OpenAI’s transcription API works: a whisper.cpp or faster-whisper server, a Parakeet server, or OpenAI.">
+          {chosenForYou('transcription') ? chosen('transcription') : <>
           {where('transcription')}
           {usesMachine('transcription') ? picker('transcription') : <>
             {field('transcriptionBaseUrl', 'Its address', 'http://localhost:8080/v1')}
             {field('transcriptionModel', 'Model', 'whisper-large-v3')}
             {keyField('transcriptionKey', transcriptionKey, setTranscriptionKey, brain.transcriptionKeySet, 'None needed for most servers on your own machines')}
           </>}
+          {letHub('transcription')}
+          </>}
         </Option>
 
         <Option title="Reading answers out" detail="Optional. A speech model reads the hub’s answers out on phones, in a voice you choose. Any server that speaks OpenAI’s speech API works: Kokoro, a Piper gateway, or OpenAI; and a Mac of yours reads them out in macOS’s own voices.">
+          {chosenForYou('speech') ? chosen('speech') : <>
           {where('speech')}
           {usesMachine('speech') ? <>
             {picker('speech')}
@@ -348,6 +381,8 @@ export function BrainPanel() {
             {field('speechModel', 'Model', 'kokoro')}
             {field('speechVoice', 'Voice', 'af_heart')}
             {keyField('speechKey', speechKey, setSpeechKey, brain.speechKeySet, 'None needed for most servers on your own machines')}
+          </>}
+          {letHub('speech')}
           </>}
         </Option>
 

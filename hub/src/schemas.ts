@@ -120,6 +120,7 @@ export const bodies = {
     machine: z.string().max(40).optional(), embeddingsMachine: z.string().max(40).optional(), transcriptionMachine: z.string().max(40).optional(), speechMachine: z.string().max(40).optional(),
   }),
   machine: z.looseObject({ name: text.max(60) }),
+  chooseJobs: z.looseObject({ jobs: z.array(z.enum(['chat', 'embeddings', 'transcription', 'speech'])).min(1).max(4) }),
   speak: z.looseObject({ text: text.max(4000) }),
   audioCapture: z.looseObject({
     id: z.string().min(1).max(100).regex(/^[A-Za-z0-9-]+$/), started: maybe, ended: maybe, device: z.string().max(120).nullish().transform((v) => v ?? undefined),

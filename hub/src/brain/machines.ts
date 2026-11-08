@@ -22,7 +22,9 @@ export interface MachineServer {
 
 export interface MachineInfo {
   id: string
+  /** Its host's name, as it says when it links: what it goes by. */
   name: string
+  host?: string
   addedBy: string
   addedAt: string
   /** As it said when it last linked. */
@@ -47,6 +49,10 @@ export const sayServer = 'say:'
 const hash = (token: string) => createHash('sha256').update(token).digest('hex')
 const listKey = 'brain-machines'
 const tokenKey = (token: string) => `brain-machine-token:${hash(token)}`
+const joinKey = (token: string) => `brain-machine-join:${hash(token)}`
+/** How long a command for adding machines works: run it on as many machines as you like until then. */
+export const joinHours = 24
+const hostName = (host: string) => host.replace(/\.local$/i, '').replace(/[^\w .@-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60)
 
 /** How long a request through a machine may take at most, whatever it asks (a long recording, written down). */
 const longest = 20 * 60_000
@@ -77,9 +83,25 @@ export class BrainMachines {
   private machines: Kept[] = []
   private live = new Map<string, WebSocket>()
   private waiting = new Map<string, Waiting>()
+  private listeners: (() => void)[] = []
 
   constructor(kv: KV) {
     this.kv = kv
+  }
+
+  /** Told when a machine links, goes, says what it serves, or is removed: so the brain can choose again. */
+  onChange(listener: () => void) {
+    this.listeners.push(listener)
+  }
+
+  private changed() {
+    for (const listener of this.listeners) {
+      try {
+        listener()
+      } catch (err) {
+        log.warn({ err }, 'Choosing the brain’s models again failed')
+      }
+    }
   }
 
   async load() {
@@ -104,16 +126,48 @@ export class BrainMachines {
   }
 
   /** A machine to add: its name, and its token, shown this once. */
-  async add(by: string, name: string) {
+  async add(by: string, name: string, host?: string) {
     const named = name.replace(/\s+/g, ' ').trim().slice(0, 60)
     if (!named) throw new Refused('Give the machine a name, like “Studio Mac” or “Spark 1”.')
     if (this.machines.length >= 20) throw new Refused('A hub takes up to 20 machines.')
     const token = `bnw_${randomBytes(32).toString('base64url')}`
-    const machine: Kept = { id: `m-${randomUUID().replace(/-/g, '').slice(0, 12)}`, name: named, addedBy: by, addedAt: new Date().toISOString(), tokenHash: hash(token) }
+    const machine: Kept = { id: `m-${randomUUID().replace(/-/g, '').slice(0, 12)}`, name: named, ...(host ? { host } : {}), addedBy: by, addedAt: new Date().toISOString(), tokenHash: hash(token) }
     this.machines.push(machine)
     await this.kv.set(tokenKey(token), machine.id)
     await this.save()
     const { tokenHash: _t, ...info } = machine
+    return { machine: { ...info, online: false } as MachineView, token }
+  }
+
+  /**
+   * The command for adding machines, an admin's: one line that works on any number of them for a day. Each machine that
+   * runs it joins with its own token.
+   */
+  async joinToken(by: string) {
+    const token = `bnj_${randomBytes(24).toString('base64url')}`
+    const expiresAt = new Date(Date.now() + joinHours * 3_600_000).toISOString()
+    await this.kv.set(joinKey(token), JSON.stringify({ by, expiresAt }), joinHours * 3600)
+    return { token, expiresAt }
+  }
+
+  /**
+   * A machine joining with that command: added under its host's name, with a token of its own. The same host joining
+   * again (the command run once more) is the same machine, with a fresh token.
+   */
+  async join(joinToken: string, host: string) {
+    const kept = joinToken.startsWith('bnj_') ? await this.kv.get(joinKey(joinToken)) : undefined
+    if (!kept) throw new Refused('That command has run out or was replaced. Get a new one in Settings → Brain → Your machines.')
+    const { by } = JSON.parse(kept) as { by: string }
+    const name = hostName(host) || 'A machine'
+    const same = this.machines.find((m) => (m.host ?? '').toLowerCase() === host.toLowerCase())
+    if (!same) return this.add(by, name, host)
+    const token = `bnw_${randomBytes(32).toString('base64url')}`
+    await this.kv.del(`brain-machine-token:${same.tokenHash}`)
+    same.tokenHash = hash(token)
+    await this.kv.set(tokenKey(token), same.id)
+    await this.save()
+    this.live.get(same.id)?.close(4000, 'This machine joined again.')
+    const { tokenHash: _t, ...info } = same
     return { machine: { ...info, online: false } as MachineView, token }
   }
 
@@ -126,6 +180,7 @@ export class BrainMachines {
     await this.save()
     this.live.get(id)?.close(4003, 'This machine was removed from the hub.')
     this.live.delete(id)
+    this.changed()
   }
 
   /** The machine a token is for. */
@@ -177,7 +232,10 @@ export class BrainMachines {
     socket.on('close', () => {
       clearInterval(ping)
       clearTimeout(hello)
-      if (id && this.live.get(id) === socket) this.live.delete(id)
+      if (id && this.live.get(id) === socket) {
+        this.live.delete(id)
+        this.changed()
+      }
     })
   }
 
@@ -188,8 +246,10 @@ export class BrainMachines {
     if (message.servers !== undefined) machine.servers = clean(message.servers)
     if (typeof message.platform === 'string') machine.platform = message.platform.slice(0, 40)
     if (typeof message.version === 'string') machine.version = message.version.slice(0, 40)
+    if (typeof message.host === 'string' && message.host.trim()) machine.host = message.host.trim().slice(0, 120)
     machine.seenAt = new Date().toISOString()
     await this.save()
+    this.changed()
   }
 
   private nameOf(id: string) {

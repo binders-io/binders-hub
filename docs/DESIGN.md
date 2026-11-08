@@ -411,7 +411,12 @@ An iPhone chooses its brain: its Mac, or the hub. With the hub, it sends the ver
   - It says which servers it found, and the hub's model classes use a fetch that goes through it.
   - It reaches only the servers it found (and only on its own network) and passes nothing else on. macOS's voices
     are `say:`.
-  - A machine that's away, removed or not linked says so in the job's needs. **Local AI only** refuses any of them that isn't on the hub's own network (loopback,
+  - A machine that's away, removed or not linked says so in the job's needs.
+  - A machine joins with a 24-hour command token (`bnj_`) and gets a token of its own (`bnw_`), named by its host. The
+    same host joining again is the same machine.
+  - Each job no admin set is chosen by the hub from the machines linked now (`hub/src/brain/autoPick.ts`), by model
+    name: `autoJobs` are the hub's choices, chosen again when a better model appears or their machine is removed;
+    `ownJobs` are an admin's, never chosen for them until handed back. **Local AI only** refuses any of them that isn't on the hub's own network (loopback,
   private and VPN ranges, `.local`, `.internal` and one-word names) and Claude with it.
 - **What the hub can't do yet** (the Manager, agents' sessions on a Mac, Auto) isn't in the features it lists, so the
   iPhone hides those screens rather than half-work.

@@ -108,16 +108,16 @@ export async function voices(): Promise<string[]> {
   return code === 0 ? voiceNames(out) : []
 }
 
-/** Every server found on this machine: the usual places, those it was told of, and macOS's voices. */
-export async function detect(extra: string[] = []): Promise<Server[]> {
+/** Every server found on this machine: the usual places, those it was told of, and macOS's voices (`only`: just those). */
+export async function detect(extra: string[] = [], only = false): Promise<Server[]> {
   const seen = new Set<string>()
-  const candidates = [...extra.map((u) => [u.trim().replace(/\/+$/, ''), 'openai'] as [string, string]), ...usual].filter(([u]) => {
+  const candidates = [...extra.map((u) => [u.trim().replace(/\/+$/, ''), 'openai'] as [string, string]), ...(only ? [] : usual)].filter(([u]) => {
     if (!u || seen.has(u) || !nearby(u)) return false
     seen.add(u)
     return true
   })
   const found = (await Promise.all(candidates.map(([u, kind]) => probe(u, kind)))).filter((s): s is Server => Boolean(s))
-  const spoken = await voices()
+  const spoken = only ? [] : await voices()
   if (spoken.length) found.push({ url: sayServer, kind: 'say', models: spoken })
   return found
 }
@@ -182,6 +182,37 @@ export async function say(message: { id?: unknown; text?: unknown; voice?: unkno
   }
 }
 
+/** A machine joining with the command from Settings → Brain (a bnj_ token): its own token, and the name the hub gives it. */
+export async function joinMachine(hub: string, joinToken: string, host = hostname()): Promise<{ token: string; name: string; id?: string }> {
+  let response: Response
+  try {
+    response = await fetch(`${hub.replace(/\/+$/, '')}/api/brain/machines/join`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: joinToken, host }), signal: AbortSignal.timeout(15_000) })
+  } catch {
+    throw new Error(`Couldn’t reach the hub at ${hub}.`)
+  }
+  const body = (await response.json().catch(() => ({}))) as { token?: string; name?: string; id?: string; error?: string }
+  if (!response.ok || !body.token?.startsWith('bnw_')) throw new Error(body.error ?? `The hub answered ${response.status}.`)
+  return { token: body.token, name: body.name ?? host, ...(body.id ? { id: body.id } : {}) }
+}
+
+/** What it found here, in words, a line each: for binders add to say. */
+export function foundLines(servers: Server[]) {
+  if (!servers.length) return ['  No model servers found here yet. Start one (Ollama, LM Studio, vLLM, a whisper or Kokoro server) and it’s offered within five minutes.']
+  return servers.map((s) => {
+    if (s.kind === 'say') return `  macOS voices: ${s.models.length}`
+    const port = (() => {
+      try {
+        return new URL(s.url).port
+      } catch {
+        return ''
+      }
+    })()
+    const names: Record<string, string> = { ollama: 'Ollama', lmstudio: 'LM Studio', vllm: 'vLLM', nim: 'NVIDIA NIM', kokoro: 'Kokoro', sglang: 'SGLang' }
+    const shown = s.models.slice(0, 6).join(', ') + (s.models.length > 6 ? `, and ${s.models.length - 6} more` : '')
+    return `  ${names[s.kind] ?? 'A model server'}${port ? ` on :${port}` : ''}: ${shown || 'no models yet'}`
+  })
+}
+
 /** Who the machine's token is, as the hub says: for binders add. */
 export async function machineIdentity(hub: string, token: string): Promise<{ name: string; id?: string }> {
   let response: Response
@@ -202,10 +233,10 @@ const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms))
  * Links to the hub and serves it until stopped: says which servers it found, answers what the hub sends, looks for
  * servers again every few minutes (one started later is offered then), and links again after any break.
  */
-export async function serve(options: { hub: string; token: string; name?: string; extra?: string[]; log?: (line: string) => void; signal?: AbortSignal; lookEveryMs?: number }) {
+export async function serve(options: { hub: string; token: string; name?: string; extra?: string[]; log?: (line: string) => void; signal?: AbortSignal; lookEveryMs?: number; host?: string; only?: boolean }) {
   const log = options.log ?? ((line: string) => console.log(`${new Date().toISOString()} ${line}`))
   const url = `${options.hub.replace(/\/+$/, '').replace(/^http/, 'ws')}/api/brain/machine`
-  let servers = await detect(options.extra)
+  let servers = await detect(options.extra, options.only)
   let failures = 0
   const describe = () => (servers.length ? servers.map((s) => `${s.kind} at ${s.url} (${s.models.length} ${s.kind === 'say' ? 'voices' : 'models'})`).join(', ') : 'no model servers yet')
   log(`Serving ${describe()}.`)
@@ -216,9 +247,9 @@ export async function serve(options: { hub: string; token: string; name?: string
       const stop = () => socket.close(1000)
       options.signal?.addEventListener('abort', stop, { once: true })
       socket.addEventListener('open', () => {
-        socket.send(JSON.stringify({ type: 'hello', token: options.token, name: options.name ?? hostname(), version: runnerVersion, platform: `${process.platform} ${process.arch}`, servers }))
+        socket.send(JSON.stringify({ type: 'hello', token: options.token, name: options.name ?? hostname(), host: options.host ?? hostname(), version: runnerVersion, platform: `${process.platform} ${process.arch}`, servers }))
         looking = setInterval(async () => {
-          const now = await detect(options.extra)
+          const now = await detect(options.extra, options.only)
           if (JSON.stringify(now) === JSON.stringify(servers)) return
           servers = now
           log(`Now serving ${describe()}.`)

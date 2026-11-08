@@ -3,6 +3,7 @@ import { chmod, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/pr
 import { homedir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
+import { detect, foundLines, joinMachine } from './brain.ts'
 import { heldIn } from './held.ts'
 import { serviceEnv } from './network.ts'
 import { launcherFor, stopTreeArgs, taskName, taskXml } from './windows.ts'
@@ -412,18 +413,21 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
   const all = f.all === true
   switch (sub) {
     case 'add': {
-      const token = String(f.token ?? process.env.BINDERS_TOKEN ?? '')
-      if (!/^bn[dw]_/.test(token)) throw new Error('binders add needs the agent’s token: --token bnd_… (from its Start the runner on the Agents page), or a brain machine’s, bnw_… (Settings → Brain → Machines).')
+      let token = String(f.token ?? process.env.BINDERS_TOKEN ?? '')
+      if (!/^bn[dwj]_/.test(token)) throw new Error('binders add needs the agent’s token: --token bnd_… (from its Start the runner on the Agents page), or the line from Settings → Brain → Your machines.')
       const hub = String(f.hub ?? process.env.BINDERS_URL ?? '').replace(/\/$/, '')
       if (!/^https?:\/\//.test(hub)) throw new Error('binders add needs the hub: --hub https://…')
       // A brain machine: no workspace, and the servers it was told of besides the usual places.
-      const brain = token.startsWith('bnw_')
+      const brain = token.startsWith('bnw_') || token.startsWith('bnj_')
       // It links with Node's own WebSocket, from Node 22.
       if (brain && typeof WebSocket === 'undefined') throw new Error(`Serving models to the hub needs Node 22 or newer; this is ${process.version}. brew upgrade node, or https://nodejs.org`)
+      // The line from Settings → Brain: this machine joins, under its own name, with a token of its own.
+      const joined = token.startsWith('bnj_') ? await joinMachine(hub, token) : undefined
+      if (joined) token = joined.token
       const serve = typeof f.serve === 'string' ? f.serve.split(',').map((u) => u.trim()).filter(Boolean) : []
       const workspace = brain ? homedir() : home(String(f.workspace ?? process.cwd()))
       if (!(await stat(workspace).then((x) => x.isDirectory(), () => false))) throw new Error(`${workspace} isn’t a folder.`)
-      const me = await whoami(hub, token)
+      const me = joined ? { name: joined.name, ...(joined.id ? { id: joined.id } : {}) } : await whoami(hub, token)
       const existing = (await saved()).find((s) => (me.id && s.agentId === me.id) || (s.agent === me.name && s.hub === hub))
       let name = existing?.name ?? (typeof f.name === 'string' ? slug(f.name) : slug(me.name))
       if (!existing) for (let n = 2; (await saved()).some((s) => s.name === name); n++) name = `${slug(me.name)}-${n}`
@@ -435,7 +439,11 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
       await chmod(tokenOf(name), 0o600)
       await writeFile(join(agentsDir(), `${name}.json`), JSON.stringify(s, null, 2))
       await install(s)
-      if (brain) console.log(`✓ ${me.name} ${existing ? 'restarted' : 'is serving this machine’s models to the hub'}, in the background. Choose what it serves in Settings → Brain.`)
+      if (brain) {
+        console.log(`✓ ${me.name} ${existing ? 'is serving this machine’s models to the hub again' : 'is serving this machine’s models to the hub'}, in the background.`)
+        for (const line of foundLines(await detect(serve))) console.log(line)
+        console.log('  Your hub uses the best of them for each job you haven’t set yourself: see Settings → Brain.')
+      }
       else console.log(`✓ ${me.name} ${existing ? 'restarted' : 'is running'} in the background, in ${workspace}.`)
       console.log(`  binders list · binders logs ${name} -f · binders restart ${name} · binders remove ${name}`)
       if (carried.length) console.log(`  It keeps this shell's ${carried.join(', ')}. To change them, run binders add again.`)
@@ -492,10 +500,10 @@ export const usage = `binders: Binders agents on this machine. Cards kept runnin
   binders add --token bnd_… [--workspace DIR] [--hub URL] [--name NAME]
                          set an agent up and keep it running in the background (at login, after a crash), with
                          the proxy and certificate settings of this shell
-  binders add --token bnw_… [--serve URL,URL]
-                         serve this machine's model servers (Ollama, LM Studio, vLLM or NIM, MLX, whisper, Kokoro)
-                         and, on a Mac, its voices to the hub's brain, in the background; --serve adds servers it
-                         doesn't find on its own. Its token is from Settings → Brain → Machines
+  binders add --token bnj_… [--serve URL,URL]
+                         give the hub's brain this machine's models (Ollama, LM Studio, vLLM or NIM, MLX, whisper,
+                         Kokoro and, on a Mac, its voices), in the background; the line is in Settings → Brain →
+                         Your machines. --serve adds servers it doesn't find on its own
   binders list           every agent here: running or not, its process, how long up, its last log, its folder
   binders logs NAME [-f] what it's been doing (-f: follow)
   binders restart NAME   stop and start it (--all: every one)

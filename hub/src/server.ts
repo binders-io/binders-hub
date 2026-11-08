@@ -124,7 +124,7 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
     if (!request.url.startsWith('/api/')) return
     // A runner's live link says who it is in its first message: its agent's token. So does a brain machine's, and its
     // who-am-I takes the machine's own token.
-    if (['/api/runner/live', '/api/brain/machine', '/api/brain/machine/me'].includes(request.url.split('?')[0])) return
+    if (['/api/runner/live', '/api/brain/machine', '/api/brain/machine/me', '/api/brain/machines/join'].includes(request.url.split('?')[0])) return
     // An app's person token. A browser only sends this header when a page sets it, and no other site's page may (no
     // CORS here), so it needs no x-binders header.
     const bearer = /^Bearer\s+(.+)$/i.exec(request.headers.authorization ?? '')?.[1]

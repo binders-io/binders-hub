@@ -2,7 +2,8 @@ import type { KV } from '../kv.ts'
 import type { Sealer } from '../secrets.ts'
 import { Refusal } from '../auth.ts'
 import { ClaudeModel, OpenAICompatibleEmbedder, OpenAICompatibleModel, OpenAICompatibleSpeaker, OpenAICompatibleTranscriber, type BrainModel, type Embedder, type Speaker, type Transcriber, type Via } from './models.ts'
-import { sayServer, type BrainMachines } from './machines.ts'
+import { sayServer, type BrainMachines, type MachineView } from './machines.ts'
+import { bestPicks, scoreOf, type Job } from './autoPick.ts'
 
 // Which models the hub's brain uses, set by an admin in Settings, under Brain, and kept in the hub's store with its
 // keys sealed. An environment variable set for one fixes it, as with the hub's other options:
@@ -51,6 +52,13 @@ export interface BrainSettings {
   embeddingsMachine: string
   transcriptionMachine: string
   speechMachine: string
+  /**
+   * The jobs the hub chose itself, from your machines (autoPick.ts): chosen again when a better model appears on one, or
+   * its machine is removed. A job you set is yours, and never chosen for you again.
+   */
+  autoJobs: Job[]
+  /** The jobs an admin set, even to nothing (the brain off): never chosen for them. */
+  ownJobs: Job[]
 }
 
 /** What Settings shows: the settings, whether each key is set (never the key), and what the environment fixes. */
@@ -82,7 +90,7 @@ export const defaultModel = 'claude-opus-5-5'
 const defaults: BrainSettings = {
   provider: 'off', model: '', baseUrl: '', summarize: true, embeddingsBaseUrl: '', embeddingsModel: '',
   transcriptionBaseUrl: '', transcriptionModel: '', speechBaseUrl: '', speechModel: '', speechVoice: '', localOnly: false,
-  machine: '', embeddingsMachine: '', transcriptionMachine: '', speechMachine: '',
+  machine: '', embeddingsMachine: '', transcriptionMachine: '', speechMachine: '', autoJobs: [], ownJobs: [],
 }
 
 const variables = {
@@ -102,6 +110,8 @@ const variables = {
   embeddingsMachine: 'EMBEDDINGS_MACHINE',
   transcriptionMachine: 'TRANSCRIPTION_MACHINE',
   speechMachine: 'SPEECH_MACHINE',
+  autoJobs: 'BRAIN_AUTO_JOBS',
+  ownJobs: 'BRAIN_OWN_JOBS',
   apiKey: 'BRAIN_API_KEY',
   embeddingsKey: 'EMBEDDINGS_API_KEY',
   transcriptionKey: 'TRANSCRIPTION_API_KEY',
@@ -185,7 +195,18 @@ function checked(fields: Partial<BrainSettings>): Partial<BrainSettings> {
     out[name] = value
   }
   if (fields.localOnly !== undefined) out.localOnly = Boolean(fields.localOnly)
+  for (const name of ['autoJobs', 'ownJobs'] as const) {
+    if (fields[name] !== undefined) out[name] = (Array.isArray(fields[name]) ? fields[name] : []).filter((j): j is Job => ['chat', 'embeddings', 'transcription', 'speech'].includes(String(j)))
+  }
   return out
+}
+
+/** Each job's settings: a change to any of them, by an admin, makes the job theirs. */
+const jobFields: Record<Job, string[]> = {
+  chat: ['provider', 'machine', 'baseUrl', 'model', 'apiKey'],
+  embeddings: ['embeddingsBaseUrl', 'embeddingsModel', 'embeddingsMachine', 'embeddingsKey'],
+  transcription: ['transcriptionBaseUrl', 'transcriptionModel', 'transcriptionMachine', 'transcriptionKey'],
+  speech: ['speechBaseUrl', 'speechModel', 'speechVoice', 'speechMachine', 'speechKey'],
 }
 
 function fromEnv(env: Record<string, string | undefined>) {
@@ -306,9 +327,12 @@ export class BrainSettingsStore {
     }
   }
 
-  /** Changes settings; a key given as '' is cleared, one left out is kept. */
-  async set(fields: Partial<BrainSettings> & Partial<Record<KeyName, string>>) {
-    const { apiKey, embeddingsKey, transcriptionKey, speechKey, ...rest } = fields
+  /**
+   * Changes settings; a key given as '' is cleared, one left out is kept. An admin's change to a job makes it theirs; the
+   * hub's own (autoPick) says which jobs it chose.
+   */
+  async set(fields: Partial<BrainSettings> & Partial<Record<KeyName, string>>, by: 'admin' | 'hub' = 'admin') {
+    const { apiKey, embeddingsKey, transcriptionKey, speechKey, autoJobs: givenAuto, ownJobs: givenOwn, ...rest } = fields
     const fixedField = Object.keys(rest).find((key) => key in this.fixed.fields) as keyof BrainSettings | undefined
     if (fixedField) throw new Refusal(`That one is set on the hub by ${variables[fixedField]}, so it can’t be changed here.`)
     for (const [name, value] of [['apiKey', apiKey], ['embeddingsKey', embeddingsKey], ['transcriptionKey', transcriptionKey], ['speechKey', speechKey]] as const) {
@@ -336,10 +360,76 @@ export class BrainSettingsStore {
       if (key) next[name] = this.sealer.seal(key)
       else delete next[name]
     }
+    const before3 = this.get()
+    const touched = (Object.keys(jobFields) as Job[]).filter((job) => jobFields[job].some((name) => name in fields))
+    next.autoJobs = by === 'hub' ? (givenAuto ?? before3.autoJobs) : before3.autoJobs.filter((job) => !touched.includes(job))
+    next.ownJobs = by === 'hub' ? (givenOwn ?? before3.ownJobs) : [...new Set([...before3.ownJobs, ...touched])]
     this.stored = next
     await this.kv.set('brain', JSON.stringify(this.stored))
     this.changed()
     return this.view()
+  }
+
+  private picking: Promise<unknown> = Promise.resolve()
+
+  /** Jobs an admin hands back: cleared, and chosen by the hub from your machines from now on. */
+  async letHubChoose(jobs: Job[]) {
+    const fields: Record<string, string> = {}
+    for (const job of jobs) {
+      if ([...jobFields[job]].some((name) => name in this.fixed.fields)) throw new Refusal(`That job is set on the hub by its environment, so it can’t be chosen for you.`)
+      if (job === 'chat') Object.assign(fields, { provider: 'off', machine: '', baseUrl: '', model: '' })
+      else Object.assign(fields, { [`${job}Machine`]: '', [`${job}BaseUrl`]: '', [`${job}Model`]: '', ...(job === 'speech' ? { speechVoice: '' } : {}) })
+    }
+    const now = this.get()
+    await this.set({ ...fields, autoJobs: now.autoJobs.filter((j) => !jobs.includes(j)), ownJobs: now.ownJobs.filter((j) => !jobs.includes(j)) } as Partial<BrainSettings>, 'hub')
+    if (this.machines) await this.autoPick(this.machines.list())
+    return this.view()
+  }
+
+  /**
+   * Each job no one chose, given the best model on your machines linked now; one the hub chose before, given a better
+   * one when it appears (a Spark joining after a Mac), or let go when its machine is removed. One at a time.
+   */
+  autoPick(machines: MachineView[]) {
+    this.picking = this.picking.then(() => this.pickNow(machines)).catch(() => undefined)
+    return this.picking
+  }
+
+  private async pickNow(machines: MachineView[]) {
+    const now = this.get()
+    const picks = bestPicks(machines)
+    const auto = new Set(now.autoJobs)
+    const known = (id: string) => machines.some((m) => m.id === id)
+    const linked = (id: string) => machines.some((m) => m.id === id && m.online)
+    const fixed = (names: string[]) => names.some((name) => name in this.fixed.fields)
+    const fields: Record<string, string> = {}
+    const own = new Set(now.ownJobs)
+    for (const job of ['chat', 'embeddings', 'transcription', 'speech'] as Job[]) {
+      if (fixed(jobFields[job]) || own.has(job)) continue
+      const chosen = auto.has(job)
+      const machine = job === 'chat' ? now.machine : now[`${job}Machine`]
+      const url = job === 'chat' ? now.baseUrl : now[`${job}BaseUrl`]
+      const model = job === 'chat' ? now.model : job === 'speech' && url === sayServer ? '' : now[`${job}Model`]
+      // Open: nothing set (the brain off, for chat), or the hub's own choice.
+      const open = job === 'chat' ? now.provider === 'off' || (chosen && now.provider === 'machine') : (!url && !machine) || chosen
+      if (!open) continue
+      const pick = picks[job]
+      const current = chosen && machine ? { machine, url, model } : undefined
+      const same = pick && current && pick.machine === current.machine && pick.url === current.url && pick.model === current.model
+      const better = pick && !same && (!current || !linked(current.machine) || pick.score > scoreOf(job, current.url, current.model))
+      if (better) {
+        if (job === 'chat') Object.assign(fields, { provider: 'machine', machine: pick.machine, baseUrl: pick.url, model: pick.model })
+        else Object.assign(fields, { [`${job}Machine`]: pick.machine, [`${job}BaseUrl`]: pick.url, [`${job}Model`]: pick.model, ...(job === 'speech' ? { speechVoice: pick.voice ?? '' } : {}) })
+        auto.add(job)
+      } else if (current && !known(current.machine)) {
+        // Its machine was removed, and no other has one: the job is open again.
+        if (job === 'chat') Object.assign(fields, { provider: 'off', machine: '', baseUrl: '', model: '' })
+        else Object.assign(fields, { [`${job}Machine`]: '', [`${job}BaseUrl`]: '', [`${job}Model`]: '', ...(job === 'speech' ? { speechVoice: '' } : {}) })
+        auto.delete(job)
+      }
+    }
+    if (!Object.keys(fields).length) return
+    await this.set({ ...fields, autoJobs: [...auto] } as Partial<BrainSettings>, 'hub')
   }
 
   private made: Made = {}
@@ -414,9 +504,10 @@ export class BrainSettingsStore {
     this.changed()
   }
 
-  /** The hub's machines, for the jobs served by one of them. */
+  /** The hub's machines, for the jobs served by one of them: and, as they come and go, what each job uses. */
   useMachines(machines: BrainMachines) {
     this.machines = machines
+    machines.onChange(() => void this.autoPick(machines.list()))
     this.changed()
   }
 

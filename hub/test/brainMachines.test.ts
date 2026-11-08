@@ -16,11 +16,11 @@ import { BrainSettingsStore } from '../src/brain/settings.ts'
 import { BrainMachines } from '../src/brain/machines.ts'
 import { SpaceBrain } from '../src/brain/brain.ts'
 import { BrainUnavailable } from '../src/brain/models.ts'
-import { serve } from '../../runner/src/brain.ts'
+import { joinMachine, serve } from '../../runner/src/brain.ts'
 import { oneSpace, seed } from './helpers.ts'
 
 /** A model server standing in for one on the machine: OpenAI's chat, embeddings and transcription APIs, fixed answers. */
-async function modelServer() {
+async function modelServer(models = ['qwen3:14b', 'whisper-large-v3']) {
   const seen: { path: string; type: string; size: number; host?: string }[] = []
   const server: Server = createServer((request, response) => {
     const chunks: Buffer[] = []
@@ -32,7 +32,7 @@ async function modelServer() {
         response.writeHead(200, { 'content-type': 'application/json' })
         response.end(JSON.stringify(value))
       }
-      if (request.url === '/v1/models') return json({ data: [{ id: 'qwen3:14b', owned_by: 'library' }, { id: 'whisper-large-v3', owned_by: 'library' }] })
+      if (request.url === '/v1/models') return json({ data: models.map((id) => ({ id, owned_by: 'library' })) })
       if (request.url === '/v1/chat/completions') return json({ choices: [{ message: { content: '{"title":"Van tyres","summary":"Tyres before the trip.","points":[],"decisions":["Split the cost"],"followUps":["Book the garage"]}' } }] })
       if (request.url === '/v1/audio/transcriptions') return json({ text: 'Book the garage.', segments: [{ start: 0, end: 1.5, text: 'Book the garage.' }] })
       response.writeHead(404)
@@ -179,6 +179,65 @@ describe('machines of yours serving the brain’s models', () => {
       assert.equal((await set.settings.set({ speechMachine: '' })).speechNeeds, 'macOS’s voices are reached through one of your machines.')
       socket.close()
     } finally {
+      await set.close()
+    }
+  })
+
+  it('takes machines with one line, names them by their hosts, and chooses their models for every job no one set', async () => {
+    const set = await setUp()
+    const spark = await modelServer(['llama-3.3-70b-instruct', 'nomic-embed-text', 'whisper-large-v3', 'kokoro'])
+    const mac = await modelServer(['qwen3:235b-a22b'])
+    const stops = [new AbortController(), new AbortController()]
+    try {
+      const boss = api(set.url, await signIn(set.url, 'boss'))
+      const command = await boss('POST', '/api/brain/machines/command', {})
+      const join = /--token (bnj_\S+)$/.exec(command.body.install)![1]
+      assert.match(command.body.install, /^curl -fsSL http:\/\/hub\.test\/install \| sh -s -- add --token bnj_/)
+
+      // The line, run on a Spark: it joins under its host's name, links, and the hub takes its models.
+      const first = await joinMachine(set.url, join, 'spark-1.local')
+      assert.equal(first.name, 'spark-1')
+      void serve({ hub: set.url, token: first.token, extra: [spark.url], only: true, host: 'spark-1.local', signal: stops[0].signal, log: () => {} })
+      await until(() => set.settings.get().autoJobs.length === 4)
+      const view = set.settings.view()
+      assert.deepEqual([view.inUse, view.embeddingsInUse, view.transcriptionInUse, view.speechInUse], ['llama-3.3-70b-instruct on spark-1', 'nomic-embed-text on spark-1', 'whisper-large-v3 on spark-1', 'kokoro, af_heart on spark-1'])
+
+      // The same line on a Mac with a bigger model: chat moves there, the rest stays where it's better.
+      const second = await joinMachine(set.url, join, 'studio-mac')
+      void serve({ hub: set.url, token: second.token, extra: [mac.url], only: true, host: 'studio-mac', signal: stops[1].signal, log: () => {} })
+      await until(() => set.settings.view().inUse === 'qwen3:235b-a22b on studio-mac')
+      assert.equal(set.settings.view().embeddingsInUse, 'nomic-embed-text on spark-1')
+
+      // A job you set is yours: never chosen for you again, until you hand it back.
+      await boss('PATCH', '/api/brain', { transcriptionMachine: '', transcriptionBaseUrl: '', transcriptionModel: '' })
+      assert.equal(set.settings.view().transcriptionInUse, undefined)
+      await set.settings.autoPick(set.machines.list())
+      assert.equal(set.settings.view().transcriptionInUse, undefined)
+      const back = await boss('POST', '/api/brain/choose', { jobs: ['transcription'] })
+      assert.equal(back.body.brain.transcriptionInUse, 'whisper-large-v3 on spark-1')
+      assert.ok(back.body.brain.autoJobs.includes('transcription'))
+
+      // Turning the brain off is a choice too.
+      await boss('PATCH', '/api/brain', { provider: 'off' })
+      await set.settings.autoPick(set.machines.list())
+      assert.equal(set.settings.get().provider, 'off')
+      await boss('POST', '/api/brain/choose', { jobs: ['chat'] })
+      assert.equal(set.settings.view().inUse, 'qwen3:235b-a22b on studio-mac')
+
+      // The Mac removed: chat goes back to the Spark's best.
+      const macId = set.machines.list().find((m) => m.name === 'studio-mac')!.id
+      await boss('DELETE', `/api/brain/machines/${macId}`)
+      await until(() => set.settings.view().inUse === 'llama-3.3-70b-instruct on spark-1')
+
+      // The line once more on the Spark: the same machine, a fresh token, the old one stopped.
+      const again = await joinMachine(set.url, join, 'spark-1.local')
+      assert.equal(again.id, first.id)
+      assert.equal(await set.machines.who(first.token), undefined)
+      await assert.rejects(joinMachine(set.url, 'bnj_not-a-command', 'x'), /run out or was replaced/)
+    } finally {
+      for (const stop of stops) stop.abort()
+      await spark.close()
+      await mac.close()
       await set.close()
     }
   })

@@ -24,12 +24,38 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
     return brainMachines
   }
   app.get('/api/brain/machines', act(async (request) => ({ machines: admin(request, 'see its machines').list() })))
+  const installLine = (token: string) => `curl -fsSL ${options.publicUrl.replace(/\/+$/, '')}/install | sh -s -- add --token ${token}`
   app.post('/api/brain/machines', act(async (request) => {
     const machines = admin(request, 'add a machine')
     const { name } = bodyOf<{ name: string }>(bodies.machine, request)
     const { machine, token } = await machines.add(login(request), name)
     brainSettings?.refresh()
-    return { machine, token, install: `curl -fsSL ${options.publicUrl.replace(/\/+$/, '')}/install | sh -s -- add --token ${token}` }
+    return { machine, token, install: installLine(token) }
+  }))
+  // The command for adding machines: one line, run on as many as you like for a day. Each joins on its own.
+  app.post('/api/brain/machines/command', act(async (request) => {
+    const { token, expiresAt } = await admin(request, 'add machines').joinToken(login(request))
+    return { install: installLine(token), expiresAt }
+  }))
+  // A machine running that command: it joins under its host's name, with a token of its own (binders add asks).
+  app.post('/api/brain/machines/join', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (request, reply) => {
+    try {
+      if (!brainMachines) throw new Refused('This hub has no machines.')
+      const body = (request.body ?? {}) as { token?: unknown; host?: unknown }
+      const { machine, token } = await brainMachines.join(String(body.token ?? ''), String(body.host ?? '').slice(0, 120))
+      brainSettings?.refresh()
+      return { id: machine.id, name: machine.name, token }
+    } catch (error) {
+      if (error instanceof Refused) return reply.code(401).send({ error: error.message })
+      throw error
+    }
+  })
+  // Jobs handed back to the hub, to choose from your machines.
+  app.post('/api/brain/choose', act(async (request) => {
+    if (!brainSettings) throw new Refused('This hub has no brain to set up.')
+    if (!isAdmin(login(request))) throw new Refused('Only the hub’s admins can set up its brain.')
+    const { jobs } = bodyOf<{ jobs: ('chat' | 'embeddings' | 'transcription' | 'speech')[] }>(bodies.chooseJobs, request)
+    return { brain: await brainSettings.letHubChoose(jobs), admin: true }
   }))
   app.delete('/api/brain/machines/:id', act(async (request) => {
     await admin(request, 'remove a machine').remove(param(request, 'id'))

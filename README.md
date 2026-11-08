@@ -350,13 +350,18 @@ by what they mean as well as by their words.
 - **Local AI only.** A switch that keeps every model on the hub's own network (this machine, private ranges, VPN ranges
   such as 100.64/10, `.local` and one-word names): Claude and any outside address are refused.
 - **Your machines.** Any of those jobs can be served by a machine of yours: a Mac, or a GPU box such as a DGX Spark.
-  An admin adds it in Settings → Brain → Machines, which gives a one-line install
-  (`curl -fsSL <hub>/install | sh -s -- add --token bnw_…`). That sets up the Binders daemon there in the background
-  (launchd on a Mac, systemd on Linux; Node 22 or newer). The daemon finds the model servers on its machine (Ollama,
-  LM Studio, vLLM or NIM, MLX, whisper or Parakeet, Kokoro, plus `--serve` for others) and, on a Mac, macOS's voices.
-  It links to the hub and makes the requests the hub sends to those servers only, so the hub can't reach anything
-  else through it. The brain's prompts and parsing stay on the hub. Each job then picks a machine, a server on it and a
-  model.
+  - **Adding them.** In Settings → Brain, an admin clicks Add your machines and gets one line:
+    `curl -fsSL <hub>/install | sh -s -- add --token bnj_…`. It works on any number of machines for 24 hours.
+  - **Running the line.** Each machine joins under its host's name, with a token of its own, and the Binders daemon
+    starts there in the background: launchd on a Mac, systemd on Linux, Node 22 or newer. Running the line again on
+    the same machine refreshes it.
+  - **What the daemon serves.** It finds the model servers on its machine: Ollama, LM Studio, vLLM or NIM, MLX, whisper
+    or Parakeet, Kokoro, plus `--serve` for others. On a Mac it also finds macOS's voices. It says what it found and
+    makes the requests the hub sends, to those servers only, so the hub can't reach anything else through it.
+  - **What the hub picks.** For each job no one set, the hub picks the best model on your machines: the biggest chat
+    model, an embeddings model, Parakeet, Canary or the largest whisper, and a speech server's voice, else a Mac's
+    own. When a better one appears later, it takes over. A job an admin set, even to off, stays theirs until they hand
+    it back.
 - **Ask.** The **Ask** screen, `POST /api/brain/ask` and the MCP tool `ask` answer a question from the notes and cards of
   a binder, or every binder you're in, numbering the ones the answer rests on. Without a model, they give the passages
   that match best.
