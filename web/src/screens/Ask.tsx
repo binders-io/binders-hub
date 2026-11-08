@@ -4,6 +4,7 @@ import { call } from '../data/api'
 import { attempt } from '../components/Toast'
 import { citeMark, Rendered } from '../components/Rendered'
 import { usePhone } from '../components/bits'
+import { space } from '../data/space'
 
 // Ask: a question answered from this binder's notes and cards, or from every binder you're in, with the notes and cards
 // the answer rests on numbered under it. Without a model on the hub, the passages that match best. ⌘K is the way in: it
@@ -44,7 +45,8 @@ let kept: Answered | undefined
 function linkOf(source: Source) {
   try {
     const url = new URL(source.url)
-    if (url.origin === window.location.origin && url.pathname === window.location.pathname) return url.hash
+    // The first Binder's address is the hub's bare one, and it's in place at its own too.
+    if (url.origin === window.location.origin && (url.pathname === window.location.pathname || source.binder === space)) return url.hash
   } catch {
     // Not a full address: as it is.
   }
