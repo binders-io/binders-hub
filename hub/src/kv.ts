@@ -59,6 +59,23 @@ export class RedisKV implements KV {
     await this.redis.del(this.prefix + key)
   }
 
+  /** Every key with no time limit, but those `skip` says to leave. */
+  async lasting(skip: (key: string) => boolean) {
+    const found: [string, string][] = []
+    let cursor = '0'
+    do {
+      const [next, keys] = await this.redis.scan(cursor, 'MATCH', `${this.prefix}*`, 'COUNT', 500)
+      for (const name of keys) {
+        const key = name.slice(this.prefix.length)
+        if (skip(key) || (await this.redis.ttl(name)) !== -1) continue
+        const value = await this.redis.get(name)
+        if (value !== null) found.push([key, value])
+      }
+      cursor = next
+    } while (cursor !== '0')
+    return found
+  }
+
   // MULTI, so it doesn't need a Redis new enough for GETDEL.
   async take(key: string) {
     const name = this.prefix + key

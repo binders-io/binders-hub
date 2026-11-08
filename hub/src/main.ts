@@ -24,6 +24,7 @@ import { log as hubLog } from './logger.ts'
 import { BrainSettingsStore } from './brain/settings.ts'
 import { BrainMachines } from './brain/machines.ts'
 import { SpaceBrain } from './brain/brain.ts'
+import { KeptKV, StateFile } from './kept.ts'
 import { VectorFiles, vectorBranch } from './brain/vectorFiles.ts'
 import type { Binder } from '../../shared/notes.ts'
 
@@ -31,7 +32,8 @@ import type { Binder } from '../../shared/notes.ts'
 // and keeps its keys here; the GITHUB_* variables set it up by hand instead, and win where both are set.
 //   PORT, HOST              where the hub listens (4400 on 127.0.0.1)
 //   PUBLIC_URL              the web app's address as people reach it (http://localhost:5173)
-//   REDIS_URL               the change log's Redis; without it the log lives in this process and is gone when it stops
+//   REDIS_URL               the change log's Redis, a working copy of what's kept in .data; without it the log lives in
+//                           this process and is gone when it stops
 //   HUB_SPACE, HUB_NAME     the first Binder's address and name (main, or what the hub's store already has); more are made in Settings
 //   HUB_SECRET              seals what the hub keeps; without it, one is made in .data/secret and kept
 //   HUB_ADMINS              GitHub logins who may change GitHub's setup, besides whoever made the app
@@ -62,9 +64,9 @@ const sealer = new Sealer(secret)
 // What's the hub's own (sessions, tokens, the GitHub App, options, its list of Binders) is kept apart from any Binder.
 // A hub that held one Binder kept it in that Binder's keys: moved once.
 // The first Binder's address: as set, else as the store already has it, else "main" for a new hub.
+const hubFile = resolve('.data/hub-kept.json')
 const space = env.HUB_SPACE ?? (env.REDIS_URL ? await storedFirstSpace(env.REDIS_URL) : undefined) ?? 'main'
 const firstLog: ChangeLog = env.REDIS_URL ? new RedisLog(env.REDIS_URL, space) : new MemoryLog()
-const kv: KV = firstLog instanceof RedisLog ? new RedisKV(firstLog.redis, hubKeys) : new MemoryKV()
 if (firstLog instanceof RedisLog) {
   const moved = await moveHubKeys(firstLog, space)
   if (moved) console.log(`Moved ${moved} of the hub's own keys out of ${space}'s.`)
@@ -78,6 +80,12 @@ if (firstLog instanceof RedisLog) {
   const moved = await moveGitHubKeys(firstLog, space)
   if (moved) console.log(`Gave ${space} the hub's ${moved} GitHub keys from before each Binder had its own.`)
 }
+
+/** A store whose lasting keys are in a file, so Redis can be rebuilt: those in Redis go there the first time. */
+const keptIn = (redis: RedisKV, file: string) => {
+  return new KeptKV(redis, file).load((skip) => redis.lasting(skip))
+}
+const kv: KV = firstLog instanceof RedisLog ? await keptIn(new RedisKV(firstLog.redis, hubKeys), hubFile) : new MemoryKV()
 
 // The hub's options, changed in Settings; an environment variable for one fixes it.
 const options = await new OptionsStore(kv, optionsFromEnv(env)).load()
@@ -128,7 +136,10 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
     const state = started?.state
     return !!state && (state.binders.some((b) => same(b.repo) || !!b.repos?.some(same)) || state.agents.some((a) => !a.revoked && a.repos.some(same)))
   }
-  const github = new GitHubConnection(log instanceof RedisLog ? new RedisKV(log.redis, id) : new MemoryKV(), sealer, endpoints, first ? manual : {}, first ? undefined : id, { id, binder: (other) => spaces.get(other)?.github, linked })
+  // This Binder's own store: one, as its parts share keys and a file.
+  const ownKv: KV = log instanceof RedisLog ? await keptIn(new RedisKV(log.redis, id), dir('kept.json')) : new MemoryKV()
+  const stateFile = log instanceof RedisLog ? new StateFile(dir('state.json')) : undefined
+  const github = new GitHubConnection(ownKv, sealer, endpoints, first ? manual : {}, first ? undefined : id, { id, binder: (other) => spaces.get(other)?.github, linked })
   await github.load()
   // An app made while the hub was only on this machine, or a tunnel with a new address: point its webhook here.
   const hook = info.personal ? 'already' : await github.pointWebhook(publicUrl).catch((error: Error) => `failed (${error.message})`)
@@ -138,7 +149,8 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   hub.lockManager = (login) => spaces.mayManage(id, login, false)
   started = hub
   // A Binder is one notebook: it starts with the one binder its notes and board are in, named as it is.
-  await hub.start(first ? startingSeed(options.get().allowedUsers[0] ?? 'you') : [{ type: 'binder.put', binder: info.personal ? { id: 'notes', name: 'Notes', createdBy: info.personal } : { id: 'main', name: info.name, createdBy: info.createdBy } }])
+  await hub.start(first ? startingSeed(options.get().allowedUsers[0] ?? 'you') : [{ type: 'binder.put', binder: info.personal ? { id: 'notes', name: 'Notes', createdBy: info.personal } : { id: 'main', name: info.name, createdBy: info.createdBy } }], await stateFile?.read())
+  await stateFile?.follow(hub)
   const actions = new Actions(hub, github)
   // Agents reach no more of GitHub than their owners.
   actions.reach = agentReach(github, auth, id, endpoints.webUrl)
@@ -155,10 +167,9 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   issues.start()
   // Jira, this binder's own: the saver mirrors cards into it, its webhook brings what happened there back. Its secret
   // and the token it acts as live in the hub's store, sealed, the saver's issue ids beside them.
-  const jiraKv = log instanceof RedisLog ? new RedisKV(log.redis, id) : new MemoryKV()
-  const jira = new JiraConnection(jiraKv, sealer, id)
+  const jira = new JiraConnection(ownKv, sealer, id)
   await jira.load().catch(() => undefined)
-  const jiraIssues = new JiraSaver(hub, () => jira, jiraKv, id)
+  const jiraIssues = new JiraSaver(hub, () => jira, ownKv, id)
   void jiraIssues.load().catch(() => undefined)
   jiraIssues.start()
   // A Challenge's findings as a review on the card's pull request, in binders that turn it on.
@@ -191,7 +202,7 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
     },
     author: gitAuthor,
   })
-  const brain = new SpaceBrain({ id, hub, kv: jiraKv, settings: brainSettings, embeds: !info.personal, files })
+  const brain = new SpaceBrain({ id, hub, kv: ownKv, settings: brainSettings, embeds: !info.personal, files })
   brain.start()
   const notesDir = first ? notesRoot : dir('notes')
   const notes = new GitNotesSaver(hub, {
@@ -208,14 +219,17 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   const running: Space = {
     id, hub, actions, webhooks, github, notes, poller, issues, jira, jiraIssues, filesDir: join(notesDir, 'files'), brain,
     stop: async () => {
+      // First: the rest of stopping can take longer than a server gives it.
+      await stateFile?.save()
       scheduler.stop()
       brain.stop()
-      await files?.stop()
       poller.stop()
       await notes.stop()
       await issues.stop()
       await jiraIssues?.stop()
       await reviews.stop()
+      await files?.stop()
+      await stateFile?.stop()
       await log.close()
     },
   }
@@ -303,6 +317,9 @@ async function moveGitHubKeys(log: RedisLog, first: string) {
 }
 
 async function storedFirstSpace(url: string) {
+  // The file first: Redis may have been rebuilt, and its first Binder would look like a new hub's.
+  const kept = await firstSpaceIn(await new KeptKV(new MemoryKV(), hubFile).load())
+  if (kept) return kept
   const probe = new RedisLog(url, hubKeys)
   try {
     return await firstSpaceIn(new RedisKV(probe.redis, hubKeys))

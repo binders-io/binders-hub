@@ -240,4 +240,15 @@ describe('the hub', () => {
     await one.log.close()
     await two.log.close()
   })
+
+  it('numbers each change once when its own append and read come back together', async (t) => {
+    if (!redis) return t.skip('redis-server isn’t installed')
+    const log = new RedisLog(redis.url, 'together')
+    // Sent in one go, so the replies can arrive in one go, the read's seen before the append's is: no change written twice.
+    const appends = Array.from({ length: 50 }, (_, i) => [log.append({ id: `a${i}`, client: 'c', at: 'now', change: { type: 'folder.delete', id: `f${i}` } }), log.read(0)])
+    await Promise.all(appends.flat())
+    assert.equal(await log.latest(), 50)
+    assert.equal((await log.read(0)).length, 50)
+    await log.close()
+  })
 })

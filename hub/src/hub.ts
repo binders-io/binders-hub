@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import { applyChange, emptyState, type Change, type Entry, type HubState, type Outgoing } from '../../shared/state.ts'
 import type { ChangeLog } from './log.ts'
+import type { SavedState } from './kept.ts'
 import type { Presence } from '../../shared/work.ts'
 import { changesTo, check, NoteDocs, type NoteDoc } from '../../shared/noteDoc.ts'
 import { log } from './logger.ts'
@@ -50,8 +51,20 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
     log.onAppend(() => void this.catchUp())
   }
 
-  /** Reads the whole log; a hub whose log is empty starts with what `seed` gives. */
-  async start(seed?: Change[]) {
+  /**
+   * Reads the whole log; a hub whose log is empty starts with what `seed` gives. A log behind the state saved in `saved`
+   * lost what it had: the hub takes that state, and the log goes on from its version.
+   */
+  async start(seed?: Change[], saved?: SavedState) {
+    if (saved) {
+      const latest = await this.log.latest().catch(() => undefined)
+      if (latest !== undefined && latest < saved.version) {
+        log.warn({ log: this.log.kind, latest, saved: saved.version }, 'The change log is behind this Binder’s saved state: carrying on from the saved state')
+        this.state = saved.state
+        this.version = saved.version
+        await this.log.startAt(saved.version)
+      }
+    }
     await this.catchUp()
     if (this.version === 0 && seed?.length) {
       const at = new Date().toISOString()

@@ -15,6 +15,8 @@ export interface ChangeLog {
   append(entry: Unnumbered): Promise<number>
   read(after: number, limit?: number): Promise<Entry[]>
   latest(): Promise<number>
+  /** Carries on from a version: a log that was lost, with its Binder's state saved at that version. */
+  startAt(version: number): Promise<void>
   onAppend(listener: () => void): void
   close(): Promise<void>
   readonly kind: 'redis' | 'memory'
@@ -26,23 +28,31 @@ export class MemoryLog implements ChangeLog {
   private entries: Entry[] = []
   private seen = new Set<string>()
   private listeners: (() => void)[] = []
+  /** The version before its first entry. */
+  private base = 0
 
   async append(entry: Unnumbered) {
     const key = `${entry.client}:${entry.id}`
     if (this.seen.has(key)) return 0
     this.seen.add(key)
-    const version = this.entries.length + 1
+    const version = this.base + this.entries.length + 1
     this.entries.push({ ...entry, change: forWire(entry.change), version })
     queueMicrotask(() => this.listeners.forEach((listener) => listener()))
     return version
   }
 
   async read(after: number, limit = 1000) {
-    return this.entries.slice(after, after + limit)
+    const from = Math.max(0, after - this.base)
+    return this.entries.slice(from, from + limit)
   }
 
   async latest() {
-    return this.entries.length
+    return this.base + this.entries.length
+  }
+
+  async startAt(version: number) {
+    this.base = version
+    this.entries = []
   }
 
   onAppend(listener: () => void) {
@@ -56,6 +66,8 @@ export class MemoryLog implements ChangeLog {
 // The stream id is the version itself ("12-0"), so reading after a version is a range read.
 const appendScript = `
 if redis.call('SET', KEYS[4], '1', 'NX', 'EX', 86400) == false then return 0 end
+local floor = tonumber(ARGV[2]) or 0
+if (tonumber(redis.call('GET', KEYS[2])) or 0) < floor then redis.call('SET', KEYS[2], floor) end
 local v = redis.call('INCR', KEYS[2])
 redis.call('XADD', KEYS[1], v .. '-0', 'e', ARGV[1])
 redis.call('PUBLISH', KEYS[3], v)
@@ -69,6 +81,11 @@ export class RedisLog implements ChangeLog {
   private subscriber: Redis
   private keys: { stream: string; version: string; channel: string; seen: string }
   private listeners: (() => void)[] = []
+  /**
+   * The highest version this hub has seen. Each append goes on from at least there, in the same step as it's numbered:
+   * with Redis emptied under a running hub, a lower number would be read after by nobody.
+   */
+  private highest = 0
 
   constructor(url: string, space: string) {
     this.redis = new Redis(url, { lazyConnect: false, maxRetriesPerRequest: 3 })
@@ -88,15 +105,24 @@ export class RedisLog implements ChangeLog {
   async append(entry: Unnumbered) {
     const { stream, version, channel, seen } = this.keys
     const run = (this.redis as unknown as { hubAppend: (...args: string[]) => Promise<number> }).hubAppend
-    return Number(await run.call(this.redis, stream, version, channel, `${seen}${entry.client}:${entry.id}`, JSON.stringify({ ...entry, change: forWire(entry.change) })))
+    const given = Number(await run.call(this.redis, stream, version, channel, `${seen}${entry.client}:${entry.id}`, JSON.stringify({ ...entry, change: forWire(entry.change) }), String(this.highest)))
+    this.highest = Math.max(this.highest, given)
+    return given
   }
 
   async read(after: number, limit = 1000) {
     const rows = await this.redis.xrange(this.keys.stream, `${after + 1}-0`, '+', 'COUNT', limit)
-    return rows.map(([id, fields]) => {
+    const entries = rows.map(([id, fields]) => {
       const entry = JSON.parse(fields[fields.indexOf('e') + 1]) as Unnumbered
       return { ...entry, version: Number(id.split('-')[0]) }
     })
+    this.highest = Math.max(this.highest, entries.at(-1)?.version ?? 0)
+    return entries
+  }
+
+  async startAt(version: number) {
+    if ((await this.latest()) < version) await this.redis.set(this.keys.version, version)
+    this.highest = Math.max(this.highest, version)
   }
 
   async latest() {

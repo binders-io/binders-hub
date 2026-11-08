@@ -5,8 +5,8 @@ Every way of running the hub needs the same five things. The rest of this page i
 | | What | Why |
 |---|---|---|
 | One hub | A single instance, never two at once | It keeps live state, WebSockets and agents' terminals in memory. Upgrades stop the old one before starting the new one. |
-| A Redis that keeps its data | `appendonly yes` on a disk that survives restarts, or Amazon MemoryDB | The change log is the only copy of a change until GitHub has it. A cache that can drop data (ElastiCache without persistence) loses work. |
-| The hub's data folder | `/app/hub/.data` in the image, on a persistent volume | Its notes repo, pictures, the working copies change sets merge in, and its secret when `HUB_SECRET` isn't set. |
+| A Redis that keeps its data | `appendonly yes` on a disk that survives restarts, or Amazon MemoryDB | The hub's working copy. Without persistence, a crash of Redis can lose the last 15 seconds of changes, and sign-ins; with it, sign-ins and those seconds survive too. Everything else is in the hub's data folder, which has to be on a disk that lasts. |
+| The hub's data folder | `/app/hub/.data` in the image, on a persistent volume | Its notes repo, pictures, the working copies change sets merge in, each Binder's saved state, its settings and keys, and its secret when `HUB_SECRET` isn't set. This is what has to last: put it on a disk that does. |
 | An HTTPS address | `PUBLIC_URL`, reachable by your team and by GitHub | GitHub sends webhooks and sign-ins there. The proxy in front must pass WebSockets (`/api/live`, terminals) and bodies up to 8 MB. Without a public address, the hub asks GitHub for changes instead of hearing them. |
 | `HUB_SECRET` | A long random string, backed up | It seals GitHub's keys and everything else the hub keeps. Lose it and GitHub has to be set up again. |
 
@@ -111,4 +111,4 @@ The hub listens on `127.0.0.1:4400`; put Caddy or nginx in front for HTTPS. To u
 
 ## Backups
 
-Back up three things together: Redis's append-only file, the hub's data folder, and `HUB_SECRET`. With them, a hub moves to a new server whole: restore them there, start it with the same `PUBLIC_URL`, and runners and GitHub carry on. A hub at a new address needs that address added to its GitHub App's callback URLs; it points the app's webhook at itself when it starts.
+Back up two things together: the hub's data folder and `HUB_SECRET`. With them, a hub moves to a new server whole: restore them there, start it with the same `PUBLIC_URL` and an empty Redis, and runners and GitHub carry on. Redis isn't part of a backup: each Binder's whole state (`state.json`, saved within 15 seconds of a change and when the hub stops) and the settings, keys and tokens' hashes the hub keeps (`hub-kept.json`, `kept.json`) are in the data folder, and a hub with an empty Redis carries on from them. Rebuilding Redis signs people in again and makes MCP clients sign in again when their tokens run out. Embeddings are in the data folder and on a `binders-embeddings` branch of each binder's repo. A hub at a new address needs that address added to its GitHub App's callback URLs; it points the app's webhook at itself when it starts.

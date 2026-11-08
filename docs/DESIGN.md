@@ -22,8 +22,8 @@ Every step links back: a line in a note shows the card, the pull request, the ch
 
 ## Where things are kept
 
-The hub keeps no data of its own. Redis holds what's being worked on now, and each kind of thing is kept in the tool
-the team already uses. GitHub first, with Jira and Confluence as the next adapters.
+Redis holds what's being worked on now, and each kind of thing is kept in the tool the team already uses, with what no
+tool has a place for in files on the hub's disk. GitHub first, with Jira and Confluence as the next adapters.
 
 | What | GitHub (first) | Next |
 |---|---|---|
@@ -56,7 +56,7 @@ a board you can't see.
 - **Agents.** Remote MCP over HTTP with OAuth. An agent registers with its name, repos and skills; presence comes from
   a heartbeat. Work goes out through a consumer group, one agent per card, and a card an agent went quiet on comes
   back after ten minutes (`XAUTOCLAIM`).
-- **Redis durability.** Disk persistence on, and the log is the only copy of a change until its destination confirms it.
+- **Redis is a working copy.** Disk persistence is on, but nothing that lasts depends on it. Each Binder's whole state is saved to a file on the hub's disk within seconds of a change and when the hub stops, with the hub's settings, keys and tokens' hashes beside it. A hub whose log is behind that file lost it, and carries on from the file, in the versions it had; one whose Redis is emptied while it runs carries on too. Only sign-ins and what can be made again are in Redis alone.
 
 ## Binders for Mac
 
