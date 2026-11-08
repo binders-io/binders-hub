@@ -16,7 +16,7 @@ import { BrainSettingsStore } from '../src/brain/settings.ts'
 import { BrainMachines } from '../src/brain/machines.ts'
 import { SpaceBrain } from '../src/brain/brain.ts'
 import { BrainUnavailable } from '../src/brain/models.ts'
-import { bestPicks, offers } from '../src/brain/autoPick.ts'
+import { bestPicks, candidates, offers } from '../src/brain/autoPick.ts'
 import { runnerVersion } from '../../shared/agents.ts'
 import { joinMachine, serve } from '../../runner/src/brain.ts'
 import { oneSpace, seed } from './helpers.ts'
@@ -312,16 +312,18 @@ describe('machines of yours serving the brain’s models', () => {
     }
   })
 
-  it('offers to serve what’s already downloaded before downloading anything, and on a Mac, audio from Hugging Face', () => {
-    const mac = { id: 'm-mac', name: 'studio-mac', addedBy: 'boss', addedAt: '', online: true, platform: 'darwin arm64', facts: { memoryGb: 64 }, runtimes: ['mlx-audio', 'lmstudio', 'hf'],
-      servers: [{ url: 'http://127.0.0.1:11434/v1', kind: 'ollama', version: '0.40.13', models: ['gemma4:26b'] }],
-      onDisk: [{ name: 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice', source: 'hf' }, { name: 'mlx-community/whisper-large-v3-turbo-asr-fp16', source: 'hf' }, { name: 'nomic-ai/nomic-embed-text-v1.5-GGUF', source: 'lmstudio' }] }
-    assert.deepEqual(offers([mac], ['embeddings', 'transcription', 'speech']), [
-      { action: 'serve', runtime: 'mlx-audio', jobs: ['transcription', 'speech'], machine: 'm-mac', model: 'mlx-community/whisper-large-v3-turbo-asr-fp16', models: { transcription: 'mlx-community/whisper-large-v3-turbo-asr-fp16', speech: 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice' } },
-      { action: 'serve', runtime: 'lmstudio', jobs: ['embeddings'], machine: 'm-mac', model: 'nomic-ai/nomic-embed-text-v1.5-GGUF', models: { embeddings: 'nomic-ai/nomic-embed-text-v1.5-GGUF' } },
+  it('lists every model each job can be done with, best first, leaving out helpers that aren’t voices', () => {
+    const mac = { id: 'm-mac', name: 'Mac.helfei.com', addedBy: 'boss', addedAt: '', online: true, platform: 'darwin arm64', facts: { memoryGb: 64 }, runtimes: ['hf'],
+      running: [{ engine: 'mlx-audio' }],
+      servers: [{ url: 'say:', kind: 'say', models: ['Karen', 'Samantha'] }, { url: 'http://models.binders/v1', kind: 'binders', models: ['beshkenadze/kitten-tts-g2p', 'mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16', 'mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit', 'mlx-community/Kokoro-82M-bf16'] }] }
+    const all = candidates([mac])
+    assert.deepEqual(all.speech.map((c) => [c.model || c.voice, c.state]), [
+      ['mlx-community/Kokoro-82M-bf16', 'on-demand'], ['mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit', 'on-demand'], ['mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16', 'on-demand'], ['Samantha', 'voice'],
     ])
-    // Nothing on disk for audio: Parakeet and Kokoro from Hugging Face, for mlx-audio.
-    assert.deepEqual(offers([{ ...mac, onDisk: [] }], ['transcription', 'speech']).map((o) => [o.action, o.source, o.model]), [['pull', 'hf', 'mlx-community/parakeet-tdt-0.6b-v3'], ['pull', 'hf', 'mlx-community/Kokoro-82M-bf16']])
+    assert.equal(all.speech[0].machineName, 'Mac.helfei.com')
+    assert.equal(bestPicks([mac]).speech?.model, 'mlx-community/Kokoro-82M-bf16')
+    // Nothing to write down with: Parakeet from Hugging Face, on a Mac with a way to download it.
+    assert.deepEqual(offers([mac], ['transcription']).map((o) => [o.action, o.source, o.model]), [['pull', 'hf', 'mlx-community/parakeet-tdt-0.6b-v3']])
   })
 
   it('starts a runtime on a machine to serve what’s on it, and uses it once it serves', async () => {
@@ -343,9 +345,6 @@ describe('machines of yours serving the brain’s models', () => {
         socket.send(JSON.stringify({ type: 'reply', id: message.id, ok: true }))
       })
       await until(() => set.machines.get(machine.id)?.online === true)
-      const listed = await boss('GET', '/api/brain/machines')
-      const offer = listed.body.offers.find((o: { action: string }) => o.action === 'serve')
-      assert.deepEqual([offer.runtime, offer.models.speech], ['mlx-audio', tts])
       assert.equal((await boss('POST', `/api/brain/machines/${machine.id}/serve`, { runtime: 'mlx-audio', job: 'speech' })).status, 200)
       await until(() => set.settings.view().speechInUse === `${tts} on studio-mac`)
       assert.deepEqual(asked, ['mlx-audio'])
@@ -363,14 +362,11 @@ describe('machines of yours serving the brain’s models', () => {
     assert.equal(bestPicks([mac]).chat?.model, 'gemma4:26b', 'an Ollama model with no size counts as small')
   })
 
-  it('offers a voice already on a Mac over its own voices, which are in use until a model is', () => {
-    const mac = { id: 'm-mac', name: 'helders-macbook-pro', addedBy: 'boss', addedAt: '', online: true, platform: 'darwin arm64', facts: { memoryGb: 64 }, runtimes: ['mlx-audio', 'hf'],
-      servers: [{ url: 'say:', kind: 'say', models: ['Samantha'] }], onDisk: [{ name: 'hexgrad/Kokoro-82M', source: 'hf' }, { name: '/Users/me/models/qwen3-tts', source: 'dir' }] }
-    const offered = offers([mac], ['speech'])
-    assert.deepEqual(offered.map((o) => [o.action, o.runtime, o.models?.speech]), [['serve', 'mlx-audio', 'hexgrad/Kokoro-82M']])
-    // Once mlx-audio serves it, it's in use, and nothing's offered.
-    const serving = { ...mac, servers: [...mac.servers, { url: 'http://127.0.0.1:8939/v1', kind: 'mlx-audio', models: ['hexgrad/Kokoro-82M'] }] }
-    assert.deepEqual(offers([serving], ['speech']), [])
+  it('takes a voice downloaded on a Mac over its own voices, with no offer to make', () => {
+    const mac = { id: 'm-mac', name: 'helders-macbook-pro', addedBy: 'boss', addedAt: '', online: true, platform: 'darwin arm64', facts: { memoryGb: 64 },
+      servers: [{ url: 'say:', kind: 'say', models: ['Samantha'] }, { url: 'http://models.binders/v1', kind: 'binders', models: ['hexgrad/Kokoro-82M'] }] }
+    assert.equal(bestPicks([mac]).speech?.model, 'hexgrad/Kokoro-82M')
+    assert.deepEqual(offers([mac], ['speech']), [])
   })
 
   it('chooses from a machine’s downloaded models, loaded when asked, as from any server: by each model’s own size', () => {

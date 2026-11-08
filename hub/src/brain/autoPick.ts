@@ -23,7 +23,9 @@ const transcription = /whisper|parakeet|canary|wav2vec|sensevoice|moonshine|voxt
 const speech = /kokoro|(^|[^a-z])tts([^a-z]|$)|piper|orpheus|xtts|melo|parler|chatterbox|outetts|sesame|csm-|zonos|phonon/i
 /** Audio models that both write down and read out: Liquid's LFM audio. */
 const audioBoth = /lfm\d*-audio/i
-const notChat = /rerank|guard|moderation|(^|[^a-z])clip|siglip|ocr|nougat|layout|(^|[^a-z])vae|diffusion|flux|sdxl|(^|[^a-z])sd-|stable-diffusion/i
+const notChat = /rerank|guard|moderation|(^|[^a-z])clip|siglip|ocr|nougat|layout|(^|[^a-z])vae|diffusion|flux|sdxl|(^|[^a-z])sd-|stable-diffusion|image|video|music|latentsync|ace-step/i
+/** Helpers that come with speech models but aren't one: words to sounds, voice activity, codecs. */
+const helper = /g2p|phonemi[sz]|(^|[^a-z])vad([^a-z]|$)|silero|tokenizer|codec/i
 
 /** Billions of parameters, from a model's name: qwen3:32b, Llama-3.3-70B-Instruct, gpt-oss-120b, mixtral-8x7b. */
 export function sizeOf(model: string) {
@@ -55,6 +57,7 @@ export function jobsOf(model: string, kind: string): Job[] {
 /** Which job a model is for, by its name and its server. */
 export function jobOf(model: string, kind: string): Job | undefined {
   if (kind === 'say') return 'speech'
+  if (helper.test(model)) return undefined
   if (kind === 'kokoro' || speech.test(model)) return 'speech'
   if (transcription.test(model)) return 'transcription'
   if (embedding.test(model)) return 'embeddings'
@@ -80,37 +83,69 @@ export function macVoice(voices: string[]) {
 }
 
 /** How good a model is for a job, as bestPicks scores it: to tell whether a newcomer is better than what's in use. */
+/**
+ * How good a voice is for reading answers out: Kokoro (quick, natural), then Qwen's CustomVoice, Phonon, any other
+ * speech model, a Base model (which wants a voice to clone), and a Mac's own voices last.
+ */
+function speaking(url: string, model: string) {
+  if (url === sayServer) return 1
+  if (/kokoro/i.test(model)) return 2.6
+  if (/tts.*custom/i.test(model)) return 2.4
+  if (/phonon/i.test(model)) return 2.3
+  if (/(^|[^a-z])base([^a-z]|$)/i.test(model)) return 1.5
+  return 2
+}
+
 export function scoreOf(job: Job, url: string, model: string, kind = '', memoryGb?: number) {
   if (job === 'transcription') return hearing(model)
-  if (job === 'speech') return url === sayServer ? 1 : 2
+  if (job === 'speech') return speaking(url, model)
   return 1 + (job === 'chat' ? chatSize(model, kind, memoryGb) : sizeOf(model))
 }
 
-/** The best pick for each job across the machines linked now. */
-export function bestPicks(machines: MachineView[]): Partial<Record<Job, Pick>> {
-  const best: Partial<Record<Job, Pick>> = {}
-  const offer = (job: Job, pick: Pick) => {
-    if (!best[job] || pick.score > best[job]!.score) best[job] = pick
-  }
+/** A model one of your machines can do a job with: where it is, what serves it, and whether it's running or loads when used. */
+export interface Candidate extends Pick {
+  machineName: string
+  kind: string
+  state: 'running' | 'on-demand' | 'voice'
+}
+
+/** Every model your linked machines can do each job with, best first. */
+export function candidates(machines: MachineView[]): Record<Job, Candidate[]> {
+  const out: Record<Job, Candidate[]> = { chat: [], embeddings: [], transcription: [], speech: [] }
   for (const machine of machines) {
     if (!machine.online) continue
+    const base = { machine: machine.id, machineName: machine.name }
     for (const server of machine.servers ?? []) {
       if (server.needsKey) continue
       if (server.url === sayServer) {
         const voice = macVoice(server.models)
-        // A Mac's own voices: the last resort for reading answers out, after a speech server.
-        if (voice) offer('speech', { machine: machine.id, url: sayServer, model: '', voice, score: 1 })
+        // A Mac's own voices: one row, the voice it'd read in.
+        if (voice) out.speech.push({ ...base, url: sayServer, model: '', voice, score: 1, kind: 'say', state: 'voice' })
         continue
       }
+      // A machine's downloaded models load when they're used: running only when its daemon says so.
+      const runningHere = (model: string) => server.kind !== 'binders' || (machine.running ?? []).some((r) => r.model === model)
       for (const model of server.models) {
         for (const job of jobsOf(model, server.kind)) {
-          if (job === 'chat') offer('chat', { machine: machine.id, url: server.url, model, score: 1 + chatSize(model, server.kind, machine.facts?.memoryGb) })
-          else if (job === 'embeddings') offer('embeddings', { machine: machine.id, url: server.url, model, score: 1 + sizeOf(model) })
-          else if (job === 'transcription') offer('transcription', { machine: machine.id, url: server.url, model, score: hearing(model) })
-          else if (job === 'speech') offer('speech', { machine: machine.id, url: server.url, model, voice: /kokoro/i.test(`${model} ${server.kind}`) ? 'af_heart' : /phonon/i.test(model) ? 'default' : '', score: 2 })
+          const state = runningHere(model) ? 'running' : 'on-demand'
+          const score = job === 'chat' ? 1 + chatSize(model, server.kind, machine.facts?.memoryGb) : scoreOf(job, server.url, model)
+          const voice = job === 'speech' ? (/kokoro/i.test(`${model} ${server.kind}`) ? 'af_heart' : /phonon/i.test(model) ? 'default' : '') : undefined
+          out[job].push({ ...base, url: server.url, model, ...(voice !== undefined ? { voice } : {}), score, kind: server.kind, state })
         }
       }
     }
+  }
+  for (const job of jobs) out[job].sort((a, b) => b.score - a.score)
+  return out
+}
+
+/** The best pick for each job across the machines linked now. */
+export function bestPicks(machines: MachineView[]): Partial<Record<Job, Pick>> {
+  const all = candidates(machines)
+  const best: Partial<Record<Job, Pick>> = {}
+  for (const job of jobs) {
+    const top = all[job][0]
+    if (top) best[job] = { machine: top.machine, url: top.url, model: top.model, ...(top.voice !== undefined ? { voice: top.voice } : {}), score: top.score }
   }
   return best
 }
@@ -161,31 +196,11 @@ export function offers(machines: MachineView[], open: Job[]): Offer[] {
   const picks = bestPicks(machines)
   const out: Offer[] = []
   let wanted = open.filter((job) => !picks[job])
-  // First, what's already downloaded on a machine and only needs serving: mlx-audio for audio on a Mac, LM Studio for
-  // its own models. Offered when it would do better than what's in use: Kokoro or Qwen on disk over a Mac's own voices.
-  // One runtime serves every model it can there: one offer, for each job it covers.
-  const taken = new Set<Job>()
-  for (const machine of machines.filter((m) => m.online)) {
-    for (const runtime of ['mlx-audio', 'lmstudio'] as const) {
-      if (!machine.runtimes?.includes(runtime)) continue
-      const models: Partial<Record<Job, string>> = {}
-      for (const job of open) {
-        if (taken.has(job)) continue
-        const fits = (machine.onDisk ?? []).filter((m) => (runtime === 'mlx-audio' ? (m.source === 'hf' || m.source === 'dir') && (job === 'speech' || job === 'transcription') : m.source === 'lmstudio' && (job === 'chat' || job === 'embeddings')) && jobsOf(m.name, '').includes(job))
-        const best = fits.sort((a, b) => scoreOf(job, '', b.name) - scoreOf(job, '', a.name))[0]
-        if (best && scoreOf(job, '', best.name) > (picks[job]?.score ?? 0)) models[job] = best.name
-      }
-      const jobs = Object.keys(models) as Job[]
-      if (!jobs.length) continue
-      out.push({ action: 'serve', runtime, jobs, machine: machine.id, model: models[jobs[0]]!, models })
-      for (const job of jobs) taken.add(job)
-      wanted = wanted.filter((job) => !jobs.includes(job))
-    }
-  }
   const withOllama = machines.filter((m) => m.online && m.servers?.some((s) => s.kind === 'ollama'))
     .sort((a, b) => (b.facts?.memoryGb ?? 0) - (a.facts?.memoryGb ?? 0))
   // A Mac that runs mlx-audio gets audio models from Hugging Face: Parakeet, as the Binders app uses, and Kokoro.
-  const audioMac = machines.find((m) => m.online && m.runtimes?.includes('mlx-audio') && m.runtimes.includes('hf'))
+  // (Its daemon loads mlx-audio when one of them is used: a Mac with Apple silicon, and a way to download.)
+  const audioMac = machines.find((m) => m.online && /darwin arm64/.test(m.platform ?? '') && m.runtimes?.includes('hf'))
   if (audioMac) {
     for (const [job, model, size] of [['transcription', 'mlx-community/parakeet-tdt-0.6b-v3', 'about 1.2 GB'], ['speech', 'mlx-community/Kokoro-82M-bf16', 'about 200 MB']] as const) {
       if (!wanted.includes(job)) continue

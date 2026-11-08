@@ -144,6 +144,11 @@ export function runtimes(): string[] {
  */
 export const modelsUrl = 'http://models.binders/v1'
 
+/** The models here, each with what serves it or why nothing does: as the hub is told, every time it's told. */
+async function diskNoted() {
+  return (await onDisk()).map((m) => ({ ...m, ...(notesNow.find((n) => n.name === m.name) ?? {}) }))
+}
+
 /** The models here an engine serves, as last looked: what a request to modelsUrl may name. */
 let servedNow = new Map<string, EngineId>()
 /** Each model found here, with what serves it or why nothing does: for Settings. */
@@ -610,7 +615,7 @@ export async function serve(options: { hub: string; token: string; name?: string
   if (!options.only) {
     void startKept(log).then(async () => {
       servers = await detect(options.extra, options.only)
-      if (live?.readyState === WebSocket.OPEN) live.send(JSON.stringify({ type: 'servers', servers, onDisk: await onDisk(), runtimes: runtimes() }))
+      if (live?.readyState === WebSocket.OPEN) live.send(JSON.stringify({ type: 'servers', servers, onDisk: await diskNoted(), runtimes: runtimes() }))
     })
   }
   const describe = () => (servers.length ? servers.map((s) => `${s.kind} at ${s.url} (${s.models.length} ${s.kind === 'say' ? 'voices' : 'models'})`).join(', ') : 'no model servers yet')
@@ -664,7 +669,7 @@ export async function serve(options: { hub: string; token: string; name?: string
           const started = await startServing(runtime, (status) => send({ type: 'progress', id: message.id, status, completed: 0, total: 0 }))
           if (started.ok) {
             servers = await detect(options.extra, options.only)
-            send({ type: 'servers', servers, onDisk: await onDisk(), runtimes: runtimes() })
+            send({ type: 'servers', servers, onDisk: await diskNoted(), runtimes: runtimes() })
           } else log(`Couldn’t start ${runtime}: ${started.error}.`)
           send({ type: 'reply', id: message.id, ok: started.ok, ...(started.error ? { error: started.error } : {}) })
           return
@@ -679,7 +684,7 @@ export async function serve(options: { hub: string; token: string; name?: string
           // What's served now, the new model with it, before the hub hears it's done.
           if (reply.ok) {
             servers = await detect(options.extra, options.only)
-            send({ type: 'servers', servers, ...(options.only ? {} : { onDisk: await onDisk(), runtimes: runtimes() }) })
+            send({ type: 'servers', servers, ...(options.only ? {} : { onDisk: await diskNoted(), runtimes: runtimes() }) })
           }
           send(reply)
           return
