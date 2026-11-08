@@ -58,6 +58,7 @@ interface MachineServer {
 }
 
 interface Download {
+  kind?: 'pull' | 'serve'
   model: string
   job: Job
   status: string
@@ -109,8 +110,9 @@ const shortName = (model: string) => model.split('/').pop() ?? model
 
 /** How far a download has got, in words: "42% of 20 GB", or what Ollama says it's doing. */
 function progressOf(d: Download) {
-  if (d.error) return `Couldn’t download it: ${d.error}.`
-  if (d.done) return 'Downloaded. The hub is choosing it now.'
+  const serving = d.kind === 'serve'
+  if (d.error) return `Couldn’t ${serving ? 'start it' : 'download it'}: ${d.error}.`
+  if (d.done) return serving ? 'Started. The hub is choosing from it now.' : 'Downloaded. The hub is choosing it now.'
   if (d.total > 0) return `${Math.floor((d.completed / d.total) * 100)}% of ${(d.total / 1024 ** 3).toFixed(d.total > 10 * 1024 ** 3 ? 0 : 1)} GB`
   return d.status ? `${d.status.charAt(0).toUpperCase()}${d.status.slice(1)}…` : 'Starting…'
 }

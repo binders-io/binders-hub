@@ -48,6 +48,8 @@ export interface MachineInfo {
 
 /** A model being downloaded on a machine, as the hub asked: where it's got to. */
 export interface Download {
+  /** A model downloaded, or a runtime started to serve what's downloaded. */
+  kind?: 'pull' | 'serve'
   model: string
   /** The job it's for: chat, embeddings, transcription or speech. */
   job: string
@@ -367,7 +369,7 @@ export class BrainMachines {
     const already = [...this.downloads.values()].find((d) => d.machine === id && d.model === model && !d.done && !d.error)
     if (already) return already
     const key = randomUUID()
-    const download: Download & { machine: string } = { machine: id, model, job, status: 'starting', completed: 0, total: 0, at: new Date().toISOString() }
+    const download: Download & { machine: string } = { kind: 'pull', machine: id, model, job, status: 'starting', completed: 0, total: 0, at: new Date().toISOString() }
     this.downloads.set(key, download)
     void this.ask(id, { type: 'pull', model, source }, undefined, key, 12 * 3_600_000).then((reply) => {
       download.at = new Date().toISOString()
@@ -391,7 +393,7 @@ export class BrainMachines {
     if (!machine.runtimes?.includes(runtime)) throw new Refused(`${machine.name} can’t run ${runtime}.`)
     const key = randomUUID()
     const label = runtime === 'mlx-audio' ? 'mlx-audio' : 'LM Studio'
-    const task: Download & { machine: string } = { machine: id, model: label, job, status: 'starting', completed: 0, total: 0, at: new Date().toISOString() }
+    const task: Download & { machine: string } = { kind: 'serve', machine: id, model: label, job, status: 'starting', completed: 0, total: 0, at: new Date().toISOString() }
     this.downloads.set(key, task)
     void this.ask(id, { type: 'serve', runtime }, undefined, key, 20 * 60_000).then((reply) => {
       task.at = new Date().toISOString()

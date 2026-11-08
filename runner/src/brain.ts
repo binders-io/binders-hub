@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { createWriteStream, existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir, hostname, tmpdir, totalmem } from 'node:os'
@@ -141,18 +141,55 @@ export function runtimes(): string[] {
 export const mlxAudioUrl = 'http://127.0.0.1:8939/v1'
 const servingFile = () => join(process.env.BINDERS_HOME ?? join(homedir(), '.binders'), 'brain-serving.json')
 
-/** The command line that runs mlx-audio's server here: its own, or uv's for it. */
+/** mlx-audio's server, installed: its own command line, here. Undefined until it's installed. */
 export function mlxAudioCommand(find: (command: string) => string | undefined = which): [string, string[]] | undefined {
   const own = find('mlx_audio.server')
-  if (own) return [own, ['--host', '127.0.0.1', '--port', '8939']]
-  const uvx = find('uvx')
-  if (uvx) return [uvx, ['--from', 'mlx-audio', 'mlx_audio.server', '--host', '127.0.0.1', '--port', '8939']]
+  return own ? [own, ['--host', '127.0.0.1', '--port', '8939']] : undefined
+}
+
+/**
+ * How mlx-audio is installed, once: as uv's tool, with its server's extra packages (uvicorn, FastAPI, webrtcvad), which
+ * its plain package leaves out: without them its server stops as it starts.
+ */
+export function mlxAudioInstall(find: (command: string) => string | undefined = which): [string, string[]] | undefined {
   const uv = find('uv')
-  if (uv) return [uv, ['tool', 'run', '--from', 'mlx-audio', 'mlx_audio.server', '--host', '127.0.0.1', '--port', '8939']]
-  return undefined
+  return uv ? [uv, ['tool', 'install', 'mlx-audio[server]']] : undefined
+}
+
+/** Where what an engine the daemon runs says is written, on this machine: for why one didn't start. */
+export const engineLog = (name: string) => join(process.env.BINDERS_HOME ?? join(homedir(), '.binders'), 'logs', `${name}.log`)
+
+/** The line that says why something stopped: its last error, else its last line. */
+export function whyStopped(output: string) {
+  const lines = output.split('\n').map((l) => l.trim()).filter(Boolean)
+  return [...lines].reverse().find((l) => /error|exception|not found|no module|failed|denied|cannot|can't/i.test(l)) ?? lines.at(-1) ?? ''
+}
+
+/** A command run to its end, with all it said: for an install whose failure needs saying. */
+function runAll(command: string, args: string[], timeoutMs: number): Promise<{ code: number; said: string }> {
+  return new Promise((done) => {
+    let said = ''
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (error) {
+      return done({ code: -1, said: error instanceof Error ? error.message : String(error) })
+    }
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
+    const keep = (chunk: Buffer) => { said = (said + chunk.toString()).slice(-20_000) }
+    child.stdout?.on('data', keep)
+    child.stderr?.on('data', keep)
+    child.on('error', (error) => { clearTimeout(timer); done({ code: -1, said: said + error.message }) })
+    child.on('close', (code) => { clearTimeout(timer); done({ code: code ?? -1, said }) })
+  })
 }
 
 let mlxAudio: ReturnType<typeof spawn> | undefined
+/** What mlx-audio said last: why it stopped, when it does. */
+let mlxAudioSaid = ''
+
+/** A path as people read it: their home as ~. */
+const shownHome = (path: string) => path.replace(homedir(), '~')
 
 /** Whether something answers at an address: any answer at all. */
 async function answers(url: string) {
@@ -172,19 +209,43 @@ export async function startServing(runtime: string, note: (status: string) => vo
     if (code !== 0) return { ok: false, error: 'LM Studio’s server didn’t start' }
   } else if (runtime === 'mlx-audio') {
     if (!(await answers(`${mlxAudioUrl}/models`))) {
-      const command = mlxAudioCommand()
-      if (!command || process.platform !== 'darwin') return { ok: false, error: 'mlx-audio needs a Mac with Apple silicon, and uv (or mlx-audio) on it' }
-      note('starting mlx-audio (the first time, uv fetches it: a few minutes)')
+      if (process.platform !== 'darwin' || process.arch !== 'arm64') return { ok: false, error: 'mlx-audio runs on a Mac with Apple silicon' }
+      let command = mlxAudioCommand()
+      if (!command) {
+        const install = mlxAudioInstall()
+        if (!install) return { ok: false, error: 'uv isn’t on this Mac, to install mlx-audio with: get it from docs.astral.sh/uv, then try again' }
+        note('installing mlx-audio, the first time only: a few minutes')
+        const installed = await runAll(install[0], install[1], 30 * 60_000)
+        command = mlxAudioCommand()
+        if (!command) return { ok: false, error: `installing mlx-audio failed: ${whyStopped(installed.said) || `uv stopped with ${installed.code}`}` }
+      }
+      note('starting mlx-audio')
       mlxAudio?.kill()
-      mlxAudio = spawn(command[0], command[1], { stdio: 'ignore' })
-      mlxAudio.on('exit', () => { mlxAudio = undefined })
+      await mkdir(join(engineLog('mlx-audio'), '..'), { recursive: true }).catch(() => {})
+      const log = createWriteStream(engineLog('mlx-audio'), { flags: 'a' })
+      mlxAudioSaid = ''
+      const child = spawn(command[0], command[1], { stdio: ['ignore', 'pipe', 'pipe'] })
+      const keep = (chunk: Buffer) => {
+        log.write(chunk)
+        mlxAudioSaid = (mlxAudioSaid + chunk.toString()).slice(-20_000)
+      }
+      child.stdout?.on('data', keep)
+      child.stderr?.on('data', keep)
+      child.on('exit', () => {
+        log.end()
+        if (mlxAudio === child) mlxAudio = undefined
+      })
+      mlxAudio = child
       let up = false
-      for (let i = 0; i < 600 && !up; i++) {
+      for (let i = 0; i < 180 && !up; i++) {
         await sleep(1000)
         up = await answers(`${mlxAudioUrl}/models`)
-        if (!mlxAudio) break
+        if (mlxAudio !== child) break
       }
-      if (!up) return { ok: false, error: 'mlx-audio didn’t start' }
+      if (!up) {
+        child.kill()
+        return { ok: false, error: `mlx-audio didn’t start: ${whyStopped(mlxAudioSaid) || 'it said nothing'} (more in ${shownHome(engineLog('mlx-audio'))})` }
+      }
     }
   } else {
     return { ok: false, error: `${runtime} isn’t something this daemon runs` }
@@ -358,7 +419,11 @@ export async function detect(extra: string[] = [], only = false): Promise<Server
   const found = answered.filter((s) => !(s.url.match(/:\d+$/) && answered.some((o) => o.url === `${s.url}/v1`)))
   if (!only && (await answers(`${mlxAudioUrl}/models`))) {
     const audio = (await onDisk()).filter((m) => (m.source === 'hf' || m.source === 'dir') && isAudio(m.name)).map((m) => m.name)
-    found.push({ url: mlxAudioUrl, kind: 'mlx-audio', models: audio })
+    const listed = found.find((s) => s.url === mlxAudioUrl)
+    if (listed) {
+      listed.kind = 'mlx-audio'
+      listed.models = [...new Set([...listed.models, ...audio])]
+    } else found.push({ url: mlxAudioUrl, kind: 'mlx-audio', models: audio })
   }
   const spoken = only ? [] : await voices()
   if (spoken.length) found.push({ url: sayServer, kind: 'say', models: spoken })

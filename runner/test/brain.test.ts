@@ -2,7 +2,7 @@ import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { detect, diskLines, hfCache, isAudio, listening, lookOnDisk, mlxAudioCommand, nearby, newer, onDisk, probe, pull, relay, repoOf, say, voiceNames } from '../src/brain.ts'
+import { detect, diskLines, hfCache, isAudio, listening, lookOnDisk, mlxAudioCommand, mlxAudioInstall, nearby, newer, onDisk, probe, pull, relay, repoOf, say, voiceNames, whyStopped } from '../src/brain.ts'
 import { mkdtemp, mkdir as makeDir, writeFile as write } from 'node:fs/promises'
 import { tmpdir as tempDir } from 'node:os'
 import { join as joinPath } from 'node:path'
@@ -127,9 +127,11 @@ describe('the brain daemon', () => {
     const names = (await onDisk({ HF_HUB_CACHE: cache }, { home })).filter((m) => m.source === 'hf').map((m) => m.name).sort()
     assert.deepEqual(names, ['mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit', 'mlx-community/parakeet-tdt-0.6b-v3'])
     assert.ok(isAudio('mlx-community/Kokoro-82M-bf16') && isAudio('Qwen/Qwen3-ASR-0.6B') && !isAudio('Qwen/Qwen3-32B'))
-    assert.deepEqual(mlxAudioCommand((c) => (c === 'uvx' ? '/u/.local/bin/uvx' : undefined)), ['/u/.local/bin/uvx', ['--from', 'mlx-audio', 'mlx_audio.server', '--host', '127.0.0.1', '--port', '8939']])
-    assert.deepEqual(mlxAudioCommand((c) => (c === 'mlx_audio.server' ? '/bin/mlx_audio.server' : '/u/uvx'))![0], '/bin/mlx_audio.server')
-    assert.equal(mlxAudioCommand(() => undefined), undefined)
+    // Installed once, as uv's tool with its server's packages (the plain package's server stops as it starts); run as itself.
+    assert.deepEqual(mlxAudioInstall((c) => (c === 'uv' ? '/u/.local/bin/uv' : undefined)), ['/u/.local/bin/uv', ['tool', 'install', 'mlx-audio[server]']])
+    assert.equal(mlxAudioCommand((c) => (c === 'uv' ? '/u/.local/bin/uv' : undefined)), undefined, 'not installed yet')
+    assert.deepEqual(mlxAudioCommand((c) => (c === 'mlx_audio.server' ? '/u/.local/bin/mlx_audio.server' : undefined)), ['/u/.local/bin/mlx_audio.server', ['--host', '127.0.0.1', '--port', '8939']])
+    assert.equal(whyStopped('Starting\nTraceback (most recent call last):\n  File "server.py", line 27\nModuleNotFoundError: No module named \'uvicorn\'\n'), "ModuleNotFoundError: No module named 'uvicorn'")
   })
 
   it('finds a model server on whatever port it listens on, one that answers at /models, and one that wants a key', async () => {
