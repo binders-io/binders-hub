@@ -260,6 +260,7 @@ export default function App() {
             </div>
           </header>
           <UpdateFailed />
+          <NewVersion />
           <div ref={content} tabIndex={-1} className={`screen${moving ? ' moving' : ''}`}>
             <ErrorBoundary resetOn={routeKey}>
               <Suspense fallback={<ScreenLoading />}>
@@ -309,6 +310,41 @@ function ScreenLoading() {
 }
 
 /** For the hub's admins: a newer commit didn't go in because its tests failed. Hidden for that commit once dismissed. */
+/**
+ * The page as it was when it was opened: when the hub has a newer one (it was updated since, and the page it serves
+ * changed), a word and a reload. Looked at every two minutes, and on coming back to the tab.
+ */
+function NewVersion() {
+  const [newer, setNewer] = useState(false)
+  useEffect(() => {
+    let first: string | undefined
+    const look = async () => {
+      try {
+        const response = await fetch('/', { method: 'HEAD', cache: 'no-store' })
+        const tag = response.headers.get('etag') ?? response.headers.get('last-modified')
+        if (!tag) return
+        if (first === undefined) first = tag
+        else if (tag !== first) setNewer(true)
+      } catch { /* the hub is away for a moment: looked at again later */ }
+    }
+    void look()
+    const again = window.setInterval(() => void look(), 120_000)
+    const back = () => void look()
+    window.addEventListener('focus', back)
+    return () => {
+      window.clearInterval(again)
+      window.removeEventListener('focus', back)
+    }
+  }, [])
+  if (!newer) return null
+  return (
+    <div className="new-version" role="status">
+      <span>A newer version of this page is ready.</span>
+      <button type="button" className="button" onClick={() => window.location.reload()}>Reload</button>
+    </div>
+  )
+}
+
 function UpdateFailed() {
   const me = useHub((state) => state.me)
   const failed = me?.updateFailed

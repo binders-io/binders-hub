@@ -4,6 +4,7 @@ import { bodies } from '../schemas.ts'
 import { ask, type AskPlace } from '../brain/brain.ts'
 import type { BrainSettings } from '../brain/settings.ts'
 import { offers } from '../brain/autoPick.ts'
+import { runnerVersion } from '../../../shared/agents.ts'
 import type { Capture } from '../brain/captures.ts'
 import type { Context } from './context.ts'
 
@@ -29,7 +30,7 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
     // For each job no machine can do, a model to download, on a machine with Ollama: none while one is downloading.
     const downloading = new Set(machines.flatMap((m) => (m.downloads ?? []).filter((d) => !d.done && !d.error).map((d) => `${m.id} ${d.model}`)))
     const offered = brainSettings ? offers(machines, brainSettings.openJobs()).filter((o) => !downloading.has(`${o.machine} ${o.action === 'serve' ? (o.runtime === 'mlx-audio' ? 'mlx-audio' : 'LM Studio') : o.model}`)) : []
-    return { machines, offers: offered }
+    return { machines, offers: offered, latest: runnerVersion }
   }))
   app.post('/api/brain/machines/:id/pull', act(async (request) => {
     const machines = admin(request, 'download models')

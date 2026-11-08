@@ -74,6 +74,7 @@ interface Machine {
   platform?: string
   servers?: MachineServer[]
   seenAt?: string
+  version?: string
   downloads?: Download[]
   onDisk?: { name: string; source: string }[]
   looked?: { where: string; count: number }[]
@@ -185,7 +186,15 @@ function MachinePicker({ id, machines, machine, baseUrl, model, voices, disabled
 }
 
 /** Your machines: one line that adds any of them; what each serves and whether it's linked; removing one. */
-function Machines({ machines, onChange }: { machines: Machine[]; onChange: () => void }) {
+/** Whether version a is older than b: 0.13.2 against 0.14.1. */
+function older(a: string, b: string) {
+  const x = a.split('.').map(Number)
+  const y = b.split('.').map(Number)
+  for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0)
+  return false
+}
+
+function Machines({ machines, onChange, latest }: { machines: Machine[]; onChange: () => void; latest?: string }) {
   const [command, setCommand] = useState<{ install: string; expiresAt: string }>()
   const [removing, setRemoving] = useState<string>()
   const getCommand = async () => {
@@ -207,7 +216,9 @@ function Machines({ machines, onChange }: { machines: Machine[]; onChange: () =>
             <li key={m.id}>
               <span className={`machine-dot${m.online ? ' on' : ''}`} aria-hidden="true" />
               <div>
-                <b>{m.name}</b> <span className="machine-state">{m.online ? 'Linked' : m.seenAt ? 'Away' : 'Not linked yet'}{m.platform ? ` · ${m.platform}` : ''}</span>
+                <b>{m.name}</b> <span className="machine-state">{m.online ? 'Linked' : m.seenAt ? 'Away' : 'Not linked yet'}{m.platform ? ` · ${m.platform}` : ''}{m.version ? ` · daemon ${m.version}` : ''}</span>
+                {/* From 0.14.0 a daemon updates itself when it links; one before that needs its line run again. */}
+                {latest && m.version && older(m.version, latest) && <span className="machine-serves option-error">{older(m.version, '0.14.0') ? `Its daemon is too old to update itself: run the line from “Add more machines” on ${m.name} again.` : 'Its daemon updates itself the next time it links.'}</span>}
                 <span className="machine-serves">{m.servers?.length ? m.servers.map(serverLabel).join(' · ') : m.seenAt ? 'No model servers found on it yet.' : 'Waiting for it to link.'}</span>
                 {diskLine(m) && <span className="machine-serves">{diskLine(m)}</span>}
               </div>
@@ -255,6 +266,7 @@ export function BrainPanel() {
   const [speechKey, setSpeechKey] = useState('')
   const [machines, setMachines] = useState<Machine[]>([])
   const [offered, setOffered] = useState<Offer[]>([])
+  const [latest, setLatest] = useState<string>()
   /** A job switched to a machine of yours, before one is chosen for it. */
   const [onMachine, setOnMachine] = useState<Partial<Record<Role, boolean>>>({})
   /** A job the hub chose, opened to choose another. */
@@ -270,7 +282,8 @@ export function BrainPanel() {
 
   // Your machines, an admin's: looked at again now and then, so one just set up shows as linked, and often while a model
   // downloads. A finished download changes what the brain uses, so the brain is read again then too.
-  const loadMachines = () => void call<{ machines: Machine[]; offers?: Offer[] }>('GET', '/api/brain/machines').then((r) => {
+  const loadMachines = () => void call<{ machines: Machine[]; offers?: Offer[]; latest?: string }>('GET', '/api/brain/machines').then((r) => {
+    setLatest(r.latest)
     setMachines((before) => {
       const finished = r.machines.some((m) => (m.downloads ?? []).some((d) => d.done && !before.find((b) => b.id === m.id)?.downloads?.find((x) => x.model === d.model)?.done))
       if (finished) void call<{ brain: BrainView }>('GET', '/api/brain').then((b) => setBrain(b.brain)).catch(() => {})
@@ -341,12 +354,16 @@ export function BrainPanel() {
     const alsoWords = also.length ? ` It also ${also.includes('speech') ? 'reads answers out' : also.includes('transcription') ? 'writes down audio' : also.includes('embeddings') ? 'finds by meaning' : 'answers'}.` : ''
     if (offer.action === 'serve') {
       const model = offer.models?.[job] ?? offer.model
+      // The others for the same job on that machine, which "Choose another" offers once it serves them.
+      const others = (machines.find((m) => m.id === offer.machine)?.onDisk ?? []).map((d) => d.name)
+        .filter((name) => name !== model && audioModel(name) && (job === 'speech' ? /kokoro|tts|csm|orpheus|chatterbox|outetts|vibevoice|phonon|lfm\d*-audio/i : /whisper|parakeet|canary|moonshine|voxtral|asr|lfm\d*-audio/i).test(name))
+        .map(shortName)
       const serve = async () => {
         if (await attempt(() => call('POST', `/api/brain/machines/${offer.machine}/serve`, { runtime: offer.runtime, job }))) loadMachines()
       }
       return (
         <div className="model-download">
-          <p className="option-status">{shortName(model)} is already on {on}, with nothing serving it yet.{alsoWords}</p>
+          <p className="option-status">{shortName(model)} is already on {on}, with nothing serving it yet.{alsoWords}{others.length ? ` Also there: ${others.slice(0, 4).join(', ')}${others.length > 4 ? `, and ${others.length - 4} more` : ''}: once it serves, Choose another picks one of them.` : ''}</p>
           <button type="button" className="button" onClick={() => void serve()}>Use it, with {offer.runtime === 'mlx-audio' ? 'mlx-audio' : 'LM Studio'}</button>
         </div>
       )
@@ -423,7 +440,7 @@ export function BrainPanel() {
       </Option>
 
       {admin && <>
-        <Machines machines={machines} onChange={loadMachines} />
+        <Machines machines={machines} onChange={loadMachines} latest={latest} />
 
         <Option title="The hub’s model" detail="Sums up the conversations and meetings phones and Macs send, and answers questions from the binders, citing the notes and cards it used. Claude runs at Anthropic with the hub’s key; a server of your own, such as Ollama, LM Studio or vLLM, keeps the words on your machines." aside={note('provider')}>
           {download('chat')}

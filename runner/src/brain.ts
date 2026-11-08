@@ -255,7 +255,8 @@ export async function probe(address: string, kind: string, timeoutMs = 4000): Pr
   const base = address.replace(/\/+$/, '')
   try {
     const response = await fetch(`${base}/models`, { signal: AbortSignal.timeout(timeoutMs) })
-    if (response.status === 401 || response.status === 403) return { url: base, kind, models: [], needsKey: true }
+    // Wanting a key, said as a model API says it (JSON): a Mac's AirPlay on :5000 turns everything away too, and isn't one.
+    if ((response.status === 401 || response.status === 403) && /json/i.test(response.headers.get('content-type') ?? '')) return { url: base, kind, models: [], needsKey: true }
     if (!response.ok) return undefined
     const body = (await response.json()) as { data?: { id?: unknown; owned_by?: unknown }[] }
     if (!Array.isArray(body.data)) return undefined

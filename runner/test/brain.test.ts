@@ -136,7 +136,7 @@ describe('the brain daemon', () => {
     const at = async (handler: (path: string) => { status: number; body?: unknown }) => {
       const server: Server = createServer((request, response) => {
         const { status, body } = handler(request.url ?? '')
-        response.writeHead(status, { 'content-type': 'application/json' })
+        response.writeHead(status, body === undefined ? {} : { 'content-type': 'application/json' })
         response.end(body === undefined ? '' : JSON.stringify(body))
       })
       await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
@@ -146,11 +146,14 @@ describe('the brain daemon', () => {
     const tensorfold = await at((path) => (path === '/v1/models' ? { status: 200, body: { object: 'list', data: [{ id: 'glm-5.3' }] } } : { status: 404 }))
     const plain = await at((path) => (path === '/models' ? { status: 200, body: { data: [{ id: 'local-model' }] } } : { status: 404 }))
     const locked = await at(() => ({ status: 401, body: { error: 'key' } }))
+    // Turned away with no JSON: not a model server at all (a Mac's AirPlay on :5000).
+    const airplay = await at(() => ({ status: 403 }))
     // Found by the port it listens on, with no address given.
     if (process.platform === 'linux' || process.platform === 'darwin') assert.ok((await listening()).includes(tensorfold), 'its port, from the machine’s own list')
     assert.deepEqual(await probe(`${tensorfold}/v1`, 'openai'), { url: `${tensorfold}/v1`, kind: 'openai', models: ['glm-5.3'] })
     assert.deepEqual(await probe(plain, 'openai'), { url: plain, kind: 'openai', models: ['local-model'] })
     assert.deepEqual(await probe(`${locked}/v1`, 'openai'), { url: `${locked}/v1`, kind: 'openai', models: [], needsKey: true })
+    assert.equal(await probe(`${airplay}/v1`, 'openai'), undefined)
     const found = await detect([`${tensorfold}/v1`, plain], true)
     assert.deepEqual(found.map((s) => s.url), [`${tensorfold}/v1`, plain])
     assert.ok(newer('0.14.0', '0.13.2') && !newer('0.13.0', '0.13.0') && !newer('0.9.9', '0.13.0'))
