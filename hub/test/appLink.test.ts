@@ -26,6 +26,8 @@ function standInModel(): BrainModel {
     summarize: async () => ({ title: 'Van tyres', summary: 'They talked about the van.', points: [], decisions: [], followUps: ['Book the garage for Tuesday'] }),
     answer: async (_question, passages) => ({ text: `See ${passages[0].title}.`, parts: [{ text: `See ${passages[0].title}.`, sources: [0] }] }),
     sortMoment: async (said) => (/\?$/.test(said.trim()) ? { kind: 'question', title: said.trim() } : /^remind me to /i.test(said) ? { kind: 'todo', title: said.replace(/^remind me to /i, '') } : { kind: 'none', title: '' }),
+    // What it heard, the turn before, and what it found: said back, so a test can see all three reached it.
+    talk: async (turns, passages) => `You said “${turns[turns.length - 1].text}” after ${turns.length - 1} turns${passages.length ? `, and ${passages[0].title} says ${passages[0].text.split('\n').pop()}` : ''}.`,
   }
 }
 
@@ -216,6 +218,33 @@ describe('the hub as an iPhone’s brain', () => {
       const asked = (await phone.request('binders/moment', { id: 'M2', heard: '2026-11-07T10:01:00Z', text: 'when does the plumber come?' })).result as { outcome: { state: string; line: string } }
       assert.equal(asked.outcome.state, 'answered')
       assert.match(asked.outcome.line, /^See Plumbing\. \[1\]\nPlumbing$/)
+    } finally {
+      phone.close()
+      await set.close()
+    }
+  })
+
+  it('talks: answers each turn with the conversation so far and what it found, and lists Talk only with a model', async () => {
+    const set = await setUp()
+    const phone = await link(set.url, set.token)
+    try {
+      const hello = (await phone.request('binders/hello', { name: 'Test iPhone', protocol: 1, features: [] })).result as { features: string[] }
+      assert.ok(hello.features.includes('talks'))
+      await phone.tool('add_note', { text: 'Plumbing\nThe plumber comes on Thursdays.', binder: 'Personal' })
+      await set.own.brain.caughtUp()
+      const first = (await phone.request('binders/talk', { turns: [{ role: 'user', text: 'When does the plumber come?' }], token: 'K1' })).result as { reply: string; sources: { title: string; binder: string }[] }
+      assert.equal(first.reply, 'You said “When does the plumber come?” after 0 turns, and Plumbing says The plumber comes on Thursdays..')
+      assert.deepEqual(first.sources.map((s) => [s.title, s.binder]), [['Plumbing', 'Personal']])
+      assert.deepEqual(phone.notes.filter((n) => n.method === 'binders/ask-progress').map((n) => (n.params as { token: string; stage: string }).stage), ['sources'])
+      // A short follow-up is looked for with what came before it, and the model hears the whole conversation.
+      const turns = [{ role: 'assistant', text: 'Hello there.' }, { role: 'user', text: 'When does the plumber come?' }, { role: 'assistant', text: first.reply }, { role: 'user', text: 'and what time?' }]
+      const second = (await phone.request('binders/talk', { turns })).result as { reply: string; sources: { title: string }[] }
+      assert.match(second.reply, /^You said “and what time\?” after 2 turns, and Plumbing says/)
+      // Nothing said: refused in words.
+      const empty = await phone.request('binders/talk', { turns: [{ role: 'user', text: '   ' }] })
+      assert.equal((empty.error as { message: string }).message, 'Say something first.')
+      // Warming for Talk answers at once; capture's own warm-ups load nothing.
+      assert.deepEqual((await phone.request('binders/warm', { talk: true })).result, {})
     } finally {
       phone.close()
       await set.close()

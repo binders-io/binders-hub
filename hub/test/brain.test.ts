@@ -248,6 +248,20 @@ describe('the models the hub calls', () => {
     assert.equal(server.seen[0].body.fallbacks, undefined)
   })
 
+  it('talks out loud with a model of your own: the conversation as turns, what it found with the last, no thinking first', async () => {
+    // A server that won't take being told not to think (OpenAI's own refuses fields it doesn't know): asked again plainly.
+    const server = await standIn((_path, body) => (body.chat_template_kwargs ? { status: 400, body: { error: 'unknown field' } } : { body: { choices: [{ message: { content: '<think>let me see</think>On Thursdays, says your note on plumbing.' } }] } }))
+    closers.push(server.close)
+    const model = new OpenAICompatibleModel({ baseURL: `${server.url}/v1`, model: 'local-model' })
+    const reply = await model.talk([{ role: 'assistant', text: 'Hi.' }, { role: 'user', text: 'Hello' }, { role: 'assistant', text: 'Hi, what’s up?' }, { role: 'user', text: 'When does the plumber come?' }], [{ title: 'Plumbing', text: 'Thursdays', context: 'A note in Personal' }])
+    assert.equal(reply, 'On Thursdays, says your note on plumbing.')
+    assert.deepEqual(server.seen.map((s) => Boolean(s.body.chat_template_kwargs)), [true, false])
+    const messages = server.seen[1].body.messages as { role: string; content: string }[]
+    assert.deepEqual(messages.map((m) => m.role), ['system', 'user', 'assistant', 'user'], 'starting with what the person said')
+    assert.match(messages[0].content, /out loud/)
+    assert.equal(messages.at(-1)!.content, '<documents>\nPlumbing (A note in Personal)\nThursdays\n</documents>\n\nWhen does the plumber come?')
+  })
+
   it('talks to a model on a server of your own, reading [n] citations and JSON summaries, and embeds with it', async () => {
     const server = await standIn((path, body) => {
       if (path.endsWith('/embeddings')) return { body: { data: (body.input as string[]).map((_, index) => ({ index, embedding: [3, 4] })).reverse() } }

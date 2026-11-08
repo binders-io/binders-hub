@@ -31,6 +31,7 @@ function standInModel(): BrainModel & { asked: { question: string; titles: strin
       asked.push({ question, titles: passages.map((p) => p.title) })
       return { text: `It’s in ${passages[0].title}.`, parts: [{ text: `It’s in ${passages[0].title}.`, sources: [0] }] }
     },
+    talk: async (turns) => `You said ${turns[turns.length - 1].text}.`,
     sortMoment: async (said) => (/\?$/.test(said.trim()) ? { kind: 'question' as const, title: said.trim() } : /^remind me to /i.test(said) ? { kind: 'todo' as const, title: said.replace(/^remind me to /i, '') } : /^note /i.test(said) ? { kind: 'note' as const, title: said.replace(/^note /i, '') } : { kind: 'none' as const, title: '' }),
   }
 }

@@ -8,7 +8,8 @@ import type { Space, Spaces } from './spaces.ts'
 import { personalId } from './spaces.ts'
 import { Refused } from './hub.ts'
 import { Refusal } from './auth.ts'
-import { ask, transcriptionTurns, type AskPlace, type AskSource } from './brain/brain.ts'
+import { ask, talk, transcriptionTurns, type AskPlace, type AskSource } from './brain/brain.ts'
+import { BrainUnavailable } from './brain/models.ts'
 import { speakersByOverlap, transcriptMarkdown, type SaidBy } from './brain/captures.ts'
 import type { BrainSettingsStore } from './brain/settings.ts'
 import type { SourceKind } from './brain/index.ts'
@@ -251,7 +252,8 @@ export class AppLinkSession {
     const model = Boolean(settings?.model())
     return [
       'conversation', 'outcomes', 'dedupe', 'askProgress', 'folders', 'todosAreCards', 'approvals',
-      ...(model ? ['suggestions', 'moment'] : []),
+      // Talk: a conversation out loud with the hub's model (binders/talk), read out by its voice or the iPhone's own.
+      ...(model ? ['suggestions', 'moment', 'talks'] : []),
       // It writes down what the iPhone sends as audio (POST /api/app/audio), and reads answers out (binders/speak).
       ...(settings?.transcriber() ? ['transcribes'] : []),
       ...(settings?.speaker() ? ['speaks'] : []),
@@ -266,8 +268,14 @@ export class AppLinkSession {
         if (!this.subscribed) this.subscribe()
         return {}
       case 'ping':
-      case 'binders/warm':
         return {}
+      case 'binders/warm':
+        // Talk opening: the hub's model and voice get ready, as one on your machines loads when first asked for. Capture's
+        // own warm-ups (every couple of minutes while someone talks) don't load anything.
+        if (params.talk === true) this.warmForTalk()
+        return {}
+      case 'binders/talk':
+        return this.talkTurn(params)
       case 'tools/call':
         return this.tool(String(params.name ?? ''), (params.arguments ?? {}) as Record<string, unknown>)
       case 'binders/format':
@@ -871,9 +879,51 @@ export class AppLinkSession {
     return { text, result, sources: result.sources.map((s) => s.title) }
   }
 
+  /** A source as the iPhone's Ask shows it: in the Mac's ask_knowledge shape. */
+  private static passage(s: AskSource) {
+    return { kind: 'note', source_id: `${s.binder}/${s.id}`, title: s.kind === 'card' ? `Card: ${s.title}` : s.title, date: '', binder: s.binderName, text: s.text }
+  }
+
+  private warmed = 0
+
+  /** The hub's model and voice, asked for now so they're loaded when Talk needs them: at most once a minute. */
+  private warmForTalk() {
+    const settings = this.deps.settings
+    if (!settings || Date.now() - this.warmed < 60_000) return
+    this.warmed = Date.now()
+    void settings.model()?.warm?.().catch(() => undefined)
+    void settings.speaker()?.speak('Hello.').catch(() => undefined)
+  }
+
+  /**
+   * One turn of Talk: the conversation so far (`turns`, ending with what the person just said), answered by the hub's
+   * model in words to read out. What it found in the binders goes to the iPhone first, as Ask's does (`token`).
+   */
+  private async talkTurn(params: Record<string, unknown>) {
+    if (!this.deps.settings) throw new Refused('Your hub has no brain to talk with.')
+    const turns = (Array.isArray(params.turns) ? params.turns : []).map((t) => {
+      const turn = (t ?? {}) as Record<string, unknown>
+      return { role: turn.role === 'assistant' ? 'assistant' as const : 'user' as const, text: String(turn.text ?? '') }
+    })
+    const token = typeof params.token === 'string' ? params.token : ''
+    let seq = 0
+    try {
+      const result = await talk(this.deps.settings, this.askPlaces(), turns, {
+        onSources: (sources) => {
+          if (token) this.deps.send({ jsonrpc: '2.0', method: 'binders/ask-progress', params: { token, seq: ++seq, stage: 'sources', sources: sources.map(AppLinkSession.passage) } })
+        },
+      })
+      return { reply: result.reply, sources: result.sources.map(AppLinkSession.passage), model: result.model }
+    } catch (err) {
+      // The model away or refusing: said to the iPhone in words, as a refusal.
+      if (err instanceof BrainUnavailable) throw new Refused(err.message)
+      throw err
+    }
+  }
+
   private async askKnowledge(question: string, token: string) {
     if (!question.trim()) throw new Refused('Ask a question.')
-    const passage = (s: AskSource) => ({ kind: 'note', source_id: `${s.binder}/${s.id}`, title: s.kind === 'card' ? `Card: ${s.title}` : s.title, date: '', binder: s.binderName, text: s.text })
+    const passage = AppLinkSession.passage
     let seq = 0
     const progress = (fields: Record<string, unknown>) => {
       if (token) this.deps.send({ jsonrpc: '2.0', method: 'binders/ask-progress', params: { token, seq: ++seq, ...fields } })

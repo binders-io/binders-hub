@@ -7,7 +7,7 @@ import type { KV } from '../kv.ts'
 import { log } from '../logger.ts'
 import { BrainIndex, type Hit, type IndexSource, type SourceKind } from './index.ts'
 import { captureNote, firstWords, withSummary, withTranscript, type Capture } from './captures.ts'
-import type { Summary } from './models.ts'
+import { conversation, type Summary, type Turn } from './models.ts'
 import type { BrainSettingsStore } from './settings.ts'
 
 // A Binder's brain: the index of its notes and cards, kept up as they change, what's captured on a phone or Mac put in
@@ -374,14 +374,13 @@ export interface AskResult {
  * Answers a question from the notes and cards of these Binders: the passages that best match it, by their words and,
  * with an embeddings model, by what they mean; then the model's answer, citing them. Without a model, the passages.
  */
-export async function ask(settings: BrainSettingsStore, places: AskPlace[], question: string, options: { most?: number; onSources?: (sources: AskSource[]) => void } = {}): Promise<AskResult> {
-  const asked = question.trim().slice(0, 2000)
-  if (!asked) throw new Refused('Ask a question.')
+/** The passages in these Binders that best match `query`: by its words and, with an embeddings model, by what it means. */
+async function find(settings: BrainSettingsStore, places: AskPlace[], query: string, most: number) {
   const embedder = settings.embedder()
   let vector: Float32Array | undefined
   if (embedder) {
     try {
-      ;[vector] = await embedder.embed([asked], 'query')
+      ;[vector] = await embedder.embed([query], 'query')
     } catch (err) {
       log.warn({ why: err instanceof Error ? err.message : String(err) }, 'The brain couldn’t embed a question; finding by words')
     }
@@ -389,7 +388,7 @@ export async function ask(settings: BrainSettingsStore, places: AskPlace[], ques
   const found: { hit: Hit; place: AskPlace }[] = []
   for (const place of places) {
     const keep = place.keep
-    for (const hit of await place.brain.index.search(asked, 12, { vector, embedKey: vector ? embedder!.key : undefined, keep: (kind, id) => place.brain.has(kind, id) && (!keep || keep(kind, id)) })) found.push({ hit, place })
+    for (const hit of await place.brain.index.search(query, 12, { vector, embedKey: vector ? embedder!.key : undefined, keep: (kind, id) => place.brain.has(kind, id) && (!keep || keep(kind, id)) })) found.push({ hit, place })
   }
   // The best passages over all the Binders, at most two from any one note or card.
   found.sort((a, b) => b.hit.score - a.hit.score)
@@ -399,7 +398,7 @@ export async function ask(settings: BrainSettingsStore, places: AskPlace[], ques
     const count = perSource.get(key) ?? 0
     perSource.set(key, count + 1)
     return count < 2
-  }).slice(0, options.most ?? 8)
+  }).slice(0, most)
   const sources: AskSource[] = chosen.map(({ hit, place }, i) => ({
     n: i + 1,
     binder: place.id,
@@ -411,17 +410,50 @@ export async function ask(settings: BrainSettingsStore, places: AskPlace[], ques
     text: hit.text,
     url: place.url(hit.kind, hit.id),
   }))
-  const searchedBy = vector ? 'words and meaning' : 'words'
+  const searchedBy: AskResult['searchedBy'] = vector ? 'words and meaning' : 'words'
+  const passages = chosen.map(({ hit, place }) => ({ title: hit.title, text: hit.text, context: `${hit.kind === 'note' ? 'A note' : 'A card'} in ${place.name}${hit.context ? `: ${hit.context}` : ''}` }))
+  return { sources, passages, searchedBy }
+}
+
+export async function ask(settings: BrainSettingsStore, places: AskPlace[], question: string, options: { most?: number; onSources?: (sources: AskSource[]) => void } = {}): Promise<AskResult> {
+  const asked = question.trim().slice(0, 2000)
+  if (!asked) throw new Refused('Ask a question.')
+  const { sources, passages, searchedBy } = await find(settings, places, asked, options.most ?? 8)
   options.onSources?.(sources)
   const model = settings.model()
   if (!model || !sources.length) return { sources, searchedBy, ...(model ? { model: model.label } : {}) }
   try {
-    const passages = chosen.map(({ hit, place }) => ({ title: hit.title, text: hit.text, context: `${hit.kind === 'note' ? 'A note' : 'A card'} in ${place.name}${hit.context ? `: ${hit.context}` : ''}` }))
     const answer = await model.answer(asked, passages)
     return { answer: { text: answer.text, parts: answer.parts.map((p) => ({ text: p.text, sources: p.sources.map((s) => s + 1) })) }, sources, model: answer.model ?? model.label, searchedBy }
   } catch (err) {
     return { sources, model: model.label, searchedBy, problem: err instanceof Error ? err.message : String(err) }
   }
+}
+
+/** What Talk on the iPhone hears back: the brain's reply, to read out, and the passages it had to go on. */
+export interface TalkResult {
+  reply: string
+  sources: AskSource[]
+  model: string
+}
+
+/**
+ * One turn of a conversation out loud: what the person just said, after what was said before. The brain looks in these
+ * Binders for it (with what they said before it, for a short follow-up such as "and the second one?"), and its model
+ * answers as people talk: from the passages when they help, and from what it knows when they don't.
+ */
+export async function talk(settings: BrainSettingsStore, places: AskPlace[], turns: Turn[], options: { onSources?: (sources: AskSource[]) => void } = {}): Promise<TalkResult> {
+  const said = conversation(turns.slice(-12).map((t): Turn => ({ role: t.role === 'assistant' ? 'assistant' : 'user', text: String(t.text ?? '').slice(0, 2000) })))
+  if (!said.length) throw new Refused('Say something first.')
+  const model = settings.model()
+  if (!model) throw new Refused('Your hub has no model to talk with.')
+  const theirs = said.filter((t) => t.role === 'user').map((t) => t.text)
+  const latest = theirs[theirs.length - 1]
+  const query = theirs.length > 1 && latest.split(/\s+/).length < 8 ? `${theirs[theirs.length - 2]} ${latest}` : latest
+  const { sources, passages } = await find(settings, places, query.slice(0, 2000), 5)
+  options.onSources?.(sources)
+  const reply = await model.talk(said, passages)
+  return { reply, sources, model: model.label }
 }
 
 /** An answer as plain text, for an MCP client: the answer with [n] after what each source supports, then the sources. */
