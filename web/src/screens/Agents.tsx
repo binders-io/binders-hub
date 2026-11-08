@@ -7,7 +7,7 @@ import { agentRepos, asksOf, usualRules, defaultRunner, runnerShown, toolForProv
 import { accessNames, atLeast, restartSince, toolInfo, tools, type Access, type AgentTool } from '../../../shared/agents.ts'
 import { call } from '../data/api'
 import { ToolIcon } from '../components/ToolIcon'
-import { AgentAvatar, ago } from '../components/bits'
+import { AgentAvatar, ago, usePhone } from '../components/bits'
 import { Dialog, Field } from '../components/Dialog'
 import { attempt } from '../components/Toast'
 import { href } from '../route'
@@ -39,7 +39,7 @@ export function Agents() {
       <header className="screen-head">
         <div>
           <h2>Agents</h2>
-          <p>Each agent connects to the hub over MCP with a token of its own. It finds cards it can do, takes them, says what it’s doing, and hands them back with a pull request. Your own terminal connects as you, through OAuth: Settings → Agents has its address.</p>
+          <p>Agents take cards from the board, say what they’re doing, and hand them back with a pull request.</p>
         </div>
         <button className="button primary" onClick={() => setAdding(true)}><Plus size={14} /> Set up an agent</button>
       </header>
@@ -87,6 +87,9 @@ export function Agents() {
 /** One agent: what it's doing first, then where it works and what it can do, as chips that fold up when there are many. */
 function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent; onEdit: () => void; onToken: () => void; onRevoke: () => void; onStart: () => void }) {
   const { state } = useStore()
+  // On a phone what it's doing comes first, and the rest when asked for.
+  const phone = usePhone()
+  const [factsOpen, setFactsOpen] = useState(false)
   const holding = state.cards.filter((c) => c.agentId === agent.id && c.stage === 'working')
   const asks = holding.filter((c) => asksOf(c))
   const done = state.cards.filter((c) => c.agentId === agent.id && (c.stage === 'review' || c.stage === 'live')).length
@@ -141,7 +144,8 @@ function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent
         )) : <span className="faint">Waiting for work{done ? ` · ${done} finished` : ''}</span>}
       </div>
 
-      <dl className="agent-facts">
+      {phone && <button type="button" className="section-toggle agent-facts-toggle" aria-expanded={factsOpen} onClick={() => setFactsOpen(!factsOpen)}><ChevronDown size={14} style={{ transform: factsOpen ? 'none' : 'rotate(-90deg)' }} /> Repos, skills and runner</button>}
+      {(!phone || factsOpen) && <dl className="agent-facts">
         <dt>Repos</dt>
         <dd>{agent.repos.length ? [...owners.entries()].map(([owner, names]) => <ChipGroup key={owner} label={owner} items={names} mono />) : <span className="faint">Any repo</span>}</dd>
         {state.binders.length > 1 && <>
@@ -154,7 +158,7 @@ function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent
         <dt>Runner</dt>
         <dd className="runner-facts">{[toolInfo((runner ?? defaultRunner).tool).name, shortAccess[(runner ?? defaultRunner).access], `${(runner ?? defaultRunner).parallel ?? 3} at once`, `${(runner ?? defaultRunner).timeoutMinutes} min`].map((part) => <span key={part}>{part}</span>)}</dd>
         {runner?.model && <><dt>Model</dt><dd className="runs-on mono" title={runner.model}>{runner.model}</dd></>}
-      </dl>
+      </dl>}
 
       {(!listening || runnerState(agent).old) && (
         <div className="agent-start">

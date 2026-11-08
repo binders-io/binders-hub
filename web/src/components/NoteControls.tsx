@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { BookMarked, History, Lock, LockOpen } from 'lucide-react'
+import { BookMarked, Ellipsis, History, Lock, LockOpen } from 'lucide-react'
 import { guideMost } from '../../../shared/guide.ts'
 import { lineDiff, fromMarkdown, type Note, type NoteProposal } from '../../../shared/notes.ts'
 import { call } from '../data/api'
 import { spaceHeaders } from '../data/space'
 import { useActions, useHub } from '../data/store'
+import { openMenuUnder, type MenuItem } from './ContextMenu'
 import { Dialog } from './Dialog'
 import { attempt } from './Toast'
 
@@ -172,8 +173,8 @@ function NoteReview({ note, mayChange, onClose, opening }: { note: Note; mayChan
   )
 }
 
-/** The note's guide, lock and history buttons. */
-export function NoteControls({ note, mayChange }: { note: Note; mayChange: boolean }) {
+/** The note's guide, lock and history buttons; on a phone, one button for them all, with what `more` adds. */
+export function NoteControls({ note, mayChange, more }: { note: Note; mayChange: boolean; more?: MenuItem[] }) {
   const store = useActions()
   const binder = useHub((state) => state.binders.find((b) => b.id === note.binderId))
   const open = useHub((state) => (state.noteProposals ?? []).filter((p) => p.noteId === note.id && p.state === 'open').length)
@@ -182,11 +183,30 @@ export function NoteControls({ note, mayChange }: { note: Note; mayChange: boole
   const lockTitle = note.locked
     ? mayChange ? `Locked by @${note.locked.by}: only they and this Binder’s owners and admins can change it. Unlock it` : `Locked by @${note.locked.by}: propose changes for review`
     : 'Lock it: others, agents included, can only propose changes'
+  const toggleGuide = () => store.updateBinder(note.binderId, { guideNoteId: guide ? '' : note.id })
+  const toggleLock = () => void attempt(() => call('POST', `/api/notes/${note.id}/lock`, { locked: !note.locked }))
+  const openReview = () => setReview(open || note.locked ? 'proposals' : 'versions')
+  if (more) {
+    const items: MenuItem[] = [
+      { label: open ? `Review ${open} proposed change${open === 1 ? '' : 's'}` : 'Versions and proposals', icon: <History size={14} />, onSelect: openReview },
+      { label: note.locked ? 'Unlock' : 'Lock', icon: note.locked ? <LockOpen size={14} /> : <Lock size={14} />, disabled: !!note.locked && !mayChange, onSelect: toggleLock },
+      { label: guide ? 'Stop using as the guide' : 'Make it the binder’s guide', icon: <BookMarked size={14} />, onSelect: toggleGuide },
+      ...more,
+    ]
+    return (
+      <>
+        <button type="button" className="icon-button note-more" onClick={(event) => openMenuUnder(event, items)} aria-haspopup="menu" aria-label="More for this note">
+          <Ellipsis size={18} />{open > 0 && <i className="waiting num">{open}</i>}
+        </button>
+        {review && <NoteReview note={note} mayChange={mayChange} opening={review} onClose={() => setReview(undefined)} />}
+      </>
+    )
+  }
   return (
     <>
-      <button type="button" className={`icon-button${guide ? ' on' : ''}`} aria-pressed={guide} onClick={() => store.updateBinder(note.binderId, { guideNoteId: guide ? '' : note.id })} title={guide ? 'This is the binder’s guide: every agent here reads it first. Stop using it as the guide' : 'Make this the binder’s guide: every agent here reads it first'} aria-label="Binder guide"><BookMarked size={15} /></button>
-      <button type="button" className={`icon-button${note.locked ? ' on' : ''}`} aria-pressed={!!note.locked} disabled={!!note.locked && !mayChange} onClick={() => void attempt(() => call('POST', `/api/notes/${note.id}/lock`, { locked: !note.locked }))} title={lockTitle} aria-label={note.locked ? 'Locked' : 'Lock'}>{note.locked ? <Lock size={15} /> : <LockOpen size={15} />}</button>
-      <button type="button" className={`icon-button${open ? ' on' : ''}`} onClick={() => setReview(open || note.locked ? 'proposals' : 'versions')} title={open ? `${open} proposed change${open === 1 ? '' : 's'} to review` : 'Versions and proposals'} aria-label="Versions and proposals"><History size={15} />{open > 0 && <i className="waiting num">{open}</i>}</button>
+      <button type="button" className={`icon-button${guide ? ' on' : ''}`} aria-pressed={guide} onClick={toggleGuide} title={guide ? 'This is the binder’s guide: every agent here reads it first. Stop using it as the guide' : 'Make this the binder’s guide: every agent here reads it first'} aria-label="Binder guide"><BookMarked size={15} /></button>
+      <button type="button" className={`icon-button${note.locked ? ' on' : ''}`} aria-pressed={!!note.locked} disabled={!!note.locked && !mayChange} onClick={toggleLock} title={lockTitle} aria-label={note.locked ? 'Locked' : 'Lock'}>{note.locked ? <Lock size={15} /> : <LockOpen size={15} />}</button>
+      <button type="button" className={`icon-button${open ? ' on' : ''}`} onClick={openReview} title={open ? `${open} proposed change${open === 1 ? '' : 's'} to review` : 'Versions and proposals'} aria-label="Versions and proposals"><History size={15} />{open > 0 && <i className="waiting num">{open}</i>}</button>
       {guide && note.text.length > guideMost && <span className="note-guide-long" title={`Agents are given the first ${guideMost.toLocaleString()} characters, and can read the rest`}>Long for a guide</span>}
       {review && <NoteReview note={note} mayChange={mayChange} opening={review} onClose={() => setReview(undefined)} />}
     </>

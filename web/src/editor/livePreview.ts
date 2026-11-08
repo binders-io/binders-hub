@@ -21,6 +21,7 @@ export function activeLines(state: EditorState, focused = true) {
 
 const hidden = Decoration.replace({})
 
+/** The space after a list's mark goes with it: words start at the same place on every line of the item. */
 class BulletWidget extends WidgetType {
   toDOM() {
     const dot = document.createElement('span')
@@ -112,6 +113,18 @@ class CalloutWidget extends WidgetType {
 }
 
 const lineClass = (name: string) => Decoration.line({ class: name })
+
+/** How far words start from a list item's mark, in pixels: bullets, boxes, and numbers by how many digits they have. */
+const hangOf = (marker: string, task: boolean) => (task ? 25 : /^[-*+]$/.test(marker) ? 22 : 24 + Math.max(0, marker.length - 2) * 9)
+
+/** How many lists a list item is inside, beyond its own. */
+function depthOf(mark: { parent: { name: string; parent: unknown } | null }) {
+  let depth = -1
+  for (let at = mark.parent as { name: string; parent: unknown } | null; at; at = at.parent as typeof at) {
+    if (at.name === 'BulletList' || at.name === 'OrderedList') depth++
+  }
+  return Math.max(0, depth)
+}
 const markClass = (name: string, attributes?: Record<string, string>) => Decoration.mark({ class: name, attributes })
 
 function build(view: EditorView): DecorationSet {
@@ -209,16 +222,28 @@ function build(view: EditorView): DecorationSet {
           case 'ListMark': {
             const item = node.node.parent
             const task = item?.getChild('Task')
+            const box = task?.getChild('TaskMarker')
             const text = state.doc.sliceString(node.from, node.to)
-            if (isActive(node.from)) return
+            const line = state.doc.lineAt(node.from)
+            // Wrapped lines hang under the words, each level a step in, whatever the note has for spaces.
+            const key = `${line.from}:list`
+            if (!seenLines.has(key)) {
+              seenLines.add(key)
+              found.push(Decoration.line({ class: 'cm-list-line', attributes: { style: `--depth:${depthOf(node.node)};--hang:${hangOf(text, !!task)}px` } }).range(line.from))
+              if (node.from > line.from && !state.doc.sliceString(line.from, node.from).trim()) found.push(markClass('cm-list-indent').range(line.from, node.from))
+            }
+            const spaced = (to: number) => (state.doc.sliceString(to, to + 1) === ' ' ? to + 1 : to)
+            if (isActive(node.from)) {
+              found.push(markClass('cm-list-mark').range(node.from, spaced(box ? box.to : node.to)))
+              return
+            }
             if (task) {
               // A task's bullet goes; its box stands for it.
-              const after = state.doc.sliceString(node.to, node.to + 1) === ' ' ? node.to + 1 : node.to
-              found.push(hidden.range(node.from, after))
+              found.push(hidden.range(node.from, spaced(node.to)))
             } else if (/^[-*+]$/.test(text)) {
-              found.push(Decoration.replace({ widget: new BulletWidget() }).range(node.from, node.to))
+              found.push(Decoration.replace({ widget: new BulletWidget() }).range(node.from, spaced(node.to)))
             } else {
-              found.push(markClass('cm-list-number').range(node.from, node.to))
+              found.push(markClass('cm-list-mark cm-list-number').range(node.from, spaced(node.to)))
             }
             return
           }

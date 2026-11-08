@@ -21,7 +21,9 @@ export interface Sync {
 }
 
 // Bumped when what's kept changes shape, so an older browser cache is left behind, not read wrong. Each Binder's own.
-export const keys = { cache: `binders-hub-cache-v3:${space}`, outbox: `binders-hub-outbox-v3:${space}`, client: 'binders-hub-client' }
+export const keys = { cache: `binders-hub-cache-v4:${space}`, outbox: `binders-hub-outbox-v3:${space}`, client: 'binders-hub-client' }
+/** The cache before diffs' lines were left out of it: too big to keep, and in the way of what replaces it. */
+const oldCache = `binders-hub-cache-v3:${space}`
 
 function read<T>(key: string): T | undefined {
   try {
@@ -61,6 +63,11 @@ export const clientId: string = (() => {
 const outboxKey = `${keys.outbox}:${clientId}`
 
 export function startingSync(seed: HubState): Sync {
+  try {
+    window.localStorage.removeItem(oldCache)
+  } catch {
+    // Blocked storage: nothing to clear.
+  }
   let cache = read<{ version: number; confirmed: HubState }>(keys.cache)
   // Anything that doesn't look like notes as they are now is dropped: the hub has them anyway.
   if (!Array.isArray(cache?.confirmed?.notes) || !Array.isArray(cache?.confirmed?.cards) || !cache.confirmed.notes.every((n) => typeof n?.text === 'string')) cache = undefined
@@ -174,6 +181,8 @@ export class HubConnection {
   private socket?: WebSocket
   private stopped = false
   private retry = 1000
+  /** This page has the hub's state and has been following it: coming back, it needs only what it missed. */
+  private following = false
   private onSnapshot: (version: number, state: HubState) => void
   private onEntries: (entries: Entry[]) => void
   private onPresence: (presence: Record<string, Presence>) => void
@@ -201,16 +210,18 @@ export class HubConnection {
     if (this.stopped) return
     this.onStatus('connecting')
     try {
-      const response = await fetch('/api/state', { headers: { accept: 'application/json', ...spaceHeaders } })
+      // Without diffs' lines, which a screen asks for when they're opened (see Diffs).
+      const response = await fetch(`/api/state?light=1&have=${this.version()}${this.following ? '&replay=1' : ''}`, { headers: { accept: 'application/json', ...spaceHeaders } })
       if (response.status === 401) {
         this.onStatus('signed-out')
         return
       }
       if (!response.ok || !response.headers.get('content-type')?.includes('json')) throw new Error(`hub answered ${response.status}`)
-      const body = (await response.json()) as { version: number; state: HubState; presence?: Record<string, Presence> }
+      const body = (await response.json()) as { version: number; state?: HubState; presence?: Record<string, Presence> }
       if (body.presence) this.onPresence(body.presence)
-      // A hub whose log was cleared starts over: take what it has.
-      if (body.version !== this.version()) this.onSnapshot(body.version, body.state)
+      // A hub whose log was cleared starts over: take what it has. No state means this is current, or the feed will make it so.
+      if (body.state && body.version !== this.version()) this.onSnapshot(body.version, body.state)
+      this.following = true
       this.open()
     } catch {
       this.again()
@@ -218,7 +229,7 @@ export class HubConnection {
   }
 
   private open() {
-    const url = new URL(`/api/live?since=${this.version()}${space ? `&space=${space}` : ''}`, window.location.href)
+    const url = new URL(`/api/live?since=${this.version()}&light=1${space ? `&space=${space}` : ''}`, window.location.href)
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
     const socket = new WebSocket(url)
     this.socket = socket

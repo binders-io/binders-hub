@@ -45,7 +45,7 @@ export function standInHub(state: () => HubState = hubState, you: unknown = me) 
     const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } })
     if (url === '/api/me') return json(you)
     if (url.endsWith('/doc')) return new Response(null, { status: 404 })
-    if (url === '/api/state') return json({ version: 1, state: state(), presence: {} })
+    if (url.split('?')[0] === '/api/state') return json({ version: 1, state: state(), presence: {} })
     if (url === '/api/changes') {
       const body = JSON.parse(String(init?.body)) as { changes: { id: string; change: Change }[] }
       posted.push(body)

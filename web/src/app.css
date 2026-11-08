@@ -285,9 +285,15 @@
 .cm-h2 { font-size: 21px; line-height: 1.35; padding-top: 10px !important; padding-bottom: 2px !important; }
 .cm-h3 { font-size: 17.5px; padding-top: 14px !important; }
 .cm-h4, .cm-h5, .cm-h6 { font-size: 15.5px; padding-top: 10px !important; }
-.cm-bullet { display: inline-block; width: 6px; height: 6px; margin: 0 9px 0 4px; border-radius: 50%; background: var(--text); vertical-align: 0.18em; }
+/* A list item's wrapped lines hang under its words, each level a step in. Its first line makes the same width from its spaces and its mark, shown or not. */
+.md-editor .cm-list-line { --step: 22px; padding-left: calc(var(--depth) * var(--step) + var(--hang)); text-indent: calc(-1 * (var(--depth) * var(--step) + var(--hang))); }
+.md-editor .cm-list-line * { text-indent: 0; }
+.cm-list-indent { display: inline-block; width: calc(var(--depth) * var(--step)); height: 1em; overflow: hidden; text-indent: 0; white-space: pre; }
+.cm-list-mark { display: inline-block; min-width: var(--hang); text-indent: 0; white-space: pre; }
+.cm-bullet { position: relative; display: inline-block; width: var(--hang); height: 6px; text-indent: 0; vertical-align: 0.18em; }
+.cm-bullet::before { content: ""; position: absolute; top: 0; left: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--text); }
 .cm-list-number { color: var(--muted); font-variant-numeric: tabular-nums; }
-.cm-task { width: 15px; height: 15px; margin: 0 8px 0 2px; vertical-align: -2px; accent-color: var(--text); cursor: pointer; }
+.cm-task { width: 15px; height: 15px; margin: 0 8px 0 2px; vertical-align: -2px; accent-color: var(--text); cursor: pointer; text-indent: 0; }
 .cm-task-done { color: var(--faint); text-decoration: line-through; text-decoration-color: var(--faint); }
 .cm-rule { display: inline-block; width: 100%; height: 1px; background: var(--line-strong); vertical-align: middle; }
 .cm-inline-code { font-family: var(--mono); font-size: 0.88em; padding: 1px 5px; border-radius: 5px; background: var(--fill-2); color: var(--text); }
@@ -450,6 +456,7 @@ button.work-chip:hover { background: color-mix(in srgb, var(--tone) 24%, transpa
 .plus { color: var(--green); }
 .minus { color: var(--red); }
 .approve { display: grid; justify-items: end; gap: 8px; }
+.set-foot { margin-top: 28px; padding-top: 14px; border-top: 1px solid var(--line); }
 .delete-set { color: var(--faint); font-weight: 600; }
 .delete-set:hover { color: var(--red); }
 .approve-note { font-size: 12.5px; color: var(--faint); max-width: 260px; text-align: right; }
@@ -816,6 +823,8 @@ a.button { text-decoration: none; }
 .conversation time { font-size: 11.5px; color: var(--faint); margin-left: 6px; }
 .conversation p { margin: 4px 0 0; font-size: 14px; color: var(--text-2); white-space: pre-wrap; }
 .reply { display: flex; gap: 8px; }
+.reply input { flex: 1; min-width: 0; }
+.reply .button { flex: none; }
 .card-controls { display: flex; flex-wrap: wrap; gap: 6px; }
 .card-controls select { width: auto; }
 .work-tags a { display: inline-flex; align-items: center; gap: 2px; text-decoration: none; }
@@ -1283,7 +1292,7 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
 @media (max-width: 600px) {
   .work { padding: 16px 14px 48px; }
   .work-head { flex-wrap: wrap; }
-  .work-title { flex-basis: calc(100% - 50px); }
+  .work-title { flex-basis: calc(100% - 58px); }
   .work-title h1 { font-size: 23px; }
   .sdlc { display: flex; overflow-x: auto; gap: 4px; margin: 18px 0 16px; padding: 14px 10px 12px; }
   .sdlc li { flex: 0 0 72px; }
@@ -1349,6 +1358,9 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
 .member-list select, .member-add select, .member-add input, .space-address input, #new-space-owner { padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; }
 .member-add { display: flex; flex-wrap: wrap; gap: 8px; }
 .member-add input { flex: 1 1 160px; min-width: 0; }
+/* The box is around its chips and its words: only one. */
+.member-add .people-input { flex: 1 1 160px; min-width: 0; }
+.member-add .people-chips input { padding: 3px 2px; border: 0; background: none; }
 .space-address { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .space-address input { flex: 1; min-width: 0; }
 .space-address span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; }
@@ -1411,10 +1423,26 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
   .notes.list-open > .note-tree { display: flex; position: absolute; inset: 0; z-index: 5; background: var(--bg-raised); border-right: 0; }
   .notes.empty { grid-template-rows: auto 1fr; overflow-y: auto; }
   .notes.empty > .note-tree { display: flex; border-right: 0; border-bottom: 1px solid var(--line); }
-  .note { padding: 16px 16px 40px; }
-  .note-meta { flex-wrap: wrap; row-gap: 4px; }
-  .md-toolbar { flex-wrap: nowrap; overflow-x: auto; top: -16px; scrollbar-width: none; }
-  .md-toolbar > * { flex: none; }
+  .note { padding: 8px 16px 40px; }
+  /* One short line over a note: back to the list, what's happening to it, and a menu for the rest. */
+  .note-meta { gap: 10px; min-height: 44px; margin-bottom: 8px; }
+  .note-meta .trail, .note-editors, .note-saved:not(:has(.spin, [title])) { display: none; }
+  .note-saved { min-width: 0; }
+  .note-back { order: -1; display: inline-flex; align-items: center; gap: 2px; min-height: 44px; margin-left: -6px; padding-right: 8px; color: var(--muted); font: 600 15px/1 var(--body); }
+  .note-edited { margin-left: auto; font-size: 12px; }
+  .note-more { flex: none; position: relative; }
+  .note-more .waiting { position: absolute; top: 2px; right: 0; padding: 0 4px; }
+
+  /* The formatting bar is for writing: under the words and over the keyboard, with nothing else of the app in the way. */
+  .md-toolbar.docked { position: sticky; top: auto; bottom: 0; z-index: 4; flex-wrap: nowrap; order: 1; max-width: none; width: calc(100% + 32px); margin: 0 -16px; padding: 4px 8px; overflow-x: auto; scrollbar-width: none; border-top: 1px solid var(--line); border-bottom: 0; background: var(--bg-raised); }
+  .md-toolbar.docked > * { flex: none; }
+  .md-toolbar.docked .md-raw { margin-left: 0; }
+  .md-done { position: sticky; right: -8px; display: inline-flex; width: auto; margin-left: auto; padding: 0 14px; font: 700 14px/1 var(--body); color: var(--text); background: var(--bg-raised); }
+  .writing, .writing body { overflow: hidden; }
+  .writing .app { height: var(--room, 100dvh) !important; grid-template-rows: minmax(0, 1fr); }
+  .writing .tabbar, .writing .topbar { display: none; }
+  .writing .note { padding-bottom: 0; }
+  .writing .md-editor .cm-content { padding-bottom: 24px; }
 
   /* Change sets: the sets as a row of chips above the one open. */
   .changes { grid-template-rows: auto minmax(0, 1fr); }
@@ -1678,6 +1706,43 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
   .stage-chips .num { color: var(--faint); }
   .stage-chips button::after { content: ""; position: absolute; inset: -4px 0; }
   .columns { padding-top: 8px; }
+
+  /* The board first: what needs you in one row that scrolls, the chips say which column this is, and New card floats. */
+  .attention { flex-wrap: nowrap; width: calc(100% + 28px); margin: 0 -14px; padding: 0 14px; overflow-x: auto; scrollbar-width: none; }
+  .attention > * { flex: none; }
+  .attention-card { max-width: 76vw; min-height: 44px; }
+  .attention-card em { max-width: 60vw; }
+  .attention .feed-toggle, .attention .distilled-toggle { height: 36px; align-self: center; }
+  .attention > .button.primary { position: fixed; z-index: 6; right: 16px; bottom: calc(70px + env(safe-area-inset-bottom, 0px)); width: 52px; height: 52px; padding: 0; border-radius: 50%; justify-content: center; font-size: 0; gap: 0; box-shadow: 0 8px 24px -8px var(--shadow-color); }
+  .attention > .button.primary svg { width: 22px; height: 22px; }
+  .column { border: 0; background: none; }
+  .column header, .column-hint { display: none; }
+  .column-cards { padding-bottom: 76px; }
+
+  /* A change set: its tabs fit, with only what needs saying on them, and its pull requests in a row that scrolls. */
+  .set-tabs button { flex: 1 1 0; min-width: 0; justify-content: center; padding: 11px 4px; }
+  .set-tab-note:not(.bad, .busy) { display: none; }
+  .set-tab-note.bad, .set-tab-note.busy { flex: none; width: 8px; height: 8px; padding: 0; border-radius: 50%; overflow: hidden; color: transparent; background: currentColor; }
+  .set-tab-note.bad { background: var(--red); }
+  .set-tab-note.busy { background: var(--blue); }
+  .merge-order { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 14px 0; }
+  .merge-order li, .node { flex: none; }
+  .approve { justify-items: stretch; width: 100%; }
+  .approve .button.big { justify-content: center; }
+  .approve-note { max-width: none; text-align: left; }
+
+  .agent-facts-toggle { min-height: 36px; font-size: 13px; font-weight: 600; }
+
+  /* A pull request: its title gets the width, with its state and the way to open it on one line at the end. */
+  .pull-head { gap: 8px 10px; padding: 12px; }
+  .pull-title { flex: 1 1 calc(100% - 76px); min-width: 0; }
+  .pull-title span { flex-wrap: wrap; overflow-wrap: anywhere; }
+  .pull-head .icon-button { margin-left: auto; }
+
+  /* A card: the back arrow beside its title, and where it is in a line, what it's doing now being just below. */
+  .sdlc em { display: none; }
+
+  .stat-go { display: none; }
 }
 /* A phone on its side: every line of chrome costs a tenth of the screen. */
 @media (max-height: 500px) {

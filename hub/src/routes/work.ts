@@ -95,6 +95,13 @@ export async function workRoutes(app: FastifyInstance, context: Context) {
   app.post('/api/sets/:id/review', act(async (request) => sp(request).actions.sendForReview(login(request), param(request, 'id'))))
   app.post('/api/sets/:id/order', act(async (request) => sp(request).actions.reorderSet(login(request), param(request, 'id'), bodyOf(bodies.order, request).prIds)))
   app.post('/api/sets/:id/check', act(async (request) => sp(request).actions.checkSet(param(request, 'id'), request.githubToken)))
+  // A pull request's diff, with its lines: a browser's state leaves them out until it's opened.
+  app.get('/api/pulls/:repo/:number/files', async (request, reply) => {
+    const id = `${decodeURIComponent(param(request, 'repo'))}#${param(request, 'number')}`
+    const pull = sp(request).hub.state.pulls.find((p) => p.id === id)
+    if (!pull) return reply.code(404).send({ error: 'No such pull request.' })
+    return { files: pull.files }
+  })
   app.post('/api/pulls/:repo/:number/update-branch', act(async (request) => sp(request).actions.updateBranch(`${decodeURIComponent(param(request, 'repo'))}#${param(request, 'number')}`, request.githubToken)))
   app.post('/api/pulls/:repo/:number/resolve', act(async (request) => sp(request).actions.sendBackToResolve(login(request), `${decodeURIComponent(param(request, 'repo'))}#${param(request, 'number')}`)))
   app.post('/api/sets/:id/approve', act(async (request) => sp(request).actions.approveSet(login(request), param(request, 'id'), request.githubToken)))

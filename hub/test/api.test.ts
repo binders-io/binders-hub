@@ -21,6 +21,7 @@ import { IssuesSaver } from '../src/savers/issues.ts'
 import { ReviewsSaver } from '../src/savers/reviews.ts'
 import { buildServer } from '../src/server.ts'
 import { Webhooks } from '../src/webhooks.ts'
+import { canCatchUp } from '../src/routes/state.ts'
 import { Spaces, type Member } from '../src/spaces.ts'
 import type { OwnerAccess } from '../src/reach.ts'
 import { fakeGitHub, oneSpace, seed, tempDir, until } from './helpers.ts'
@@ -2189,6 +2190,81 @@ describe('repo briefs from before they were notes', () => {
     assert.equal(note.text, '# Brief\n\n## Map\nsrc/hub.ts: the log.\n')
     await actions.moveBriefsToNotes()
     assert.equal(hub.state.notes.filter((n) => n.title === 'Brief').length, 1, 'once')
+    await close()
+  })
+})
+
+describe('a browser’s state', () => {
+  const diff = [{ path: 'src/a.ts', added: 1, removed: 0, lines: [{ kind: '+' as const, text: 'a new line', n: 1 }] }]
+  const pull = { id: 'acme/web#7', repo: 'acme/web', number: 7, title: 'A page', branch: 'b', url: '', state: 'open' as const, checks: [], files: diff }
+  const card = { id: 'c-light', binderId: 'b1', title: 'A card', brief: '', doneWhen: '', size: 'S' as const, stage: 'working' as const, createdAt: 'now', createdBy: 'you', updatedAt: 'now', waitsFor: [], activity: [], worktree: { branch: 'b', base: 'main', files: diff, at: 'now' } }
+  const withWork = async () => {
+    const set = await setUp()
+    await set.hub.record({ kind: 'hub' }, { type: 'pr.put', pull })
+    await set.hub.record({ kind: 'hub' }, { type: 'card.put', card })
+    return { ...set, as: api(set.url, await signIn(set.url)) }
+  }
+
+  it('leaves out diffs’ lines, and gives a pull request’s when it’s opened', async () => {
+    const { as, close } = await withWork()
+    const whole = (await as('GET', '/api/state')).body.state
+    assert.equal(whole.pulls[0].files[0].lines.length, 1, 'the apps still get all of it')
+    const light = (await as('GET', '/api/state?light=1')).body.state
+    assert.deepEqual(light.pulls[0].files, [{ path: 'src/a.ts', added: 1, removed: 0, lines: [] }])
+    assert.deepEqual(light.cards.find((c: { id: string }) => c.id === 'c-light').worktree.files[0].lines, [])
+
+    assert.deepEqual((await as('GET', '/api/pulls/acme%2Fweb/7/files')).body.files, diff)
+    assert.equal((await as('GET', '/api/pulls/acme%2Fweb/8/files')).status, 404)
+    await close()
+  })
+
+  it('sends no state to a page that’s current, or that’s been following and can catch up from the feed', async () => {
+    const { hub, as, close } = await withWork()
+    const now = hub.version
+    assert.equal((await as('GET', `/api/state?light=1&have=${now}`)).body.state, undefined)
+    assert.equal((await as('GET', `/api/state?light=1&have=${now}`)).body.version, now)
+    assert.ok((await as('GET', `/api/state?light=1&have=${now - 1}`)).body.state, 'a page just loaded starts from the whole state')
+    assert.equal((await as('GET', `/api/state?light=1&have=${now - 1}&replay=1`)).body.state, undefined)
+    assert.ok((await as('GET', `/api/state?light=1&have=${now + 5}&replay=1`)).body.state, 'ahead of the hub: it started over')
+    assert.ok((await as('GET', '/api/state?light=1&have=0&replay=1')).body.state)
+    await close()
+  })
+
+  it('isn’t told to catch up from changes a rebuilt log no longer has, or from too far back', async () => {
+    const log = new MemoryLog()
+    const hub = new Hub(log)
+    await hub.start(undefined, { version: 3000, state: new Hub(new MemoryLog()).state })
+    await hub.record({ kind: 'hub' }, { type: 'binder.put', binder: { id: 'b9', name: 'After' } })
+    assert.equal(hub.version, 3001)
+    assert.equal(await canCatchUp(hub, 3000), true)
+    assert.equal(await canCatchUp(hub, 2999), false, 'what came before the rebuild isn’t in the log')
+    assert.equal(await canCatchUp(hub, 500), false, 'more than the feed should replay')
+  })
+
+  it('leaves them out of the live feed too, for a browser', async () => {
+    const { hub, url, close } = await withWork()
+    const cookie = await signIn(url)
+    const listen = async (query: string) => {
+      const received: Entry[] = []
+      const socket = new WebSocket(`${url.replace('http', 'ws')}/api/live?since=${hub.version}${query}`, { headers: { cookie } })
+      socket.on('message', (data) => {
+        const message = JSON.parse(String(data)) as { type: string; entries?: Entry[] }
+        if (message.type === 'entries') received.push(...message.entries!)
+      })
+      await new Promise((done) => socket.once('open', done))
+      return { received, socket }
+    }
+    const light = await listen('&light=1')
+    const whole = await listen('')
+    await hub.record({ kind: 'hub' }, { type: 'pr.update', id: pull.id, fields: { files: diff } })
+    await hub.record({ kind: 'hub' }, { type: 'card.update', id: card.id, fields: { worktree: card.worktree } })
+    await until(() => light.received.length === 2 && whole.received.length === 2)
+    const files = (entries: Entry[]) => entries.map((e) => (e.change.type === 'pr.update' ? e.change.fields.files : e.change.type === 'card.update' ? e.change.fields.worktree?.files : undefined)?.[0].lines.length)
+    assert.deepEqual(files(light.received), [0, 0])
+    assert.deepEqual(files(whole.received), [1, 1])
+    assert.deepEqual((light.received[0].change as { fields: { files: unknown[] } }).fields.files, [{ path: 'src/a.ts', added: 1, removed: 0, lines: [] }])
+    light.socket.close()
+    whole.socket.close()
     await close()
   })
 })

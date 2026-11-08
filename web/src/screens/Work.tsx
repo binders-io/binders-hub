@@ -3,7 +3,8 @@ import { motion } from 'motion/react'
 import { ArrowLeft, ArrowUpRight, Check, ChevronDown, FilePen, FileSearch, FileText, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, Globe, ListChecks, MessageCircleQuestion, Quote, ShieldQuestionMark, Rocket, Send, ShieldCheck, Sparkles, SquareTerminal, Trash2, Workflow } from 'lucide-react'
 import { stages, type Card, type Environment, type HubState, type PullRequest } from '../data/model'
 import { nameFor, useStore } from '../data/store'
-import { CheckGlyph, Progress, RepoTag, Who, ago, checksSummary, foldRepeats, onTouch, stageTone } from '../components/bits'
+import { CheckGlyph, Progress, RepoTag, Who, ago, checksSummary, foldRepeats, onTouch, stageTone, usePhone } from '../components/bits'
+import { PullDiffs } from '../components/Diffs'
 import { Terminal } from '../components/Terminal'
 import { DebriefButton, DebriefView } from '../components/Debrief'
 import { ChallengeButton, ChallengeView } from '../components/Challenge'
@@ -61,6 +62,9 @@ const taskIcon: Record<string, typeof Check> = { Read: FileSearch, Fetch: Globe,
 const taskVerb: Record<string, string> = { Read: 'Read', Fetch: 'Looked up', WebFetch: 'Looked up', Write: 'Wrote', Edit: 'Edited', Update: 'Edited', Bash: 'Ran', Grep: 'Searched', Glob: 'Listed' }
 
 
+/** Changed lines a card's pull request may have and still start open. */
+const changesOpenLines = 400
+
 export function Work({ id }: { id: string }) {
   const store = useStore()
   const { state } = store
@@ -83,6 +87,9 @@ export function Work({ id }: { id: string }) {
   }, [stepCount])
   const [reply, setReply] = useState('')
   const [allActivity, setAllActivity] = useState(false)
+  // A big diff, or any on a phone, waits to be asked for.
+  const phone = usePhone()
+  const [showChanges, setShowChanges] = useState<boolean>()
   // Worked out from a good part of the state: only when one of those parts changes, not on each of an agent's reports.
   const steps = useMemo(() => (card ? lifecycle(card, state) : []), [card, state.pulls, state.changeSets, state.environments, state.agents, state.notes]) // eslint-disable-line react-hooks/exhaustive-deps
   if (!card) {
@@ -95,6 +102,7 @@ export function Work({ id }: { id: string }) {
   }
   const agent = state.agents.find((a) => a.id === card.agentId)
   const pull = state.pulls.find((p) => p.id === card.prId)
+  const changesOpen = showChanges ?? (!phone && !!pull && pull.files.reduce((n, f) => n + f.added + f.removed, 0) <= changesOpenLines)
   const set = pull && state.changeSets.find((c) => c.prIds.includes(pull.id))
   const siblings = set ? set.prIds.map((p) => state.pulls.find((x) => x.id === p)).filter((p): p is PullRequest => !!p) : []
   const note = state.notes.find((n) => n.id === card.noteId)
@@ -283,20 +291,11 @@ export function Work({ id }: { id: string }) {
 
           {pull && pull.files.length > 0 && (
             <section className="work-section">
-              <h2>Changes <span className="num faint"><span className="plus">+{pull.files.reduce((n, f) => n + f.added, 0)}</span> <span className="minus">−{pull.files.reduce((n, f) => n + f.removed, 0)}</span></span></h2>
-              {pull.files.map((file) => (
-                <div key={file.path} className="pull file-card">
-                  <div className="file-head mono"><span>{file.path}</span><span className="num"><span className="plus">+{file.added}</span> <span className="minus">−{file.removed}</span></span></div>
-                  <div className="diff mono">
-                    {file.lines.map((line, i) => (
-                      <div key={i} className={`d-line ${line.kind === '+' ? 'add' : line.kind === '-' ? 'del' : line.kind === '@' ? 'hunk' : ''}`}>
-                        <span className="d-sign">{line.kind === '@' ? '' : line.kind}</span>
-                        <span className="d-text">{line.text || ' '}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
+              <button className="section-toggle" onClick={() => setShowChanges(!changesOpen)} aria-expanded={changesOpen}>
+                <h2>Changes <span className="num faint"><span className="plus">+{pull.files.reduce((n, f) => n + f.added, 0)}</span> <span className="minus">−{pull.files.reduce((n, f) => n + f.removed, 0)}</span></span></h2>
+                <ChevronDown size={16} style={{ transform: changesOpen ? 'none' : 'rotate(-90deg)' }} />
+              </button>
+              {changesOpen && <PullDiffs pull={pull} boxed />}
             </section>
           )}
         </div>

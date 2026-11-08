@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { hubState, mount, note, standInHub } from './harness'
+import { ContextMenuHost } from '../src/components/ContextMenu'
 import { NoteControls, useMayChange } from '../src/components/NoteControls'
 import { useHub } from '../src/data/store'
 
@@ -32,6 +33,49 @@ function hubWith(mayChange: boolean, over: object = {}) {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+})
+
+describe('a note’s controls on a phone', () => {
+  function OnPhone({ more }: { more: () => void }) {
+    const current = useHub((state) => state.notes.find((n) => n.id === 'n1'))
+    const mayChange = useMayChange(current ?? { id: 'n1' })
+    if (!current) return null
+    return <><NoteControls note={current} mayChange={mayChange} more={[{ label: 'Schedule it', onSelect: more }, { label: 'Delete this note', danger: true, confirm: 'Delete for good?', onSelect: more }]} /><ContextMenuHost /></>
+  }
+
+  it('are one button, whose menu has them and what the screen adds, each doing what its button does', async () => {
+    const sent = hubWith(true)
+    const more = vi.fn()
+    await mount(<OnPhone more={more} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'More for this note' })).toBeTruthy())
+    expect(screen.queryByRole('button', { name: 'Binder guide' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'More for this note' }))
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Review 1 proposed change', 'Unlock', 'Make it the binder’s guide', 'Schedule it', 'Delete this note'])
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Schedule it' }))
+    expect(more).toHaveBeenCalledOnce()
+
+    fireEvent.click(screen.getByRole('button', { name: 'More for this note' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete this note' }))
+    expect(more).toHaveBeenCalledOnce()
+    screen.getByRole('menuitem', { name: 'Delete for good?' })
+    fireEvent.keyDown(window, { key: 'Escape' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'More for this note' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Unlock' }))
+    await waitFor(() => expect(sent).toEqual([{ url: '/api/notes/n1/lock', body: { locked: false } }]))
+
+    fireEvent.click(screen.getByRole('button', { name: 'More for this note' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Review 1 proposed change' }))
+    screen.getByText('The formatter uses spaces.')
+  })
+
+  it('don’t offer to unlock what you may not', async () => {
+    hubWith(false)
+    await mount(<OnPhone more={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'More for this note' }))
+    expect(screen.getByRole('menuitem', { name: 'Unlock' }).hasAttribute('disabled')).toBe(true)
+  })
 })
 
 describe('a locked note’s controls', () => {

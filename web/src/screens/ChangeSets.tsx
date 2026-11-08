@@ -7,6 +7,7 @@ import { nameFor, useStore } from '../data/store'
 import { attempt } from '../components/Toast'
 import { DebriefView, SetDebriefButton } from '../components/Debrief'
 import { FindingsLink, SetChallenge } from '../components/Challenge'
+import { PullDiffs } from '../components/Diffs'
 import { titleOf } from '../../../shared/notes.ts'
 import { testTally } from '../../../shared/changeSet.ts'
 import { AgentAvatar, CheckGlyph, RepoTag, checksSummary, usePhone } from '../components/bits'
@@ -103,7 +104,7 @@ export function ChangeSets({ id }: { id: string }) {
   const repos = [...new Set(pulls.map((p) => p.repo))]
   // Diffs start open only when the whole set is small and the screen isn't a phone: a big set's every line at once is
   // more than a phone's browser holds.
-  const startOpen = !phone && pulls.flatMap((p) => p.files).reduce((n, f) => n + f.lines.length, 0) <= diffOpenLines
+  const startOpen = !phone && added + removed <= diffOpenLines
 
   return (
     <div className="changes">
@@ -144,7 +145,6 @@ export function ChangeSets({ id }: { id: string }) {
             ) : (
               <span className="approve-note">Agents add pull requests here as they finish cards.</span>
             )}
-            <button className="text-button delete-set" onClick={() => { if (window.confirm(deleteWarning(set, pulls, state.environments))) void attempt(() => store.deleteSet(set.id)) }}>Delete change set</button>
           </div>
         </header>
 
@@ -215,14 +215,17 @@ export function ChangeSets({ id }: { id: string }) {
           )}
           {tab === 'review' && (pulls.length ? <SetChallenge set={set} /> : <p className="faint">Once it has a pull request.</p>)}
         </div>
+        {/* Well away from Approve. */}
+        <footer className="set-foot">
+          <button className="text-button delete-set" onClick={() => { if (window.confirm(deleteWarning(set, pulls, state.environments))) void attempt(() => store.deleteSet(set.id)) }}>Delete change set</button>
+        </footer>
       </div>
     </div>
   )
 }
 
-/** Diff lines a set may have and still start open; lines a file shows before "Show the rest". */
-const diffOpenLines = 1500
-const fileLines = 300
+/** Changed lines a set may have and still start open. */
+const diffOpenLines = 800
 
 function PullSection({ pull, order, startOpen }: { pull: PullRequest; order: number; startOpen: boolean }) {
   const [open, setOpen] = useState(startOpen)
@@ -271,34 +274,9 @@ function PullSection({ pull, order, startOpen }: { pull: PullRequest; order: num
           )}
         </div>
       )}
-      {open && pull.files.map((file) => <FileDiff key={file.path} file={file} />)}
+      {open && <PullDiffs pull={pull} />}
       {open && !pull.files.length && <div className="file-empty">Changes load from GitHub when you open them.</div>}
     </section>
-  )
-}
-
-/** A file's diff: its first lines, and the rest when asked for. */
-function FileDiff({ file }: { file: PullRequest['files'][number] }) {
-  const [all, setAll] = useState(false)
-  const lines = all ? file.lines : file.lines.slice(0, fileLines)
-  return (
-    <div className="file">
-      <div className="file-head mono">
-        <span>{file.path}</span>
-        <span className="num"><span className="plus">+{file.added}</span> <span className="minus">−{file.removed}</span></span>
-      </div>
-      <div className="diff mono">
-        {lines.map((line, i) => (
-          <div key={i} className={`d-line ${line.kind === '+' ? 'add' : line.kind === '-' ? 'del' : line.kind === '@' ? 'hunk' : ''}`}>
-            <span className="d-sign">{line.kind === '@' ? '' : line.kind}</span>
-            <span className="d-text">{line.text || ' '}</span>
-          </div>
-        ))}
-      </div>
-      {lines.length < file.lines.length && (
-        <button type="button" className="file-more" onClick={() => setAll(true)}>Show the other {file.lines.length - lines.length} lines</button>
-      )}
-    </div>
   )
 }
 

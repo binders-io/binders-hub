@@ -34,9 +34,11 @@ export function BinderSwitcher({ binder, onPick }: { binder: string; onPick: (id
     if (!open) return
     const away = (event: MouseEvent) => { if (!box.current?.contains(event.target as Node)) setOpen(false) }
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false) }
+    // pointerdown too: a tap on nothing in particular has no mousedown on an iPhone.
+    window.addEventListener('pointerdown', away)
     window.addEventListener('mousedown', away)
     window.addEventListener('keydown', escape)
-    return () => { window.removeEventListener('mousedown', away); window.removeEventListener('keydown', escape) }
+    return () => { window.removeEventListener('pointerdown', away); window.removeEventListener('mousedown', away); window.removeEventListener('keydown', escape) }
   }, [open])
 
   const pick = (id: string) => {

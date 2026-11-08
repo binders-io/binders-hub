@@ -55,10 +55,12 @@ interface Props {
   noteId?: string
   /** Shown, not changed: a note someone else has locked. Set from the start: the parent keys it by this too. */
   readOnly?: boolean
+  /** When someone starts or stops writing in it. */
+  onFocusChange?: (focused: boolean) => void
 }
 
 /** The note as Markdown, shown rendered. The parent keys it by note, so each note gets its own editor and history. */
-export const MarkdownEditor = forwardRef<EditorHandle, Props>(function MarkdownEditor({ text, onChange, live, links, marks, raw, noteId, readOnly }, ref) {
+export const MarkdownEditor = forwardRef<EditorHandle, Props>(function MarkdownEditor({ text, onChange, live, links, marks, raw, noteId, readOnly, onFocusChange }, ref) {
   const host = useRef<HTMLDivElement>(null)
   const view = useRef<EditorView>(undefined)
   const change = useRef(onChange)
@@ -67,6 +69,8 @@ export const MarkdownEditor = forwardRef<EditorHandle, Props>(function MarkdownE
   liveRef.current = live
   const linksRef = useRef(links)
   linksRef.current = links
+  const focusChange = useRef(onFocusChange)
+  focusChange.current = onFocusChange
   const compartments = useRef({ raw: new Compartment() })
 
   useImperativeHandle(ref, () => ({ view: () => view.current }), [])
@@ -104,7 +108,10 @@ export const MarkdownEditor = forwardRef<EditorHandle, Props>(function MarkdownE
           autocompletion({ override: [linkCompletions, slashCompletions], icons: false, closeOnBlur: true, activateOnTyping: true }),
           keymap.of([...formattingKeys, ...completionKeymap, ...searchKeymap, ...historyKeymap, ...defaultKeymap, indentWithTab]),
           placeholder('Start with a title, then write. Type / for headings, lists, tables and diagrams, and [[ to link a note.'),
+          // A phone's formatting bar sits over the bottom of the note: the caret stays clear of it.
+          EditorView.scrollMargins.of(() => ({ bottom: 64 })),
           EditorView.updateListener.of((update) => {
+            if (update.focusChanged) focusChange.current?.(update.view.hasFocus)
             // A change that came from the hub isn't sent back to it.
             const yours = update.transactions.filter((t) => t.docChanged && !t.annotation(Transaction.remote))
             if (!yours.length) return
@@ -138,6 +145,7 @@ export const MarkdownEditor = forwardRef<EditorHandle, Props>(function MarkdownE
       window.removeEventListener('binders-theme', retheme)
       editor.destroy()
       view.current = undefined
+      focusChange.current?.(false)
     }
     // One editor per note: the parent keys this component by the note's id.
     // eslint-disable-next-line react-hooks/exhaustive-deps

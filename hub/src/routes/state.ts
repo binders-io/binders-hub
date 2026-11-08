@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { lightChange, lightState } from '../../../shared/light.ts'
 import { slug } from '../../../shared/notes.ts'
 import { isChange } from '../log.ts'
-import { Refused } from '../hub.ts'
+import { Refused, type Hub } from '../hub.ts'
 import type { FastifyInstance } from 'fastify'
 import type { Change, Entry, Outgoing } from '../../../shared/state.ts'
 import type { Context } from './context.ts'
@@ -20,7 +21,13 @@ export async function stateRoutes(app: FastifyInstance, context: Context) {
 
   app.get('/api/state', async (request) => {
     const { hub } = sp(request)
-    return { version: hub.version, state: hub.state, presence: hub.presence() }
+    const query = request.query as { light?: string; have?: string; replay?: string }
+    if (query.light !== '1') return { version: hub.version, state: hub.state, presence: hub.presence() }
+    // A browser's, without the lines of its diffs. Nothing more when it has this version already, or is coming back on
+    // a page that's been following along and the live feed can bring it the rest.
+    const have = Number(query.have)
+    const current = have === hub.version || (query.replay === '1' && await canCatchUp(hub, have))
+    return { version: hub.version, ...(current ? {} : { state: lightState(hub.state) }), presence: hub.presence() }
   })
 
   app.post('/api/changes', async (request, reply) => {
@@ -67,13 +74,14 @@ export async function stateRoutes(app: FastifyInstance, context: Context) {
     }
     for (const agent of hub.state.agents) if (!agent.revoked && agent.owner.toLowerCase() === me) terminalsOf(`${spaceId}/${agent.id}`)
     terminals.on('change', terminalsOf)
-    const since = Number((request.query as { since?: string }).since ?? 0)
+    const { since: from, light } = request.query as { since?: string; light?: string }
+    const since = Number(from ?? 0)
     let sent = Number.isFinite(since) && since >= 0 ? since : 0
     const send = (entries: Entry[]) => {
       const fresh = entries.filter((e) => e.version > sent)
       if (!fresh.length || socket.readyState !== socket.OPEN) return
       sent = fresh[fresh.length - 1].version
-      socket.send(JSON.stringify({ type: 'entries', entries: fresh }))
+      socket.send(JSON.stringify({ type: 'entries', entries: light === '1' ? fresh.map((e) => ({ ...e, change: lightChange(e.change) })) : fresh }))
     }
     void hub.read(sent, 5000).then(send)
     hub.on('entries', send)
@@ -124,6 +132,15 @@ export async function stateRoutes(app: FastifyInstance, context: Context) {
       return reply.code(404).send({ error: 'No such file.' })
     }
   })
+}
+
+/** How far behind a page may be and still catch up from the live feed, which replays up to 5000 changes. */
+const catchUpMost = 2000
+
+/** Whether the log still has every change after this version: the next one is there, or it was lost with its Redis. */
+export async function canCatchUp(hub: Hub, have: number) {
+  if (!Number.isInteger(have) || have <= 0 || have > hub.version || hub.version - have > catchUpMost) return false
+  return (await hub.read(have, 1))[0]?.version === have + 1
 }
 
 /** A picture by its name: in one of these Binders' files folders, or one of their projects'. */

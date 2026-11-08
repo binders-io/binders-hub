@@ -79,12 +79,17 @@ export function ContextMenuHost() {
       const now = buttons.indexOf(document.activeElement as HTMLButtonElement)
       buttons[(now + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus()
     }
+    // A tap on nothing in particular has no mousedown on an iPhone, and a menu doesn't outlive its screen.
+    window.addEventListener('pointerdown', away)
     window.addEventListener('mousedown', away)
+    window.addEventListener('hashchange', close)
     window.addEventListener('scroll', scrolled, true)
     window.addEventListener('resize', close)
     window.addEventListener('keydown', keys)
     return () => {
+      window.removeEventListener('pointerdown', away)
       window.removeEventListener('mousedown', away)
+      window.removeEventListener('hashchange', close)
       window.removeEventListener('scroll', scrolled, true)
       window.removeEventListener('resize', close)
       window.removeEventListener('keydown', keys)

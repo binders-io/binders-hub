@@ -116,6 +116,16 @@ describe('a right-click menu', () => {
     return opener
   }
 
+  it('closes on a tap elsewhere, which an iPhone tells only as a pointer, and when the screen changes', async () => {
+    await opened()
+    fireEvent.pointerDown(document.body)
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+    fireEvent.click(screen.getByRole('button', { name: 'Actions' }))
+    await screen.findByRole('menu')
+    fireEvent(window, new Event('hashchange'))
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+  })
+
   it('gives focus back on Escape', async () => {
     const opener = await opened()
     fireEvent.keyDown(window, { key: 'Escape' })

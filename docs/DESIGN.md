@@ -57,6 +57,7 @@ a board you can't see.
   a heartbeat. Work goes out through a consumer group, one agent per card, and a card an agent went quiet on comes
   back after ten minutes (`XAUTOCLAIM`).
 - **Redis is a working copy.** Disk persistence is on, but nothing that lasts depends on it. Each Binder's whole state is saved to a file on the hub's disk within seconds of a change and when the hub stops, with the hub's settings, keys and tokens' hashes beside it. A hub whose log is behind that file lost it, and carries on from the file, in the versions it had; one whose Redis is emptied while it runs carries on too. Only sign-ins and what can be made again are in Redis alone.
+- **A browser holds less than the state.** Most of a Binder's state is the lines of its diffs, so `GET /api/state?light=1` and `/api/live?light=1` leave those out, keeping each file's name and counts, and a screen asks `GET /api/pulls/:repo/:number/files` when a pull request is opened. A page that's been following and lost its connection sends `have` and `replay=1`: if the log still has every change since, it gets no state and the live feed brings it the rest. A page just loaded takes the whole light state, unless it has this very version, as what it kept from last time may not match what this version of the code would have made of the log. The apps and agents that ask without `light` get all of it.
 
 ## Binders for Mac
 
