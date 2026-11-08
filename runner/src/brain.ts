@@ -1,10 +1,12 @@
 import { spawn } from 'node:child_process'
-import { createWriteStream, existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir, hostname, tmpdir, totalmem } from 'node:os'
 import { join } from 'node:path'
 import { runnerVersion } from '../../shared/agents.ts'
+import { catalogue, engineAddress, enginePorts, isAudio, prepare, runningNow, stopAll, stopIdle, thisMachine, type EngineId } from './engines.ts'
+export { engineLog, isAudio, whyStopped } from './engines.ts'
 
 // The Binders daemon for the hub's brain: it serves the model servers on this machine (a Mac, or a GPU box such as a
 // DGX Spark) to the hub, so the hub's brain can sum up, answer, find by meaning, write down audio and read answers out
@@ -128,73 +130,26 @@ export async function onDisk(env: Record<string, string | undefined> = process.e
   return (await lookOnDisk(env, place)).models
 }
 
-/** What can serve models found on disk here: mlx-audio for audio on Apple Silicon (through uv), and LM Studio's server. */
+/** What the hub may ask to start here: LM Studio's server; and Hugging Face's tool, to download with. */
 export function runtimes(): string[] {
   const out: string[] = []
-  if (process.platform === 'darwin' && process.arch === 'arm64' && (which('mlx_audio.server') || which('uvx') || which('uv'))) out.push('mlx-audio')
   if (which('lms')) out.push('lmstudio')
   if (which('hf') || which('uvx') || which('uv')) out.push('hf')
   return out
 }
 
-/** Where the daemon runs mlx-audio, on this machine only. */
-export const mlxAudioUrl = 'http://127.0.0.1:8939/v1'
-const servingFile = () => join(process.env.BINDERS_HOME ?? join(homedir(), '.binders'), 'brain-serving.json')
-
-/** mlx-audio's server, installed: its own command line, here. Undefined until it's installed. */
-export function mlxAudioCommand(find: (command: string) => string | undefined = which): [string, string[]] | undefined {
-  const own = find('mlx_audio.server')
-  return own ? [own, ['--host', '127.0.0.1', '--port', '8939']] : undefined
-}
-
 /**
- * How mlx-audio is installed, once: as uv's tool, with its server's extra packages (uvicorn, FastAPI, webrtcvad), which
- * its plain package leaves out: without them its server stops as it starts.
+ * The address the hub reaches every downloaded model here at: not a real server, but the daemon itself, which starts
+ * the engine for the model a request names and passes the request on to it (engines.ts).
  */
-export function mlxAudioInstall(find: (command: string) => string | undefined = which): [string, string[]] | undefined {
-  const uv = find('uv')
-  return uv ? [uv, ['tool', 'install', 'mlx-audio[server]']] : undefined
-}
+export const modelsUrl = 'http://models.binders/v1'
 
-/** Where what an engine the daemon runs says is written, on this machine: for why one didn't start. */
-export const engineLog = (name: string) => join(process.env.BINDERS_HOME ?? join(homedir(), '.binders'), 'logs', `${name}.log`)
+/** The models here an engine serves, as last looked: what a request to modelsUrl may name. */
+let servedNow = new Map<string, EngineId>()
+/** Each model found here, with what serves it or why nothing does: for Settings. */
+let notesNow: { name: string; engine?: EngineId; why?: string }[] = []
 
-/** The line that says why something stopped: its last error, else its last line. */
-export function whyStopped(output: string) {
-  const lines = output.split('\n').map((l) => l.trim()).filter(Boolean)
-  return [...lines].reverse().find((l) => /error|exception|not found|no module|failed|denied|cannot|can't/i.test(l)) ?? lines.at(-1) ?? ''
-}
-
-/** A command run to its end, with all it said: for an install whose failure needs saying. */
-function runAll(command: string, args: string[], timeoutMs: number): Promise<{ code: number; said: string }> {
-  return new Promise((done) => {
-    let said = ''
-    let child: ReturnType<typeof spawn>
-    try {
-      child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] })
-    } catch (error) {
-      return done({ code: -1, said: error instanceof Error ? error.message : String(error) })
-    }
-    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
-    const keep = (chunk: Buffer) => { said = (said + chunk.toString()).slice(-20_000) }
-    child.stdout?.on('data', keep)
-    child.stderr?.on('data', keep)
-    child.on('error', (error) => { clearTimeout(timer); done({ code: -1, said: said + error.message }) })
-    child.on('close', (code) => { clearTimeout(timer); done({ code: code ?? -1, said }) })
-  })
-}
-
-let mlxAudio: ReturnType<typeof spawn> | undefined
-/** What mlx-audio said last: why it stopped, when it does. */
-let mlxAudioSaid = ''
-
-/** A path as people read it: their home as ~. */
-const shownHome = (path: string) => path.replace(homedir(), '~')
-
-/** Whether something answers at an address: any answer at all. */
-async function answers(url: string) {
-  return fetch(url, { signal: AbortSignal.timeout(1500) }).then(() => true, () => false)
-}
+const servingFile = () => join(process.env.BINDERS_HOME ?? join(homedir(), '.binders'), 'brain-serving.json')
 
 /**
  * A runtime started to serve what's on disk, as the hub asked, and kept: mlx-audio (its first start fetches it through
@@ -208,45 +163,8 @@ export async function startServing(runtime: string, note: (status: string) => vo
     const { code } = await run(lms, ['server', 'start'], 120_000)
     if (code !== 0) return { ok: false, error: 'LM Studio’s server didn’t start' }
   } else if (runtime === 'mlx-audio') {
-    if (!(await answers(`${mlxAudioUrl}/models`))) {
-      if (process.platform !== 'darwin' || process.arch !== 'arm64') return { ok: false, error: 'mlx-audio runs on a Mac with Apple silicon' }
-      let command = mlxAudioCommand()
-      if (!command) {
-        const install = mlxAudioInstall()
-        if (!install) return { ok: false, error: 'uv isn’t on this Mac, to install mlx-audio with: get it from docs.astral.sh/uv, then try again' }
-        note('installing mlx-audio, the first time only: a few minutes')
-        const installed = await runAll(install[0], install[1], 30 * 60_000)
-        command = mlxAudioCommand()
-        if (!command) return { ok: false, error: `installing mlx-audio failed: ${whyStopped(installed.said) || `uv stopped with ${installed.code}`}` }
-      }
-      note('starting mlx-audio')
-      mlxAudio?.kill()
-      await mkdir(join(engineLog('mlx-audio'), '..'), { recursive: true }).catch(() => {})
-      const log = createWriteStream(engineLog('mlx-audio'), { flags: 'a' })
-      mlxAudioSaid = ''
-      const child = spawn(command[0], command[1], { stdio: ['ignore', 'pipe', 'pipe'] })
-      const keep = (chunk: Buffer) => {
-        log.write(chunk)
-        mlxAudioSaid = (mlxAudioSaid + chunk.toString()).slice(-20_000)
-      }
-      child.stdout?.on('data', keep)
-      child.stderr?.on('data', keep)
-      child.on('exit', () => {
-        log.end()
-        if (mlxAudio === child) mlxAudio = undefined
-      })
-      mlxAudio = child
-      let up = false
-      for (let i = 0; i < 180 && !up; i++) {
-        await sleep(1000)
-        up = await answers(`${mlxAudioUrl}/models`)
-        if (mlxAudio !== child) break
-      }
-      if (!up) {
-        child.kill()
-        return { ok: false, error: `mlx-audio didn’t start: ${whyStopped(mlxAudioSaid) || 'it said nothing'} (more in ${shownHome(engineLog('mlx-audio'))})` }
-      }
-    }
+    // Loaded when a request names one of its models now (engines.ts): nothing to start ahead.
+    return { ok: true }
   } else {
     return { ok: false, error: `${runtime} isn’t something this daemon runs` }
   }
@@ -304,11 +222,6 @@ export function nearby(address: string) {
   }
   if (host.includes(':')) return host === '::1' || /^f[cd]/.test(host) || /^fe[89ab]/.test(host)
   return !host.includes('.')
-}
-
-/** A speech or transcription model, by its name: what mlx-audio serves. */
-export function isAudio(name: string) {
-  return /whisper|parakeet|canary|moonshine|voxtral|qwen\d*-asr|kokoro|tts|csm|dia-|orpheus|chatterbox|outetts|spark-tts|vibevoice|sesame/i.test(name)
 }
 
 /** One server, if it answers OpenAI's model list: what it is and which models it has, or that it wants a key first. */
@@ -414,16 +327,18 @@ export async function detect(extra: string[] = [], only = false): Promise<Server
     seen.add(u)
     return true
   })
-  const answered = (await Promise.all(candidates.map(([u, kind]) => probe(u, kind)))).filter((s): s is Server => Boolean(s))
+  // The engines this daemon started are reached through modelsUrl: not found again on their own ports.
+  const ownPorts = new Set(enginePorts())
+  const answered = (await Promise.all(candidates.filter(([u]) => !ownPorts.has(Number(/:(\d+)/.exec(u.replace(/^https?:\/\//, ''))?.[1]))).map(([u, kind]) => probe(u, kind)))).filter((s): s is Server => Boolean(s))
   // One server answers at /v1 and at its root alike: kept once, as /v1, which the hub's model classes add their paths to.
   const found = answered.filter((s) => !(s.url.match(/:\d+$/) && answered.some((o) => o.url === `${s.url}/v1`)))
-  if (!only && (await answers(`${mlxAudioUrl}/models`))) {
-    const audio = (await onDisk()).filter((m) => (m.source === 'hf' || m.source === 'dir') && isAudio(m.name)).map((m) => m.name)
-    const listed = found.find((s) => s.url === mlxAudioUrl)
-    if (listed) {
-      listed.kind = 'mlx-audio'
-      listed.models = [...new Set([...listed.models, ...audio])]
-    } else found.push({ url: mlxAudioUrl, kind: 'mlx-audio', models: audio })
+  // Every downloaded model an engine here can run, as one server: loaded when a request names it.
+  if (!only) {
+    const disk = await onDisk()
+    const { served, notes } = catalogue(disk.filter((m) => m.source !== 'lmstudio').map((m) => m.name), thisMachine(which))
+    servedNow = served
+    notesNow = notes
+    if (served.size) found.push({ url: modelsUrl, kind: 'binders', models: [...served.keys()] })
   }
   const spoken = only ? [] : await voices()
   if (spoken.length) found.push({ url: sayServer, kind: 'say', models: spoken })
@@ -447,11 +362,48 @@ const own = new Set(['host', 'content-length', 'connection', 'transfer-encoding'
  * One request the hub sends through: made to a server this machine found on itself, and only to one; the server's
  * answer goes back as it came.
  */
-export async function relay(message: { id?: unknown; method?: unknown; url?: unknown; headers?: unknown; body?: unknown }, servers: Server[]): Promise<Reply> {
+/** The model a request names: in its JSON body, or as its multipart form's model field (a recording to write down). */
+export function modelOfRequest(body: Buffer, contentType: string) {
+  const text = body.toString('utf8')
+  if (/json/i.test(contentType)) {
+    try {
+      return String((JSON.parse(text) as { model?: unknown }).model ?? '')
+    } catch {
+      return ''
+    }
+  }
+  return /name="model"\r\n\r\n([^\r\n]+)/.exec(text)?.[1] ?? ''
+}
+
+/** How a request for a downloaded model reaches its engine: started when it isn't running. */
+export type Route = (model: string) => Promise<{ base: string; done: () => void } | { error: string }>
+
+export async function relay(message: { id?: unknown; method?: unknown; url?: unknown; headers?: unknown; body?: unknown }, servers: Server[], route?: Route): Promise<Reply> {
   const id = String(message.id ?? '')
-  const url = String(message.url ?? '')
-  const ours = servers.some((s) => s.url !== sayServer && (url === s.url || url.startsWith(`${s.url}/`)))
-  if (!ours || !nearby(url)) return { type: 'reply', id, ok: false, error: 'that address isn’t one of the servers on this machine' }
+  let url = String(message.url ?? '')
+  let finished: (() => void) | undefined
+  if (route && (url === modelsUrl || url.startsWith(`${modelsUrl}/`))) {
+    // A downloaded model: its engine, started if need be, takes the request.
+    const headers = (message.headers ?? {}) as Record<string, unknown>
+    const contentType = String(Object.entries(headers).find(([name]) => name.toLowerCase() === 'content-type')?.[1] ?? '')
+    const model = modelOfRequest(typeof message.body === 'string' ? Buffer.from(message.body, 'base64') : Buffer.alloc(0), contentType)
+    const engine = await route(model)
+    if ('error' in engine) return { type: 'reply', id, ok: false, error: engine.error }
+    url = `${engine.base}${url.slice(modelsUrl.length)}`
+    finished = engine.done
+  } else {
+    const ours = servers.some((s) => s.url !== sayServer && s.url !== modelsUrl && (url === s.url || url.startsWith(`${s.url}/`)))
+    if (!ours || !nearby(url)) return { type: 'reply', id, ok: false, error: 'that address isn’t one of the servers on this machine' }
+  }
+  try {
+    return await passOn(id, url, message)
+  } finally {
+    finished?.()
+  }
+}
+
+/** The request, made to the server it's for, and its answer as it came. */
+async function passOn(id: string, url: string, message: { method?: unknown; headers?: unknown; body?: unknown }): Promise<Reply> {
   const method = String(message.method ?? 'GET').toUpperCase()
   if (!['GET', 'POST'].includes(method)) return { type: 'reply', id, ok: false, error: `${method} isn’t passed on` }
   const headers: Record<string, string> = {}
@@ -644,6 +596,14 @@ export async function serve(options: { hub: string; token: string; name?: string
   const url = `${options.hub.replace(/\/+$/, '').replace(/^http/, 'ws')}/api/brain/machine`
   let servers = await detect(options.extra, options.only)
   let failures = 0
+  // The engines the models here need, installed ahead, so a first request doesn't wait for an install; what this daemon
+  // started and nothing has asked for in twenty minutes, stopped; and all of it, when the daemon stops.
+  if (!options.only) void prepare([...new Set(servedNow.values())], which, log)
+  const idle = setInterval(() => stopIdle(), 60_000)
+  options.signal?.addEventListener('abort', () => {
+    clearInterval(idle)
+    stopAll()
+  }, { once: true })
   /** The link up now, if one is: for news that comes in between (a runtime started again). */
   let live: WebSocket | undefined
   // What the hub asked to be served before, started again beside the link (mlx-audio's first start can take minutes).
@@ -665,7 +625,9 @@ export async function serve(options: { hub: string; token: string; name?: string
         live = socket
         void (async () => {
           const disk = options.only ? { models: [], looked: [] } : await lookOnDisk()
-          socket.send(JSON.stringify({ type: 'hello', token: options.token, name: options.name ?? hostname(), host: options.host ?? hostname(), version: runnerVersion, platform: `${process.platform} ${process.arch}`, servers, facts: facts(), onDisk: disk.models, looked: disk.looked, runtimes: options.only ? [] : runtimes() }))
+          // Each model with what serves it here, or why nothing does.
+          const noted = disk.models.map((m) => ({ ...m, ...(notesNow.find((n) => n.name === m.name) ?? {}) }))
+          socket.send(JSON.stringify({ type: 'hello', token: options.token, name: options.name ?? hostname(), host: options.host ?? hostname(), version: runnerVersion, platform: `${process.platform} ${process.arch}`, servers, facts: facts(), onDisk: noted, looked: disk.looked, runtimes: options.only ? [] : runtimes(), running: runningNow() }))
         })()
         const lookAgain = async () => {
           const now = await detect(options.extra, options.only)
@@ -713,8 +675,6 @@ export async function serve(options: { hub: string; token: string; name?: string
           const reply = fromHf
             ? await hfDownload(message, (status) => send({ type: 'progress', id: message.id, status, completed: 0, total: 0 }))
             : await pull(message, servers, (status, completed, total) => send({ type: 'progress', id: message.id, status, completed, total }))
-          // A Hugging Face audio model is served by mlx-audio: started, if it isn't already.
-          if (reply.ok && fromHf) await startServing('mlx-audio')
           log(reply.ok ? `Downloaded ${String(message.model)}.` : `Couldn’t download ${String(message.model)}: ${reply.error}.`)
           // What's served now, the new model with it, before the hub hears it's done.
           if (reply.ok) {
@@ -724,7 +684,7 @@ export async function serve(options: { hub: string; token: string; name?: string
           send(reply)
           return
         }
-        const reply = message.type === 'http' ? await relay(message, servers) : message.type === 'say' ? await say(message, servers) : undefined
+        const reply = message.type === 'http' ? await relay(message, servers, (model) => engineAddress(model, servedNow, which, log)) : message.type === 'say' ? await say(message, servers) : undefined
         if (reply) send(reply)
       })
       socket.addEventListener('close', (event) => {

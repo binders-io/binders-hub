@@ -40,7 +40,8 @@ export function sizeOf(model: string) {
  */
 export function chatSize(model: string, kind: string, memoryGb?: number) {
   const named = sizeOf(model)
-  if (named || !memoryGb || kind === 'ollama' || kind === 'lmstudio') return named
+  // A machine's own list of downloaded models ('binders') has many: each counts by its name.
+  if (named || !memoryGb || kind === 'ollama' || kind === 'lmstudio' || kind === 'binders') return named
   return Math.round(memoryGb * 0.75)
 }
 

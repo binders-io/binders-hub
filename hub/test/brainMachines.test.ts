@@ -372,5 +372,15 @@ describe('machines of yours serving the brain’s models', () => {
     const serving = { ...mac, servers: [...mac.servers, { url: 'http://127.0.0.1:8939/v1', kind: 'mlx-audio', models: ['hexgrad/Kokoro-82M'] }] }
     assert.deepEqual(offers([serving], ['speech']), [])
   })
+
+  it('chooses from a machine’s downloaded models, loaded when asked, as from any server: by each model’s own size', () => {
+    const mac = { id: 'm-mac', name: 'studio-mac', addedBy: 'boss', addedAt: '', online: true, platform: 'darwin arm64', facts: { memoryGb: 64 },
+      servers: [{ url: 'say:', kind: 'say', models: ['Samantha'] }, { url: 'http://models.binders/v1', kind: 'binders', models: ['mlx-community/Qwen3-8B-4bit', 'mlx-community/Qwen3-32B-4bit', 'mlx-community/Kokoro-82M-bf16', 'mlx-community/parakeet-tdt-0.6b-v3'] }] }
+    const picks = bestPicks([mac])
+    assert.deepEqual([picks.chat?.model, picks.speech?.model, picks.transcription?.model], ['mlx-community/Qwen3-32B-4bit', 'mlx-community/Kokoro-82M-bf16', 'mlx-community/parakeet-tdt-0.6b-v3'])
+    // A Spark's GLM in TensorFold, with no size in its name, still outranks a Mac's 32B on disk.
+    const spark = { id: 'm-spark', name: 'spark-4793', addedBy: 'boss', addedAt: '', online: true, platform: 'linux arm64', facts: { memoryGb: 128 }, servers: [{ url: 'http://127.0.0.1:8090/v1', kind: 'openai', models: ['GLM-5.3'] }] }
+    assert.equal(bestPicks([mac, spark]).chat?.model, 'GLM-5.3')
+  })
 })
 

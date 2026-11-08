@@ -330,7 +330,8 @@ export class OpenAICompatibleModel implements BrainModel {
       stream: false,
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
       ...(json ? { response_format: { type: 'json_object' } } : {}),
-    }, 300_000, `The model server at ${serverName(this.base, this.via)}`, this.via) as { choices?: { message?: { content?: string } }[] }
+      // On one of your machines, a model loads when it's first asked for: a big one takes minutes.
+    }, this.via ? 20 * 60_000 : 300_000, `The model server at ${serverName(this.base, this.via)}`, this.via) as { choices?: { message?: { content?: string } }[] }
     // Thinking models put their reasoning first, between tags: it isn't the answer.
     return (body.choices?.[0]?.message?.content ?? '').replace(/<think>[\s\S]*?<\/think>/g, '').trim()
   }

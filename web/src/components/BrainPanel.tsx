@@ -77,20 +77,32 @@ interface Machine {
   seenAt?: string
   version?: string
   downloads?: Download[]
-  onDisk?: { name: string; source: string }[]
+  onDisk?: { name: string; source: string; engine?: string; why?: string }[]
   looked?: { where: string; count: number }[]
+  running?: { engine: string; model?: string }[]
 }
 
 /** A speech or transcription model, by its name: what people look for on their machines first. */
 const audioModel = (name: string) => /whisper|parakeet|canary|moonshine|voxtral|asr|kokoro|tts|csm|orpheus|chatterbox|outetts|vibevoice|phonon|lfm\d*-audio/i.test(name)
 
-/** What a machine has downloaded that nothing serves yet, in words: its audio models by name, and how many more. */
+/**
+ * What a machine has downloaded, in words: how many it loads when asked (and with what), what's running now, and why
+ * the rest can't run there.
+ */
 function diskLine(m: Machine) {
   const all = m.onDisk ?? []
   if (!all.length) return m.looked?.length ? `No downloaded models found in ${m.looked.map((l) => l.where).join(', ')}.` : ''
-  const audio = all.filter((d) => audioModel(d.name)).map((d) => shortName(d.name))
-  const rest = all.length - audio.length
-  return `Downloaded: ${[...audio.slice(0, 6), ...(audio.length > 6 ? [`${audio.length - 6} more for speech`] : [])].join(', ')}${audio.length && rest ? ', and ' : ''}${rest ? `${rest} other model${rest === 1 ? '' : 's'}` : ''}. Looked in ${(m.looked ?? []).map((l) => l.where).join(', ') || 'the usual places'}.`
+  const served = all.filter((d) => d.engine)
+  const engines = [...new Set(served.map((d) => d.engine))].join(', ')
+  const why = new Map<string, number>()
+  for (const d of all) if (d.why) why.set(d.why, (why.get(d.why) ?? 0) + 1)
+  const running = (m.running ?? []).map((r) => (r.model ? `${r.engine} (${shortName(r.model)})` : r.engine))
+  return [
+    `Downloaded: ${all.length} model${all.length === 1 ? '' : 's'}${served.length ? `, ${served.length} loaded when asked for${engines ? ` (${engines})` : ''}` : ''}.`,
+    running.length ? `Running now: ${running.join(', ')}.` : '',
+    why.size ? `The rest: ${[...why].map(([reason, n]) => `${n} ${reason}`).join('; ')}.` : '',
+    `Looked in ${(m.looked ?? []).map((l) => l.where).join(', ') || 'the usual places'}.`,
+  ].filter(Boolean).join(' ')
 }
 
 /** What the hub offers for jobs none of your machines serves: a model already there to serve, or one to download. */
@@ -129,6 +141,7 @@ function serverLabel(server: MachineServer) {
     port = new URL(server.url).port
   } catch { /* shown without */ }
   if (server.needsKey) return `A server${port ? ` on :${port}` : ''} that wants a key`
+  if (server.kind === 'binders') return `Downloaded models · ${server.models.length}, each loaded when it’s asked for`
   return `${serverNames[server.kind] ?? 'A server'}${port ? ` on :${port}` : ''} · ${server.models.length} model${server.models.length === 1 ? '' : 's'}`
 }
 

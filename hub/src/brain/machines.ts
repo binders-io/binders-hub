@@ -39,8 +39,10 @@ export interface MachineInfo {
   seenAt?: string
   /** What it said about itself: its memory, for the size of model to offer it. */
   facts?: { memoryGb?: number }
-  /** Models downloaded on it that nothing serves yet (Hugging Face's, LM Studio's), and what could serve them there. */
-  onDisk?: { name: string; source: string }[]
+  /** Models downloaded on it, each with the engine that loads it there when it's asked for, or why nothing can. */
+  onDisk?: { name: string; source: string; engine?: string; why?: string }[]
+  /** What its daemon has running now: each engine, and its model when it runs one. */
+  running?: { engine: string; model?: string }[]
   runtimes?: string[]
   /** Where it looked for downloaded models, and how many it found in each. */
   looked?: { where: string; count: number }[]
@@ -292,7 +294,12 @@ export class BrainMachines {
     if (typeof message.platform === 'string') machine.platform = message.platform.slice(0, 40)
     if (typeof message.version === 'string') machine.version = message.version.slice(0, 40)
     if (typeof message.host === 'string' && message.host.trim()) machine.host = message.host.trim().slice(0, 120)
-    if (Array.isArray(message.onDisk)) machine.onDisk = (message.onDisk as { name?: unknown; source?: unknown }[]).slice(0, 300).flatMap((m) => (typeof m?.name === 'string' && m.name ? [{ name: m.name.slice(0, 200), source: String(m.source ?? '').slice(0, 20) }] : []))
+    if (Array.isArray(message.onDisk)) {
+      machine.onDisk = (message.onDisk as { name?: unknown; source?: unknown; engine?: unknown; why?: unknown }[]).slice(0, 300).flatMap((m) => (typeof m?.name === 'string' && m.name
+        ? [{ name: m.name.slice(0, 200), source: String(m.source ?? '').slice(0, 20), ...(typeof m.engine === 'string' ? { engine: m.engine.slice(0, 20) } : {}), ...(typeof m.why === 'string' ? { why: m.why.slice(0, 120) } : {}) }]
+        : []))
+    }
+    if (Array.isArray(message.running)) machine.running = (message.running as { engine?: unknown; model?: unknown }[]).slice(0, 10).map((r) => ({ engine: String(r?.engine ?? '').slice(0, 20), ...(typeof r?.model === 'string' ? { model: r.model.slice(0, 200) } : {}) }))
     if (Array.isArray(message.runtimes)) machine.runtimes = (message.runtimes as unknown[]).slice(0, 10).map((r) => String(r).slice(0, 20))
     if (Array.isArray(message.looked)) machine.looked = (message.looked as { where?: unknown; count?: unknown }[]).slice(0, 12).map((l) => ({ where: String(l?.where ?? '').slice(0, 200), count: Math.max(0, Number(l?.count) || 0) }))
     const facts = message.facts as { memoryGb?: unknown } | undefined
