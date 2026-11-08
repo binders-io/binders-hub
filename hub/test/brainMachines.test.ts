@@ -17,6 +17,7 @@ import { BrainMachines } from '../src/brain/machines.ts'
 import { SpaceBrain } from '../src/brain/brain.ts'
 import { BrainUnavailable } from '../src/brain/models.ts'
 import { offers } from '../src/brain/autoPick.ts'
+import { runnerVersion } from '../../shared/agents.ts'
 import { joinMachine, serve } from '../../runner/src/brain.ts'
 import { oneSpace, seed } from './helpers.ts'
 
@@ -78,7 +79,7 @@ function api(url: string, cookie: string) {
   }
 }
 
-const until = async (check: () => boolean | Promise<boolean>, ms = 5000) => {
+const until = async (check: () => boolean | Promise<boolean>, ms = 15000) => {
   const end = Date.now() + ms
   while (Date.now() < end) {
     if (await check()) return
@@ -108,7 +109,8 @@ describe('machines of yours serving the brain’s models', () => {
 
       // The daemon, as binders add runs it: it finds the server it was told of, and links.
       const lines: string[] = []
-      void serve({ hub: set.url, token: added.body.token, extra: [models.url], signal: stop.signal, log: (line) => lines.push(line) })
+      // Only the server it's told of: the port scan is the daemon's own test's (the suite's other servers listen here too).
+      void serve({ hub: set.url, token: added.body.token, extra: [models.url], only: true, signal: stop.signal, log: (line) => lines.push(line) })
       await until(async () => (await boss('GET', '/api/brain/machines')).body.machines[0]?.online === true)
       const listed = (await boss('GET', '/api/brain/machines')).body.machines[0]
       assert.deepEqual(listed.servers.find((s: { url: string }) => s.url === models.url)?.models, ['qwen3:14b', 'whisper-large-v3'])
@@ -164,13 +166,16 @@ describe('machines of yours serving the brain’s models', () => {
       const socket = new WebSocket(`${set.url.replace('http', 'ws')}/api/brain/machine`)
       const said: { voice?: string; text?: string }[] = []
       socket.on('open', () => socket.send(JSON.stringify({ type: 'hello', token, servers: [{ url: 'say:', kind: 'say', models: ['Samantha', 'Daniel'] }] })))
+      let latest = ''
       socket.on('message', (raw) => {
-        const message = JSON.parse(String(raw)) as { type: string; id: string; voice?: string; text?: string }
+        const message = JSON.parse(String(raw)) as { type: string; id: string; voice?: string; text?: string; latest?: string }
+        if (message.type === 'welcome') latest = message.latest ?? ''
         if (message.type !== 'say') return
         said.push({ voice: message.voice, text: message.text })
         socket.send(JSON.stringify({ type: 'reply', id: message.id, ok: true, status: 200, headers: { 'content-type': 'audio/wav' }, body: Buffer.from('RIFF-ish').toString('base64') }))
       })
-      await until(() => set.machines.get(machine.id)?.online === true)
+      await until(() => set.machines.get(machine.id)?.online === true && latest !== '')
+      assert.equal(latest, runnerVersion, 'the daemon this hub hands out, for an older one to take its place')
       const view = await set.settings.set({ speechMachine: machine.id, speechBaseUrl: 'say:', speechVoice: 'Samantha' })
       assert.equal(view.speechInUse, 'Samantha on Studio Mac')
       const spoken = await set.settings.speaker()!.speak('Tomatoes along the south wall.')

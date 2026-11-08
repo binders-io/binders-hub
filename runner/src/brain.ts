@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir, hostname, tmpdir, totalmem } from 'node:os'
 import { join } from 'node:path'
 import { runnerVersion } from '../../shared/agents.ts'
@@ -23,6 +24,8 @@ export interface Server {
   models: string[]
   /** Ollama's version, when it's Ollama: which models it can pull and serve. */
   version?: string
+  /** It answered, but wants a key before it says which models it has. */
+  needsKey?: boolean
 }
 
 /** What the hub weighs when it offers a model to download here: how much memory this machine has. */
@@ -206,11 +209,12 @@ export function isAudio(name: string) {
   return /whisper|parakeet|canary|moonshine|voxtral|qwen\d*-asr|kokoro|tts|csm|dia-|orpheus|chatterbox|outetts|spark-tts|vibevoice|sesame/i.test(name)
 }
 
-/** One server, if it answers OpenAI's model list: what it is and which models it has. */
-export async function probe(address: string, kind: string, timeoutMs = 1500): Promise<Server | undefined> {
+/** One server, if it answers OpenAI's model list: what it is and which models it has, or that it wants a key first. */
+export async function probe(address: string, kind: string, timeoutMs = 4000): Promise<Server | undefined> {
   const base = address.replace(/\/+$/, '')
   try {
     const response = await fetch(`${base}/models`, { signal: AbortSignal.timeout(timeoutMs) })
+    if (response.status === 401 || response.status === 403) return { url: base, kind, models: [], needsKey: true }
     if (!response.ok) return undefined
     const body = (await response.json()) as { data?: { id?: unknown; owned_by?: unknown }[] }
     if (!Array.isArray(body.data)) return undefined
@@ -255,15 +259,61 @@ export async function voices(): Promise<string[]> {
   return code === 0 ? voiceNames(out) : []
 }
 
-/** Every server found on this machine: the usual places, those it was told of, and macOS's voices (`only`: just those). */
+/** Ports never a model server's: ssh, mail, DNS, printing, databases, and the like. */
+const notModels = new Set([22, 25, 53, 111, 123, 139, 445, 631, 3306, 5353, 5432, 6379, 11211, 27017])
+
+/**
+ * The TCP ports this machine listens on, each with the address to reach it at from here: from the kernel's own table on
+ * Linux, from lsof on a Mac. A port open on every address is reached at 127.0.0.1.
+ */
+export async function listening(): Promise<string[]> {
+  const out = new Set<string>()
+  if (process.platform === 'linux') {
+    for (const file of ['/proc/net/tcp', '/proc/net/tcp6']) {
+      const table = await readFile(file, 'utf8').catch(() => '')
+      for (const line of table.split('\n').slice(1)) {
+        const cols = line.trim().split(/\s+/)
+        if (cols[3] !== '0A') continue
+        const [hex, portHex] = (cols[1] ?? '').split(':')
+        const port = parseInt(portHex ?? '', 16)
+        if (!port || port < 1024 || notModels.has(port)) continue
+        // An IPv4 address, little-endian: a server on one address only is reached there; on all of them, at loopback.
+        const ip = hex?.length === 8 ? [6, 4, 2, 0].map((i) => parseInt(hex.slice(i, i + 2), 16)).join('.') : '0.0.0.0'
+        out.add(`http://${ip === '0.0.0.0' ? '127.0.0.1' : ip}:${port}`)
+      }
+    }
+  } else if (process.platform === 'darwin') {
+    const { code, out: listed } = await run('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fn'], 10_000)
+    if (code === 0) {
+      for (const line of listed.split('\n')) {
+        const found = /^n(.*):(\d+)$/.exec(line)
+        if (!found) continue
+        const port = Number(found[2])
+        if (port < 1024 || notModels.has(port)) continue
+        const host = found[1].replace(/^\[|\]$/g, '')
+        out.add(`http://${host === '*' || host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host.includes(':') ? `[${host}]` : host}:${port}`)
+      }
+    }
+  }
+  return [...out].filter(nearby).slice(0, 80)
+}
+
+/**
+ * Every server found on this machine: the ones it was told of, the usual places, and every port it listens on that
+ * answers OpenAI's model list (at /v1/models or /models), then macOS's voices (`only`: just those it was told of).
+ */
 export async function detect(extra: string[] = [], only = false): Promise<Server[]> {
   const seen = new Set<string>()
-  const candidates = [...extra.map((u) => [u.trim().replace(/\/+$/, ''), 'openai'] as [string, string]), ...(only ? [] : usual)].filter(([u]) => {
+  const open = only ? [] : await listening()
+  const candidates = [...extra.map((u) => [u.trim().replace(/\/+$/, ''), 'openai'] as [string, string]), ...(only ? [] : usual),
+    ...open.flatMap((origin) => [[`${origin}/v1`, 'openai'], [origin, 'openai']] as [string, string][])].filter(([u]) => {
     if (!u || seen.has(u) || !nearby(u)) return false
     seen.add(u)
     return true
   })
-  const found = (await Promise.all(candidates.map(([u, kind]) => probe(u, kind)))).filter((s): s is Server => Boolean(s))
+  const answered = (await Promise.all(candidates.map(([u, kind]) => probe(u, kind)))).filter((s): s is Server => Boolean(s))
+  // One server answers at /v1 and at its root alike: kept once, as /v1, which the hub's model classes add their paths to.
+  const found = answered.filter((s) => !(s.url.match(/:\d+$/) && answered.some((o) => o.url === `${s.url}/v1`)))
   if (!only && (await answers(`${mlxAudioUrl}/models`))) {
     const audio = (await onDisk()).filter((m) => m.source === 'hf' && isAudio(m.name)).map((m) => m.name)
     found.push({ url: mlxAudioUrl, kind: 'mlx-audio', models: audio })
@@ -413,9 +463,10 @@ export async function joinMachine(hub: string, joinToken: string, host = hostnam
 
 /** What it found here, in words, a line each: for binders add to say. */
 export function foundLines(servers: Server[]) {
-  if (!servers.length) return ['  No model servers found here yet. Start one (Ollama, LM Studio, vLLM, a whisper or Kokoro server) and it’s offered within five minutes.']
+  if (!servers.length) return ['  No model servers found here yet: nothing that listens on this machine answered with a list of models. Start one (Ollama, LM Studio, vLLM, TensorFold, a whisper or Kokoro server) and it’s offered within five minutes.']
   return servers.map((s) => {
     if (s.kind === 'say') return `  macOS voices: ${s.models.length}`
+    if (s.needsKey) return `  A model server at ${s.url} wants a key before it says which models it has.`
     const port = (() => {
       try {
         return new URL(s.url).port
@@ -449,7 +500,30 @@ const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms))
  * Links to the hub and serves it until stopped: says which servers it found, answers what the hub sends, looks for
  * servers again every few minutes (one started later is offered then), and links again after any break.
  */
-export async function serve(options: { hub: string; token: string; name?: string; extra?: string[]; log?: (line: string) => void; signal?: AbortSignal; lookEveryMs?: number; host?: string; only?: boolean }) {
+/** Whether version a is newer than b: 0.14.0 against 0.13.2. */
+export function newer(a: string, b: string) {
+  const x = a.split('.').map(Number)
+  const y = b.split('.').map(Number)
+  for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0)
+  return false
+}
+
+/** The hub's runner file in place of this one, when it's the version the hub said: false when it isn't, or can't be had. */
+async function replaceWith(hub: string, version: string, file: string, log: (line: string) => void) {
+  try {
+    const response = await fetch(new URL('/runner/binders-runner.mjs', hub), { headers: { 'cache-control': 'no-cache' }, signal: AbortSignal.timeout(60_000) })
+    const code = response.ok ? await response.text() : ''
+    if (!code.includes(`runnerVersion = "${version}"`)) return false
+    await writeFile(`${file}.new`, code)
+    await rename(`${file}.new`, file)
+    return true
+  } catch (error) {
+    log(`Couldn’t update to ${version}: ${error instanceof Error ? error.message : String(error)}.`)
+    return false
+  }
+}
+
+export async function serve(options: { hub: string; token: string; name?: string; extra?: string[]; log?: (line: string) => void; signal?: AbortSignal; lookEveryMs?: number; host?: string; only?: boolean; selfUpdate?: string }) {
   const log = options.log ?? ((line: string) => console.log(`${new Date().toISOString()} ${line}`))
   const url = `${options.hub.replace(/\/+$/, '').replace(/^http/, 'ws')}/api/brain/machine`
   let servers = await detect(options.extra, options.only)
@@ -477,13 +551,15 @@ export async function serve(options: { hub: string; token: string; name?: string
           const disk = options.only ? [] : await onDisk()
           socket.send(JSON.stringify({ type: 'hello', token: options.token, name: options.name ?? hostname(), host: options.host ?? hostname(), version: runnerVersion, platform: `${process.platform} ${process.arch}`, servers, facts: facts(), onDisk: disk, runtimes: options.only ? [] : runtimes() }))
         })()
-        looking = setInterval(async () => {
+        const lookAgain = async () => {
           const now = await detect(options.extra, options.only)
           if (JSON.stringify(now) === JSON.stringify(servers)) return
           servers = now
           log(`Now serving ${describe()}.`)
           if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'servers', servers }))
-        }, options.lookEveryMs ?? 5 * 60_000)
+        }
+        setTimeout(() => void lookAgain(), 30_000)
+        looking = setInterval(() => void lookAgain(), options.lookEveryMs ?? 5 * 60_000)
       })
       socket.addEventListener('message', async (event) => {
         let message: Record<string, unknown>
@@ -495,6 +571,12 @@ export async function serve(options: { hub: string; token: string; name?: string
         if (message.type === 'welcome') {
           failures = 0
           log(`Linked to the hub as ${String(message.name ?? 'a machine')}.`)
+          // The hub hands out a newer daemon: this one takes its place, and the service starts it again on it.
+          if (typeof message.latest === 'string' && options.selfUpdate && newer(message.latest, runnerVersion) && (await replaceWith(options.hub, message.latest, options.selfUpdate, log))) {
+            log(`Updated to ${message.latest}: starting again on it.`)
+            socket.close(1000)
+            process.exit(0)
+          }
           return
         }
         const send = (value: unknown) => socket.readyState === WebSocket.OPEN && socket.send(JSON.stringify(value))
@@ -565,6 +647,8 @@ export async function brainCommand(argv: string[]): Promise<number> {
     return 1
   }
   const extra = (value('--serve') ?? '').split(',').map((s) => s.trim()).filter(Boolean)
-  await serve({ hub, token, name: value('--name'), extra })
+  // Run as the single file the hub hands out, it keeps itself current, as an agent's runner does.
+  const self = import.meta.url.endsWith('.mjs') ? fileURLToPath(import.meta.url) : undefined
+  await serve({ hub, token, name: value('--name'), extra, ...(self ? { selfUpdate: self } : {}) })
   return 0
 }

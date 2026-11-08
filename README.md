@@ -355,8 +355,10 @@ by what they mean as well as by their words.
   - **Running the line.** Each machine joins under its host's name, with a token of its own, and the Binders daemon
     starts there in the background: launchd on a Mac, systemd on Linux, Node 22 or newer. Running the line again on
     the same machine refreshes it.
-  - **What the daemon serves.** It finds the model servers on its machine: Ollama, LM Studio, vLLM or NIM, MLX, whisper
-    or Parakeet, Kokoro, plus `--serve` for others. On a Mac it also finds macOS's voices. It says what it found and
+  - **What the daemon serves.** It finds the model servers on its machine: every port the machine listens on that
+    answers OpenAI's model list (at `/v1/models` or `/models`), so Ollama, LM Studio, vLLM or NIM, TensorFold, MLX,
+    whisper or Parakeet and Kokoro are found wherever they listen. `--serve` covers anything else. A server that wants
+    a key is reported as such. The daemon updates itself when the hub has a newer one, as an agent's runner does. On a Mac it also finds macOS's voices. It says what it found and
     makes the requests the hub sends, to those servers only, so the hub can't reach anything else through it.
   - **What the hub picks.** For each job no one set, the hub picks the best model on your machines: the biggest chat
     model, an embeddings model, Parakeet, Canary or the largest whisper, and a speech server's voice, else a Mac's

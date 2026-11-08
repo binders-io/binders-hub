@@ -4,6 +4,7 @@ import type { KV } from '../kv.ts'
 import { Refused } from '../hub.ts'
 import { log } from '../logger.ts'
 import { BrainUnavailable, type Speaker } from './models.ts'
+import { runnerVersion } from '../../../shared/agents.ts'
 
 // Machines of yours that serve the brain's models: a Mac, or a GPU box such as a DGX Spark, running the Binders daemon
 // (`binders add --token bnw_…`). It links to the hub, says which model servers it found on itself (Ollama, LM Studio,
@@ -16,6 +17,8 @@ export interface MachineServer {
   url: string
   /** Ollama's version, when it's Ollama. */
   version?: string
+  /** It answered, but wants a key before it says which models it has. */
+  needsKey?: boolean
   /** What it is, as the daemon could tell: ollama, lmstudio, vllm, nim, kokoro, openai (anything else that speaks OpenAI's API), say. */
   kind: string
   /** The models it lists, or the voices, for say. */
@@ -95,7 +98,7 @@ function clean(servers: unknown): MachineServer[] {
     const server = s as Partial<MachineServer>
     const url = String(server.url ?? '').slice(0, 300)
     if (!url) return []
-    return [{ url, kind: String(server.kind ?? 'openai').slice(0, 20), models: Array.isArray(server.models) ? server.models.slice(0, 300).map((m) => String(m).slice(0, 200)) : [], ...(typeof server.version === 'string' && server.version ? { version: server.version.slice(0, 40) } : {}) }]
+    return [{ url, kind: String(server.kind ?? 'openai').slice(0, 20), models: Array.isArray(server.models) ? server.models.slice(0, 300).map((m) => String(m).slice(0, 200)) : [], ...(typeof server.version === 'string' && server.version ? { version: server.version.slice(0, 40) } : {}), ...(server.needsKey === true ? { needsKey: true } : {}) }]
   })
 }
 
@@ -243,7 +246,8 @@ export class BrainMachines {
         this.live.set(id, socket)
         if (before && before !== socket) before.close(4000, 'This machine linked again.')
         await this.heard(id, message)
-        socket.send(JSON.stringify({ type: 'welcome', id, name: machine.name }))
+        // The daemon this hub hands out: one that's older takes its place and starts again on it.
+        socket.send(JSON.stringify({ type: 'welcome', id, name: machine.name, latest: runnerVersion }))
         log.info({ machine: machine.name }, 'A brain machine linked')
         return
       }

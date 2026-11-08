@@ -54,6 +54,7 @@ interface MachineServer {
   url: string
   kind: string
   models: string[]
+  needsKey?: boolean
 }
 
 interface Download {
@@ -110,6 +111,7 @@ function serverLabel(server: MachineServer) {
   try {
     port = new URL(server.url).port
   } catch { /* shown without */ }
+  if (server.needsKey) return `A server${port ? ` on :${port}` : ''} that wants a key`
   return `${serverNames[server.kind] ?? 'A server'}${port ? ` on :${port}` : ''} · ${server.models.length} model${server.models.length === 1 ? '' : 's'}`
 }
 
@@ -125,7 +127,7 @@ function MachinePicker({ id, machines, machine, baseUrl, model, voices, disabled
   disabled: boolean
   onPick: (pick: { machine: string; baseUrl: string; model: string }) => void
 }) {
-  const offered = (m?: Machine) => (m?.servers ?? []).filter((s) => voices || s.kind !== 'say')
+  const offered = (m?: Machine) => (m?.servers ?? []).filter((s) => !s.needsKey && (voices || s.kind !== 'say'))
   const chosen = machines.find((m) => m.id === machine)
   const servers = offered(chosen)
   const server = servers.find((s) => s.url === baseUrl)
@@ -161,7 +163,9 @@ function MachinePicker({ id, machines, machine, baseUrl, model, voices, disabled
           </select>
         </label>
       )}
-      {chosen && !servers.length && <p className="field-hint">{chosen.name} hasn’t found a server for this. Start one there (Ollama, vLLM, a whisper server…) and it’s offered within five minutes, or add its address with binders add --serve.</p>}
+      {chosen && !servers.length && <p className="field-hint">{(chosen.servers ?? []).some((s) => s.needsKey)
+        ? `${chosen.name} found a model server that wants a key before it says which models it has. Start it without one for this machine (it’s reached from the machine itself), and it’s offered within five minutes.`
+        : `${chosen.name} hasn’t found a model server for this: nothing listening there answered with a list of models. Once one does (Ollama, vLLM, TensorFold, a whisper server…), it’s offered within five minutes.`}</p>}
     </div>
   )
 }

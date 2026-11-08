@@ -412,6 +412,9 @@ An iPhone chooses its brain: its Mac, or the hub. With the hub, it sends the ver
   - It reaches only the servers it found (and only on its own network) and passes nothing else on. macOS's voices
     are `say:`.
   - A machine that's away, removed or not linked says so in the job's needs.
+  - The daemon finds servers by the machine's own list of listening ports (`/proc/net/tcp` on Linux, `lsof` on a Mac),
+    asking each for its models at `/v1/models` and `/models`. The hub's welcome says which daemon it hands out
+    (`runnerVersion`), and an older one replaces its file and exits for its service to start it again.
   - A machine joins with a 24-hour command token (`bnj_`) and gets a token of its own (`bnw_`), named by its host. The
     same host joining again is the same machine.
   - Each job no admin set is chosen by the hub from the machines linked now (`hub/src/brain/autoPick.ts`), by model

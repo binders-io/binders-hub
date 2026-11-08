@@ -83,6 +83,7 @@ export function bestPicks(machines: MachineView[]): Partial<Record<Job, Pick>> {
   for (const machine of machines) {
     if (!machine.online) continue
     for (const server of machine.servers ?? []) {
+      if (server.needsKey) continue
       if (server.url === sayServer) {
         const voice = macVoice(server.models)
         // A Mac's own voices: the last resort for reading answers out, after a speech server.

@@ -2,7 +2,7 @@ import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { detect, hfCache, isAudio, mlxAudioCommand, nearby, onDisk, probe, pull, relay, repoOf, say, voiceNames } from '../src/brain.ts'
+import { detect, hfCache, isAudio, listening, mlxAudioCommand, nearby, newer, onDisk, probe, pull, relay, repoOf, say, voiceNames } from '../src/brain.ts'
 import { mkdtemp, mkdir as makeDir, writeFile as write } from 'node:fs/promises'
 import { tmpdir as tempDir } from 'node:os'
 import { join as joinPath } from 'node:path'
@@ -135,6 +135,30 @@ describe('the brain daemon', () => {
     assert.deepEqual(mlxAudioCommand((c) => (c === 'uvx' ? '/u/.local/bin/uvx' : undefined)), ['/u/.local/bin/uvx', ['--from', 'mlx-audio', 'mlx_audio.server', '--host', '127.0.0.1', '--port', '8939']])
     assert.deepEqual(mlxAudioCommand((c) => (c === 'mlx_audio.server' ? '/bin/mlx_audio.server' : '/u/uvx'))![0], '/bin/mlx_audio.server')
     assert.equal(mlxAudioCommand(() => undefined), undefined)
+  })
+
+  it('finds a model server on whatever port it listens on, one that answers at /models, and one that wants a key', async () => {
+    const at = async (handler: (path: string) => { status: number; body?: unknown }) => {
+      const server: Server = createServer((request, response) => {
+        const { status, body } = handler(request.url ?? '')
+        response.writeHead(status, { 'content-type': 'application/json' })
+        response.end(body === undefined ? '' : JSON.stringify(body))
+      })
+      await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+      closers.push(() => new Promise<void>((done) => server.close(() => done())))
+      return `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    }
+    const tensorfold = await at((path) => (path === '/v1/models' ? { status: 200, body: { object: 'list', data: [{ id: 'glm-5.3' }] } } : { status: 404 }))
+    const plain = await at((path) => (path === '/models' ? { status: 200, body: { data: [{ id: 'local-model' }] } } : { status: 404 }))
+    const locked = await at(() => ({ status: 401, body: { error: 'key' } }))
+    // Found by the port it listens on, with no address given.
+    if (process.platform === 'linux' || process.platform === 'darwin') assert.ok((await listening()).includes(tensorfold), 'its port, from the machine’s own list')
+    assert.deepEqual(await probe(`${tensorfold}/v1`, 'openai'), { url: `${tensorfold}/v1`, kind: 'openai', models: ['glm-5.3'] })
+    assert.deepEqual(await probe(plain, 'openai'), { url: plain, kind: 'openai', models: ['local-model'] })
+    assert.deepEqual(await probe(`${locked}/v1`, 'openai'), { url: `${locked}/v1`, kind: 'openai', models: [], needsKey: true })
+    const found = await detect([`${tensorfold}/v1`, plain], true)
+    assert.deepEqual(found.map((s) => s.url), [`${tensorfold}/v1`, plain])
+    assert.ok(newer('0.14.0', '0.13.2') && !newer('0.13.0', '0.13.0') && !newer('0.9.9', '0.13.0'))
   })
 })
 
