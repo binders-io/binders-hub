@@ -725,7 +725,9 @@ a.button { text-decoration: none; }
 .settings-nav button:hover { background: var(--fill-1); color: var(--text); }
 .settings-nav button.on { background: var(--fill-2); color: var(--text); }
 .settings-warn { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: var(--amber); }
-.settings-pane { min-height: 0; overflow-y: auto; padding: 28px clamp(20px, 4vw, 56px) 64px; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 16px; max-width: 860px; animation: pane-in 0.18s ease-out; }
+/* Rows as tall as what's in them: a card that clips its corners (.options) would otherwise be squeezed to the window, and
+   what's below cut off with nothing to scroll to. */
+.settings-pane { min-height: 0; overflow-y: auto; padding: 28px clamp(20px, 4vw, 56px) 64px; display: grid; grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; align-content: start; gap: 16px; max-width: 860px; animation: pane-in 0.18s ease-out; }
 @keyframes pane-in { from { opacity: 0; transform: translateY(4px); } }
 @media (prefers-reduced-motion: reduce) { .settings-pane { animation: none; } }
 .settings-pane > header { display: grid; gap: 6px; margin-bottom: 4px; }
