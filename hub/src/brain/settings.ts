@@ -428,7 +428,10 @@ export class BrainSettingsStore {
       const pick = picks[job]
       const current = chosen && machine ? { machine, url, model } : undefined
       const same = pick && current && pick.machine === current.machine && pick.url === current.url && pick.model === current.model
-      const better = pick && !same && (!current || !linked(current.machine) || pick.score > scoreOf(job, current.url, current.model))
+      // What's in use, scored as bestPicks scores it: by its server and machine, too, for a model with no size in its name.
+      const server = current ? machines.find((m) => m.id === current.machine)?.servers?.find((s) => s.url === current.url) : undefined
+      const memory = current ? machines.find((m) => m.id === current.machine)?.facts?.memoryGb : undefined
+      const better = pick && !same && (!current || !linked(current.machine) || pick.score > scoreOf(job, current.url, current.model, server?.kind, memory))
       if (better) {
         if (job === 'chat') Object.assign(fields, { provider: 'machine', machine: pick.machine, baseUrl: pick.url, model: pick.model })
         else Object.assign(fields, { [`${job}Machine`]: pick.machine, [`${job}BaseUrl`]: pick.url, [`${job}Model`]: pick.model, ...(job === 'speech' ? { speechVoice: pick.voice ?? '' } : {}) })

@@ -33,6 +33,17 @@ export function sizeOf(model: string) {
   return plain ? Number(plain[1]) : 0
 }
 
+/**
+ * A chat model's size, for choosing between them: from its name (qwen3:32b) or, with none there (GLM-5.3), from the
+ * machine serving it, when that's a server that runs one big model (vLLM, NIM, TensorFold, SGLang): about three
+ * quarters of its memory, in billions. Ollama's and LM Studio's many models, without a size, count as small.
+ */
+export function chatSize(model: string, kind: string, memoryGb?: number) {
+  const named = sizeOf(model)
+  if (named || !memoryGb || kind === 'ollama' || kind === 'lmstudio') return named
+  return Math.round(memoryGb * 0.75)
+}
+
 /** Which jobs a model is for: most do one, an audio model like LFM3-Audio both writing down and reading out. */
 export function jobsOf(model: string, kind: string): Job[] {
   if (kind !== 'say' && audioBoth.test(model)) return ['transcription', 'speech']
@@ -68,10 +79,10 @@ export function macVoice(voices: string[]) {
 }
 
 /** How good a model is for a job, as bestPicks scores it: to tell whether a newcomer is better than what's in use. */
-export function scoreOf(job: Job, url: string, model: string) {
+export function scoreOf(job: Job, url: string, model: string, kind = '', memoryGb?: number) {
   if (job === 'transcription') return hearing(model)
   if (job === 'speech') return url === sayServer ? 1 : 2
-  return 1 + sizeOf(model)
+  return 1 + (job === 'chat' ? chatSize(model, kind, memoryGb) : sizeOf(model))
 }
 
 /** The best pick for each job across the machines linked now. */
@@ -92,7 +103,7 @@ export function bestPicks(machines: MachineView[]): Partial<Record<Job, Pick>> {
       }
       for (const model of server.models) {
         for (const job of jobsOf(model, server.kind)) {
-          if (job === 'chat') offer('chat', { machine: machine.id, url: server.url, model, score: 1 + sizeOf(model) })
+          if (job === 'chat') offer('chat', { machine: machine.id, url: server.url, model, score: 1 + chatSize(model, server.kind, machine.facts?.memoryGb) })
           else if (job === 'embeddings') offer('embeddings', { machine: machine.id, url: server.url, model, score: 1 + sizeOf(model) })
           else if (job === 'transcription') offer('transcription', { machine: machine.id, url: server.url, model, score: hearing(model) })
           else if (job === 'speech') offer('speech', { machine: machine.id, url: server.url, model, voice: /kokoro/i.test(`${model} ${server.kind}`) ? 'af_heart' : /phonon/i.test(model) ? 'default' : '', score: 2 })

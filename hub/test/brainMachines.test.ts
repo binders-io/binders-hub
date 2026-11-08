@@ -16,7 +16,7 @@ import { BrainSettingsStore } from '../src/brain/settings.ts'
 import { BrainMachines } from '../src/brain/machines.ts'
 import { SpaceBrain } from '../src/brain/brain.ts'
 import { BrainUnavailable } from '../src/brain/models.ts'
-import { offers } from '../src/brain/autoPick.ts'
+import { bestPicks, offers } from '../src/brain/autoPick.ts'
 import { runnerVersion } from '../../shared/agents.ts'
 import { joinMachine, serve } from '../../runner/src/brain.ts'
 import { oneSpace, seed } from './helpers.ts'
@@ -354,6 +354,13 @@ describe('machines of yours serving the brain’s models', () => {
     } finally {
       await set.close()
     }
+  })
+
+  it('ranks a big model with no size in its name, on a Spark’s own server, above a smaller one named with its size', () => {
+    const spark = { id: 'm-spark', name: 'spark-4793', addedBy: 'boss', addedAt: '', online: true, platform: 'linux arm64', facts: { memoryGb: 128 }, servers: [{ url: 'http://127.0.0.1:8090/v1', kind: 'openai', models: ['GLM-5.3'] }] }
+    const mac = { id: 'm-mac', name: 'helders-macbook-pro', addedBy: 'boss', addedAt: '', online: true, platform: 'darwin arm64', facts: { memoryGb: 64 }, servers: [{ url: 'http://127.0.0.1:11434/v1', kind: 'ollama', models: ['gemma4:26b', 'llama3.2:latest'] }] }
+    assert.deepEqual([bestPicks([mac, spark]).chat?.machine, bestPicks([mac, spark]).chat?.model], ['m-spark', 'GLM-5.3'])
+    assert.equal(bestPicks([mac]).chat?.model, 'gemma4:26b', 'an Ollama model with no size counts as small')
   })
 })
 
