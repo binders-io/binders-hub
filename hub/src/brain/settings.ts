@@ -3,7 +3,7 @@ import type { Sealer } from '../secrets.ts'
 import { Refusal } from '../auth.ts'
 import { ClaudeModel, OpenAICompatibleEmbedder, OpenAICompatibleModel, OpenAICompatibleSpeaker, OpenAICompatibleTranscriber, type BrainModel, type Embedder, type Speaker, type Transcriber, type Via } from './models.ts'
 import { sayServer, type BrainMachines, type MachineView } from './machines.ts'
-import { bestPicks, scoreOf, type Job } from './autoPick.ts'
+import { bestPicks, candidates, scoreOf, type Job } from './autoPick.ts'
 
 // Which models the hub's brain uses, set by an admin in Settings, under Brain, and kept in the hub's store with its
 // keys sealed. An environment variable set for one fixes it, as with the hub's other options:
@@ -410,6 +410,7 @@ export class BrainSettingsStore {
   private async pickNow(machines: MachineView[]) {
     const now = this.get()
     const picks = bestPicks(machines)
+    const listed = candidates(machines)
     const auto = new Set(now.autoJobs)
     const known = (id: string) => machines.some((m) => m.id === id)
     const linked = (id: string) => machines.some((m) => m.id === id && m.online)
@@ -431,13 +432,17 @@ export class BrainSettingsStore {
       // What's in use, scored as bestPicks scores it: by its server and machine, too, for a model with no size in its name.
       const server = current ? machines.find((m) => m.id === current.machine)?.servers?.find((s) => s.url === current.url) : undefined
       const memory = current ? machines.find((m) => m.id === current.machine)?.facts?.memoryGb : undefined
-      const better = pick && !same && (!current || !linked(current.machine) || pick.score > scoreOf(job, current.url, current.model, server?.kind, memory))
+      // What the hub chose before and is no longer a candidate (its machine went, or it turned out not to be a model there,
+      // such as a gateway's): the best that is takes its place.
+      const gone = current && !listed[job].some((c) => c.machine === current.machine && c.url === current.url && (c.model === current.model || (c.url === sayServer && job === 'speech')))
+      const better = pick && !same && (!current || gone || !linked(current.machine) || pick.score > scoreOf(job, current.url, current.model, server?.kind, memory))
       if (better) {
         if (job === 'chat') Object.assign(fields, { provider: 'machine', machine: pick.machine, baseUrl: pick.url, model: pick.model })
         else Object.assign(fields, { [`${job}Machine`]: pick.machine, [`${job}BaseUrl`]: pick.url, [`${job}Model`]: pick.model, ...(job === 'speech' ? { speechVoice: pick.voice ?? '' } : {}) })
         auto.add(job)
-      } else if (current && !known(current.machine)) {
-        // Its machine was removed, and no other has one: the job is open again.
+      } else if (current && (!known(current.machine) || (gone && linked(current.machine)))) {
+        // Its machine was removed, or it's linked and the model isn't one to use there (a gateway's), and no other machine
+        // has one: the job is open again.
         if (job === 'chat') Object.assign(fields, { provider: 'off', machine: '', baseUrl: '', model: '' })
         else Object.assign(fields, { [`${job}Machine`]: '', [`${job}BaseUrl`]: '', [`${job}Model`]: '', ...(job === 'speech' ? { speechVoice: '' } : {}) })
         auto.delete(job)

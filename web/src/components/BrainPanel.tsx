@@ -55,6 +55,8 @@ interface MachineServer {
   kind: string
   models: string[]
   needsKey?: boolean
+  /** It lists cloud models, or ones too big for the machine: a gateway to somewhere else, never chosen from. */
+  gateway?: boolean
 }
 
 interface Download {
@@ -147,6 +149,7 @@ function serverLabel(server: MachineServer) {
     port = new URL(server.url).port
   } catch { /* shown without */ }
   if (server.needsKey) return `A server${port ? ` on :${port}` : ''} that wants a key`
+  if (server.gateway) return `A gateway${port ? ` on :${port}` : ''} to cloud models (${server.models.length}), not used`
   if (server.kind === 'binders') return `Downloaded models · ${server.models.length}, each loaded when it’s asked for`
   return `${serverNames[server.kind] ?? 'A server'}${port ? ` on :${port}` : ''} · ${server.models.length} model${server.models.length === 1 ? '' : 's'}`
 }
@@ -243,6 +246,19 @@ function OldDaemons({ machines, latest }: { machines: Machine[]; latest?: string
 }
 
 const stateWords: Record<Candidate['state'], string> = { running: 'Running', 'on-demand': 'Loads when used', voice: 'Built in' }
+
+/** Where a candidate comes from on its machine, in words: Ollama, its downloads, macOS, a server on a port. */
+function sourceOf(c: Candidate) {
+  if (c.kind === 'binders') return 'downloaded'
+  if (c.kind === 'say') return 'macOS'
+  if (serverNames[c.kind] && c.kind !== 'openai') return serverNames[c.kind]
+  try {
+    const port = new URL(c.url).port
+    return port ? `server on :${port}` : 'a server'
+  } catch {
+    return 'a server'
+  }
+}
 
 export function BrainPanel() {
   const [brain, setBrain] = useState<BrainView>()
@@ -373,7 +389,7 @@ export function BrainPanel() {
               <li key={`${c.machine} ${c.url} ${c.model} ${c.voice ?? ''}`} className={current ? 'on' : undefined}>
                 <div className="choice-name">
                   <b>{c.kind === 'say' ? `macOS voice: ${c.voice}` : shortName(c.model)}</b>
-                  <span>{c.machineName}</span>
+                  <span>{c.machineName} · {sourceOf(c)}</span>
                 </div>
                 <span className={`choice-chip ${c.state}`}>{stateWords[c.state]}{engine && c.state === 'on-demand' ? ` · ${engine}` : ''}</span>
                 <button type="button" className="button" disabled={current || !admin} onClick={() => use(job, c)}>{current ? 'In use' : 'Use'}</button>

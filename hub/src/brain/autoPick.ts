@@ -1,4 +1,4 @@
-import { sayServer, type MachineView } from './machines.ts'
+import { sayServer, type MachineServer, type MachineView } from './machines.ts'
 
 // What the hub chooses for each of the brain's jobs from your machines, when you haven't chosen: the biggest chat model
 // on any of them, an embeddings model, a transcription model (Parakeet, Canary or the largest whisper), and a voice
@@ -26,6 +26,40 @@ const audioBoth = /lfm\d*-audio/i
 const notChat = /rerank|guard|moderation|(^|[^a-z])clip|siglip|ocr|nougat|layout|(^|[^a-z])vae|diffusion|flux|sdxl|(^|[^a-z])sd-|stable-diffusion|image|video|music|latentsync|ace-step/i
 /** Helpers that come with speech models but aren't one: words to sounds, voice activity, codecs. */
 const helper = /g2p|phonemi[sz]|(^|[^a-z])vad([^a-z]|$)|silero|tokenizer|codec/i
+
+/**
+ * Names of models that live in a cloud (OpenAI's, Azure's, Anthropic's, Google's, xAI's…): a server listing them is a
+ * gateway to one, such as a LiteLLM proxy, not a model on the machine.
+ */
+const cloudName = /^(gpt-(3|35|4|5)|gpt-4o|chatgpt|o[134](-|$)|dall-e|text-embedding-(ada|3)|text-davinci|davinci|babbage|whisper-1|tts-1|claude-|gemini-|command-r|grok-|sonar)/i
+/** Ollama's models that run in Ollama's cloud: gpt-oss:120b-cloud, glm-4.6:cloud. */
+const ollamaCloud = /(^|[:-])cloud$/i
+/** Servers that list what's downloaded on the machine, loaded or not: some of theirs may be too big to load there. */
+const downloadedKinds = new Set(['ollama', 'lmstudio', 'binders'])
+
+/** Whether a model could be on a machine at all: none that wouldn't fit in its memory, even at four bits. */
+export function fits(model: string, memoryGb?: number) {
+  const billions = sizeOf(model)
+  if (!memoryGb || !billions) return true
+  const bytes = /bf16|fp16|(^|[^a-z])f16/i.test(model) ? 2 : /fp8|8bit|int8|q8/i.test(model) ? 1 : 0.5
+  return billions * bytes <= memoryGb * 1.1
+}
+
+/**
+ * A server that lists cloud models, or a catalogue of models no machine like this could hold: a gateway to somewhere
+ * else, which the hub never chooses from. Its kind doesn't clear it, as a kind is guessed from a port or from what the
+ * first model says owns it (NVIDIA, for a gateway listing Nemotron first); only the daemon's own lists never are one.
+ */
+export function isGateway(server: { kind: MachineServer['kind']; models: MachineServer['models'] }, memoryGb?: number) {
+  if (server.kind === 'binders' || server.kind === 'say' || !server.models.length) return false
+  const cloud = server.models.filter((m) => cloudName.test(m.split('/').pop() ?? m)).length
+  if (cloud >= 2) return true
+  // Ollama and LM Studio list what's downloaded, and a server running one model (vLLM, TensorFold) may spread it over
+  // several machines: neither is a catalogue.
+  if (downloadedKinds.has(server.kind) || server.models.length < 4) return false
+  const impossible = server.models.filter((m) => !fits(m, memoryGb)).length
+  return (cloud + impossible) / server.models.length >= 0.3
+}
 
 /** Billions of parameters, from a model's name: qwen3:32b, Llama-3.3-70B-Instruct, gpt-oss-120b, mixtral-8x7b. */
 export function sizeOf(model: string) {
@@ -116,16 +150,22 @@ export function candidates(machines: MachineView[]): Record<Job, Candidate[]> {
     if (!machine.online) continue
     const base = { machine: machine.id, machineName: machine.name }
     for (const server of machine.servers ?? []) {
-      if (server.needsKey) continue
+      // A gateway to a cloud isn't a model on the machine: never one to choose.
+      if (server.needsKey || isGateway(server, machine.facts?.memoryGb)) continue
       if (server.url === sayServer) {
         const voice = macVoice(server.models)
         // A Mac's own voices: one row, the voice it'd read in.
         if (voice) out.speech.push({ ...base, url: sayServer, model: '', voice, score: 1, kind: 'say', state: 'voice' })
         continue
       }
-      // A machine's downloaded models load when they're used: running only when its daemon says so.
-      const runningHere = (model: string) => server.kind !== 'binders' || (machine.running ?? []).some((r) => r.model === model)
+      // Downloaded models (the daemon's, Ollama's, LM Studio's) load when they're used: running only when the daemon says
+      // so. A server that lists the one it serves is running it.
+      const downloaded = downloadedKinds.has(server.kind)
+      const runningHere = (model: string) => !downloaded || (machine.running ?? []).some((r) => r.model === model)
       for (const model of server.models) {
+        // Nothing that runs in a cloud, nor a download the machine couldn't load.
+        if (ollamaCloud.test(model)) continue
+        if ((downloaded || server.models.length > 1) && !fits(model, machine.facts?.memoryGb)) continue
         for (const job of jobsOf(model, server.kind)) {
           const state = runningHere(model) ? 'running' : 'on-demand'
           const score = job === 'chat' ? 1 + chatSize(model, server.kind, machine.facts?.memoryGb) : scoreOf(job, server.url, model)

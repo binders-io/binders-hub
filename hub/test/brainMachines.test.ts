@@ -16,7 +16,7 @@ import { BrainSettingsStore } from '../src/brain/settings.ts'
 import { BrainMachines } from '../src/brain/machines.ts'
 import { SpaceBrain } from '../src/brain/brain.ts'
 import { BrainUnavailable } from '../src/brain/models.ts'
-import { bestPicks, candidates, offers } from '../src/brain/autoPick.ts'
+import { bestPicks, candidates, isGateway, offers } from '../src/brain/autoPick.ts'
 import { runnerVersion } from '../../shared/agents.ts'
 import { joinMachine, serve } from '../../runner/src/brain.ts'
 import { oneSpace, seed } from './helpers.ts'
@@ -191,7 +191,7 @@ describe('machines of yours serving the brain’s models', () => {
 
   it('takes machines with one line, names them by their hosts, and chooses their models for every job no one set', async () => {
     const set = await setUp()
-    const spark = await modelServer(['llama-3.3-70b-instruct', 'nomic-embed-text', 'whisper-large-v3', 'kokoro'])
+    const spark = await modelServer(['llama-3.2-3b-instruct', 'nomic-embed-text', 'whisper-large-v3', 'kokoro'])
     const mac = await modelServer(['qwen3:235b-a22b'])
     const stops = [new AbortController(), new AbortController()]
     try {
@@ -206,7 +206,7 @@ describe('machines of yours serving the brain’s models', () => {
       void serve({ hub: set.url, token: first.token, extra: [spark.url], only: true, host: 'spark-1.local', signal: stops[0].signal, log: () => {} })
       await until(() => set.settings.get().autoJobs.length === 4)
       const view = set.settings.view()
-      assert.deepEqual([view.inUse, view.embeddingsInUse, view.transcriptionInUse, view.speechInUse], ['llama-3.3-70b-instruct on spark-1', 'nomic-embed-text on spark-1', 'whisper-large-v3 on spark-1', 'kokoro, af_heart on spark-1'])
+      assert.deepEqual([view.inUse, view.embeddingsInUse, view.transcriptionInUse, view.speechInUse], ['llama-3.2-3b-instruct on spark-1', 'nomic-embed-text on spark-1', 'whisper-large-v3 on spark-1', 'kokoro, af_heart on spark-1'])
 
       // The same line on a Mac with a bigger model: chat moves there, the rest stays where it's better.
       const second = await joinMachine(set.url, join, 'studio-mac')
@@ -233,7 +233,7 @@ describe('machines of yours serving the brain’s models', () => {
       // The Mac removed: chat goes back to the Spark's best.
       const macId = set.machines.list().find((m) => m.name === 'studio-mac')!.id
       await boss('DELETE', `/api/brain/machines/${macId}`)
-      await until(() => set.settings.view().inUse === 'llama-3.3-70b-instruct on spark-1')
+      await until(() => set.settings.view().inUse === 'llama-3.2-3b-instruct on spark-1')
 
       // The line once more on the Spark: the same machine, a fresh token, the old one stopped.
       const again = await joinMachine(set.url, join, 'spark-1.local')
@@ -270,7 +270,7 @@ describe('machines of yours serving the brain’s models', () => {
 
   it('downloads a model it offered into a machine’s Ollama, and uses it once it’s there', async () => {
     const set = await setUp()
-    const models = ['llama-3.3-70b-instruct']
+    const models = ['llama-3.2-3b-instruct']
     const ollama: Server = createServer((request, response) => {
       request.resume()
       request.on('end', () => {
@@ -377,6 +377,40 @@ describe('machines of yours serving the brain’s models', () => {
     // A Spark's GLM in TensorFold, with no size in its name, still outranks a Mac's 32B on disk.
     const spark = { id: 'm-spark', name: 'spark-4793', addedBy: 'boss', addedAt: '', online: true, platform: 'linux arm64', facts: { memoryGb: 128 }, servers: [{ url: 'http://127.0.0.1:8090/v1', kind: 'openai', models: ['GLM-5.3'] }] }
     assert.equal(bestPicks([mac, spark]).chat?.model, 'GLM-5.3')
+  })
+
+  it('takes a gateway to cloud models for what it is, lists none of them, and moves off one it chose there', async () => {
+    const gatewayModels = ['Nemotron-3-Ultra-550B-A55B-BF16', 'Nemotron-3-Ultra-550B-A55B-BF16-256K', 'Meta-Llama-3.1-405B-Instruct', 'gpt-oss-120b', 'Nemotron-3-Super-120B-A12B-BF16', 'dall-e-3-3.0', 'dall-e-2-2.0', 'gpt-35-turbo-0301', 'gpt-35-turbo-0613']
+    const mac = { id: 'm-mac', name: 'Mac.helfei.com', addedBy: 'boss', addedAt: '', online: true, platform: 'darwin arm64', facts: { memoryGb: 64 },
+      servers: [
+        // Its first model's owner is NVIDIA's, so the daemon took it for NIM.
+        { url: 'http://127.0.0.1:4000/v1', kind: 'nim', models: gatewayModels },
+        { url: 'http://127.0.0.1:11434/v1', kind: 'ollama', models: ['gemma4:26b', 'gpt-oss:120b-cloud', 'glm-4.6:cloud', 'llama3.1:405b'] },
+        { url: 'http://models.binders/v1', kind: 'binders', models: ['mlx-community/Qwen3.5-35B-A3B-4bit', 'mlx-community/Qwen3-235B-A22B-bf16'] },
+      ] }
+    assert.equal(isGateway(mac.servers[0], 64), true)
+    assert.equal(isGateway(mac.servers[1], 64), false, 'Ollama lists what’s downloaded, too big to load or not')
+    assert.equal(isGateway({ kind: 'openai', models: ['GLM-5.3'] }, 128), false, 'a Spark’s TensorFold')
+    assert.equal(isGateway({ kind: 'vllm', models: ['nvidia/Llama-3.1-Nemotron-Ultra-253B-v1-FP8'] }, 128), false, 'one model, spread over several Sparks')
+    assert.equal(isGateway({ kind: 'openai', models: ['gpt-4o', 'gpt-4o-mini'] }, 128), true)
+    const chat = candidates([mac]).chat.map((c) => c.model)
+    assert.deepEqual(chat, ['mlx-community/Qwen3.5-35B-A3B-4bit', 'gemma4:26b'], 'nothing from the gateway or Ollama’s cloud, nor a download too big to load')
+    assert.deepEqual(candidates([mac]).chat.map((c) => c.state), ['on-demand', 'on-demand'], 'Ollama loads its models when they’re used, too')
+    // One model spread over several Sparks: listed, and running.
+    const spark = { id: 'm-spark', name: 'spark-4793', addedBy: 'boss', addedAt: '', online: true, platform: 'linux arm64', facts: { memoryGb: 128 }, servers: [{ url: 'http://127.0.0.1:8100/v1', kind: 'vllm', models: ['nvidia/Llama-3.1-Nemotron-Ultra-253B-v1-FP8'] }] }
+    assert.deepEqual(candidates([spark]).chat.map((c) => [c.model, c.state]), [['nvidia/Llama-3.1-Nemotron-Ultra-253B-v1-FP8', 'running']])
+    // Chosen before from the gateway: the hub moves to the best real one.
+    const { BrainSettingsStore } = await import('../src/brain/settings.ts')
+    const { Sealer } = await import('../src/secrets.ts')
+    const { MemoryKV } = await import('../src/kv.ts')
+    const store = await new BrainSettingsStore(new MemoryKV(), new Sealer('s'), {}).load()
+    await store.set({ provider: 'machine', machine: 'm-mac', baseUrl: 'http://127.0.0.1:4000/v1', model: 'Nemotron-3-Ultra-550B-A55B-BF16', autoJobs: ['chat'] }, 'hub')
+    await store.autoPick([mac])
+    assert.deepEqual([store.get().baseUrl, store.get().model], ['http://models.binders/v1', 'mlx-community/Qwen3.5-35B-A3B-4bit'])
+    // With nothing else on the machine, the job is open again: the hub doesn't stay on a gateway.
+    await store.set({ provider: 'machine', machine: 'm-mac', baseUrl: 'http://127.0.0.1:4000/v1', model: 'Nemotron-3-Ultra-550B-A55B-BF16', autoJobs: ['chat'] }, 'hub')
+    await store.autoPick([{ ...mac, servers: [mac.servers[0]] }])
+    assert.deepEqual([store.get().provider, store.get().model, store.get().autoJobs], ['off', '', []])
   })
 })
 
