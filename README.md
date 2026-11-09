@@ -126,7 +126,7 @@ Then give each binder its repo, in Settings → Binder. People sign in to the hu
 address they're at (or the first Binder with one), and connect their GitHub to their other Binders from their account page (their picture, top right).
 
 **Signing in, with a private GitHub App.** A private GitHub App lets only its own organization's members sign in
-through it. To let anyone you allow sign in, add a GitHub OAuth App in **Settings → Access** (or set
+through it. To let anyone you allow sign in, add a GitHub OAuth App in **Settings → GitHub** (or set
 `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET`): callback `https://your-hub/auth/github/callback`. It asks
 GitHub only who people are; the hub's allowed people and each binder's members decide who gets in. What's done as
 someone on repos (approving, merging, an agent pushing as its owner) still goes through the GitHub App, which each
@@ -148,9 +148,10 @@ The hub's secret, which seals what it keeps, is `HUB_SECRET`, or `hub/.data/secr
 
 ## Options
 
-Settings → Options has the hub's switches, kept by the hub and taking effect at once: following GitHub by asking (while
-no webhook arrives, always, or webhooks only, and how often), the pause before a note is committed, who may sign in,
-who the admins are, and signing in by name. Only admins change them; until someone names admins, whoever can sign in
+Settings → This hub has the hub's switches, kept by the hub and taking effect at once: who may sign in and who the admins
+are, and under Advanced, following GitHub by asking (while no webhook arrives, always, or webhooks only, and how often),
+the pause before a note is committed, and signing in by name. Settings → GitHub has how change sets merge and who agents
+commit as. Only admins change them; until someone names admins, whoever can sign in
 can. An environment variable fixes an option (Settings shows it as set on the hub): `HUB_POLL`, `HUB_POLL_SECONDS`,
 `NOTES_QUIET_SECONDS`, `NOTES_LONGEST_MINUTES`, `HUB_ALLOWED_USERS`, `HUB_ALLOWED_ORGS`, `HUB_ADMINS`, `HUB_DEV_LOGIN`.
 

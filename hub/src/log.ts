@@ -18,6 +18,8 @@ export interface ChangeLog {
   /** Carries on from a version: a log that was lost, with its Binder's state saved at that version. */
   startAt(version: number): Promise<void>
   onAppend(listener: () => void): void
+  /** Resolves once it hears of appends, so what's read after that misses nothing. */
+  listening?(): Promise<void>
   close(): Promise<void>
   readonly kind: 'redis' | 'memory'
 }
@@ -81,6 +83,7 @@ export class RedisLog implements ChangeLog {
   private subscriber: Redis
   private keys: { stream: string; version: string; channel: string; seen: string }
   private listeners: (() => void)[] = []
+  private subscribed: Promise<unknown>
   /**
    * The highest version this hub has seen. Each append goes on from at least there, in the same step as it's numbered:
    * with Redis emptied under a running hub, a lower number would be read after by nobody.
@@ -94,12 +97,17 @@ export class RedisLog implements ChangeLog {
     this.redis.defineCommand('hubAppend', { numberOfKeys: 4, lua: appendScript })
     // It goes on trying by itself. Without someone listening, each try is an "unhandled error" on stderr.
     for (const client of [this.redis, this.subscriber]) client.on('error', (error: Error) => log.warn({ why: error.message }, 'The change log can’t reach Redis'))
-    this.subscriber.subscribe(this.keys.channel).catch(() => {})
+    this.subscribed = this.subscriber.subscribe(this.keys.channel).catch(() => {})
     this.subscriber.on('message', () => this.listeners.forEach((listener) => listener()))
   }
 
   async ping() {
     return (await this.redis.ping()) === 'PONG'
+  }
+
+  /** Subscribed, or Redis is away and a read will say so: a hub doesn't wait long to find out. */
+  async listening() {
+    await Promise.race([this.subscribed, new Promise((done) => { setTimeout(done, 3000).unref?.() })])
   }
 
   async append(entry: Unnumbered) {

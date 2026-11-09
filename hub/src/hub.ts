@@ -56,6 +56,8 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
    * lost what it had: the hub takes that state, and the log goes on from its version.
    */
   async start(seed?: Change[], saved?: SavedState) {
+    // Listening first, then reading: a change made between the two would otherwise wait for the next one to be heard of.
+    await this.log.listening?.()
     if (saved) {
       const latest = await this.log.latest().catch(() => undefined)
       if (latest !== undefined && latest < saved.version) {

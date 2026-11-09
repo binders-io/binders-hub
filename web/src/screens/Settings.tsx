@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { ArrowUpRight } from 'lucide-react'
 import { call } from '../data/api'
-import { BookOpen, Brain, Check, Copy, Plug, Plus, RefreshCw, Server, ShieldCheck, Trash2, Bot, Users, X, } from 'lucide-react'
+import { Brain, Check, Copy, Plug, Plus, Server, Trash2, Users, X } from 'lucide-react'
 import { useHub, useStore } from '../data/store'
 import { ago } from '../components/bits'
 import type { Binder } from '../../../shared/notes.ts'
@@ -17,33 +17,33 @@ import { PersonalGitHub } from '../components/PersonalGitHub'
 import { isPersonal } from '../components/PersonalRepo'
 import { claudeCodeCommand } from '../components/ClaudeCode'
 
-type Part = 'binder' | 'github' | 'briefs' | 'access' | 'sync' | 'agents' | 'brain' | 'jira' | 'hub'
+type Part = 'binder' | 'github' | 'brain' | 'jira' | 'hub'
 
 const parts: { id: Part; label: string; icon: (props: { size?: number }) => ReactNode; detail: string }[] = [
-  { id: 'binder', label: 'Binder', icon: Users, detail: 'This binder: its name, who’s in it, and its GitHub repo. Its cards are kept there as issues and its notes on a branch, and agents’ pull requests there come back to its cards.' },
-  { id: 'github', label: 'GitHub', icon: Github, detail: 'This binder’s own GitHub App, the repos it’s installed on, and anything GitHub still needs from you. No other binder uses it or sees its repos.' },
-  { id: 'briefs', label: 'Repo briefs', icon: BookOpen, detail: 'What agents are told about each repo before they work or review there: its map, the rules its code keeps, how to build and test it, where it breaks. Each is a note in Repo docs, saved to the repo with your other notes; agents also get any other notes you put in a repo’s folder there. An agent writes it the first time one works in the repo, and again as the repo moves on.' },
-  { id: 'access', label: 'Access', icon: ShieldCheck, detail: 'Who may sign in, and who may change how the hub works.' },
-  { id: 'sync', label: 'Syncing', icon: RefreshCw, detail: 'How the hub follows GitHub, and when your notes are committed.' },
-  { id: 'agents', label: 'Agents', icon: Bot, detail: 'Where agents connect. Each agent’s own settings are on the Agents page.' },
-  { id: 'brain', label: 'Brain', icon: Brain, detail: 'The hub’s own model: it sums up the conversations and meetings your phone and Mac send, and answers questions from the binders, citing the notes and cards it used. The same for every binder on this hub.' },
+  { id: 'binder', label: 'Binder', icon: Users, detail: 'Its name, who’s in it, and the GitHub repo its cards and notes go to.' },
+  { id: 'github', label: 'GitHub', icon: Github, detail: 'This binder’s own GitHub App and the repos it’s installed on. No other binder uses it or sees its repos.' },
+  { id: 'brain', label: 'Brain', icon: Brain, detail: 'The models the hub sums up, answers and talks with, the same for every binder on this hub.' },
   { id: 'jira', label: 'Jira', icon: Plug, detail: 'Mirrors this binder’s cards into one Jira Cloud project: a card becomes an issue, its stage the issue’s status, and what people do there comes back: a status they change moves the card, a comment lands on it. The hub keeps the words; Jira’s copy is written, never read back.' },
-  { id: 'hub', label: 'This hub', icon: Server, detail: 'Where the hub keeps things, and how this browser is connected to it.' },
+  { id: 'hub', label: 'This hub', icon: Server, detail: 'Who may sign in, and how the hub is doing.' },
 ]
+
+/** Where a section went, for a browser that remembers one from before there were these. */
+const movedTo: Record<string, Part> = { binders: 'binder', briefs: 'github', access: 'hub', sync: 'hub', agents: 'hub' }
 
 const remembered = (): Part => {
   try {
-    const stored = window.localStorage.getItem('binders-settings-part')
-    const part = (stored === 'binders' ? 'binder' : stored) as Part | null
-    return part && parts.some((p) => p.id === part) ? part : 'binder'
+    const stored = window.localStorage.getItem('binders-settings-part') ?? ''
+    const part = (movedTo[stored] ?? stored) as Part
+    return parts.some((p) => p.id === part) ? part : 'binder'
   } catch {
     return 'binder'
   }
 }
 
 /**
- * A binder's Settings, a section at a time: this binder (its members and repo), GitHub, access, syncing, agents and the
- * hub. What's yours rather than the binder's (who you're signed in as, your GitHub, your apps) is on your account page.
+ * A binder's Settings, a section at a time: this binder (its members and repo), GitHub, the brain, Jira and the hub. What
+ * most people never change is tucked away under each. What's yours rather than the binder's (who you're signed in as, your
+ * GitHub, your apps) is on your account page.
  */
 export function Settings() {
   const { state } = useStore()
@@ -76,11 +76,7 @@ export function Settings() {
           <p>{current.detail}</p>
         </header>
         {part === 'binder' && <><SpacePanel /><Binders /></>}
-        {part === 'github' && (isPersonal ? <PersonalGitHub /> : <GitHubPart />)}
-        {part === 'briefs' && <RepoBriefs />}
-        {part === 'access' && <HubOptionsPanel part="access" />}
-        {part === 'sync' && <HubOptionsPanel part="sync" />}
-        {part === 'agents' && <AgentsPart />}
+        {part === 'github' && <>{isPersonal ? <PersonalGitHub /> : <GitHubPart />}<Briefs /></>}
         {part === 'brain' && <BrainPanel />}
         {part === 'jira' && <JiraPart />}
         {part === 'hub' && <HubPart />}
@@ -150,19 +146,26 @@ interface IssueStatus { on: boolean; kept: number; waiting: number; problem?: st
 function NotesRow({ binder, status, onChange }: { binder: Binder; status?: IssueStatus['notes']; onChange: (fields: { notes?: boolean; notesBranch?: string }) => void }) {
   const on = binder.notes !== false
   const branch = binder.notesBranch || 'binders-notes'
+  const [changing, setChanging] = useState(false)
   return (
     <div className="issues-row">
       <label className="switch" htmlFor={`binder-notes-${binder.id}`}>
         <input id={`binder-notes-${binder.id}`} type="checkbox" checked={on} onChange={(e) => onChange({ notes: e.target.checked })} />
         <span aria-hidden="true" />
-        Push its notes to {binder.repo}, on the branch
-        <input id={`binder-branch-${binder.id}`} className="branch-input mono" defaultValue={branch} disabled={!on} onClick={(e) => e.preventDefault()} onBlur={(e) => e.target.value.trim() && e.target.value.trim() !== branch && onChange({ notesBranch: e.target.value.trim() })} aria-label="Branch" />
+        Push its notes to {binder.repo}
       </label>
       {on && (
         <p className={`issues-status${status?.error && status.error !== 'No notes to push yet.' ? ' problem' : ''}`}>
           {status?.error ?? (status?.at ? `Pushed ${ago(status.at)} ago.` : 'Pushed with the next commit.')}
           {' '}<a href={`https://github.com/${binder.repo}/tree/${branch}`} target="_blank" rel="noreferrer">Notes <ArrowUpRight size={11} /></a>
+          {' · '}<button type="button" className="text-button" aria-expanded={changing} onClick={() => setChanging(!changing)}>On branch <span className="mono">{branch}</span></button>
         </p>
+      )}
+      {on && changing && (
+        <label className="field branch-field">
+          <span className="field-label">Branch</span>
+          <input id={`binder-branch-${binder.id}`} className="branch-input mono" defaultValue={branch} onBlur={(e) => e.target.value.trim() && e.target.value.trim() !== branch && onChange({ notesBranch: e.target.value.trim() })} />
+        </label>
       )}
     </div>
   )
@@ -206,13 +209,26 @@ function GitHubPart() {
     <>
       <GitHubSetup />
       {me?.github.server && <ul className="status-list">
-        <Status ok={!!me.github.polling?.webhookHeard || !!me.github.polling?.active} label="GitHub’s news" detail={!me?.github.server ? 'Once the app is installed.' : me.github.polling?.webhookHeard ? 'Webhooks arrive as things happen on GitHub.' : me.github.polling?.active ? `Asked for every ${me.github.polling.everySeconds} seconds, as webhooks don’t reach this hub. See Syncing.` : 'Neither webhooks nor asking: see Syncing.'} />
+        <Status ok={!!me.github.polling?.webhookHeard || !!me.github.polling?.active} label="GitHub’s news" detail={!me?.github.server ? 'Once the app is installed.' : me.github.polling?.webhookHeard ? 'Webhooks arrive as things happen on GitHub.' : me.github.polling?.active ? `Asked for every ${me.github.polling.everySeconds} seconds, as webhooks don’t reach this hub.` : 'Neither webhooks nor asking: see This hub, under Advanced.'} />
       </ul>}
+      <HubOptionsPanel part="github" />
     </>
   )
 }
 
-function AgentsPart() {
+/** Each repo's brief, under GitHub as they're about its repos. */
+function Briefs() {
+  return (
+    <section className="settings-part">
+      <h3 className="settings-sub">Repo briefs</h3>
+      <p className="settings-part-detail">What agents are told about each repo before they work or review there. An agent writes it the first time one works in the repo, and again as the repo moves on. Each is a note in Repo docs, and agents also get any other notes you put in a repo’s folder there.</p>
+      <RepoBriefs />
+    </section>
+  )
+}
+
+/** Where agents and other MCP clients connect. Add to Claude Code and an agent's card give most people what they need. */
+function Addresses() {
   const me = useStore().state.me
   if (!me) return null
   const runner = `${window.location.origin}/runner/binders-runner.mjs`
@@ -586,7 +602,8 @@ function CopyWebhook({ url }: { url: string }) {
 function HubPart() {
   const { state } = useStore()
   const me = state.me
-  return (
+  const trouble = me?.log !== 'redis' || state.sync.connection !== 'live' || !!me?.updateFailed
+  const status = (
     <ul className="status-list">
       <Status ok={me?.log === 'redis'} label="Change log" detail={me?.log === 'redis' ? 'On Redis: everything is kept across restarts.' : 'In memory: set REDIS_URL, or everything is gone when the hub stops.'} />
       <Status ok={state.sync.connection === 'live'} label="Live connection" detail={state.sync.connection === 'live' ? `Up to date, at change ${state.sync.version}.` : 'Reconnecting. Your changes wait in this browser meanwhile.'} />
@@ -601,6 +618,19 @@ function HubPart() {
         </>} />
       )}
     </ul>
+  )
+  return (
+    <>
+      {trouble && status}
+      <HubOptionsPanel part="access" />
+      {!trouble && status}
+      <details className="settings-more">
+        <summary>Advanced</summary>
+        <HubOptionsPanel part="advanced" />
+        <h3 className="settings-sub">Addresses for agents and MCP clients</h3>
+        <Addresses />
+      </details>
+    </>
   )
 }
 

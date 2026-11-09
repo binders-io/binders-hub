@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Check, Copy, Download as DownloadIcon, Sparkles } from 'lucide-react'
 import { call } from '../data/api'
 import { attempt, toast } from './Toast'
@@ -481,12 +481,23 @@ export function BrainPanel() {
     )
   }
 
+  /** The models to choose from for a job, and a server by its address, once there's something in use: most people leave it. */
+  const change = (job: Job, more: ReactNode) => (
+    <details className="by-address job-change" open={!inUseFor[job]}>
+      <summary>Change it</summary>
+      {list(job)}
+      {more}
+    </details>
+  )
+  /** How much of this binder the brain has read, and where what it found by meaning is kept. */
+  const read = index && <p className="option-status num">This binder: {index.sources} note{index.sources === 1 ? '' : 's'} and cards read, in {index.passages} passages{brain.embeddingsInUse ? `, ${index.withVectors} of them found by meaning` : ''}.{brain.embeddingsInUse && index.kept && <> {index.kept.error ? `The embeddings couldn’t be saved to GitHub: ${index.kept.error}` : index.kept.to ? `The embeddings are saved in ${index.kept.to}, on ${index.kept.branch}, so a rebuilt hub gets them back.` : 'The embeddings are saved on the hub’s disk: give this binder a repo and they’re saved there too.'}</>}</p>
+
   return (
     <div className="options">
       {!admin && <p className="setup-note">Only the hub’s admins can change these.</p>}
       {admin && <OldDaemons machines={machines} latest={latest} />}
 
-      <Option title="In use" detail="What the brain does now, and how much of this binder it has read.">
+      {!admin && <Option title="In use" detail="What the brain does now, and how much of this binder it has read.">
         <p className="option-status">
           {brain.inUse ? <>Summing up and answering with <b className="mono">{brain.inUse}</b>.</> : 'No model: the brain finds passages by their words, and doesn’t sum up or answer.'}
           {' '}{brain.embeddingsInUse ? <>Finding by meaning with <b className="mono">{brain.embeddingsInUse}</b>.</> : 'Finding by words only.'}
@@ -496,57 +507,56 @@ export function BrainPanel() {
           {' '}{brain.speechInUse ? <>Reading answers out with <b className="mono">{brain.speechInUse}</b>.</> : ''}
           {brain.localOnly ? ' Local AI only: every model is on the hub’s own network.' : ''}
         </p>
-        {index && <p className="option-status num">This binder: {index.sources} note{index.sources === 1 ? '' : 's'} and cards read, in {index.passages} passages{brain.embeddingsInUse ? `, ${index.withVectors} of them found by meaning` : ''}.{brain.embeddingsInUse && index.kept && <> {index.kept.error ? `The embeddings couldn’t be saved to GitHub: ${index.kept.error}` : index.kept.to ? `The embeddings are saved in ${index.kept.to}, on ${index.kept.branch}, so a rebuilt hub gets them back.` : 'The embeddings are saved on the hub’s disk: give this binder a repo and they’re saved there too.'}</>}</p>}
-      </Option>
+        {read}
+      </Option>}
 
       {admin && <>
         <Machines machines={machines} onChange={loadMachines} latest={latest} />
 
-        <Option title="The hub’s model" detail="Sums up the conversations and meetings phones and Macs send, and answers questions from the binders, citing the notes and cards it used." aside={note('provider')}>
+        <Option title="The hub’s model" detail="Sums up what phones and Macs send, answers questions from the binders, and talks." aside={note('provider')}>
           {inUse('chat')}
-          {list('chat')}
           {download('chat')}
-          <details className="by-address">
-            <summary>Use Claude, or a server by its address</summary>
-            <Segmented id="brain-provider" value={brain.provider} disabled={off('provider')} onChange={(provider) => void save({ provider }, 'provider')}
-              choices={[['off', 'Off'], ['anthropic', 'Claude'], ['openai', 'A server by its address']]} />
-            {brain.provider === 'anthropic' && <>
-              {field('model', 'Model', 'claude-opus-5-5')}
-              {keyField('apiKey', apiKey, setApiKey, brain.apiKeySet && !brain.usesAnthropicKey, 'sk-ant-…')}
-              {brain.usesAnthropicKey && <span className="field-hint">Using the hub’s ANTHROPIC_API_KEY until a key is saved here.</span>}
-            </>}
-            {brain.provider === 'openai' && <>
-              {field('baseUrl', 'Its address', 'http://localhost:11434/v1')}
-              {field('model', 'Model', 'qwen3:32b')}
-              {keyField('apiKey', apiKey, setApiKey, brain.apiKeySet, 'None needed for most servers on your own machines')}
-            </>}
-          </details>
+          {change('chat', <>
+            <div className="field">
+              <span className="field-label">Sum up conversations and meetings {note('summarize')}</span>
+              <Segmented id="brain-summarize" value={brain.summarize ? 'on' : 'off'} disabled={off('summarize') || brain.provider === 'off'} onChange={(on) => void save({ summarize: on === 'on' }, 'summarize')} choices={[['on', 'On'], ['off', 'Off']]} />
+            </div>
+            <details className="by-address">
+              <summary>Use Claude, or a server by its address</summary>
+              <Segmented id="brain-provider" value={brain.provider} disabled={off('provider')} onChange={(provider) => void save({ provider }, 'provider')}
+                choices={[['off', 'Off'], ['anthropic', 'Claude'], ['openai', 'A server by its address']]} />
+              {brain.provider === 'anthropic' && <>
+                {field('model', 'Model', 'claude-opus-5-5')}
+                {keyField('apiKey', apiKey, setApiKey, brain.apiKeySet && !brain.usesAnthropicKey, 'sk-ant-…')}
+                {brain.usesAnthropicKey && <span className="field-hint">Using the hub’s ANTHROPIC_API_KEY until a key is saved here.</span>}
+              </>}
+              {brain.provider === 'openai' && <>
+                {field('baseUrl', 'Its address', 'http://localhost:11434/v1')}
+                {field('model', 'Model', 'qwen3:32b')}
+                {keyField('apiKey', apiKey, setApiKey, brain.apiKeySet, 'None needed for most servers on your own machines')}
+              </>}
+            </details>
+          </>)}
         </Option>
 
-        <Option title="Summing up" detail="A conversation or meeting sent to the hub gets a summary at the top of its note: what it was about, what was decided, and who said they’d do what. Distill can then turn the note into cards." aside={note('summarize')}>
-          <Segmented id="brain-summarize" value={brain.summarize ? 'on' : 'off'} disabled={off('summarize') || brain.provider === 'off'} onChange={(on) => void save({ summarize: on === 'on' }, 'summarize')} choices={[['on', 'On'], ['off', 'Off']]} />
-        </Option>
-
-        <Option title="Finding by meaning" detail="Optional. An embeddings model finds the passages that mean what a question asks, even in other words. Without one, the brain finds passages by their words.">
+        <Option title="Finding by meaning" detail="Optional. Finds the passages that mean what a question asks, even in other words. Without it, passages are found by their words.">
           {inUse('embeddings')}
-          {list('embeddings')}
+          {read}
           {download('embeddings')}
-          {byAddress('embeddings')}
+          {change('embeddings', byAddress('embeddings'))}
         </Option>
 
-        <Option title="Writing down audio" detail="Optional. Phones send the hub what they record, and the hub writes it down with a bigger model than a phone can run; the voices the phone told apart keep their names. The audio isn’t kept.">
+        <Option title="Writing down audio" detail="Optional. Writes down what phones record with a bigger model than a phone can run. The audio isn’t kept.">
           {inUse('transcription')}
-          {list('transcription')}
           {download('transcription')}
-          {byAddress('transcription')}
+          {change('transcription', byAddress('transcription'))}
         </Option>
 
-        <Option title="Reading answers out" detail="Optional. A speech model reads the hub’s answers out on phones.">
+        <Option title="Reading answers out" detail="Optional. Reads the hub’s answers out on phones.">
           {inUse('speech')}
           {voicePicker()}
-          {list('speech')}
           {download('speech')}
-          {byAddress('speech')}
+          {change('speech', byAddress('speech'))}
         </Option>
 
         <Option title="Local AI only" detail="Every model the hub uses runs on its own network: this machine, your LAN or your VPN. Claude and any address outside it are refused, so nothing said or written leaves your machines." aside={note('localOnly')}>
