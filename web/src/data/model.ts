@@ -72,14 +72,9 @@ export interface SpaceView {
 
 /** The hub's options, as Settings changes them. */
 export interface HubOptions {
-  pollMode: 'auto' | 'on' | 'off'
-  pollSeconds: number
-  notesQuietSeconds: number
-  notesLongestMinutes: number
   mergeMethod: 'merge' | 'squash' | 'rebase'
   allowedUsers: string[]
   allowedOrgs: string[]
   admins: string[]
-  devLogin: 'auto' | 'on' | 'off'
   agentCommits: 'agent' | 'owner' | 'app'
 }

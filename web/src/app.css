@@ -926,10 +926,6 @@ a.button { text-decoration: none; }
 .segmented button:hover:not(:disabled) { color: var(--text); }
 .segmented button.on { background: var(--surface-3); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
 .segmented button:disabled { cursor: not-allowed; }
-.inline-number { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13.5px; color: var(--text-2); }
-.inline-number input { width: 76px; padding: 6px 8px; border-radius: var(--r-sm); border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font-size: 13.5px; font-variant-numeric: tabular-nums; outline: none; }
-.inline-number input:focus { border-color: var(--text); }
-.inline-number input:disabled { opacity: 0.5; }
 .status-dot.listening { box-shadow: 0 0 0 3px var(--green-wash); animation: pulse 2s ease-in-out infinite; }
 .runner-fields { gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
 
@@ -978,7 +974,6 @@ a.button { text-decoration: none; }
 .note-delete { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 7px; border-radius: 7px; color: var(--faint); font-size: 12px; font-weight: 600; }
 .note-delete:hover { background: var(--fill-2); color: var(--text); }
 .note-delete.sure { background: var(--red); color: #fff; }
-.inline-number input.wide { width: 220px; }
 .issues-row { display: grid; gap: 6px; margin-top: 4px; }
 .switch { display: inline-flex; align-items: center; gap: 10px; font-size: 13.5px; cursor: pointer; }
 .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
@@ -1353,8 +1348,6 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
   .settings-nav { justify-content: space-between; gap: 0; padding-inline: 8px; }
   .settings-nav button { gap: 0; padding: 0 9px; }
   .settings-nav button svg { display: none; }
-  .gh-app { flex-wrap: wrap; }
-  .gh-app > div { flex-basis: calc(100% - 40px); }
 }
 .machine-more { margin-top: 2px; }
 .machine-more summary { cursor: pointer; width: fit-content; font-size: 12.5px; color: var(--muted); }
@@ -1362,7 +1355,6 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
 .settings-more { display: grid; gap: 12px; }
 .settings-more > summary { cursor: pointer; width: fit-content; padding: 6px 0; font-size: 13px; font-weight: 700; color: var(--muted); }
 .settings-more > summary:hover { color: var(--text); }
-.settings-more > .settings-sub { margin-bottom: 0; }
 .settings-part { display: grid; gap: 8px; }
 .settings-part > .settings-sub { margin-bottom: 0; }
 .settings-part-detail { margin: 0; max-width: 62ch; font-size: 13px; color: var(--muted); }
@@ -1551,6 +1543,10 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
 .gh-app { display: flex; align-items: center; gap: 14px; }
 .gh-app > div { flex: 1; min-width: 0; display: grid; gap: 3px; }
 .gh-app .faint { font-size: 12.5px; }
+@media (max-width: 600px) {
+  .gh-app { flex-wrap: wrap; }
+  .gh-app > div { flex: 1 1 calc(100% - 40px); }
+}
 .gh-problems { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .gh-problems li { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--r); border: 1px solid var(--amber-line); background: var(--amber-wash); font-size: 13px; color: var(--text-2); }
 .gh-problems li svg { flex: none; color: var(--amber); margin-top: 1px; }

@@ -37,22 +37,21 @@ describe('the hub’s options', () => {
     assert.equal(read.locked.pollSeconds, 'HUB_POLL_SECONDS')
 
     // Nobody's an admin yet, so whoever could sign in sets it up.
-    const changed = await patch(you, { notesQuietSeconds: 120, pollMode: 'off' })
+    const changed = await patch(you, { mergeMethod: 'squash' })
     assert.equal(changed.status, 200)
-    assert.equal(options.get().notesQuietSeconds, 120)
+    assert.equal(options.get().mergeMethod, 'squash')
     assert.match((await patch(you, { pollSeconds: 60 })).body.error!, /set on the hub by HUB_POLL_SECONDS/)
-    assert.match((await patch(you, { notesQuietSeconds: 2 })).body.error!, /from 5 to 3600/)
+    assert.match((await patch(you, { mergeMethod: 'nope' })).body.error!, /merge commits, squash or rebase/)
+    // What has no switch in Settings isn't changed from there.
+    assert.match((await patch(you, { notesQuietSeconds: 120 })).body.error!, /set on the hub itself, with NOTES_QUIET_SECONDS/)
+    assert.match((await patch(you, { devLogin: 'on' })).body.error!, /set on the hub itself, with HUB_DEV_LOGIN/)
+    assert.equal(options.get().devLogin, 'auto')
     assert.match((await patch(you, { allowedUsers: ['not a name!'] })).body.error!, /isn’t a GitHub name/)
 
     // Naming admins hands it over: from then on only they change options.
     assert.equal((await patch(you, { admins: ['boss'] })).status, 200)
-    assert.match((await patch(you, { notesQuietSeconds: 30 })).body.error!, /Only the hub’s admins/)
-
-    // An option takes effect at once: with signing in by name off, nobody new signs in that way.
+    assert.match((await patch(you, { mergeMethod: 'rebase' })).body.error!, /Only the hub’s admins/)
     const boss = await signIn('boss')
-    assert.equal((await patch(boss, { devLogin: 'off' })).status, 200)
-    const late = await fetch(`${url}/auth/dev`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-binders': '1' }, body: JSON.stringify({ login: 'late' }) })
-    assert.equal(late.status, 422)
 
     // Who agents' commits are by: each agent's choice until an admin fixes it; people see it on /api/me.
     const me = async (cookie: string) => (await (await fetch(`${url}/api/me`, { headers: { cookie } })).json() as { agentCommits?: string }).agentCommits
@@ -66,7 +65,24 @@ describe('the hub’s options', () => {
     assert.equal(optionsFromEnv({ HUB_AGENT_COMMITS: 'nobody' }).agentCommits, undefined)
 
     // And they're kept: a hub reading the same store sees them.
-    assert.equal((await new OptionsStore(kv).load()).get().notesQuietSeconds, 120)
+    assert.equal((await new OptionsStore(kv).load()).get().mergeMethod, 'squash')
     await app.close()
+  })
+
+  it('ignores what was saved for an option with no switch any more, so nothing is left on that nobody can turn off', async () => {
+    const kv = new MemoryKV()
+    await kv.set('options', JSON.stringify({ devLogin: 'on', pollMode: 'off', pollSeconds: 999, notesQuietSeconds: 2, notesLongestMinutes: 90, mergeMethod: 'squash' }))
+    const options = await new OptionsStore(kv).load()
+    const { devLogin, pollMode, pollSeconds, notesQuietSeconds, notesLongestMinutes, mergeMethod } = options.get()
+    assert.deepEqual({ devLogin, pollMode, pollSeconds, notesQuietSeconds, notesLongestMinutes }, { devLogin: 'auto', pollMode: 'auto', pollSeconds: 30, notesQuietSeconds: 60, notesLongestMinutes: 5 })
+    assert.equal(mergeMethod, 'squash', 'and what still has a switch stays')
+
+    // The environment still sets them, for a hub that wants something else.
+    const fixed = await new OptionsStore(kv, optionsFromEnv({ HUB_DEV_LOGIN: 'off', NOTES_QUIET_SECONDS: '120', HUB_POLL: 'off' })).load()
+    assert.deepEqual([fixed.get().devLogin, fixed.get().notesQuietSeconds, fixed.get().pollMode], ['off', 120, 'off'])
+
+    // Saving anything leaves the old ones behind.
+    await options.set({ allowedUsers: ['sam'] })
+    assert.doesNotMatch((await kv.get('options'))!, /devLogin|pollMode|notesQuiet/)
   })
 })

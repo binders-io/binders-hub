@@ -60,6 +60,13 @@ export const optionVariables: Record<keyof HubOptions, string> = {
   agentCommits: 'HUB_AGENT_COMMITS',
 }
 
+/**
+ * What only the environment sets, with no switch in Settings, as the defaults suit nearly every hub. A value saved from
+ * when there was one is ignored, so nobody is left with a setting they can't see or change, such as signing in by name
+ * left on.
+ */
+const environmentOnly: (keyof HubOptions)[] = ['pollMode', 'pollSeconds', 'notesQuietSeconds', 'notesLongestMinutes', 'devLogin']
+
 const list = (value: string) => value.split(',').map((v) => v.trim()).filter(Boolean)
 const login = /^[A-Za-z0-9-]{1,39}(?:_[A-Za-z0-9]{1,20})?$/
 
@@ -132,14 +139,16 @@ export class OptionsStore {
 
   async load() {
     try {
-      this.stored = checked(JSON.parse((await this.kv.get('options')) ?? '{}'))
+      const saved = JSON.parse((await this.kv.get('options')) ?? '{}') as Partial<HubOptions>
+      for (const key of environmentOnly) delete saved[key]
+      this.stored = checked(saved)
     } catch {
       this.stored = {}
     }
     return this
   }
 
-  /** The options as they are now: the defaults, then what was set in Settings, then what the environment fixes. */
+  /** The options as they are now: the defaults, then what's set in Settings, then what the environment fixes. */
   get(): HubOptions {
     return { ...defaultOptions, ...this.stored, ...this.fixed }
   }
@@ -152,6 +161,8 @@ export class OptionsStore {
   async set(fields: Partial<HubOptions>) {
     const fixed = Object.keys(fields).find((key) => key in this.fixed) as keyof HubOptions | undefined
     if (fixed) throw new Refusal(`That one is set on the hub by ${optionVariables[fixed]}, so it can’t be changed here.`)
+    const elsewhere = environmentOnly.find((key) => key in fields)
+    if (elsewhere) throw new Refusal(`That one is set on the hub itself, with ${optionVariables[elsewhere]}.`)
     this.stored = { ...this.stored, ...checked(fields) }
     await this.kv.set('options', JSON.stringify(this.stored))
     return this.get()

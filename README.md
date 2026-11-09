@@ -148,12 +148,16 @@ The hub's secret, which seals what it keeps, is `HUB_SECRET`, or `hub/.data/secr
 
 ## Options
 
-Settings → This hub has the hub's switches, kept by the hub and taking effect at once: who may sign in and who the admins
-are, and under Advanced, following GitHub by asking (while no webhook arrives, always, or webhooks only, and how often),
-the pause before a note is committed, and signing in by name. Settings → GitHub has how change sets merge and who agents
-commit as. Only admins change them; until someone names admins, whoever can sign in
-can. An environment variable fixes an option (Settings shows it as set on the hub): `HUB_POLL`, `HUB_POLL_SECONDS`,
-`NOTES_QUIET_SECONDS`, `NOTES_LONGEST_MINUTES`, `HUB_ALLOWED_USERS`, `HUB_ALLOWED_ORGS`, `HUB_ADMINS`, `HUB_DEV_LOGIN`.
+Settings → This hub has who may sign in and who the admins are, and Settings → GitHub how change sets merge and who agents
+commit as. They're kept by the hub and take effect at once. Only admins change them; until someone names admins, whoever
+can sign in can. An environment variable fixes one (Settings shows it as set on the hub): `HUB_ALLOWED_USERS`,
+`HUB_ALLOWED_ORGS`, `HUB_ADMINS`, `MERGE_METHOD`, `HUB_AGENT_COMMITS`.
+
+A few have no switch, as their defaults suit nearly every hub, and only an environment variable changes them:
+`HUB_POLL` (following GitHub by asking: `auto` while no webhook arrives, `on`, or `off`), `HUB_POLL_SECONDS` (how often, 30),
+`NOTES_QUIET_SECONDS` (the pause before a note is committed, 60), `NOTES_LONGEST_MINUTES` (the longest it waits while typing
+goes on, 5), and `HUB_DEV_LOGIN` (signing in by name: `auto` on a hub run on this machine until GitHub is set up, `on`, or
+`off`).
 
 ## When GitHub can't reach the hub
 

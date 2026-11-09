@@ -209,7 +209,7 @@ function GitHubPart() {
     <>
       <GitHubSetup />
       {me?.github.server && <ul className="status-list">
-        <Status ok={!!me.github.polling?.webhookHeard || !!me.github.polling?.active} label="GitHub’s news" detail={!me?.github.server ? 'Once the app is installed.' : me.github.polling?.webhookHeard ? 'Webhooks arrive as things happen on GitHub.' : me.github.polling?.active ? `Asked for every ${me.github.polling.everySeconds} seconds, as webhooks don’t reach this hub.` : 'Neither webhooks nor asking: see This hub, under Advanced.'} />
+        <Status ok={!!me.github.polling?.webhookHeard || !!me.github.polling?.active} label="GitHub’s news" detail={!me?.github.server ? 'Once the app is installed.' : me.github.polling?.webhookHeard ? 'Webhooks arrive as things happen on GitHub.' : me.github.polling?.active ? `Asked for every ${me.github.polling.everySeconds} seconds, as webhooks don’t reach this hub.` : 'Neither webhooks nor asking, as HUB_POLL is off on this hub.'} />
       </ul>}
       <HubOptionsPanel part="github" />
     </>
@@ -625,9 +625,7 @@ function HubPart() {
       <HubOptionsPanel part="access" />
       {!trouble && status}
       <details className="settings-more">
-        <summary>Advanced</summary>
-        <HubOptionsPanel part="advanced" />
-        <h3 className="settings-sub">Addresses for agents and MCP clients</h3>
+        <summary>Addresses for agents and MCP clients</summary>
         <Addresses />
       </details>
     </>
