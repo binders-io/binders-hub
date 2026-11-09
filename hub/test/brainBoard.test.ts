@@ -13,7 +13,7 @@ import { Webhooks } from '../src/webhooks.ts'
 import { IssuesSaver } from '../src/savers/issues.ts'
 import { BrainSettingsStore } from '../src/brain/settings.ts'
 import { ask, askText, SpaceBrain, talk, type AskPlace } from '../src/brain/brain.ts'
-import { answerIn, boardFor, isAsking, propose, readDo, takeProposal, type WorkPlace } from '../src/brain/board.ts'
+import { answerIn, boardFor, isAsking, propose, readDo, takeProposal, withoutMarks, type WorkPlace } from '../src/brain/board.ts'
 import type { BrainModel } from '../src/brain/models.ts'
 import type { Change } from '../../shared/state.ts'
 import { nextFor, type Agent, type Card, type PullRequest } from '../../shared/work.ts'
@@ -128,6 +128,21 @@ describe('how the work stands, for the brain', () => {
     assert.deepEqual(readDo('DO stop'), { words: '', asked: { verb: 'stop', mark: '', rest: '' } })
     // Words that aren't its line stay words.
     assert.deepEqual(readDo('Do stop by the office.\nDO nothing at all'), { words: 'Do stop by the office.\nDO nothing at all', asked: undefined })
+  })
+
+  it('takes the board’s marks out of what’s said, and leaves other words alone', async () => {
+    const set = await setUp()
+    try {
+      const board = boardFor([set.place], 'you')
+      assert.ok(board.targets.has('c1') && board.targets.has('c2') && board.targets.has('s18'))
+      assert.equal(withoutMarks('Sonnet is waiting on you (six cards, c1–c2).', board), 'Sonnet is waiting on you (six cards).')
+      assert.equal(withoutMarks('Change set #18 [s18] is in review, and [c1] is ready.', board), 'Change set #18 is in review, and is ready.')
+      assert.equal(withoutMarks('Files are in S3, on v2, and x9 is not a thing here.', board), 'Files are in S3, on v2, and x9 is not a thing here.')
+      set.say('Sonnet has c1 and [c2].')
+      assert.equal((await talk(set.settings, set.places, [{ role: 'user', text: 'What is Sonnet on?' }], { person: 'you' })).reply, 'Sonnet has and.')
+    } finally {
+      await set.close()
+    }
   })
 
   it('tells asking about something from asking for it', () => {

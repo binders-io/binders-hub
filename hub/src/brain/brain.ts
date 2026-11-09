@@ -8,7 +8,7 @@ import { log } from '../logger.ts'
 import { BrainIndex, type Hit, type IndexSource, type SourceKind } from './index.ts'
 import { captureNote, firstWords, withSummary, withTranscript, type Capture } from './captures.ts'
 import { conversation, type Summary, type Turn } from './models.ts'
-import { askPerson, boardFor, boardRules, doRules, heardAnswer, isAsking, onlyTellRules, propose, proposalView, readDo, spoken, type Asked, type Board, type Proposal, type WorkPlace } from './board.ts'
+import { askPerson, boardFor, boardRules, doRules, heardAnswer, isAsking, onlyTellRules, propose, proposalView, readDo, spoken, withoutMarks, type Asked, type Board, type Proposal, type WorkPlace } from './board.ts'
 import type { BrainSettingsStore } from './settings.ts'
 import type { VectorFiles } from './vectorFiles.ts'
 
@@ -439,6 +439,9 @@ export async function search(settings: BrainSettingsStore, places: AskPlace[], q
   return { sources, searchedBy }
 }
 
+/** Tidied words with the space a part of an answer ended with, which keeps it apart from the next. */
+const keepingEnd = (was: string, now: string) => `${now}${/\s+$/.exec(was)?.[0] ?? ''}`
+
 /** How the work stands in these places for this person, when any of them has its work to hand. */
 function boardOf(places: AskPlace[], person?: string) {
   const work = places.flatMap((p) => (p.work ? [p.work] : []))
@@ -479,7 +482,8 @@ export async function ask(settings: BrainSettingsStore, places: AskPlace[], ques
       const read = readDo(part.text)
       wanted ??= read.asked
       if (read.asked && !read.words) return []
-      return [{ text: read.asked ? read.words : part.text, sources: part.sources.filter((s) => s < sources.length).map((s) => s + 1) }]
+      const text = read.asked ? read.words : part.text
+      return [{ text: board ? keepingEnd(text, withoutMarks(text, board)) : text, sources: part.sources.filter((s) => s < sources.length).map((s) => s + 1) }]
     })
     if (wanted) {
       if (may && board && options.person) {
@@ -524,7 +528,9 @@ export async function talk(settings: BrainSettingsStore, places: AskPlace[], tur
   if (!board || !options.person) return { reply: await model.talk(said, passages), sources, model: model.label }
   const may = !isAsking(latest)
   const reply = await model.talk(said, [...passages, board.passage], `${boardRules}\n${may ? doRules : onlyTellRules}`)
-  const { words, asked } = readDo(reply)
+  const read = readDo(reply)
+  const words = withoutMarks(read.words, board)
+  const asked = read.asked
   if (!asked) return { reply: words, sources, model: model.label }
   if (!may) return { reply: words || 'That’s a question, so I’ve changed nothing. Tell me to do it, and I’ll check with you first.', sources, model: model.label }
   // What's read out is the hub's words for what would happen, whatever else the model said.

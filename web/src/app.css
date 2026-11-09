@@ -1349,6 +1349,13 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
 .no-binder-list { list-style: none; margin: 0 0 6px; padding: 0; width: 100%; display: grid; gap: 8px; }
 .no-binder-list .button { width: 100%; justify-content: space-between; }
 
+@media (max-width: 600px) {
+  .settings-nav { justify-content: space-between; gap: 0; padding-inline: 8px; }
+  .settings-nav button { gap: 0; padding: 0 9px; }
+  .settings-nav button svg { display: none; }
+  .gh-app { flex-wrap: wrap; }
+  .gh-app > div { flex-basis: calc(100% - 40px); }
+}
 .machine-more { margin-top: 2px; }
 .machine-more summary { cursor: pointer; width: fit-content; font-size: 12.5px; color: var(--muted); }
 .machine-more[open] { display: grid; gap: 4px; }

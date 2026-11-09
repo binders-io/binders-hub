@@ -226,7 +226,7 @@ export function Ask({ asked: fromPalette }: { asked?: { question: string; at: nu
                 {!result.sources.length ? 'Nothing in your binders matches that.' : result.problem ? `No answer: ${result.problem} The passages that match best are below.` : 'The hub has no model to answer with yet, so here are the passages that match best. An admin can set one up in Settings, under Brain.'}
               </p>
             )}
-            {rows.length > 0 && (
+            {rows.length > 0 && !result.proposal && (
               <>
                 <h3 className="ask-sources-title">Sources</h3>
                 <ol className="ask-sources">
