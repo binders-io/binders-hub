@@ -13,7 +13,7 @@ import { Webhooks } from '../src/webhooks.ts'
 import { IssuesSaver } from '../src/savers/issues.ts'
 import { BrainSettingsStore } from '../src/brain/settings.ts'
 import { ask, askText, SpaceBrain, talk, type AskPlace } from '../src/brain/brain.ts'
-import { answerIn, boardFor, propose, readDo, takeProposal, type WorkPlace } from '../src/brain/board.ts'
+import { answerIn, boardFor, isAsking, propose, readDo, takeProposal, type WorkPlace } from '../src/brain/board.ts'
 import type { BrainModel } from '../src/brain/models.ts'
 import type { Change } from '../../shared/state.ts'
 import { nextFor, type Agent, type Card, type PullRequest } from '../../shared/work.ts'
@@ -92,8 +92,8 @@ describe('how the work stands, for the brain', () => {
     const set = await setUp()
     try {
       const { text } = boardFor([set.place], 'you').passage
-      assert.match(text, /Sonnet \(yours, online\): on “Fix the login page”/)
-      assert.match(text, /Grok \(sam’s, online\)/)
+      assert.match(text, /Sonnet \(yours, online\): working on “Fix the login page”; waiting for an answer on “Move the database”, “Clear the cache”/)
+      assert.match(text, /Grok \(sam’s, online\): waiting for an answer on “Update the docs”/)
       assert.match(text, /Waiting on you:\n[^]*“Move the database”: Sonnet asks: Which region should it go to\?/)
       assert.match(text, /“Clear the cache”: Sonnet asks to use Bash: rm -rf build\n/)
       assert.match(text, /“Update the docs”: Grok asks to use Bash: ls \(only sam can answer it\)/)
@@ -122,8 +122,17 @@ describe('how the work stands, for the brain', () => {
     assert.deepEqual(readDo('**DO approve s18**'), { words: '', asked: { verb: 'approve', mark: 's18', rest: '' } })
     assert.deepEqual(readDo('Sure.\n`DO tell c1 use the staging database`'), { words: 'Sure.', asked: { verb: 'tell', mark: 'c1', rest: 'use the staging database' } })
     assert.deepEqual(readDo('DO card b1: Fix the footer'), { words: '', asked: { verb: 'card', mark: 'b1', rest: 'Fix the footer' } })
+    assert.deepEqual(readDo('DO stop [c3].'), { words: '', asked: { verb: 'stop', mark: 'c3', rest: '.' } })
+    // Copied from its rules, it's on no board.
+    assert.deepEqual(readDo('DO stop MARK'), { words: '', asked: { verb: 'stop', mark: 'mark', rest: '' } })
+    assert.deepEqual(readDo('DO stop'), { words: '', asked: { verb: 'stop', mark: '', rest: '' } })
     // Words that aren't its line stay words.
     assert.deepEqual(readDo('Do stop by the office.\nDO nothing at all'), { words: 'Do stop by the office.\nDO nothing at all', asked: undefined })
+  })
+
+  it('tells asking about something from asking for it', () => {
+    for (const asking of ['What should I think about before approving change set 6?', 'Should I approve it?', 'does anyone need me', 'Um, what are my agents working on?', 'Tell me what it’s doing', 'Why did it stop?']) assert.equal(isAsking(asking), true, asking)
+    for (const telling of ['Approve it', 'Stop that task', 'Could you stop it?', 'Can you put release 18 into motion?', 'Please approve change set 6', 'Put a card on the board', 'Tell Sonnet to use the new logo']) assert.equal(isAsking(telling), false, telling)
   })
 
   it('takes only a clear answer as one, and only the word itself for what can’t be taken back', () => {
@@ -149,7 +158,7 @@ describe('what the brain can have done', () => {
       const asked = await talk(set.settings, set.places, [{ role: 'user', text: 'Stop that task' }], { person: 'you' })
       assert.equal(asked.reply, 'Stop “Fix the login page”, which Sonnet is working on. It goes to Proposed, where nothing picks it up. Should I go ahead?')
       assert.equal(set.cardNow('working').stage, 'working', 'nothing happens on the model’s word')
-      assert.match(set.seen[0].more!, /DO stop c1/)
+      assert.match(set.seen[0].more!, /DO stop MARK/)
       assert.ok(set.seen[0].passages.includes('What’s going on now'))
 
       const done = await talk(set.settings, set.places, [{ role: 'user', text: 'Stop that task' }, { role: 'assistant', text: asked.reply }, { role: 'user', text: 'Yes.' }], { person: 'you' })
@@ -302,8 +311,27 @@ describe('what the brain can have done', () => {
       assert.deepEqual(result.sources, [])
       assert.deepEqual(result.answer?.parts[0].sources, [], 'the board is no source')
       assert.equal(askText(result), 'Sonnet is on the login page.')
-      assert.match(set.seen[0].more!, /you can only tell them how things stand/)
+      assert.match(set.seen[0].more!, /only tell them how things stand/)
       assert.doesNotMatch(set.seen[0].more!, /DO stop/)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('doesn’t offer the lines for a question, and does nothing when a model gives one anyway', async () => {
+    const set = await setUp()
+    try {
+      const mark = marked(boardFor([set.place], 'you').passage.text, 'The November release')!
+      set.say(`You should check its checks.\nDO approve ${mark}`)
+      const talked = await talk(set.settings, set.places, [{ role: 'user', text: 'What should I think about before approving it?' }], { person: 'you' })
+      assert.equal(talked.reply, 'You should check its checks.')
+      assert.doesNotMatch(set.seen[0].more!, /DO stop/)
+      set.say(`DO approve ${mark}`)
+      const asked = await ask(set.settings, set.places, 'Should I approve it?', { person: 'you', may: true })
+      assert.equal(asked.proposal, undefined)
+      assert.match(asked.answer!.text, /That’s a question/)
+      assert.equal(set.hub.state.changeSets.find((s) => s.id === 'set-18')?.state, 'review')
+      assert.equal(await (async () => { set.say('Sure.'); return (await talk(set.settings, set.places, [{ role: 'user', text: 'approve' }], { person: 'you' })).reply })(), 'Sure.', 'nothing was waiting for an answer')
     } finally {
       await set.close()
     }

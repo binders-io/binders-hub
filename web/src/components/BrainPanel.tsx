@@ -167,6 +167,15 @@ function serverLabel(server: MachineServer) {
   return `${serverNames[server.kind] ?? 'A server'}${port ? ` on :${port}` : ''} · ${server.models.length} model${server.models.length === 1 ? '' : 's'}`
 }
 
+/** What a machine has for the hub, in a few words: the models it can use, leaving out what wants a key or is someone else's. */
+function modelCount(m: Machine) {
+  const usable = (m.servers ?? []).filter((server) => !server.needsKey && !server.gateway)
+  const models = usable.filter((server) => server.kind !== 'say').reduce((n, server) => n + server.models.length, 0)
+  const voices = usable.some((server) => server.kind === 'say')
+  if (!models && !voices) return 'No models the hub can use yet'
+  return [models ? `${models} model${models === 1 ? '' : 's'}` : '', voices ? 'macOS voices' : ''].filter(Boolean).join(' and ')
+}
+
 /** Whether version a is older than b: 0.13.2 against 0.14.1. */
 function older(a: string, b: string) {
   const x = a.split('.').map(Number)
@@ -190,18 +199,24 @@ function Machines({ machines, onChange, latest }: { machines: Machine[]; onChang
   const copy = (text: string) => void navigator.clipboard.writeText(text).then(() => toast('Copied. Paste it in a terminal on each machine.'), () => toast('Couldn’t copy it: select it and copy it yourself.'))
   const until = command ? new Date(command.expiresAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : ''
   return (
-    <Option title="Your machines" detail="A Mac, or a GPU box such as a DGX Spark, giving the hub the models it runs: Ollama, LM Studio, vLLM or NIM, MLX, a whisper or Parakeet server, Kokoro and, on a Mac, macOS’s own voices. Run one line on it; the hub finds its models and uses the best of them for each job you haven’t set yourself.">
+    <Option title="Your machines" detail="A Mac, or a GPU box such as a DGX Spark, giving the hub its models. Run one line on it; the hub finds what it has and uses the best of it for each job.">
       {machines.length > 0 && (
         <ul className="machine-list">
           {machines.map((m) => (
             <li key={m.id}>
               <span className={`machine-dot${m.online ? ' on' : ''}`} aria-hidden="true" />
               <div>
-                <b>{m.name}</b> <span className="machine-state">{m.online ? 'Linked' : m.seenAt ? 'Away' : 'Not linked yet'}{m.platform ? ` · ${m.platform}` : ''}{m.version ? ` · daemon ${m.version}` : ''}</span>
+                <b>{m.name}</b> <span className="machine-state">{m.online ? 'Linked' : m.seenAt ? 'Away' : 'Not linked yet'}</span>
                 {/* From 0.14.0 a daemon updates itself when it links; one before that needs its line run again. */}
                 {latest && m.version && older(m.version, latest) && <span className="machine-serves option-error">{older(m.version, '0.14.0') ? `Its daemon is too old to update itself: run the line from “Add more machines” on ${m.name} again.` : 'Its daemon updates itself the next time it links.'}</span>}
-                <span className="machine-serves">{m.servers?.length ? m.servers.map(serverLabel).join(' · ') : m.seenAt ? 'No model servers found on it yet.' : 'Waiting for it to link.'}</span>
-                {diskLine(m) && <span className="machine-serves">{diskLine(m)}</span>}
+                {m.seenAt ? (
+                  <details className="machine-more">
+                    <summary>{modelCount(m)}</summary>
+                    <span className="machine-serves">{[m.platform, m.version && `daemon ${m.version}`].filter(Boolean).join(' · ')}</span>
+                    {m.servers?.length ? <span className="machine-serves">{m.servers.map(serverLabel).join(' · ')}</span> : null}
+                    {diskLine(m) && <span className="machine-serves">{diskLine(m)}</span>}
+                  </details>
+                ) : <span className="machine-serves">Waiting for it to link.</span>}
               </div>
               {removing === m.id
                 ? <span className="machine-confirm">Remove {m.name}? <button type="button" className="button" onClick={() => void remove(m.id)}>Remove</button> <button type="button" className="button" onClick={() => setRemoving(undefined)}>Keep</button></span>

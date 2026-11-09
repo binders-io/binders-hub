@@ -8,7 +8,7 @@ import { log } from '../logger.ts'
 import { BrainIndex, type Hit, type IndexSource, type SourceKind } from './index.ts'
 import { captureNote, firstWords, withSummary, withTranscript, type Capture } from './captures.ts'
 import { conversation, type Summary, type Turn } from './models.ts'
-import { askPerson, boardFor, boardRules, doRules, heardAnswer, onlyTellRules, propose, proposalView, readDo, spoken, type Asked, type Board, type Proposal, type WorkPlace } from './board.ts'
+import { askPerson, boardFor, boardRules, doRules, heardAnswer, isAsking, onlyTellRules, propose, proposalView, readDo, spoken, type Asked, type Board, type Proposal, type WorkPlace } from './board.ts'
 import type { BrainSettingsStore } from './settings.ts'
 import type { VectorFiles } from './vectorFiles.ts'
 
@@ -470,7 +470,8 @@ export async function ask(settings: BrainSettingsStore, places: AskPlace[], ques
   const board = boardOf(places, options.person)
   if (!model || (!sources.length && !board)) return { sources, searchedBy, ...(model ? { model: model.label } : {}) }
   try {
-    const answer = await model.answer(asked, board ? [...passages, board.passage] : passages, board ? `${boardRules}\n${options.may ? doRules : onlyTellRules}` : undefined)
+    const may = !!options.may && !isAsking(asked)
+    const answer = await model.answer(asked, board ? [...passages, board.passage] : passages, board ? `${boardRules}\n${may ? doRules : onlyTellRules}` : undefined)
     const said = (words: string, proposal?: Proposal) => ({ answer: { text: words, parts: [{ text: words, sources: [] }] }, sources, model: answer.model ?? model.label, searchedBy, ...(proposal ? { proposal: proposalView(proposal) } : {}) })
     // The board isn't a source to show: it's only what's so now. A line a model gave is taken out of what's shown.
     let wanted: Asked | undefined
@@ -481,12 +482,12 @@ export async function ask(settings: BrainSettingsStore, places: AskPlace[], ques
       return [{ text: read.asked ? read.words : part.text, sources: part.sources.filter((s) => s < sources.length).map((s) => s + 1) }]
     })
     if (wanted) {
-      if (!options.may || !board || !options.person) {
-        if (!parts.length) return said('You can’t do that from here. Talk can, on the iPhone, and so can Ask on the hub.')
-      } else {
+      if (may && board && options.person) {
         const came = proposalFrom(wanted, board, options.person)
         return 'proposal' in came ? said(came.proposal.what, came.proposal) : said(came.refused)
       }
+      // Asked about it, or asked where they can't answer: it's words or nothing, and nothing is done.
+      if (!parts.length) return said(options.may ? 'That’s a question, so I’ve changed nothing. Tell me to do it, and I’ll check with you first.' : 'You can’t do that from here. Talk can, on the iPhone, and so can Ask on the hub.')
     }
     return { answer: { text: parts.map((p) => p.text).join('').trim(), parts }, sources, model: answer.model ?? model.label, searchedBy }
   } catch (err) {
@@ -521,9 +522,11 @@ export async function talk(settings: BrainSettingsStore, places: AskPlace[], tur
   options.onSources?.(sources)
   const board = boardOf(places, options.person)
   if (!board || !options.person) return { reply: await model.talk(said, passages), sources, model: model.label }
-  const reply = await model.talk(said, [...passages, board.passage], `${boardRules}\n${doRules}`)
+  const may = !isAsking(latest)
+  const reply = await model.talk(said, [...passages, board.passage], `${boardRules}\n${may ? doRules : onlyTellRules}`)
   const { words, asked } = readDo(reply)
   if (!asked) return { reply: words, sources, model: model.label }
+  if (!may) return { reply: words || 'That’s a question, so I’ve changed nothing. Tell me to do it, and I’ll check with you first.', sources, model: model.label }
   // What's read out is the hub's words for what would happen, whatever else the model said.
   const came = proposalFrom(asked, board, options.person)
   return { reply: 'proposal' in came ? spoken(came.proposal) : came.refused, sources, model: model.label }
