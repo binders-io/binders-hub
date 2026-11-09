@@ -1495,7 +1495,8 @@ say({ type: 'result', total_cost_usd: 0.1, duration_ms: 1000, result: 'Done.' })
     assert.equal(set.stored().stage, 'working', 'it’s asking, with nobody to answer yet')
     await set.newRunner().start(true)
     for (let i = 0; i < 500 && set.stored().stage !== 'live'; i++) await new Promise((done) => setTimeout(done, 20))
-    assert.equal(set.stored().stage, 'live')
+    // Said when it fails, as it has on a slow machine: why the card went where it did.
+    assert.equal(set.stored().stage, 'live', `last on the card: ${JSON.stringify(set.stored().activity.slice(-3).map((a) => [a.kind, a.text]))}`)
     await set.close()
   })
 
