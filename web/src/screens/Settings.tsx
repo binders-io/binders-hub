@@ -75,8 +75,8 @@ export function Settings() {
           <h2>{current.label}</h2>
           <p>{current.detail}</p>
         </header>
-        {part === 'binder' && <><SpacePanel /><Binders /></>}
-        {part === 'github' && <>{isPersonal ? <PersonalGitHub /> : <GitHubPart />}<Briefs /></>}
+        {part === 'binder' && <><SpacePanel /><Binders toGitHub={() => choose('github')} /></>}
+        {part === 'github' && <>{isPersonal ? <PersonalGitHub /> : <GitHubPart />}<AgentRepos /><Briefs /></>}
         {part === 'brain' && <BrainPanel />}
         {part === 'jira' && <JiraPart />}
         {part === 'hub' && <HubPart />}
@@ -85,7 +85,7 @@ export function Settings() {
   )
 }
 
-function Binders() {
+function Binders({ toGitHub }: { toGitHub: () => void }) {
   const store = useStore()
   const { state } = store
   const [name, setName] = useState('')
@@ -118,9 +118,10 @@ function Binders() {
               </div>
               <label className="field-label" htmlFor={`binder-repo-${binder.id}`}>GitHub repo</label>
               <RepoInput id={`binder-repo-${binder.id}`} single value={binder.repo ? [binder.repo] : []} placeholder="Pick the repo its cards go to…" onChange={(repos) => store.updateBinder(binder.id, { repo: repos[0] ?? '' })} />
-              <label className="field-label" htmlFor={`binder-repos-${binder.id}`}>Repos its agents work in</label>
-              <RepoInput id={`binder-repos-${binder.id}`} value={binder.repos ?? []} placeholder="Add repos… (none: any repo)" onChange={(repos) => store.updateBinder(binder.id, { repos })} />
-              <span className="field-hint">Each agent works in all of these, or the ones it’s limited to on the Agents page.</span>
+              <p className="field-hint">
+                {binder.repos?.length ? `Its agents work in ${binder.repos.length} repo${binder.repos.length === 1 ? '' : 's'}.` : 'Its agents work in any repo the app reaches.'}{' '}
+                <button type="button" className="text-button" onClick={toGitHub}>Choose them in GitHub</button>
+              </p>
               {binder.repo && <NotesRow binder={binder} status={issues?.[binder.id]?.notes} onChange={(fields) => store.updateBinder(binder.id, fields)} />}
               {binder.repo && <IssuesRow binderId={binder.id} repo={binder.repo} on={binder.issues !== false} status={issues?.[binder.id]} onChange={(on) => store.updateBinder(binder.id, { issues: on })} onSync={() => void attempt(() => call('POST', `/api/binders/${binder.id}/sync-issues`)).then(refresh)} />}
               <ReviewCommentsRow binderId={binder.id} on={binder.reviewComments === true} onChange={(on) => store.updateBinder(binder.id, { reviewComments: on })} />
@@ -213,6 +214,78 @@ function GitHubPart() {
       </ul>}
       <HubOptionsPanel part="github" />
     </>
+  )
+}
+
+/**
+ * The repos a binder's agents work in, found by name, topic or custom property, and every match of a filter added at
+ * once; with what the app reaches on each account, as the hub has read it from GitHub.
+ */
+function AgentRepos() {
+  const store = useStore()
+  const { state } = store
+  if (!state.binders.length) return null
+  const several = state.binders.length > 1
+  return (
+    <section className="settings-part">
+      <h3 className="settings-sub">Repos its agents work in</h3>
+      <p className="settings-part-detail">Agents in this binder work only in these, and each picks among them on the Agents page. None: any repo the app reaches. Filter by topic or custom property to add every match at once.</p>
+      {state.binders.map((binder) => (
+        <div key={binder.id} className="agent-repos">
+          {several && <label className="field-label" htmlFor={`binder-repos-${binder.id}`}>{binder.name}</label>}
+          <RepoInput id={`binder-repos-${binder.id}`} value={binder.repos ?? []} placeholder="Add repos… (none: any repo)" onChange={(repos) => store.updateBinder(binder.id, { repos })} />
+        </div>
+      ))}
+      <RepoLists />
+    </section>
+  )
+}
+
+interface RepoList {
+  account: string
+  kind?: 'User' | 'Organization'
+  indexed: number
+  total?: number
+  complete: boolean
+  reading: boolean
+  failed: boolean
+  properties?: 'listed' | 'organization' | 'denied' | 'failed' | 'none'
+}
+
+/** What the app reaches on each account it's installed on, as the hub has read it, and its repos' custom properties. */
+function RepoLists() {
+  const [lists, setLists] = useState<{ installations: RepoList[]; permissionsUrl?: string }>()
+  useEffect(() => {
+    let current = true
+    const read = () => void call<{ installations?: RepoList[]; permissionsUrl?: string }>('GET', '/api/github/lists').then((found) => {
+      if (!current || !Array.isArray(found?.installations)) return
+      setLists({ installations: found.installations, permissionsUrl: found.permissionsUrl })
+      // While a list is being read, how far it's got, every few seconds.
+      if (found.installations.some((i) => !i.complete && !i.failed)) window.setTimeout(read, 4000)
+    }, () => {})
+    read()
+    return () => { current = false }
+  }, [])
+  if (!lists?.installations.length) return null
+  const count = (n: number) => n.toLocaleString()
+  return (
+    <ul className="repo-lists">
+      {lists.installations.map((list) => (
+        <li key={list.account}>
+          <b>@{list.account}</b>{' '}
+          {list.complete
+            ? `${count(list.indexed)} repo${list.indexed === 1 ? '' : 's'} the app reaches${list.properties === 'listed' || list.properties === 'organization' ? ', with their topics and custom properties' : ', with their topics'}.`
+            : list.failed
+              ? `GitHub didn’t answer while its repos were read${list.indexed ? `, after ${count(list.indexed)}` : ''}. The hub tries again in a few minutes.`
+              : `Reading its repos from GitHub: ${count(list.indexed)}${list.total ? ` of ${count(list.total)}` : ''} so far.`}
+          {list.complete && list.kind !== 'User' && list.properties === 'denied' && (
+            <span className="field-hint">
+              GitHub didn’t give the app @{list.account}’s custom properties, if it uses any. To filter by them, the app needs Custom properties (read) under Organization permissions{lists.permissionsUrl ? <>: <a href={lists.permissionsUrl} target="_blank" rel="noreferrer">its permissions on GitHub <ArrowUpRight size={11} /></a></> : ''}. @{list.account} then accepts it, and the hub reads them within six hours.
+            </span>
+          )}
+        </li>
+      ))}
+    </ul>
   )
 }
 

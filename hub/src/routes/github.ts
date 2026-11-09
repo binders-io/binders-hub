@@ -5,13 +5,26 @@ import { personalId } from '../spaces.ts'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { HubOptions } from '../options.ts'
 import type { Context } from './context.ts'
-import { deprovisioned } from '../../../shared/people.ts'
-import { binderRepos } from '../../../shared/work.ts'
+import { filterRepos, linkOf } from '../repoFilter.ts'
+import type { IndexedRepo } from '../repoIndex.ts'
+import { agentRepos, binderRepos } from '../../../shared/work.ts'
+
+/** The most repos added together: each is checked with GitHub on adding, so more should be a choice, not a slip. */
+const mostTogether = 200
+
+/** Why a repo can't be linked, in a few words, for a list of those left out. */
+export function shortWhy(refusal: string) {
+  if (/lets you read .* but not push/.test(refusal)) return 'you can only read it'
+  if (/doesn’t let you reach/.test(refusal)) return 'GitHub doesn’t let you reach it'
+  if (/^Connect your GitHub/.test(refusal)) return 'your GitHub isn’t connected to this binder'
+  if (/didn’t say whether/.test(refusal)) return 'GitHub didn’t answer'
+  return refusal.split(/(?<=[.:])\s/)[0].replace(/[.:]$/, '')
+}
 
 // The hub's options, GitHub as people reach it, and setting up a Binder's GitHub App.
 
 export async function githubRoutes(app: FastifyInstance, context: Context) {
-  const { spaces, auth, hubOptions, options, sp, login, firstGitHub, isAdmin, mayManageGitHub, act, bodyOf, backFor } = context
+  const { spaces, auth, hubOptions, options, sp, login, firstGitHub, isAdmin, mayManageGitHub, act, bodyOf, backFor, mayLink } = context
   // The hub's options: anyone signed in may read them, an admin may change them ------------------------------------
 
   // What the GitHub App already lets in or makes admin, shown with the options so Settings isn't blank about it.
@@ -27,44 +40,36 @@ export async function githubRoutes(app: FastifyInstance, context: Context) {
     return { options: await hubOptions.set(bodyOf(bodies.options, request) as Partial<HubOptions>), locked: hubOptions.locked(), implied: implied() }
   }))
 
-  // People and organizations to suggest as names are typed: members of the organizations the app is installed on, the
-  // person's own organizations, and GitHub's user search.
-  const members = new Map<string, { at: number; logins: { login: string; avatar?: string }[]; managed?: string }>()
+  // People and organizations to suggest as names are typed: members of the organizations the app is installed on, from
+  // the list the hub keeps of them (an organization can have thousands), the person's own organizations, and GitHub's
+  // user search.
   app.get('/api/github/people', act(async (request) => {
     const { q = '', kind = 'user' } = request.query as { q?: string; kind?: 'user' | 'org' }
-    const typed = q.trim().replace(/^@/, '').toLowerCase()
+    const typed = String(q).trim().replace(/^@/, '').slice(0, 100).toLowerCase()
     const found = new Map<string, { login: string; avatar?: string; why: string }>()
     const add = (login: string, why: string, avatar?: string) => {
       if (!typed || login.toLowerCase().includes(typed)) if (!found.has(login.toLowerCase())) found.set(login.toLowerCase(), { login, avatar, why })
     }
     const { github } = sp(request)
-    let managed = false
     // Their GitHub sign-in searches too: the GitHub App's, or the OAuth App's they signed in with.
     const searchWith = request.githubToken ?? request.identityToken
     const me = searchWith ? github.asUser(searchWith) : undefined
+    let reading: { indexed: number } | undefined
     if (kind === 'org') {
       for (const account of github.installedAccounts()) add(account, 'The app is installed there')
       const mine = await me?.get<{ login: string; avatar_url: string }[]>('/user/orgs').catch(() => [])
       for (const org of mine ?? []) add(org.login, 'One of yours', org.avatar_url)
     } else {
-      for (const account of github.installedAccounts()) {
-        let cached = members.get(`${sp(request).id}:${account}`)
-        if (!cached || Date.now() - cached.at > 5 * 60_000) {
-          const client = await github.forAccount(account).catch(() => undefined)
-          const logins = client ? await orgMembers(client, account) : []
-          cached = { at: Date.now(), logins, managed: managedShortcode(logins.map((m) => m.login)) }
-          members.set(`${sp(request).id}:${account}`, cached)
-        }
-        for (const member of cached.logins) add(member.login, `In ${account}`, member.avatar)
-        if (cached.managed) managed = true
-      }
+      const members = await github.findPeople(typed, 12).catch(() => ({ people: [], managed: false, reading: undefined }))
+      for (const member of members.people) add(member.login, `In ${member.account}`, member.avatar)
+      reading = members.reading
       // An organization of managed users can only have its own accounts in it: nobody from the rest of GitHub to offer.
-      if (typed.length >= 2 && found.size < 8 && me && !managed) {
+      if (typed.length >= 2 && found.size < 8 && me && !members.managed) {
         const search = await me.get<{ items: { login: string; avatar_url: string }[] }>(`/search/users?q=${encodeURIComponent(`${typed} in:login`)}&per_page=8`).catch(() => ({ items: [] }))
         for (const user of search.items) add(user.login, 'On GitHub', user.avatar_url)
       }
     }
-    return { people: [...found.values()].slice(0, 12) }
+    return { people: [...found.values()].slice(0, 12), ...(reading ? { reading } : {}) }
   }))
 
   // Your GitHub, as this Binder sees it: whether the hub holds a sign-in for you, and what you may do in each of its
@@ -109,25 +114,75 @@ export async function githubRoutes(app: FastifyInstance, context: Context) {
     theirs.set(key, found)
     return found
   }
+  // What a picker asks for: words, a topic, a custom property with a value; `binders`, an agent's binders, to pick among
+  // the repos they name; `for=binder`, a binder's own repo; `all`, every match's name, to add them together.
   app.get('/api/github/repos', act(async (request) => {
-    const typed = String((request.query as { q?: string }).q ?? '').trim().slice(0, 100)
+    const query = request.query as Record<string, unknown>
+    // A filter sent twice is a list: taken as no filter, like one left out.
+    const given = (name: string) => (typeof query[name] === 'string' ? (query[name] as string).slice(0, 200) : undefined)
+    const typed = (given('q') ?? '').trim().slice(0, 100)
     const { github, hub } = sp(request)
     // Through another binder's app, only the repos this person sees on GitHub, or this binder linked already: the
     // rest of that organization's repos aren't this binder's to list.
     const borrowing = !!github.status().app?.borrowedFrom
     const mine = await theirRepos(request, borrowing)
-    const linked = new Set(hub.state.binders.flatMap((x) => binderRepos(x).map((r) => r.toLowerCase())))
-    const keep = borrowing ? (name: string) => mine.listed.has(name.toLowerCase()) || linked.has(name.toLowerCase()) : undefined
-    const found = await github.findRepos(typed, 50, keep).catch(() => ({ repos: [], more: 0 }))
-    const shown = found.repos
+    const lower = (name: string) => name.toLowerCase()
+    const linked = new Set(hub.state.binders.flatMap((x) => binderRepos(x).map(lower)))
+    // An agent in binders that name their repos picks among those alone.
+    const binders = given('binders')
+    const among = binders ? agentRepos({ repos: [], binders: binders === '*' ? [] : binders.split(',').filter(Boolean) }, hub.state.binders) : []
+    const scope = among.length ? new Set(among.map(lower)) : undefined
+    const keep = scope ? (name: string) => scope.has(lower(name)) : borrowing ? (name: string) => mine.listed.has(lower(name)) || linked.has(lower(name)) : undefined
+    const found = await github.findRepos(typed, keep, given('again') === '1').catch(() => ({ repos: [] as IndexedRepo[], reading: undefined, failed: true }))
+    const failed = !!found.failed
+    // A binder's repos the app doesn't reach (typed in by name) are still among an agent's to pick.
+    if (scope) for (const name of among) if (!found.repos.some((r) => lower(r.fullName) === lower(name))) found.repos.push({ fullName: name, private: false })
+    // A private repo's topics and properties say more than its name: only to those GitHub shows it to, those who run
+    // this binder's GitHub, and on the repos the binder named itself.
+    const manages = mayManageGitHub(request)
+    const sees = (repo: IndexedRepo) => !repo.private || manages || linked.has(lower(repo.fullName)) || mine.listed.has(lower(repo.fullName))
+    const visible = found.repos.map((repo) => (sees(repo) ? repo : { ...repo, topics: undefined, properties: undefined }))
     // Known for the repos GitHub listed as the person's; for the app's others, the check on linking says.
-    const push = (name: string) => (mine.listed.has(name.toLowerCase()) ? mine.pushable.has(name.toLowerCase()) : undefined)
+    const push = (name: string) => (mine.listed.has(lower(name)) ? mine.pushable.has(lower(name)) : undefined)
+    const who = { anyReached: given('for') === 'binder' && manages && github.status().mode === 'app', token: !!request.githubToken, byName: auth.options.devLogin() }
+    const result = filterRepos(visible, { q: typed, topic: given('topic'), property: given('property'), value: given('value') }, (repo) => linkOf({ archived: repo.archived, push: push(repo.fullName) }, who))
+    // Every match that isn't known to be refused, by name, for adding them together.
+    if (given('all')) return { names: result.repos.filter((r) => r.linkable !== false).slice(0, mostTogether).map((r) => r.fullName), total: result.repos.length }
+    const shown = result.repos.slice(0, 50)
     return {
-      repos: shown.map((r) => ({ ...r, reached: true, push: push(r.fullName) })),
-      more: found.more,
-      ...('reading' in found && found.reading ? { reading: found.reading } : {}),
+      repos: shown.map((r) => ({ ...r, topics: r.topics ?? [], properties: r.properties ?? {}, reached: true, push: push(r.fullName) })),
+      topics: result.topics.slice(0, 200),
+      properties: result.properties.slice(0, 50),
+      total: result.repos.length,
+      more: Math.max(0, result.repos.length - shown.length),
+      ...(found.reading ? { reading: found.reading } : {}),
+      ...(failed ? { failed } : {}),
     }
   }))
+
+  // Repos about to be added together: which this person may link, each checked as saving will check it, a few at a time.
+  app.post('/api/github/repos/check', act(async (request) => {
+    const { repos } = bodyOf<{ repos: string[] }>(bodies.repoCheck, request)
+    const ok: string[] = []
+    const refused: { repo: string; why: string }[] = []
+    for (let at = 0; at < repos.length; at += 8) {
+      await Promise.all(repos.slice(at, at + 8).map(async (repo) => {
+        try {
+          await mayLink(request, repo)
+          ok.push(repo)
+        } catch (error) {
+          refused.push({ repo, why: shortWhy((error as Error).message) })
+        }
+      }))
+    }
+    // In the order asked.
+    const order = new Map(repos.map((r, n) => [r, n]))
+    ok.sort((a, b) => order.get(a)! - order.get(b)!)
+    return { ok, refused }
+  }))
+
+  // How the lists the pickers search stand: what the app reaches, how far it's read, and its repos' custom properties.
+  app.get('/api/github/lists', act(async (request) => sp(request).github.lists()))
 
   app.post('/api/github/repos', act(async (request) => {
     const body = bodyOf(bodies.newRepo, request)
@@ -143,7 +198,7 @@ export async function githubRoutes(app: FastifyInstance, context: Context) {
       const made = await sp(request).github.createRepo(request.githubToken, acting, { owner, name, private: body.private !== false, description: body.description }, mayManageGitHub(request))
       for (const key of theirs.keys()) if (key.startsWith(`${sp(request).id}:${login(request)}:`)) theirs.delete(key)
       // Into the list pickers search now, rather than when it's next read through.
-      await sp(request).github.findRepos(made.fullName, 1).catch(() => undefined)
+      await sp(request).github.findRepos(made.fullName).catch(() => undefined)
       return made
     } catch (error) {
       const words = (error as Error).message
@@ -292,36 +347,4 @@ export async function githubRoutes(app: FastifyInstance, context: Context) {
   app.get('/setup/github/created/:space', created)
   app.get('/setup/github/installed', installed)
   app.get('/setup/github/installed/:space', installed)
-}
-
-/**
- * An organization's members, every page of them, without deprovisioned managed accounts: GitHub lists members by login,
- * so in an enterprise of managed users the first pages can be all hashes of people who left, and the people who are
- * there come after them. Up to 5,000.
- */
-export async function orgMembers(client: { get: <T>(path: string) => Promise<T> }, account: string) {
-  const out: { login: string; avatar?: string }[] = []
-  for (let page = 1; page <= 50; page++) {
-    const list = await client.get<{ login: string; avatar_url?: string }[]>(`/orgs/${encodeURIComponent(account)}/members?per_page=100&page=${page}`).catch(() => undefined)
-    if (!list?.length) break
-    for (const m of list) if (!deprovisioned(m.login)) out.push({ login: m.login, avatar: m.avatar_url })
-    if (list.length < 100) break
-  }
-  return out
-}
-
-/**
- * The shortcode of an organization of Enterprise Managed Users, from its members: in one, the accounts end in the
- * enterprise's shortcode (`jdoe_acme`). Undefined for an ordinary organization, where logins have no underscore.
- */
-export function managedShortcode(logins: string[]) {
-  if (!logins.length) return undefined
-  // Most of them, not all: the enterprise's setup account is `<shortcode>_admin`.
-  const counts = new Map<string, number>()
-  for (const login of logins) {
-    const end = /_([A-Za-z0-9]{1,20})$/.exec(login)?.[1]?.toLowerCase()
-    if (end) counts.set(end, (counts.get(end) ?? 0) + 1)
-  }
-  const [top, count] = [...counts].sort((a, b) => b[1] - a[1])[0] ?? []
-  return top && count! >= Math.ceil(logins.length * 0.8) ? top : undefined
 }

@@ -134,6 +134,8 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
       const payload = JSON.parse(raw.toString('utf8'))
       // Repos added to or removed from one of its app's installations: the list its pickers search follows.
       if (event === 'installation_repositories' || event === 'installation') await space.github.heardInstallation(event, payload).catch(() => undefined)
+      // People joining or leaving an organization it's installed on: the list its people pickers search follows.
+      if (event === 'organization') await space.github.heardOrganization(payload).catch(() => undefined)
       const result = await space.webhooks.handle(event, payload)
       // Binders that use this one's app hear what it hears: each acts on its own repos.
       for (const other of spaces.all()) {

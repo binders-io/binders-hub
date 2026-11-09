@@ -16,7 +16,7 @@ const repoName = /^[\w.-]+\/[\w.-]+$/
 const clientPattern = /^[A-Za-z0-9_-]{6,64}$/
 
 export async function stateRoutes(app: FastifyInstance, context: Context) {
-  const { spaces, terminals, sp, login, param, isAdmin, fail, mayLink } = context
+  const { spaces, terminals, sp, login, param, isAdmin, fail, mayLink, mayLinkAll } = context
   // The state and its changes ----------------------------------------------------------------------------------------
 
   app.get('/api/state', async (request) => {
@@ -49,8 +49,7 @@ export async function stateRoutes(app: FastifyInstance, context: Context) {
         const repos = change.binder.repos
         if (repos === undefined) return
         if (!Array.isArray(repos) || repos.length > 500 || !repos.every((r) => typeof r === 'string' && repoName.test(r))) throw new Refused('A binder’s repos are a list of at most 500, each as owner/name.')
-        const known = new Set((was?.repos ?? []).map((r) => r.toLowerCase()))
-        for (const repo of repos) if (!known.has(repo.toLowerCase())) await mayLink(request, repo)
+        await mayLinkAll(request, repos, was?.repos ?? [])
       }
       const versions = await hub.submit(request.user!.login, client, changes, vet)
       // A Binder goes by its one binder's name: renamed there (on the web or a Mac), it's renamed too.

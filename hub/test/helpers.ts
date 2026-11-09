@@ -98,6 +98,24 @@ export async function fakeGitHub(options: {
     /** How many repos the app's installation reaches (acme/repo-0 onward), and how many of them it lists before the rest. */
     installationRepos: 0,
     listedRepos: undefined as number | undefined,
+    /** The repos the app's installations reach, as GitHub gives them, in place of acme/repo-0 onward when set. */
+    installed: undefined as Record<string, unknown>[] | undefined,
+    /** Each person's own repos, by the token they signed in with. A token not here, GitHub won't list them for. */
+    mine: {} as Record<string, Record<string, unknown>[]>,
+    /** The organization's list of its repos' custom properties. Unset, GitHub refuses it, as to an app without the permission. */
+    orgProperties: undefined as { repository_full_name: string; properties: { property_name: string; value: unknown }[] }[] | undefined,
+    /** The page of `installed` GitHub fails on, if any. */
+    installedFailsOn: 0,
+    /** How long GitHub takes to say what someone may do in a repo, in milliseconds, and the most it's been asked at once. */
+    accessPause: 0,
+    accessPeak: 0,
+    /** An organization's members, as GitHub lists them. */
+    members: [{ login: 'ana', avatar_url: 'https://github.test/ana.png' }, { login: 'ben', avatar_url: '' }] as { login: string; avatar_url?: string }[],
+  }
+  let accessAsked = 0
+  const pageOf = <T>(items: T[], query: unknown, size = 30) => {
+    const { page = '1', per_page: per = String(size) } = query as { page?: string; per_page?: string }
+    return items.slice((Number(page) - 1) * Number(per), Number(page) * Number(per))
   }
   let notModified = 0
   const app = Fastify()
@@ -191,11 +209,18 @@ export async function fakeGitHub(options: {
   })
   app.get('/repos/:owner/:repo', async (request, reply) => {
     const { owner, repo } = request.params as { owner: string; repo: string }
+    world.accessPeak = Math.max(world.accessPeak, ++accessAsked)
+    if (world.accessPause) await new Promise((done) => setTimeout(done, world.accessPause))
+    accessAsked--
     const access = world.access[`${owner}/${repo}`] ?? 'push'
     if (access === 'none') return reply.code(404).send({ message: 'Not Found' })
     return { full_name: `${owner}/${repo}`, private: true, default_branch: 'main', permissions: { pull: true, push: access === 'push' } }
   })
-  app.get('/installation/repositories', async (request) => {
+  app.get('/installation/repositories', async (request, reply) => {
+    if (world.installed) {
+      if (Number((request.query as { page?: string }).page ?? 1) === world.installedFailsOn) return reply.code(502).send({ message: 'Bad Gateway' })
+      return { total_count: world.installed.length, repositories: pageOf(world.installed, request.query) }
+    }
     const page = Number((request.query as { page?: string }).page ?? 1)
     const listed = Math.min(world.installationRepos, world.listedRepos ?? world.installationRepos)
     const repositories = []
@@ -248,7 +273,12 @@ export async function fakeGitHub(options: {
   })
   app.get('/user', async () => ({ login: options.login ?? 'octo', name: 'Octo Person', avatar_url: 'https://github.test/a.png' }))
   app.get('/user/orgs', async () => (options.orgs ?? []).map((login) => ({ login })))
-  app.get('/orgs/:org/members', async () => [{ login: 'ana', avatar_url: 'https://github.test/ana.png' }, { login: 'ben', avatar_url: '' }])
+  app.get('/orgs/:org/members', async (request) => pageOf(world.members, request.query))
+  app.get('/orgs/:org/properties/values', async (request, reply) => (world.orgProperties ? pageOf(world.orgProperties, request.query) : reply.code(403).send({ message: 'Resource not accessible by integration' })))
+  app.get('/user/repos', async (request, reply) => {
+    const mine = world.mine[(request.headers.authorization ?? '').replace(/^(Bearer|token) /, '')]
+    return mine ? pageOf(mine, request.query) : reply.code(403).send({ message: 'Forbidden' })
+  })
   // Only the app may make repos in an organization: its people's accounts may not, as in one of managed users.
   app.post('/orgs/:org/repos', async (request, reply) => {
     const { org } = request.params as { org: string }

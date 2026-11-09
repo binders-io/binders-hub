@@ -24,6 +24,8 @@ export function PeopleInput({ id, kind, value, implied, impliedWhy, disabled, on
   const [typed, setTyped] = useState('')
   const [open, setOpen] = useState(false)
   const [people, setPeople] = useState<Person[]>([])
+  // While the hub is still reading an organization's people from GitHub: how many so far.
+  const [reading, setReading] = useState<{ indexed: number }>()
   const [index, setIndex] = useState(0)
   const timer = useRef<number>(undefined)
 
@@ -31,8 +33,8 @@ export function PeopleInput({ id, kind, value, implied, impliedWhy, disabled, on
     if (!open || disabled) return
     window.clearTimeout(timer.current)
     timer.current = window.setTimeout(() => {
-      void call<{ people: Person[] }>('GET', `/api/github/people?kind=${kind}&q=${encodeURIComponent(typed)}`)
-        .then((r) => setPeople(r.people.filter((p) => !value.includes(p.login) && !implied.includes(p.login))))
+      void call<{ people: Person[]; reading?: { indexed: number } }>('GET', `/api/github/people?kind=${kind}&q=${encodeURIComponent(typed)}`)
+        .then((r) => { setPeople(r.people.filter((p) => !value.includes(p.login) && !implied.includes(p.login))); setReading(r.reading) })
         .catch(() => setPeople([]))
     }, 180)
     return () => window.clearTimeout(timer.current)
@@ -77,7 +79,7 @@ export function PeopleInput({ id, kind, value, implied, impliedWhy, disabled, on
           />
         )}
       </div>
-      {open && !disabled && people.length > 0 && (
+      {open && !disabled && (people.length > 0 || !!reading) && (
         <ul className="people-suggestions" role="listbox">
           {people.map((person, i) => (
             <li key={person.login}>
@@ -88,6 +90,11 @@ export function PeopleInput({ id, kind, value, implied, impliedWhy, disabled, on
               </button>
             </li>
           ))}
+          {reading && (
+            <li className="repo-hint" role="presentation">
+              Still reading the organization’s people from GitHub: {reading.indexed.toLocaleString()} so far. Someone not read yet can be added by their GitHub name.
+            </li>
+          )}
         </ul>
       )}
     </div>

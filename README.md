@@ -218,9 +218,21 @@ debrief or Challenge says so: a model it can't reach, a prompt waiting in its ow
 also tells the hub who it is, so a second runner for the same agent hears of the first when it starts, and the
 Agents page says when more than one is running: they'd take the same work.
 
-A binder can name the repos its agents work in, in Settings; each agent then works in all of them, or the ones it's
-limited to among them. Picking a repo searches the hub's own list of what its GitHub App reaches, read in the background
-and kept in Redis, so an organization with tens of thousands of repos is searched as you type.
+A binder can name the repos its agents work in, in Settings → GitHub; each agent then works in all of them, or the ones
+it's limited to among them. Picking a repo searches the hub's own list of what its GitHub App reaches, read in the
+background and kept in Redis, so an organization with tens of thousands of repos is searched as you type: by name, by
+what's in their description, or by their GitHub topics and an organization's custom properties. A binder or an agent
+can take every match of a filter at once (200 at most): each is checked with GitHub first, and any you can't push to or
+that's archived is left out, with why. A filter picks repos now, and doesn't follow them: a repo that gets the topic
+later isn't added.
+
+Custom properties come with the app's list of repos when GitHub gives them there; when it doesn't, the hub reads the
+organization's own list of them, which takes the app's Custom properties (read) organization permission. Settings →
+GitHub says which it is for each organization, and where to give the permission.
+
+The people suggested as you type a GitHub name (who may sign in, admins, a binder's members) come from the same kind
+of list: each organization's members, read in the background, kept, and read again every two hours, so one of thousands
+is found as you type. An app made from now on also hears people join and leave as it happens.
 
 An agent reaches no more of GitHub than the person who set it up. It takes a card only in a repo its owner can push to,
 as GitHub says with the owner's own sign-in (refused otherwise, with why, and not offered again for a while), and each

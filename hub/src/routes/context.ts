@@ -106,11 +106,12 @@ export function makeContext(spaces: Spaces, deps: { auth: Auth; options?: Option
     if (access === 'read') throw new Refused(`As ${as}, GitHub lets you read ${repo} but not push to it, so it can’t be linked here. ${other}`)
     if (access === 'none') throw new Refused(`As ${as}, GitHub doesn’t let you reach ${repo}. ${other}`)
   }
-  /** The repos in `repos` that aren't in `before`, each checked as above. */
+  /** The repos in `repos` that aren't in `before`, each checked as above: a few at a time, as many can be added at once. */
   const mayLinkAll = async (request: FastifyRequest, repos: unknown, before: string[] = []) => {
     if (!Array.isArray(repos)) return
     const known = new Set(before.map((r) => r.toLowerCase()))
-    for (const repo of repos) if (typeof repo === 'string' && !known.has(repo.toLowerCase())) await mayLink(request, repo)
+    const fresh = repos.filter((repo): repo is string => typeof repo === 'string' && !known.has(repo.toLowerCase()))
+    for (let at = 0; at < fresh.length; at += 8) await Promise.all(fresh.slice(at, at + 8).map((repo) => mayLink(request, repo)))
   }
 
   /** A note's or card's address in the web app: the first Binder's at the hub's own, as its links have always been. */

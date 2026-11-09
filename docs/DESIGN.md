@@ -154,14 +154,29 @@ with the Mac.
 
 - A person sets an agent up in Agents: name, tool, repos, binders, skills. The hub gives a token (`bnd_…`), shown once;
   only its hash is kept. A new token replaces the old; revoking stops it at once and puts what it held back on the board.
-- A binder can name the repos its agents work in (Settings). Each agent then works in all of them, or picks some among
-  them on the Agents page; one it's limited to outside them is refused. A binder that names none leaves its agents to
-  any repo, as before.
-- Repos are picked by typing. The hub keeps a list of each GitHub App installation's repos in its store, read a hundred
-  at a time in the background the first time a picker asks, and again every six hours, the old list answering
-  meanwhile; a hub that restarts goes on from the page it stopped at. GitHub's word that repos were added to or removed
-  from an installation changes it at once. A name the list doesn't have yet (still being read, or made since) is looked
-  up on GitHub by name, and kept when found. An organization of tens of thousands of repos is a lookup in memory.
+- A binder can name the repos its agents work in (Settings → GitHub). Each agent then works in all of them, or picks
+  some among them on the Agents page; one it's limited to outside them is refused. A binder that names none leaves its
+  agents to any repo, as before.
+- Repos are picked by typing, or by a GitHub topic or custom property. The hub keeps a list of each GitHub App
+  installation's repos in its store (listIndex.ts), with each one's description, topics, custom properties and whether
+  it's archived, read a hundred at a time in the background the first time a picker asks, and again every six hours,
+  the old list answering meanwhile; a hub that restarts goes on from the page it stopped at, and a list kept in an
+  older shape answers while it's read again. GitHub's word that repos were added to or removed from an installation
+  changes it at once. A name the list doesn't have yet (still being read, or made since) is looked up on GitHub by
+  name, and kept when found, without replacing what the list says of one it has. An organization of tens of thousands
+  of repos is a lookup in memory, filters and counts included.
+- Custom properties come with the installation's list when GitHub gives them there. When it gives none at all, the hub
+  reads the organization's own list of them once the repos are read through, which takes the app's Custom properties
+  (read) permission; refused, Settings → GitHub says so with a link to the app's permissions.
+- A filter picks repos now; it isn't a live rule. `agent.repos` and a binder's repos stay lists of names, so a later
+  change on GitHub never widens what an agent may touch without the push check in `mayLink`. Adding every match of a
+  filter (200 at most) checks each with GitHub as saving will, a few at a time, and leaves out those refused, with why.
+- What a person sees of a private repo's topics and properties: only if GitHub lists the repo for them, they run the
+  binder's GitHub, or the binder named the repo itself. Its name and description were shown already.
+- People are suggested the same way: each organization's members, kept as a list (peopleIndex.ts), read in the
+  background and every two hours, the accounts of people who left an enterprise of managed users left out, and kept
+  up to date by the `organization` webhook on apps made since it was added. The first keystroke never waits for GitHub
+  to page through thousands of people.
 - The agent connects to `/mcp` (Streamable HTTP, stateless, Bearer token). Its tools: `whoami`, `update_profile`,
   `list_binders`, `list_notes`, `get_note`, `create_note`, `append_to_note`, `list_tasks`, `get_task`, `wait_for_work`
   (waits up to 50 s for a card it could take), `claim_task`, `report_progress` (doing, progress, plan, steps, said),

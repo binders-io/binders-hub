@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import axe from 'axe-core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { card, hubState, me, mount, note, settle, standInHub } from './harness'
+import { card, hubState, me, mount, note, settle, standInHub, standInRepos } from './harness'
 import App from '../src/App'
 import { phoneQuery } from '../src/components/bits'
 
@@ -41,6 +41,28 @@ afterEach(() => {
 describe('axe', () => {
   it.each(['#/home', '#/flow', '#/notes/n1', '#/changes', '#/delivery', '#/agents', '#/settings', '#/account', '#/ask', '#/work/c3'])('finds nothing on %s', async (hash) => {
     await open(hash)
+    expect(await violations()).toEqual([])
+  })
+
+  it('finds nothing in the repo picker, filters and all', async () => {
+    standInRepos(() => ({
+      repos: [
+        { fullName: 'acme/web', private: true, description: 'The site', linkable: true },
+        { fullName: 'acme/docs', private: false, linkable: false, why: 'You can only read it, so it can’t be linked' },
+      ],
+      total: 2,
+      more: 0,
+      topics: [{ name: 'backend', count: 1 }],
+      properties: [{ name: 'team', values: [{ value: 'payments', count: 1 }] }],
+      failed: true,
+    }))
+    await open('#/agents')
+    fireEvent.click(screen.getByRole('button', { name: 'Set up an agent' }))
+    const box = await screen.findByRole('combobox', { name: 'Repos it works in' })
+    act(() => box.focus())
+    await screen.findByRole('option', { name: /acme\/docs/ })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter by topic' }), { target: { value: 'backend' } })
+    await screen.findByRole('button', { name: 'Add all 1' })
     expect(await violations()).toEqual([])
   })
 

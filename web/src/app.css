@@ -1567,6 +1567,26 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
 .your-github > p { margin: 0 0 8px; font-size: 12.5px; }
 .people-suggestions .repo-hint { padding: 8px 10px; font-size: 12px; color: var(--faint); border-top: 1px solid var(--line); }
 .people-suggestions .repo-hint a { color: var(--text-2); }
+.people-suggestions .repo-hint, .people-suggestions .repo-status { margin: 0; }
+.people-suggestions .repo-status { padding: 8px 10px; font-size: 12.5px; color: var(--muted); }
+.people-suggestions .repo-retry { color: var(--text); font-weight: 700; }
+.people-suggestions button.unlinkable { cursor: not-allowed; }
+.people-suggestions button.unlinkable b { color: var(--muted); font-weight: 500; }
+.repo-chips-more { display: flex; gap: 14px; margin-top: 6px; }
+.repo-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.repo-filters select { flex: 1 1 150px; width: auto; min-width: 0; height: 34px; padding: 0 8px; border-radius: var(--r-sm); border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font-size: 13px; }
+.repo-filters .faint { flex-basis: 100%; font-size: 12px; }
+.agent-repos + .agent-repos { margin-top: 12px; }
+.repo-lists { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; font-size: 13px; color: var(--text-2); }
+.repo-lists .field-hint { display: block; margin-top: 4px; }
+@media (max-width: 760px) {
+  .repo-input .people-suggestions button { flex-wrap: wrap; row-gap: 2px; }
+  .repo-input .people-suggestions em { flex-basis: 100%; margin-left: 0; white-space: normal; }
+  .repo-input .people-suggestions em:empty { display: none; }
+}
+@media (hover: none) {
+  .repo-filters select, .repo-filters .button, .repo-chips-more button, .repo-input .people-suggestions button { min-height: 44px; }
+}
 
 /* Save all: how many notes wait for typing to pause, on the button. */
 .save-all { position: relative; }

@@ -56,6 +56,36 @@ export function standInHub(state: () => HubState = hubState, you: unknown = me) 
   return { posted }
 }
 
+/**
+ * Has the stand-in hub answer for GitHub's repos too, as `answer` says: what to send, or a promise of it, or an Error
+ * to fail with. Every match by name (`all=1`) comes from the same answer, and checking repos to add together finds
+ * them all linkable but those `refuse` names. Gives what each call asked for.
+ */
+export function standInRepos(answer: (query: URLSearchParams) => unknown, refuse: Record<string, string> = {}) {
+  const hub = globalThis.fetch
+  const asked: URLSearchParams[] = []
+  const checked: string[][] = []
+  const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.startsWith('/api/github/repos/check')) {
+      const repos = (JSON.parse(String(init?.body ?? '{}')) as { repos: string[] }).repos
+      checked.push(repos)
+      return reply({ ok: repos.filter((r) => !refuse[r]), refused: repos.filter((r) => refuse[r]).map((repo) => ({ repo, why: refuse[repo] })) })
+    }
+    if (!url.startsWith('/api/github/repos')) return hub(url, init)
+    const query = new URL(url, 'http://hub.test').searchParams
+    const body = await answer(query)
+    if (body instanceof Error) return reply({ error: body.message }, 500)
+    if (query.get('all')) {
+      const repos = ((body as { repos?: { fullName: string; linkable?: boolean }[] }).repos ?? [])
+      return reply({ names: repos.filter((r) => r.linkable !== false).map((r) => r.fullName), total: repos.length })
+    }
+    asked.push(query)
+    return reply(body)
+  }))
+  return Object.assign(asked, { checked })
+}
+
 export const hear = (message: unknown) => act(async () => { FakeSocket.open.at(-1)!.onmessage?.({ data: JSON.stringify(message) }) })
 
 export function Ready() {

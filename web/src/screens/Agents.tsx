@@ -258,8 +258,8 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
           {!tool.mcp && runner.tool !== 'custom' && <span className="field-hint">{tool.name} doesn’t get Binders’ tools for a run, so the runner hands it each card and note, and reports back what it prints.</span>}
         </fieldset>
         <Field label="Name"><input id="agent-name" autoFocus required value={name} onChange={(e) => setName(e.target.value)} placeholder={`${tool.name} · web`} /></Field>
-        <Field label="Repos it works in" hint={scope.length ? `Among its binder’s ${scope.length} repo${scope.length === 1 ? '' : 's'} (Settings). None: all of them.` : 'From GitHub as you type, as many as it works in. None: any repo.'} group htmlFor="agent-repos">
-          <RepoInput id="agent-repos" value={repos} within={scope} onChange={setRepos} />
+        <Field label="Repos it works in" hint={scope.length ? `Among its binder’s ${scope.length} repo${scope.length === 1 ? '' : 's'} (Settings → GitHub), by name, topic or custom property. None: all of them.` : 'Search by name, topic or custom property, as many as it works in. None: any repo.'} group htmlFor="agent-repos">
+          <RepoInput id="agent-repos" value={repos} within={scope} binders={binders} onChange={setRepos} />
         </Field>
         <Field label="What it can do" hint="Comma separated. The agent can add to this itself.">
           <input id="agent-skills" value={skills} onChange={(e) => setSkills(e.target.value)} placeholder="TypeScript, React, Distill" />

@@ -4,7 +4,11 @@ import type { KV } from './kv.ts'
 import type { Sealer } from './secrets.ts'
 import { Refusal } from './auth.ts'
 import { log } from './logger.ts'
-import { RepoIndex, type IndexedRepo } from './repoIndex.ts'
+import { RepoIndex, rank, type IndexedRepo } from './repoIndex.ts'
+import { PeopleIndex, type Member } from './peopleIndex.ts'
+import { pause, type Progress } from './listIndex.ts'
+import { propertiesOf, topicsOf } from './repoFilter.ts'
+import { deprovisioned } from '../../shared/people.ts'
 
 export type Access = 'push' | 'read' | 'none'
 
@@ -91,7 +95,32 @@ const loansKey = 'github-app-loans'
 /** Names once each, whatever their case, and none blank. */
 const unique = (names: string[]) => names.filter((name, i) => name && names.findIndex((n) => n.toLowerCase() === name.toLowerCase()) === i)
 /** The events Binders listens for. */
-export const webhookEvents = ['issues', 'pull_request', 'check_run', 'workflow_run', 'deployment_status']
+// `organization`: people joining and leaving an organization the app is installed on, for the list its pickers search.
+export const webhookEvents = ['issues', 'pull_request', 'check_run', 'workflow_run', 'deployment_status', 'organization']
+
+/** A repo as GitHub gives one, in a list or alone. */
+type GitHubRepo = { full_name: string; private: boolean; description?: string | null; archived?: boolean; topics?: unknown; custom_properties?: unknown }
+
+/** A repo as the list its pickers search keeps one: what GitHub says of it, its description cut short. */
+export function indexedRepo(repo: GitHubRepo): IndexedRepo {
+  const topics = topicsOf(repo.topics)
+  const properties = propertiesOf(repo.custom_properties)
+  return {
+    fullName: repo.full_name,
+    private: repo.private,
+    ...(repo.description ? { description: repo.description.slice(0, 200) } : {}),
+    ...(repo.archived ? { archived: true } : {}),
+    ...(topics.length ? { topics } : {}),
+    ...(Object.keys(properties).length ? { properties } : {}),
+  }
+}
+
+/**
+ * Where an organization's repos' custom properties came from, when its list was read through: with the list itself,
+ * from the organization's own list of them, or not at all, as GitHub didn't let the app read them (`denied`).
+ * `none`: a person's account, which has none.
+ */
+export type PropertiesFrom = 'listed' | 'organization' | 'denied' | 'failed' | 'none'
 /** JSON kept in the KV, when it's there and the shape `ok` expects. */
 const parse = <T>(raw: string | undefined | null, ok: (value: any) => boolean): T | undefined => {
   if (!raw) return undefined
@@ -125,6 +154,8 @@ export class GitHubConnection {
   private tokens = new Map<number, { token: string; until: number }>()
   /** The repos its own app's installations reach, read in the background and kept (repoIndex.ts). */
   readonly ownIndex: RepoIndex
+  /** The people in the organizations its own app is installed on, read in the background and kept (peopleIndex.ts). */
+  readonly ownPeople: PeopleIndex
   /** What searching GitHub found lately, by what was typed; and when GitHub last said to slow down. */
   private searched = new Map<string, { at: number; repos: IndexedRepo[] }>()
   private searchHeldUntil = 0
@@ -134,8 +165,24 @@ export class GitHubConnection {
   constructor(kv: KV, sealer: Sealer, endpoints: Endpoints, manual: ManualSettings = {}, space?: string, sharing?: Sharing, indexOptions?: ConstructorParameters<typeof RepoIndex>[2]) {
     this.ownIndex = new RepoIndex(kv, async (installation, page) => {
       const client = new GitHub(await this.installationToken(installation), this.endpoints.apiUrl)
-      const answer = await client.get<{ total_count?: number; repositories: { full_name: string; private: boolean }[] }>(`/installation/repositories?per_page=100&page=${page}`)
-      return { total: answer.total_count, repos: answer.repositories.map((r) => ({ fullName: r.full_name, private: r.private })) }
+      const answer = await client.get<{ total_count?: number; repositories: GitHubRepo[] }>(`/installation/repositories?per_page=100&page=${page}`)
+      return { total: answer.total_count, repos: answer.repositories.map(indexedRepo) }
+    }, indexOptions, (installation, repos) => this.propertiesFor(installation, repos))
+    this.ownPeople = new PeopleIndex(kv, async (installation, page) => {
+      const found = this.own?.installations.find((i) => i.id === installation)
+      if (!found || this.kindOf(found) === 'User') return { items: [], size: 0 }
+      const client = new GitHub(await this.installationToken(installation), this.endpoints.apiUrl)
+      try {
+        const list = await client.get<{ login: string; avatar_url?: string }[]>(`/orgs/${encodeURIComponent(found.account)}/members?per_page=100&page=${page}`)
+        // In an enterprise of managed users, the first pages can be all hashes of people who left: left out, and counted
+        // as given, so a page of them isn't taken for the last.
+        const items: Member[] = list.filter((m) => !deprovisioned(m.login)).map((m) => ({ login: m.login, ...(m.avatar_url ? { avatar: m.avatar_url } : {}) }))
+        return { items, size: list.length }
+      } catch (error) {
+        // A person's account, after all: no members to list.
+        if (error instanceof GitHubError && error.status === 404) return { items: [], size: 0 }
+        throw error
+      }
     }, indexOptions)
     this.kv = kv
     this.sealer = sealer
@@ -410,28 +457,113 @@ export class GitHubConnection {
     return this.lending()?.ownIndex ?? this.ownIndex
   }
 
+  /** The list of people it suggests: its own app's, or the one of the Binder whose app it borrows. */
+  private get peopleIndex() {
+    return this.lending()?.ownPeople ?? this.ownPeople
+  }
+
+  /** The kind of account an installation it may use is on: its own app's, or the lender's. */
+  private accountKind(installation: AppSettings['installations'][number]) {
+    return this.kindOf(installation) ?? this.lending()?.kindOf(installation)
+  }
+
   /**
-   * The repos the app reaches that match what's typed, for a picker: from the list kept of each installation's repos,
-   * which starts being read the first time it's asked for. A name it doesn't have yet (still being read, or made since)
-   * is asked of GitHub's search, and kept when found.
+   * Every repo the app reaches, as the list kept of each installation's repos has them, for a picker to filter: that
+   * list starts being read the first time it's asked for. `keep`, when given, says which may be had at all. Words that
+   * match none of them yet (the list still being read, or a repo made since) are asked of GitHub's search, and what it
+   * finds is kept. `reading`, while the list isn't read through, says how far it's got.
    */
-  async findRepos(typed: string, limit = 50, keep?: (fullName: string) => boolean): Promise<{ repos: IndexedRepo[]; more: number; reading?: { indexed: number; total?: number } }> {
+  async findRepos(typed: string, keep?: (fullName: string) => boolean, again = false): Promise<{ repos: IndexedRepo[]; reading?: Omit<Progress, 'complete' | 'failed'>; failed?: boolean }> {
     const ids = this.installations.map((i) => i.id)
-    if (!ids.length) return { repos: [], more: 0 }
+    if (!ids.length) return { repos: [] }
     const index = this.repoIndex
-    await index.ensure(ids)
-    let found = await index.search(ids, typed, limit, keep)
-    // A first read of a small installation is done in a moment: wait for it rather than show a list half read.
-    if (!found.complete && found.indexed < 100) {
-      await Promise.race([index.settled(ids), new Promise((done) => setTimeout(done, 3000))])
-      found = await index.search(ids, typed, limit, keep)
+    await index.ensure(ids, again)
+    const wanted = keep ? (repo: IndexedRepo) => keep(repo.fullName) : undefined
+    let found = await index.all(ids, wanted)
+    // A first read of a small installation is done in a moment (and one tried again, as asked): wait for it rather than
+    // show a list half read.
+    if (!found.complete && (found.indexed < 100 || again)) {
+      await Promise.race([index.settled(ids), pause(3000)])
+      found = await index.all(ids, wanted)
     }
+    const repos = found.items.map((i) => i.item)
     const words = typed.trim()
-    if (words.length >= 2 && (!found.complete || !found.repos.length)) {
-      const more = (await this.searchGitHub(words).catch(() => [])).filter((r) => (!keep || keep(r.fullName)) && !found.repos.some((f) => f.fullName.toLowerCase() === r.fullName.toLowerCase()))
-      if (more.length) found = { ...found, repos: [...found.repos, ...more].slice(0, limit) }
+    const lower = words.toLowerCase()
+    if (words.length >= 2 && (!found.complete || !repos.some((r) => rank(r.fullName.toLowerCase(), lower) !== undefined))) {
+      const known = new Set(repos.map((r) => r.fullName.toLowerCase()))
+      for (const repo of await this.searchGitHub(words).catch(() => [])) if ((!keep || keep(repo.fullName)) && !known.has(repo.fullName.toLowerCase())) repos.push(repo)
     }
-    return { repos: found.repos, more: found.more, ...(found.complete ? {} : { reading: { indexed: found.indexed, total: found.total } }) }
+    // A list GitHub stopped giving is short: said, rather than taken for all there is.
+    return { repos, ...(found.complete ? {} : { reading: { indexed: found.indexed, total: found.total } }), ...(found.failed ? { failed: true } : {}) }
+  }
+
+  /**
+   * The people in the organizations the app is installed on whose login matches what's typed, from the list kept of
+   * each organization's members, with the organization each is in. `managed`: they're an enterprise's managed users.
+   * `reading`, while a list isn't read through, says how far it's got.
+   */
+  async findPeople(typed: string, limit = 12): Promise<{ people: (Member & { account: string })[]; managed: boolean; reading?: { indexed: number } }> {
+    const orgs = this.installations.filter((i) => this.accountKind(i) !== 'User')
+    if (!orgs.length) return { people: [], managed: false }
+    const ids = orgs.map((i) => i.id)
+    const index = this.peopleIndex
+    await index.ensure(ids)
+    let found = await index.search(ids, typed, limit)
+    if (!found.complete && found.indexed < 100) {
+      await Promise.race([index.settled(ids), pause(3000)])
+      found = await index.search(ids, typed, limit)
+    }
+    const accountOf = (id: number) => orgs.find((i) => i.id === id)?.account ?? ''
+    return {
+      people: found.people.map(({ installation, ...member }) => ({ ...member, account: accountOf(installation) })),
+      managed: !!found.managed,
+      ...(found.complete ? {} : { reading: { indexed: found.indexed } }),
+    }
+  }
+
+  /**
+   * An organization's repos' custom properties, once its list is read through, when the list didn't carry any: from
+   * the organization's own list of them, which GitHub gives an app with the Custom properties permission. (A list can
+   * carry them empty for an app that may not see them, so none at all is asked about too.)
+   */
+  private async propertiesFor(installation: number, repos: Map<string, IndexedRepo>): Promise<{ properties: PropertiesFrom }> {
+    const found = this.own?.installations.find((i) => i.id === installation)
+    if (!found || this.kindOf(found) === 'User') return { properties: 'none' }
+    for (const repo of repos.values()) if (repo.properties && Object.keys(repo.properties).length) return { properties: 'listed' }
+    try {
+      const client = new GitHub(await this.installationToken(installation), this.endpoints.apiUrl)
+      for (let page = 1; page <= 2000; page++) {
+        const list = await client.get<{ repository_full_name?: string; properties?: { property_name: string; value: unknown }[] }[]>(`/orgs/${encodeURIComponent(found.account)}/properties/values?per_page=100&page=${page}`)
+        for (const each of list) {
+          const key = each.repository_full_name?.toLowerCase()
+          const repo = key ? repos.get(key) : undefined
+          if (!key || !repo) continue
+          const properties = propertiesOf(Object.fromEntries((each.properties ?? []).map((p) => [p.property_name, p.value])))
+          if (Object.keys(properties).length) repos.set(key, { ...repo, properties })
+        }
+        if (list.length < 100) break
+        await pause(100)
+      }
+      return { properties: 'organization' }
+    } catch (error) {
+      return { properties: error instanceof GitHubError && (error.status === 403 || error.status === 404) ? 'denied' : 'failed' }
+    }
+  }
+
+  /**
+   * How the lists its pickers search stand, for Settings: for each installation, how many repos the app reaches and
+   * how far they're read, and where their custom properties came from; and where on GitHub the app's permissions are.
+   */
+  async lists() {
+    const index = this.repoIndex
+    const installations = await Promise.all(this.installations.map(async (i) => {
+      const status = await index.status(i.id)
+      return { account: i.account, kind: this.accountKind(i), indexed: status.indexed, total: status.total, complete: status.complete, at: status.at, reading: status.reading, failed: !!status.failed, properties: status.meta?.properties as PropertiesFrom | undefined }
+    }))
+    const app = this.app
+    const web = this.endpoints.webUrl.replace(/\/$/, '')
+    const permissionsUrl = app ? (app.owner.type === 'Organization' ? `${web}/organizations/${app.owner.login}/settings/apps/${app.slug}/permissions` : `${web}/settings/apps/${app.slug}/permissions`) : undefined
+    return { installations, permissionsUrl }
   }
 
   /**
@@ -460,17 +592,17 @@ export class GitHubConnection {
       try {
         let repos: IndexedRepo[]
         if (exact) {
-          const repo = await client.get<{ full_name: string; private: boolean }>(`/repos/${exact[1]}/${exact[2]}`)
-          repos = [{ fullName: repo.full_name, private: repo.private }]
+          repos = [indexedRepo(await client.get<GitHubRepo>(`/repos/${exact[1]}/${exact[2]}`))]
         } else {
           const scope = `${installation.type === 'User' ? 'user' : 'org'}:${installation.account}`
-          const answer = await client.get<{ items: { full_name: string; private: boolean }[] }>(`/search/repositories?q=${encodeURIComponent(`${words} in:name ${scope}`)}&per_page=20`)
-          repos = answer.items.map((r) => ({ fullName: r.full_name, private: r.private }))
+          const answer = await client.get<{ items: GitHubRepo[] }>(`/search/repositories?q=${encodeURIComponent(`${words} in:name ${scope}`)}&per_page=20`)
+          repos = answer.items.map(indexedRepo)
         }
         // In the installation's own account alone.
         repos = repos.filter((r) => same(r.fullName.split('/')[0], installation.account))
         out.push(...repos)
-        await this.repoIndex.add(installation.id, repos)
+        // Kept, but not over what the list has: that may have custom properties a search doesn't give.
+        await this.repoIndex.add(installation.id, repos, true)
       } catch (error) {
         if (error instanceof GitHubError && (error.status === 403 || error.status === 429)) this.searchHeldUntil = Date.now() + 60_000
         if (!(error instanceof GitHubError && error.status === 404)) whole = false
@@ -496,12 +628,24 @@ export class GitHubConnection {
   async heardInstallation(event: string, payload: { action?: string; installation?: { id?: number }; repositories_added?: { full_name: string; private: boolean }[]; repositories_removed?: { full_name: string }[] }) {
     const id = payload.installation?.id
     if (typeof id !== 'number') return
-    if (event === 'installation' && payload.action === 'deleted') return this.ownIndex.forget(id)
+    if (event === 'installation' && payload.action === 'deleted') {
+      await this.ownPeople.forget(id)
+      return this.ownIndex.forget(id)
+    }
     if (event !== 'installation_repositories') return
     // Changed between all repos and chosen ones, perhaps: asked again when next needed.
     this.selections.delete(id)
     await this.ownIndex.add(id, (payload.repositories_added ?? []).map((r) => ({ fullName: r.full_name, private: r.private })))
     await this.ownIndex.remove(id, (payload.repositories_removed ?? []).map((r) => r.full_name))
+  }
+
+  /** What GitHub says of people joining and leaving an organization the app is installed on, kept in the list it suggests. */
+  async heardOrganization(payload: { action?: string; installation?: { id?: number }; membership?: { user?: { login?: string; avatar_url?: string } } }) {
+    const id = payload.installation?.id
+    const login = payload.membership?.user?.login
+    if (typeof id !== 'number' || !login || !this.own?.installations.some((i) => i.id === id)) return
+    if (payload.action === 'member_added' && !deprovisioned(login)) await this.ownPeople.add(id, [{ login, ...(payload.membership?.user?.avatar_url ? { avatar: payload.membership.user.avatar_url } : {}) }])
+    if (payload.action === 'member_removed') await this.ownPeople.remove(id, [login])
   }
 
   /**

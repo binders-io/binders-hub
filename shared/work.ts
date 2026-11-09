@@ -831,7 +831,7 @@ export function outsideBinders(repos: string[], agent: Pick<Agent, 'binders'>, b
   if (!scope.length) return undefined
   const outside = repos.filter((r) => !scope.some((s) => sameRepo(s, r)))
   if (!outside.length) return undefined
-  return `${outside.join(', ')} ${outside.length === 1 ? 'isn’t' : 'aren’t'} among its binder’s repos: add ${outside.length === 1 ? 'it' : 'them'} to the binder in Settings first, or pick from ${scope.length === 1 ? scope[0] : 'its repos'}.`
+  return `${outside.join(', ')} ${outside.length === 1 ? 'isn’t' : 'aren’t'} among its binder’s repos: add ${outside.length === 1 ? 'it' : 'them'} to the binder in Settings → GitHub first, or pick from ${scope.length === 1 ? scope[0] : 'its repos'}.`
 }
 
 /**
