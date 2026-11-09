@@ -10,6 +10,7 @@ import type { Actions } from './actions.ts'
 import { Refused, type Hub } from './hub.ts'
 import { Refusal } from './auth.ts'
 import { ask, askText, type SpaceBrain } from './brain/brain.ts'
+import { agentOnline } from './brain/board.ts'
 import type { BrainSettingsStore } from './brain/settings.ts'
 
 // The hub's MCP server for a person's own terminal, not an agent's: signed in through OAuth, it reads and writes the
@@ -372,9 +373,12 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
 
   server.registerTool('list_agents', { description: 'The agents that work in a binder (or each of yours), by name, so you can give one a card.', inputSchema: { binder: z.string().optional() } }, run(async ({ binder }: { binder?: string }) => {
     const mine = binder ? [binderNamed(binder)] : spots()
-    return text(mine.flatMap(({ place, binder: b }) => place.hub.state.agents
-      .filter((a) => !a.revoked && (!a.binders.length || a.binders.includes(b.id)))
-      .map((a) => ({ id: a.id, name: a.name, owner: a.owner, ...(mine.length > 1 ? { binder_id: idOf(place, b.id) } : {}), online: a.lastSeen ? Date.now() - Date.parse(a.lastSeen) < 120_000 : false }))))
+    return text(mine.flatMap(({ place, binder: b }) => {
+      const presence = place.hub.presence()
+      return place.hub.state.agents
+        .filter((a) => !a.revoked && (!a.binders.length || a.binders.includes(b.id)))
+        .map((a) => ({ id: a.id, name: a.name, owner: a.owner, ...(mine.length > 1 ? { binder_id: idOf(place, b.id) } : {}), online: agentOnline(presence, a) }))
+    }))
   }))
 
   server.registerTool('assign_task', {

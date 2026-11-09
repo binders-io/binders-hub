@@ -6,13 +6,14 @@ import { call } from '../data/api'
 import { isListening, nameFor, useActions, useHub, usePresence } from '../data/store'
 import { AgentAvatar, Who, ago } from './bits'
 import { attempt } from './Toast'
+import { ConfirmButton } from './ConfirmButton'
 import { href } from '../route'
 
 /**
  * Talking with an agent about the note open beside it, as with a manager: it reads the note, changes it, makes cards or
  * looks at the code, and answers here. One chat for each note and agent, kept by the hub.
  */
-export function NoteChat({ note, agents, initial }: { note: Pick<Note, 'id'>; agents: Agent[]; initial?: Agent }) {
+export function NoteChat({ note, agents, initial, onFocusChange }: { note: Pick<Note, 'id'>; agents: Agent[]; initial?: Agent; /** Whether the message box has focus: on a phone the page makes room for the keyboard while it does. */ onFocusChange?: (focused: boolean) => void }) {
   const store = useActions()
   const allAgents = useHub((state) => state.agents)
   usePresence()
@@ -43,13 +44,15 @@ export function NoteChat({ note, agents, initial }: { note: Pick<Note, 'id'>; ag
 
   return (
     <div className="note-chat">
-      <label className="distill-with">
-        <AgentAvatar agent={agent} size={18} />
-        <select id="chat-agent" value={agent?.id ?? ''} onChange={(e) => setAgentId(e.target.value)}>
-          {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-        </select>
-        {chat?.messages.length ? <button type="button" className="icon-button" title="Start over" aria-label="Start over" onClick={() => store.clearChat(chat.id)}><Trash2 size={13} /></button> : null}
-      </label>
+      <div className="distill-with">
+        <label className="chat-agent">
+          <AgentAvatar agent={agent} size={18} />
+          <select id="chat-agent" aria-label="Who to talk with" value={agent?.id ?? ''} onChange={(e) => setAgentId(e.target.value)}>
+            {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+        </label>
+        {chat?.messages.length ? <ConfirmButton className="icon-button" question="Clear this chat? Press again" label="Start over" title="Start over: clear this chat" onConfirm={() => store.clearChat(chat.id)}><Trash2 size={13} /></ConfirmButton> : null}
+      </div>
       <ol className="chat-messages" ref={list}>
         {!chat?.messages.length && (
           <li className="chat-empty">
@@ -81,9 +84,12 @@ export function NoteChat({ note, agents, initial }: { note: Pick<Note, 'id'>; ag
           value={text}
           placeholder={`Message ${agent?.name ?? 'the agent'}…`}
           onChange={(e) => setText(e.target.value)}
+          onFocus={() => onFocusChange?.(true)}
+          onBlur={() => onFocusChange?.(false)}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send() } }}
         />
-        <button className="icon-button send" disabled={!text.trim() || sending} aria-label="Send"><Send size={15} /></button>
+        {/* Pressing it keeps focus in the box, so on a phone the keyboard stays and the page doesn't move from under the finger. */}
+        <button className="icon-button send" onMouseDown={(e) => e.preventDefault()} disabled={!text.trim() || sending} aria-label="Send"><Send size={15} /></button>
       </form>
     </div>
   )

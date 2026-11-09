@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
-import { chmod, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { chmod, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { homedir, userInfo } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { detect, diskLines, foundLines, joinMachine, lookOnDisk } from './brain.ts'
@@ -165,6 +165,37 @@ async function writeUnit(s: Saved) {
   await mkdir(join(homedir(), '.config', 'systemd', 'user'), { recursive: true })
   await writeService(unitOf(s.name), unitFor(s), s)
   await run('systemctl', ['--user', 'daemon-reload'])
+}
+
+/**
+ * A systemd user service stops when its person logs out of the machine (an SSH session ending, say), unless the user
+ * is allowed to linger. Turned on here when the system lets this user do it; when it doesn't, the line to run instead.
+ * Nothing when it was on already.
+ */
+export async function keepRunningAfterLogout(call: (command: string, args: string[]) => Promise<{ stdout: string }> = (command, args) => run(command, args), user = userInfo().username) {
+  const on = await call('loginctl', ['show-user', user, '--property=Linger']).then((r) => /Linger=yes/.test(r.stdout), () => false)
+  if (on) return undefined
+  const turned = await call('loginctl', ['enable-linger', user]).then(() => true, () => false)
+  return turned
+    ? `It keeps running after you log out: lingering is now on for ${user}.`
+    : `It stops when you log out of this machine, until you log in again. To keep it running, run once: sudo loginctl enable-linger ${user}`
+}
+
+/**
+ * What to say when a folder an agent is set up in isn't a git repo and holds none: its cards are worked straight in that
+ * folder, with no branch or worktree of their own. A folder inside a repo, or one with repos directly in it, is fine.
+ */
+export async function folderWarning(folder: string) {
+  const top = (dir: string) => run('git', ['-C', dir, 'rev-parse', '--show-toplevel']).then((r) => r.stdout.trim(), () => '')
+  if (await top(folder)) return undefined
+  const entries = await readdir(folder, { withFileTypes: true }).catch(() => [])
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+    const dir = join(folder, entry.name)
+    const found = await top(dir)
+    if (found && (await realpath(found).catch(() => found)) === (await realpath(dir).catch(() => dir))) return undefined
+  }
+  return `${folder} isn’t a git repo and has no repo in it, so the agent will work straight in that folder, with no branch of its own for each card. Point --workspace at a repo, or a folder of repos, to give each card its own branch.`
 }
 
 /** Its LaunchAgent. */
@@ -439,6 +470,8 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
       await chmod(tokenOf(name), 0o600)
       await writeFile(join(agentsDir(), `${name}.json`), JSON.stringify(s, null, 2))
       await install(s)
+      const logout = platform === 'linux' ? await keepRunningAfterLogout().catch(() => undefined) : undefined
+      const wrongFolder = brain ? undefined : await folderWarning(workspace).catch(() => undefined)
       if (brain) {
         console.log(`✓ ${me.name} ${existing ? 'is serving this machine’s models to the hub again' : 'is serving this machine’s models to the hub'}, in the background.`)
         for (const line of foundLines(await detect(serve))) console.log(line)
@@ -447,6 +480,8 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
       }
       else console.log(`✓ ${me.name} ${existing ? 'restarted' : 'is running'} in the background, in ${workspace}.`)
       console.log(`  binders list · binders logs ${name} -f · binders restart ${name} · binders remove ${name}`)
+      if (wrongFolder) console.log(`  Warning: ${wrongFolder}`)
+      if (logout) console.log(`  ${logout}`)
       if (carried.length) console.log(`  It keeps this shell's ${carried.join(', ')}. To change them, run binders add again.`)
       if (platform === 'windows') console.log('  It starts each time you log in to Windows, not before.')
       if (!brain && platform === 'mac' && workspace.startsWith(join(homedir(), 'Documents'))) console.log('  macOS may ask once whether node may use your Documents folder: allow it, or the agent can’t read its code.')

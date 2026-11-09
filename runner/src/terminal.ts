@@ -118,7 +118,7 @@ export class Terminals {
   private socket?: WebSocket
   private stopped = false
   private wait = 1000
-  private options: { hubUrl: string; token: string; version: string; log: (line: string) => void; start: (sid: string, by: string) => Promise<Started>; heldRoot?: () => string; finished?: (meta: HeldMeta) => Promise<void> }
+  private options: { hubUrl: string; token: string; version: string; log: (line: string) => void; start: (sid: string, by: string) => Promise<Started>; heldRoot?: () => string; finished?: (meta: HeldMeta) => Promise<void>; webSocket?: boolean; nodeVersion?: string }
 
   constructor(options: Terminals['options']) {
     this.options = options
@@ -126,6 +126,11 @@ export class Terminals {
 
   async start() {
     await this.adopt().catch((error) => this.options.log(`Couldn’t look for terminals left running: ${(error as Error).message}`))
+    // The link to the hub is Node's own WebSocket, from Node 22: on an older Node, cards work and it would only fail again each second.
+    if (!(this.options.webSocket ?? typeof WebSocket !== 'undefined')) {
+      this.options.log(`This runner is on Node ${this.options.nodeVersion ?? process.versions.node}. Cards work, but the terminal link to the hub needs Node 22 or newer, so terminals opened from the web app won’t reach this machine until Node is updated.`)
+      return
+    }
     this.link()
   }
 
@@ -333,7 +338,8 @@ export class Terminals {
   }
 
   private send(message: FromRunner) {
-    if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(message))
+    // Looked at only when there's a socket: with no WebSocket on this Node, there's none, and the name itself isn't there.
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(message))
   }
 
   /** The terminals open now, for the hub to list. */

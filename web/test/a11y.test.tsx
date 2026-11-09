@@ -74,7 +74,7 @@ describe('axe', () => {
   })
 
   it('finds nothing in the Claude Code dialog, which has the command with the hub in it', async () => {
-    await open('#/home')
+    await open('#/agents')
     fireEvent.click(screen.getByRole('button', { name: 'Add to Claude Code' }))
     const dialog = await screen.findByRole('dialog', { name: 'Add the hub to Claude Code' })
     expect(dialog.querySelector('pre')?.textContent).toBe(`claude mcp add --transport http --scope user binders-hub ${window.location.origin}/mcp`)
@@ -224,7 +224,8 @@ describe('the palette', () => {
   it('says how many it found, and offers to ask when no title matches', async () => {
     const box = await opened()
     fireEvent.change(box, { target: { value: 'nothing like this' } })
-    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('1 result'))
+    // The page's toast has a polite region of its own, always there.
+    await waitFor(() => expect(screen.getAllByRole('status').map((region) => region.textContent)).toContain('1 result'))
     expect(screen.getByRole('option').textContent).toContain('Ask: nothing like this')
     expect(box.getAttribute('aria-activedescendant')).toBe('palette-option-0')
   })

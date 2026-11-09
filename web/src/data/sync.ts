@@ -60,6 +60,12 @@ export const clientId: string = (() => {
   return made
 })()
 
+/**
+ * Whether the hub has answered this tab at least once: its state is in hand (a copy kept here from last time counts), or
+ * its live feed is open. Until then an empty list means nothing has arrived yet, not that there's nothing.
+ */
+export const heard = (sync: Sync) => sync.version > 0 || sync.connection === 'live'
+
 /** Each tab's waiting changes are its own, so two tabs never write over each other's. */
 const outboxKey = `${keys.outbox}:${clientId}`
 

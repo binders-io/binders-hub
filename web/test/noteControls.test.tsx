@@ -51,7 +51,7 @@ describe('a note’s controls on a phone', () => {
     expect(screen.queryByRole('button', { name: 'Binder guide' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'More for this note' }))
-    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Review 1 proposed change', 'Unlock', 'Make it the binder’s guide', 'Schedule it', 'Delete this note'])
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Review 1 suggested change', 'Unlock', 'Make it the binder’s guide', 'Copy link', 'Schedule it', 'Delete this note'])
     fireEvent.click(screen.getByRole('menuitem', { name: 'Schedule it' }))
     expect(more).toHaveBeenCalledOnce()
 
@@ -66,8 +66,32 @@ describe('a note’s controls on a phone', () => {
     await waitFor(() => expect(sent).toEqual([{ url: '/api/notes/n1/lock', body: { locked: false } }]))
 
     fireEvent.click(screen.getByRole('button', { name: 'More for this note' }))
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Review 1 proposed change' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Review 1 suggested change' }))
     screen.getByText('The formatter uses spaces.')
+  })
+
+  it('have Copy link, as the notes list’s rows do, which puts the note’s address on the clipboard and says so', async () => {
+    hubWith(true)
+    const written = vi.fn(async () => {})
+    Object.assign(navigator, { clipboard: { writeText: written } })
+    const said: string[] = []
+    window.addEventListener('binders-refused', (event) => said.push((event as CustomEvent<{ message: string }>).detail.message))
+    await mount(<OnPhone more={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'More for this note' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }))
+    expect(written).toHaveBeenCalledWith(new URL('#/notes/n1', window.location.href).toString())
+    await waitFor(() => expect(said).toContain('Link copied.'))
+  })
+
+  it('say when the link couldn’t be copied', async () => {
+    hubWith(true)
+    Object.assign(navigator, { clipboard: { writeText: async () => { throw new Error('no') } } })
+    const said: { message: string; bad?: boolean }[] = []
+    window.addEventListener('binders-refused', (event) => said.push((event as CustomEvent<{ message: string; bad?: boolean }>).detail))
+    await mount(<OnPhone more={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'More for this note' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }))
+    await waitFor(() => expect(said).toEqual([{ message: 'Couldn’t copy the link.', bad: true }]))
   })
 
   it('don’t offer to unlock what you may not', async () => {
@@ -79,44 +103,44 @@ describe('a note’s controls on a phone', () => {
 })
 
 describe('a locked note’s controls', () => {
-  it('lets who may change it accept what’s proposed', async () => {
+  it('lets who may change it accept what’s suggested', async () => {
     const sent = hubWith(true)
     await mount(<Controls />)
     await waitFor(() => expect(screen.getByTestId('may').textContent).toBe('true'))
-    fireEvent.click(screen.getByRole('button', { name: 'Versions and proposals' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Versions and suggested changes' }))
     screen.getByText('The formatter uses spaces.')
     screen.getByText('Use spaces.')
     fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
     await waitFor(() => expect(sent).toEqual([{ url: '/api/note-proposals/np-1/decide', body: { accept: true } }]))
   })
 
-  it('lets anyone else talk it over and propose, but not decide or unlock', async () => {
+  it('lets anyone else talk it over and suggest, but not decide or unlock', async () => {
     const sent = hubWith(false)
     await mount(<Controls />)
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith('/api/notes/n1/access', expect.anything()))
     expect(screen.getByTestId('may').textContent).toBe('false')
     expect((screen.getByRole('button', { name: 'Locked' }) as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.click(screen.getByRole('button', { name: 'Versions and proposals' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Versions and suggested changes' }))
     expect(screen.queryByRole('button', { name: 'Accept' })).toBeNull()
 
     fireEvent.change(document.getElementById('proposal-comment-np-1')!, { target: { value: 'Agreed.' } })
     fireEvent.click(screen.getByRole('button', { name: 'Comment' }))
     await waitFor(() => expect(sent).toEqual([{ url: '/api/note-proposals/np-1/comments', body: { text: 'Agreed.' } }]))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Propose a change' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest a change' }))
     fireEvent.change(document.getElementById('proposal-text')!, { target: { value: '# Standards\n\nUse both.' } })
     fireEvent.change(document.getElementById('proposal-why')!, { target: { value: 'Both.' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Propose' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Suggest' }))
     await waitFor(() => expect(sent[1]).toEqual({ url: '/api/notes/n1/proposals', body: { text: '# Standards\n\nUse both.', why: 'Both.' } }))
   })
 
-  it('won’t accept a proposal the note has moved on from', async () => {
+  it('won’t accept a suggested change the note has moved on from', async () => {
     hubWith(true, { notes: [{ ...locked, text: 'Moved on.' }] })
     await mount(<Controls />)
     await waitFor(() => expect(screen.getByTestId('may').textContent).toBe('true'))
-    fireEvent.click(screen.getByRole('button', { name: 'Versions and proposals' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Versions and suggested changes' }))
     expect((screen.getByRole('button', { name: 'Accept' }) as HTMLButtonElement).disabled).toBe(true)
-    screen.getByText(/changed since this was proposed/)
+    screen.getByText(/changed since this was suggested/)
   })
 
   it('makes a note the binder’s guide', async () => {

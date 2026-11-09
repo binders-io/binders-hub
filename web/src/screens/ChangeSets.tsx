@@ -5,12 +5,14 @@ import type { ChangeSet, Environment, PullRequest } from '../data/model'
 import { call } from '../data/api'
 import { nameFor, useStore } from '../data/store'
 import { attempt } from '../components/Toast'
+import { ConfirmButton } from '../components/ConfirmButton'
 import { DebriefView, SetDebriefButton } from '../components/Debrief'
 import { FindingsLink, SetChallenge } from '../components/Challenge'
 import { PullDiffs } from '../components/Diffs'
 import { titleOf } from '../../../shared/notes.ts'
 import { testTally } from '../../../shared/changeSet.ts'
-import { AgentAvatar, CheckGlyph, RepoTag, checksSummary, usePhone } from '../components/bits'
+import { AgentAvatar, CheckGlyph, RepoTag, checksSummary, unpicked, usePhone } from '../components/bits'
+import { heard } from '../data/sync'
 import { href } from '../route'
 import { useUI } from '../ui'
 
@@ -18,7 +20,7 @@ const spring = { type: 'spring', stiffness: 380, damping: 34 } as const
 
 const setLabel: Record<ChangeSet['state'], string> = {
   assembling: 'Assembling',
-  review: 'Waiting for you',
+  review: 'Waiting on you',
   merging: 'Merging',
   merged: 'Deploying',
   shipped: 'Shipped',
@@ -33,19 +35,16 @@ const mergeHelp: Record<NonNullable<PullRequest['mergeable']>, string> = {
   unknown: 'GitHub is working it out.',
 }
 
-/** What deleting a change set does, said before it happens. */
+/** What deleting a change set does, said under its button once it asks. */
 function deleteWarning(set: ChangeSet, pulls: PullRequest[], environments: Environment[]) {
   const open = pulls.filter((p) => p.state !== 'merged' && p.state !== 'closed').length
   const on = environments.filter((e) => e.changeSetIds.includes(set.id)).map((e) => e.name)
   return [
-    `Delete change set #${set.number}?`,
-    [
-      set.state === 'merging' ? 'Its merging stops.' : '',
-      open ? `${open === 1 ? 'Its open pull request stays' : `Its ${open} open pull requests stay`} open on GitHub, outside any change set.` : '',
-      on.length ? `It also leaves ${on.join(' and ')} in Delivery.` : '',
-      'Its cards stay. This can’t be undone.',
-    ].filter(Boolean).join(' '),
-  ].join('\n\n')
+    set.state === 'merging' ? 'Its merging stops.' : '',
+    open ? `${open === 1 ? 'Its open pull request stays' : `Its ${open} open pull requests stay`} open on GitHub, outside any change set.` : '',
+    on.length ? `It also leaves ${on.join(' and ')} in Delivery.` : '',
+    'Its cards stay. This can’t be undone.',
+  ].filter(Boolean).join(' ')
 }
 
 const prLabel: Record<PullRequest['state'], string> = { open: 'Open', approved: 'Approved', queued: 'In merge queue', merged: 'Merged', closed: 'Closed' }
@@ -69,6 +68,8 @@ export function ChangeSets({ id }: { id: string }) {
   const { binder } = useUI()
   const [tab, setTab] = useState<Tab>(rememberedTab)
   const phone = usePhone()
+  // The set whose approval is on its way to the hub: the button can't be pressed again meanwhile.
+  const [merging, setMerging] = useState<string>()
   const choose = (next: Tab) => {
     setTab(next)
     try { window.localStorage.setItem('binders-set-tab', next) } catch { /* only a convenience */ }
@@ -79,7 +80,10 @@ export function ChangeSets({ id }: { id: string }) {
   const sets = state.changeSets
     .filter((c) => binder === 'all' || c.binderId === binder)
     .sort((a, b) => (order[a.state] ?? 2) - (order[b.state] ?? 2) || b.number - a.number)
-  const set = state.changeSets.find((c) => c.id === id) ?? sets[0]
+  // A set deleted from its own page: the address still names it for a moment, which isn't worth a word.
+  const [deleted, setDeleted] = useState<string>()
+  const asked = id ? state.changeSets.find((c) => c.id === id) : undefined
+  const set = asked ?? sets[0]
   // Opening a set asks GitHub whether each of its pull requests still merges.
   const setId = set?.id
   const setState = set?.state
@@ -87,6 +91,15 @@ export function ChangeSets({ id }: { id: string }) {
     if (!setId || (setState !== 'review' && setState !== 'assembling')) return
     void call('POST', `/api/sets/${setId}/check`).catch(() => {})
   }, [setId, setState])
+  if (id && !asked && id !== deleted && heard(state.sync)) {
+    return (
+      <div className="empty-screen">
+        <h2>That change set isn’t here any more</h2>
+        <p>It may have been deleted, or moved out of reach.</p>
+        <a className="button primary" href={href({ screen: 'changes', id: '' })}>Go to the change sets</a>
+      </div>
+    )
+  }
   if (!set) {
     return (
       <div className="empty-screen">
@@ -98,6 +111,7 @@ export function ChangeSets({ id }: { id: string }) {
   const firstNote = state.notes.find((n) => n.id === set.noteIds[0])
   const conflicts = set.prIds.map((p) => state.pulls.find((x) => x.id === p)).filter((p): p is PullRequest => !!p && p.state !== 'merged' && p.mergeable === 'conflicts')
   const pulls = set.prIds.map((p) => state.pulls.find((x) => x.id === p)).filter((p) => !!p)
+  const toMerge = pulls.filter((p) => p.state !== 'merged').length
   const pending = pulls.flatMap((p) => p.checks).filter((c) => c.state !== 'passed').length
   const added = pulls.flatMap((p) => p.files).reduce((n, f) => n + f.added, 0)
   const removed = pulls.flatMap((p) => p.files).reduce((n, f) => n + f.removed, 0)
@@ -134,9 +148,17 @@ export function ChangeSets({ id }: { id: string }) {
           <div className="approve">
             {set.state === 'review' || (set.state === 'assembling' && pulls.length > 0) ? (
               <>
-                <button className="button primary big" disabled={!pulls.length || pulls.some((p) => p.state !== 'merged' && p.checks.some((c) => c.state === 'failed'))} onClick={() => void attempt(() => store.approveSet(set.id))}>
-                  <ShieldCheck size={16} /> {pulls.some((p) => p.state === 'merged') ? `Approve the other ${pulls.filter((p) => p.state !== 'merged').length} and merge` : `Approve ${pulls.length} and merge`}
-                </button>
+                <ConfirmButton
+                  className="button primary big"
+                  question={`Merge ${toMerge} pull request${toMerge === 1 ? '' : 's'}? Press again`}
+                  disabled={!pulls.length || merging === set.id || pulls.some((p) => p.state !== 'merged' && p.checks.some((c) => c.state === 'failed'))}
+                  onConfirm={() => {
+                    setMerging(set.id)
+                    void attempt(() => store.approveSet(set.id)).finally(() => setMerging(undefined))
+                  }}
+                >
+                  <ShieldCheck size={16} /> {merging === set.id ? 'Merging…' : pulls.some((p) => p.state === 'merged') ? `Approve the other ${toMerge} and merge` : `Approve ${pulls.length} and merge`}
+                </ConfirmButton>
                 <span className="approve-note">{pulls.some((p) => p.state !== 'merged' && p.checks.some((c) => c.state === 'failed')) ? 'A check failed: nothing merges until it passes.' : pending > 0 ? `Approve now and each merges once its checks pass (${pending} running).` : conflicts.length ? 'The hub settles conflicts as it merges.' : pending > 0 ? `Waiting on ${pending} check${pending === 1 ? '' : 's'}` : state.me?.github.token || state.me?.github.server ? 'Every check passed. Approved and merged on GitHub in this order, then staging.' : 'Every check passed. Merges in order, then staging. (GitHub isn’t connected, so the hub records it.)'}</span>
                 {set.state === 'assembling' && <button className="text-button" onClick={() => void attempt(() => store.sendForReview(set.id))}>Close it to new pull requests</button>}
               </>
@@ -168,12 +190,12 @@ export function ChangeSets({ id }: { id: string }) {
           </div>
         )}
 
-        {/* Its pull requests and their diffs, its debrief, and its review: a tab each, so one reads at a time. */}
+        {/* Its pull requests and their diffs, its debrief, and its Challenge: a tab each, so one reads at a time. */}
         <div className="set-tabs" role="tablist" aria-label="This change set">
           {([
-            ['changes', 'Changes', `${pulls.length} pull request${pulls.length === 1 ? '' : 's'}`],
+            ['changes', 'Pull requests', `${pulls.length} pull request${pulls.length === 1 ? '' : 's'}`],
             ['debrief', 'Debrief', debriefNote(set)],
-            ['review', 'Review', reviewNote(set)],
+            ['review', 'Challenge', reviewNote(set)],
           ] as const).map(([key, label, note]) => (
             <button key={key} type="button" role="tab" id={`set-tab-${key}`} aria-selected={tab === key} aria-controls={`set-panel-${key}`} className={tab === key ? 'on' : ''} onClick={() => choose(key)}>
               {label}
@@ -217,7 +239,7 @@ export function ChangeSets({ id }: { id: string }) {
         </div>
         {/* Well away from Approve. */}
         <footer className="set-foot">
-          <button className="text-button delete-set" onClick={() => { if (window.confirm(deleteWarning(set, pulls, state.environments))) void attempt(() => store.deleteSet(set.id)) }}>Delete change set</button>
+          <ConfirmButton className="text-button delete-set" question={`Delete change set #${set.number}? Press again`} detail={deleteWarning(set, pulls, state.environments)} onConfirm={() => { setDeleted(set.id); void attempt(() => store.deleteSet(set.id)) }}>Delete change set</ConfirmButton>
         </footer>
       </div>
     </div>
@@ -299,6 +321,8 @@ function TestsLine({ set }: { set: ChangeSet }) {
 function debriefNote(set: ChangeSet) {
   const d = set.debrief
   if (!d) return ''
+  // Asked and nothing came of it for long enough: the card's page says the same.
+  if (unpicked(d)) return d.state === 'asked' ? 'not started' : 'went quiet'
   if (d.state === 'asked' || d.state === 'writing') return 'writing…'
   if (d.state === 'failed' && !d.against) return 'couldn’t'
   const met = d.against?.filter((p) => p.mark === 'met').length ?? 0
@@ -306,10 +330,11 @@ function debriefNote(set: ChangeSet) {
   return d.against ? `${met} of ${d.against.length} met${tests.total ? ` · tests ${tests.passed} of ${tests.total}` : ''}` : ''
 }
 
-/** How its review stands, for its tab: findings and the worst, or what the blast radius found. */
+/** How its Challenge stands, for its tab: findings and the worst, or what else it touches. */
 function reviewNote(set: ChangeSet) {
   const c = set.challenge
   if (!c) return ''
+  if (unpicked(c)) return c.state === 'asked' ? 'not started' : 'went quiet'
   if (c.state === 'asked' || c.state === 'reviewing') return 'reviewing…'
   if (c.state === 'failed') return 'couldn’t'
   const findings = c.findings ?? []

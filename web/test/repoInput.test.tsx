@@ -332,6 +332,15 @@ describe('adding every match', () => {
     await waitFor(() => expect(chosen()).toBe('acme/web acme/api'))
   })
 
+  it('says what it left out as news that went wrong, not as a plain notice', async () => {
+    const said: { message: string; bad?: boolean }[] = []
+    window.addEventListener('binders-refused', (event) => said.push((event as CustomEvent<{ message: string; bad?: boolean }>).detail))
+    await open(matching, <Picker />, { 'acme/maybe': 'you can only read it' })
+    choose('Filter by topic', 'backend')
+    fireEvent.click(await screen.findByRole('button', { name: 'Add all 3' }))
+    await waitFor(() => expect(said).toEqual([expect.objectContaining({ message: 'Added 2. Left out acme/maybe: you can only read it.', bad: true })]))
+  })
+
   it('says what it left out in a few words, a few named', () => {
     expect(leftOut(2, [{ repo: 'acme/maybe', why: 'you can only read it' }])).toBe('Added 2. Left out acme/maybe: you can only read it.')
     const four = ['a', 'b', 'c', 'd'].map((n) => ({ repo: `acme/${n}`, why: 'you can only read it' }))

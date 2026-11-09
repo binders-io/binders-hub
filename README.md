@@ -3,14 +3,15 @@
 From a note to production, with your coding agents. Self-hosted and open source.
 
 An agentic development platform. Notes become work items, agents take them over MCP, their pull requests are approved
-together in change sets, and every change is followed through CI and CD to production. GitHub keeps the work: cards
-are issues in each binder's repo, and notes are Markdown in a Git repo.
+together in change sets, and the hub follows each change through its checks and deployments on GitHub. GitHub keeps the
+work: cards are issues in each binder's repo, and notes are Markdown in a Git repo.
 
 - `hub/`: the server. A change log on Redis Streams; sign-in with GitHub; cards saved as GitHub Issues; GitHub's
   webhooks for issues, pull requests, checks, workflow runs and deployments; approving and merging change sets on
   GitHub; notes committed to Git; a live feed over WebSocket; and the MCP server agents connect to.
-- `web/`: the web app. Flow, Notes (a Markdown editor with live preview, [[links]], tables and Mermaid, and Distill),
-  each card full screen, Change sets, Delivery, Agents and Settings.
+- `web/`: the web app. Home (what the agents are doing, and what waits on you), the Board, Notes (a Markdown editor
+  with live preview, [[links]], tables and Mermaid, and Distill), each card full screen, Change sets, Delivery, Agents,
+  Ask and Settings. It works on a phone too.
 - `runner/`: keeps an agent taking cards on the machine where the code is (see below).
 - `shared/`: what they all use: the model, the changes, and the code that applies them.
 - `demo/`: a throwaway hub of invented data, and the site's screenshots taken from it (see its README).
@@ -46,8 +47,8 @@ your own machines, where your code is: the hub only hands them work.
    `docker compose -f deploy/compose.yml logs hub | grep -i setup`. Open it to become the hub's first admin.
 
 4. **Connect GitHub**, in Settings → GitHub: create the hub's GitHub App (GitHub makes it and hands its keys straight
-   back), install it on your repos, and sign in with GitHub. Then give your binder its repo in Settings → Binder. See
-   [Connect GitHub](#connect-github).
+   back), install it on your repos, and sign in with GitHub. Then give your binder its repo, also in Settings → GitHub.
+   See [Connect GitHub](#connect-github).
 
 5. **Add an agent**, in Agents: set one up and run the command it shows on the machine where your code is. That starts
    the [runner](#the-runner-agents-that-take-work-on-their-own), which takes cards with Claude Code, Codex or a command
@@ -91,12 +92,18 @@ itself when it starts.
 
 ## Binders on one hub
 
-A hub holds binders. A binder is one notebook, as on the Mac: its folders and notes, its board, its GitHub repo and
-its members, at its own address (`https://hub/mobile-app/`). Anyone signed in makes one, in the sidebar's switcher or
-Settings → Binder, and owns it; its owners and admins add and remove people there. Everyone also gets a binder of
-their own at `/~login`, which nobody else opens (the hub's admins included), its notes synced to a private
-`<login>/binders-notes` repo once the hub's GitHub App is on their account. Sessions, apps' and agents' tokens and the
-hub's options are the hub's; an agent's token belongs to the binder it was made in.
+A hub holds binders. A binder is one notebook, as on the Mac: its folders and notes, its board, its GitHub repo and its
+members, at its own address (`https://hub/mobile-app/`). Anyone signed in makes one, from the binder switcher at the top
+left, and owns it. Its owners and admins add and remove people in Settings → People, and only they (and the hub's
+admins) change where its cards and notes go: its repo, its agents' repos, whether notes are pushed, whether cards are
+kept as issues, and whether a Challenge's findings are posted as review comments. Everyone in a binder sees who runs it.
+A person can leave a binder (Settings → General), unless they're its only owner; leaving, or being taken out, revokes
+the agents they own there. A binder's owners and the hub's admins can take it off the hub by typing its name: nothing is
+destroyed, its notes stay in its repo and its data on the hub's disk, and its address stays taken. The hub's first
+binder and personal binders can't be taken off. Everyone also gets a binder of their own at `/~login`, which nobody else
+opens (the hub's admins included), its notes synced to a private `<login>/binders-notes` repo once the hub's GitHub App
+is on their account. Sessions, apps' and agents' tokens and the hub's options are the hub's; an agent's token belongs to
+the binder it was made in.
 
 The first binder is the one a hub had before it held several (`HUB_SPACE`, `main` by default, or the one its store already has; named by
 `HUB_NAME`). It keeps its folders and starts with no members, so whoever the hub let in still gets in; adding its first
@@ -104,6 +111,53 @@ member, as owner, closes it. In Redis each binder is `hub:<address>:…` and the
 code a binder at its own address is a space, which holds one `binder` (its notes and board) as the log has always
 called it; one made before a binder was one notebook may hold several, shown as its parts. A binder goes by its name in
 both places: renaming either renames the other.
+
+## Working in a binder
+
+**What waits on you.** Home lists what waits on a person in three groups: what's for you, what anyone in the binder
+can do, and what waits on someone else. A row is a question an agent asked, a card that stopped, a permission an agent
+asked for, a Challenge's findings, a change set to approve, cards Distill proposed, a change suggested to a locked
+note, or an environment to promote. The count is in the browser tab's title, and a switch turns on browser
+notifications for what starts waiting while the tab is hidden.
+
+**Cards.** A card's title, brief, done-when and size can be changed while it's proposed or ready, or blocked with no
+agent on it. What Distill proposes shows on the board in Proposed: it opens in place to read, Accept puts it in Ready,
+and Edit first puts it on the board in Proposed, where no agent takes it, to change its words. A ready card no agent
+holds can be split into parts, each its own card for the agent it's given, and the card follows once its parts are done.
+
+**When work fails or stalls.** A card whose run fails twice in a row waits in Blocked with why, and any answer puts it
+back in Ready. A card whose agent hasn't been heard from for 20 minutes goes back on the board, saying so. A person can
+stop a card from the web, which puts it in Proposed, and can send a card in review back to its agent with what to
+change. A pull request closed on GitHub without merging comes out of its change set, and its card waits in Proposed.
+
+**Schedules.** A schedule puts a note on the board as a card on a timer, for an agent. Set one from a note's Schedule
+button; a schedule can also tell its run to write what it finds as a note in a folder. Settings → How work flows lists
+them.
+
+**Folder rules.** A folder can carry a rule: its notes are Distilled once typing in them pauses, or once a run's note is
+written, and the rule may accept the cards that come of it, for the agents it names and up to a limit, with no person
+in between. Settings → How work flows lists them too. Words heard in a room (a conversation or meeting) always wait
+for a person.
+
+**Locks and suggested changes.** A person can lock a note they've settled. Then only they and the binder's owners and
+admins can change or move it, whether the change comes from a person or an agent. Anyone else suggests a change, with
+why; people and agents can talk it over, and whoever may change the note accepts it or turns it down.
+
+## Delivery
+
+Delivery follows what GitHub deploys, repo by repo. When GitHub reports a deployment from one of a binder's repos, the
+hub makes an environment for it, and each environment shows what's on it, where it's served, the run that put it there,
+and which merged pull requests it has, asked of GitHub by commit. The hub shows only what GitHub reports: a merge
+doesn't mark anything deployed, and a new hub starts with no environments. A deployment GitHub marks as transient (a preview for one
+pull request, say) is passed over, the hub takes at most twelve environments from GitHub in one repo, and a person can
+add more by hand. Where webhooks don't arrive the hub looks at GitHub's deployments itself, and **Look on GitHub now**
+asks at once.
+
+A binder's owners and admins set what GitHub can't say, in Settings → How work flows: where an environment is served,
+its place in its repo's order, and, optionally, a deploy workflow (a workflow file and the branch or tag to run it on).
+**Promote** is only for an environment given one: it runs that workflow with the version on the environment before it.
+Any other environment only shows what GitHub deploys there. A change set is shipped once its merged pull requests are
+on their repos' last environments.
 
 ## Connect GitHub
 
@@ -122,12 +176,12 @@ app is installed. Three steps:
 3. **Sign in with GitHub**, so approvals and merges happen as you. From then on people sign in this way: the app's
    owner, or the members of its organization (add more with `HUB_ALLOWED_USERS` / `HUB_ALLOWED_ORGS`).
 
-Then give each binder its repo, in Settings → Binder. People sign in to the hub through the app of the Binder whose
+Then give each binder its repo, in Settings → GitHub. People sign in to the hub through the app of the Binder whose
 address they're at (or the first Binder with one), and connect their GitHub to their other Binders from their account page (their picture, top right).
 
 **Signing in, with a private GitHub App.** A private GitHub App lets only its own organization's members sign in
-through it. To let anyone you allow sign in, add a GitHub OAuth App in **Settings → GitHub** (or set
-`GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET`): callback `https://your-hub/auth/github/callback`. It asks
+through it. To let anyone you allow sign in, give the hub a GitHub OAuth App: set `GITHUB_OAUTH_CLIENT_ID` and
+`GITHUB_OAUTH_CLIENT_SECRET` on the hub, with the callback `https://your-hub/auth/github/callback`. It asks
 GitHub only who people are; the hub's allowed people and each binder's members decide who gets in. What's done as
 someone on repos (approving, merging, an agent pushing as its owner) still goes through the GitHub App, which each
 person connects to from their account page (their picture, top right).
@@ -148,8 +202,8 @@ The hub's secret, which seals what it keeps, is `HUB_SECRET`, or `hub/.data/secr
 
 ## Options
 
-Settings → This hub has who may sign in and who the admins are, and Settings → GitHub how change sets merge and who agents
-commit as. They're kept by the hub and take effect at once. Only admins change them; until someone names admins, whoever
+Settings → Who gets in has who may sign in and who the admins are, and Settings → Agents how change sets merge and who
+agents commit as. They're kept by the hub and take effect at once. Only admins change them; until someone names admins, whoever
 can sign in can. An environment variable fixes one (Settings shows it as set on the hub): `HUB_ALLOWED_USERS`,
 `HUB_ALLOWED_ORGS`, `HUB_ADMINS`, `MERGE_METHOD`, `HUB_AGENT_COMMITS`.
 
@@ -173,7 +227,12 @@ work. The runner fixes that: it runs on the machine where the code is, stays con
 new card reaches it within a second, and it shows as listening), and for each card starts the agent headless in the
 workspace with Binders' tools attached. It relays what the agent does to the card as it goes; an agent that stops
 without finishing, crashes or runs past its time limit puts the card back with why; and one that asks a person
-something is started again on that card with the answer.
+something is started again on that card with the answer. When a run stops, the card says why in plain words: not signed
+in on this machine, out of credit or over its limit, or rate limited for now, each with what to do, and the tool's own
+last line. A runner that is stopped on purpose, restarted or updated says so on its cards. When a runner starts, or
+reaches the hub again, it gives back any card the hub says its agent holds and it isn't running (left by a runner
+that died), unless another runner works as the same agent. A card whose run fails twice in a row isn't taken a third
+time: it waits in Blocked with why.
 
 ```sh
 cd runner && npm install
@@ -197,6 +256,9 @@ binders logs NAME -f    # what it's doing
 binders restart NAME    # also stop, start, remove; --all for every one
 ```
 
+The installer asks for Node 22 or newer, as an agent's terminal links to the hub with Node's own WebSocket; on an older
+Node, cards still work, and the runner says once that terminals need 22.
+
 Each runs as a service of yours (a LaunchAgent on a Mac, a `systemd --user` unit on Linux, a logon task on Windows,
 which needs no admin rights: install it with `& ([scriptblock]::Create((irm <hub>/install.ps1))) add --token bnd_… --workspace C:\code\app`
 in PowerShell. Runs kept going through restarts and an agent's own terminals aren't on Windows yet): it starts at login and
@@ -214,9 +276,9 @@ machine's certificate store (with Node 23.9 or newer; before that, set `NODE_EXT
 get through, `binders logs NAME` says why, with the cause and what to try.
 
 An agent that says nothing for 15 minutes (`--idle-minutes`, or its settings) is stopped as stuck, and its card,
-debrief or Challenge says so: a model it can't reach, a prompt waiting in its own app, a login gone stale. Each runner
-also tells the hub who it is, so a second runner for the same agent hears of the first when it starts, and the
-Agents page says when more than one is running: they'd take the same work.
+debrief or Challenge says so: a model it can't reach, a prompt waiting in its own app, a login gone stale. A laptop that slept isn't taken for an agent gone quiet. Each runner also tells the hub who it is,
+so a second runner for the same agent hears of the first when it starts, and the Agents page says when more than one
+is running: they'd take the same work.
 
 A binder can name the repos its agents work in, in Settings → GitHub; each agent then works in all of them, or the ones
 it's limited to among them. Picking a repo searches the hub's own list of what its GitHub App reaches, read in the
@@ -239,8 +301,9 @@ as GitHub says with the owner's own sign-in (refused otherwise, with why, and no
 run gets a token of the GitHub App's for that one repo, for an hour, to read and push code and open pull requests
 (`repo_token`; the runner renews it on long runs). The runner hands it to the agent's git through a credential helper,
 with SSH addresses of that GitHub sent over HTTPS, and to gh as `GH_TOKEN`, so the machine's own GitHub login isn't
-used. A hub without a GitHub App (a token set by hand) can't narrow a token: there the agent uses the machine's login,
-and the runner's log says so.
+used. If the hub refuses a token for a card, the run doesn't start, and the card goes back with the hub's words. A hub
+without a GitHub App (a token set by hand) can't narrow a token: there the agent uses the machine's login, and the
+runner's log says so.
 
 Before a Challenge, the runner works out the change's blast radius in the reviewer's folder, with git alone: the
 functions, types and exports it added, changed or removed (found by their shape in the diff and the hunks' headers),
@@ -332,11 +395,11 @@ for an agent's run `binders_hub`. In Claude Code, `/mcp` signs it in: a browser 
 binders it may work in, and allow it. It gets a person token
 that runs out and renews itself, and the connection shows under **Your account → MCP connections**, with its binders,
 where it can be stopped. To change which binders it reaches, connect it again. A binder's own address
-(`https://your-hub/<binder>/mcp`, in its **Settings → Agents**) connects to that binder alone.
+(`https://your-hub/<binder>/mcp`, in **Settings → Status**) connects to that binder alone.
 
 Each binder stays apart: every call works in one of them, named by its id from `list_binders`, or found by where the
 card, note or change set it names is; notes don't move between them, cards wait only for cards of their own binder, and
-an agent is given only cards of its own. The connection loses a binder as soon as you leave it, and the token isn't
+an agent is given only cards of its own. The connection loses a binder as soon as you leave it or are taken out of it, and the token isn't
 accepted on `/api`. A client that can’t sign in with OAuth can be given a person token on the account page (**Create a
 token**), for the binder it's made in, to put in its config as a Bearer token; it lasts until it’s stopped. A
 connection can read and write notes, make and comment on cards, assign them, and read change sets, debriefs and
@@ -447,7 +510,8 @@ console: `CSP_ENFORCE=1` turns it on once that's been quiet. Sign-in is rate lim
 `TRUST_PROXY` names others (`true`, or addresses and ranges).
 
 An agent is its owner's: only they can change what it runs on their machine or take a token for it. A Binder's owners and
-admins can still rename it, point it elsewhere or revoke it.
+admins can still rename it, point it elsewhere or revoke it. Taking its owner out of a binder revokes it there, and an
+agent whose owner is no longer in its binder is refused.
 
 ## License
 

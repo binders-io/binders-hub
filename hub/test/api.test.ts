@@ -6,7 +6,7 @@ import type { AddressInfo } from 'node:net'
 import WebSocket from 'ws'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import type { Entry, Change } from '../../shared/state.ts'
+import type { Entry } from '../../shared/state.ts'
 import { cardChangeSet } from '../../shared/changeSet.ts'
 import { changesTo, load, textOf } from '../../shared/noteDoc.ts'
 import { defaultRunner } from '../../shared/work.ts'
@@ -30,14 +30,9 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Merger, keepBothAdditions } from '../src/merger.ts'
 
-const envs: Change[] = [
-  { type: 'env.put', environment: { id: 'staging', name: 'Staging', url: '', version: '0.1.0', changeSetIds: [], state: 'healthy', deployedAt: '', needsApproval: false } },
-  { type: 'env.put', environment: { id: 'production', name: 'Production', url: '', version: '0.1.0', changeSetIds: [], state: 'healthy', deployedAt: '', needsApproval: true } },
-]
-
 async function setUp(options: { github?: Awaited<ReturnType<typeof fakeGitHub>>; devLogin?: boolean; allowedUsers?: string[]; webhookSecret?: string; filesDir?: string; merger?: Merger; webDir?: string; updateFailedFile?: string; admins?: string[]; members?: Member[] } = {}) {
   const hub = new Hub(new MemoryLog())
-  await hub.start([...seed(), ...envs])
+  await hub.start(seed())
   const kv = new MemoryKV()
   const sealer = new Sealer('test-secret')
   const github = new GitHubConnection(kv, sealer, { webUrl: options.github?.url ?? 'http://unused', apiUrl: options.github?.url ?? 'http://unused' },
@@ -391,14 +386,21 @@ describe('each person’s GitHub', () => {
     const octo = api(url, await viaGitHub(url))
     const link = await octo('GET', '/api/github/me')
     assert.equal(link.body.connected, true)
-    assert.equal(github.world.renewals, 1)
+    // A minute left isn't out yet: the call goes on with the token it has, and it's renewed beside the call.
+    await until(() => github.world.renewals >= 1)
     const used = () => github.calls.filter((c) => c.path === '/user/repos').map((c) => c.auth)
+    // Once the renewed one is kept, calls go out with it.
+    await until(async () => {
+      await octo('GET', '/api/github/repos')
+      return !!used().at(-1)?.startsWith('Bearer gho_renewed_')
+    })
+    const before = used().length
     const answers = await Promise.all([octo('GET', '/api/github/repos'), octo('GET', '/api/github/repos?q=a'), octo('GET', '/api/me')])
     assert.deepEqual(answers.map((a) => a.status), [200, 200, 200])
     assert.equal(answers[2].body.github.token, true)
-    // Renewed again (still a minute each time), each refresh token used once.
-    assert.ok(github.world.renewals >= 2)
-    assert.ok(used().every((auth) => auth?.startsWith('Bearer gho_renewed_')))
+    // Renewed again (still a minute each time), each refresh token used once, and never back to the first token.
+    await until(() => github.world.renewals >= 2)
+    assert.ok(used().slice(before).every((auth) => auth?.startsWith('Bearer gho_renewed_')))
     await close()
     await github.close()
   })
@@ -728,11 +730,11 @@ describe('the live feed', () => {
       if (message.type === 'presence') presence = message.presence
     })
     await new Promise((done) => socket.once('open', done))
-    await until(() => received.length === 4)
+    await until(() => received.length === 2)
     assert.deepEqual(presence, {}, 'agents’ presence comes first, live and out of the log')
     await api(url, cookie)('POST', '/api/changes', { client: 'tab-1234', changes: [{ id: 'b2', change: { type: 'binder.put', binder: { id: 'b2', name: 'Design' } } }] })
-    await until(() => received.length === 5)
-    assert.equal(received[4].client, 'user:you:tab-1234')
+    await until(() => received.length === 3)
+    assert.equal(received[2].client, 'user:you:tab-1234')
     socket.close()
     const anonymous = new WebSocket(`${url.replace('http', 'ws')}/api/live`)
     const code = await new Promise((done) => anonymous.once('unexpected-response', (_request, response) => done(response.statusCode)))
@@ -992,7 +994,7 @@ describe('an agent giving a card up', () => {
 describe('agents over MCP', () => {
   it('finds work, takes it, reports, asks, finishes with a pull request, and ships it', async () => {
     const github = await fakeGitHub()
-    const { url, hub, close } = await setUp({ github })
+    const { url, hub, actions, close } = await setUp({ github })
     const you = api(url, await signIn(url))
     await you('POST', '/api/changes', { client: 'tab-1234', changes: [{ id: 'r', change: { type: 'binder.put', binder: { id: 'b1', name: 'Server', repo: 'acme/web' } } }] })
     const made = await you('POST', '/api/cards', { binderId: 'b1', title: 'Add a health check', brief: 'GET /health answers 200.', doneWhen: 'It does.' })
@@ -1051,14 +1053,18 @@ describe('agents over MCP', () => {
     const merges = github.calls.filter((c) => c.path.endsWith('/merge') || c.path.endsWith('/reviews')).map((c) => `${c.method} ${c.path}`)
     assert.deepEqual(merges, ['POST /repos/acme/web/pulls/7/reviews', 'PUT /repos/acme/web/pulls/7/merge'])
     assert.equal(hub.state.pulls.find((p) => p.id === pull.id)!.state, 'merged')
-    assert.equal(hub.state.environments.find((e) => e.id === 'staging')!.version, '0.2.0')
+    assert.equal(hub.state.pulls.find((p) => p.id === pull.id)!.mergeSha, 'merged7', 'the merge commit GitHub made is kept')
     assert.equal(hub.state.cards.find((c) => c.id === cardId)!.stage, 'live', 'merged is done')
-
-    const promoted = await you('POST', '/api/environments/production/promote')
-    assert.equal(promoted.status, 200, JSON.stringify(promoted.body))
-    assert.equal(hub.state.cards.find((c) => c.id === cardId)!.stage, 'live')
+    // Merged is as far as the hub takes it: nothing is deployed, or made up, until GitHub says so.
+    assert.equal(hub.state.environments.length, 0)
+    assert.equal(hub.state.changeSets.find((s) => s.id === set.id)!.state, 'merged')
     assert.equal((await builder.call('get_task', { id: cardId })).value.stage, 'done', 'agents read it as done')
     assert.equal((await builder.call('list_tasks', { stage: 'done' })).value.length, 1)
+
+    // GitHub deploys it: the environment is found, the pull request is on it, and the change set has shipped.
+    github.world.compares['merged7...abc1234def'] = { commits: [], status: 'ahead' }
+    await actions.deploymentSeen('acme/web', { environment: 'production', ref: 'v1.0.0', sha: 'abc1234def', state: 'success' })
+    assert.deepEqual(hub.state.environments.map((e) => [e.id, e.version, e.pullIds]), [['acme/web#production', 'v1.0.0', ['acme/web#7']]])
     assert.equal(hub.state.changeSets.find((s) => s.id === set.id)!.state, 'shipped')
 
     // Deleted, though shipped: gone from the hub and its environments, with its card kept and nothing asked of GitHub.
@@ -1890,8 +1896,8 @@ describe('GitHub’s webhooks', () => {
     await deliver('check_run', { check_run: { name: 'lint', status: 'completed', conclusion: 'failure', pull_requests: [{ number: 9 }] }, repository: { full_name: 'acme/web' } })
     assert.equal(hub.state.pulls.find((p) => p.id === 'acme/web#9')!.checks.find((c) => c.name === 'lint')?.state, 'failed')
 
-    await deliver('deployment_status', { deployment_status: { state: 'success' }, deployment: { environment: 'staging', ref: 'main', sha: 'abcdef123', payload: { version: '0.3.0' } } })
-    assert.equal(hub.state.environments.find((e) => e.id === 'staging')!.version, '0.3.0')
+    await deliver('deployment_status', { deployment_status: { state: 'success' }, deployment: { environment: 'staging', ref: 'main', sha: 'abcdef123', payload: { version: '0.3.0' } }, repository: { full_name: 'acme/web' } })
+    assert.equal(hub.state.environments.find((e) => e.id === 'acme/web#staging')!.version, '0.3.0')
 
     await deliver('issues', { action: 'closed', issue: { number: issue.number, title: 'New title', body: '', state: 'closed', html_url: '' }, repository: { full_name: 'acme/web' } })
     assert.equal(hub.state.cards.find((c) => c.id === card.id)!.stage, 'live')

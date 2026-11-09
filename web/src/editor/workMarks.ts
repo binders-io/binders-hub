@@ -24,6 +24,8 @@ export interface Marks {
   work: WorkMark[]
   presence?: Presence
   open: (itemId: string) => void
+  /** A press on a Proposed chip: this note's Distill, where it's accepted or dismissed. */
+  distill?: () => void
   /** A right-click on a card's chip: its menu. */
   menu?: (itemId: string, event: MouseEvent) => void
 }
@@ -33,19 +35,24 @@ export const setMarks = StateEffect.define<Marks>()
 class ChipWidget extends WidgetType {
   mark: WorkMark
   open: (itemId: string) => void
+  distill?: () => void
   menu?: (itemId: string, event: MouseEvent) => void
-  constructor(mark: WorkMark, open: (itemId: string) => void, menu?: (itemId: string, event: MouseEvent) => void) {
+  constructor(mark: WorkMark, open: (itemId: string) => void, distill?: () => void, menu?: (itemId: string, event: MouseEvent) => void) {
     super()
     this.mark = mark
     this.open = open
+    this.distill = distill
     this.menu = menu
   }
   eq(other: ChipWidget) {
     return other.mark.label === this.mark.label && other.mark.tone === this.mark.tone && other.mark.kind === this.mark.kind && other.mark.stage === this.mark.stage
   }
   toDOM() {
-    const chip = document.createElement(this.mark.itemId ? 'button' : 'span')
-    chip.className = `work-chip ${this.mark.kind === 'proposed' ? 'proposed-chip' : this.mark.tone ?? ''}`
+    const proposed = this.mark.kind === 'proposed'
+    // Each is a button when there's somewhere to go, so a keyboard reaches it and Enter or Space presses it.
+    const chip = document.createElement(this.mark.itemId || (proposed && this.distill) ? 'button' : 'span')
+    chip.className = `work-chip ${proposed ? 'proposed-chip' : this.mark.tone ?? ''}`
+    if (chip instanceof HTMLButtonElement) chip.type = 'button'
     if (this.mark.kind === 'card') chip.appendChild(document.createElement('i'))
     const label = document.createElement('b')
     label.textContent = this.mark.label
@@ -55,17 +62,21 @@ class ChipWidget extends WidgetType {
       stage.textContent = this.mark.stage
       chip.appendChild(stage)
     }
+    // Pressing it mustn't move the caret or take focus from the words; the press itself is its click.
+    const keepFocus = (event: Event) => { if ((event as MouseEvent).button === 0) event.preventDefault() }
     if (this.mark.itemId) {
       chip.title = 'Open the card · right-click for more'
-      chip.addEventListener('mousedown', (event) => {
-        if ((event as MouseEvent).button !== 0) return
-        event.preventDefault()
-        this.open(this.mark.itemId!)
-      })
+      chip.addEventListener('mousedown', keepFocus)
+      chip.addEventListener('click', () => this.open(this.mark.itemId!))
       chip.addEventListener('contextmenu', (event) => {
         if (!this.menu) return
         this.menu(this.mark.itemId!, event as MouseEvent)
       })
+    } else if (proposed && this.distill) {
+      chip.title = 'Show it in Distill, to accept or dismiss it'
+      chip.setAttribute('aria-label', 'Proposed: show it in Distill')
+      chip.addEventListener('mousedown', keepFocus)
+      chip.addEventListener('click', () => this.distill?.())
     }
     return chip
   }
@@ -102,7 +113,7 @@ function build(state: EditorState, marks: Marks | undefined): DecorationSet {
     const index = text.indexOf(mark.quote)
     if (index < 0) continue
     const line = state.doc.lineAt(index)
-    found.push({ at: line.to, line: line.from, deco: Decoration.widget({ widget: new ChipWidget(mark, marks.open, marks.menu), side: 1 }), lineDeco: Decoration.line({ class: mark.kind === 'proposed' ? 'cm-proposed' : 'cm-linked' }) })
+    found.push({ at: line.to, line: line.from, deco: Decoration.widget({ widget: new ChipWidget(mark, marks.open, marks.distill, marks.menu), side: 1 }), lineDeco: Decoration.line({ class: mark.kind === 'proposed' ? 'cm-proposed' : 'cm-linked' }) })
   }
   if (marks.presence) {
     const index = text.indexOf(marks.presence.quote)

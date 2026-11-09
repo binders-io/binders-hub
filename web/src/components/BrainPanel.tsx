@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Check, Copy, Download as DownloadIcon, Sparkles } from 'lucide-react'
 import { call } from '../data/api'
-import { attempt, toast } from './Toast'
+import { attempt, failure, toast } from './Toast'
 import { Option, Segmented } from './HubOptionsPanel'
 
 // The hub's brain: the model that sums up what phones and Macs capture and answers questions from the binders, the
@@ -196,7 +196,7 @@ function Machines({ machines, onChange, latest }: { machines: Machine[]; onChang
     setRemoving(undefined)
     onChange()
   }
-  const copy = (text: string) => void navigator.clipboard.writeText(text).then(() => toast('Copied. Paste it in a terminal on each machine.'), () => toast('Couldn’t copy it: select it and copy it yourself.'))
+  const copy = (text: string) => void navigator.clipboard.writeText(text).then(() => toast('Copied. Paste it in a terminal on each machine.'), () => failure('Couldn’t copy it: select it and copy it yourself.'))
   const until = command ? new Date(command.expiresAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : ''
   return (
     <Option title="Your machines" detail="A Mac, or a GPU box such as a DGX Spark, giving the hub its models. Run one line on it; the hub finds what it has and uses the best of it for each job.">
@@ -269,7 +269,7 @@ function OldDaemons({ machines, latest }: { machines: Machine[]; latest?: string
         <p key={m.id}><b>{m.name}</b> runs daemon {m.version}; this hub’s is {latest}. {older(m.version!, '0.14.0') ? 'It’s too old to update itself: run the line below on it once.' : 'It updates itself the next time it links.'}</p>
       ))}
       {stuck.length > 0 && (line
-        ? <div className="machine-line"><code>{line}</code><button type="button" className="button" onClick={() => void navigator.clipboard.writeText(line).then(() => toast('Copied. Paste it in a terminal on the machine.'), () => toast('Couldn’t copy it: select it and copy it yourself.'))}><Copy size={13} /> Copy</button></div>
+        ? <div className="machine-line"><code>{line}</code><button type="button" className="button" onClick={() => void navigator.clipboard.writeText(line).then(() => toast('Copied. Paste it in a terminal on the machine.'), () => failure('Couldn’t copy it: select it and copy it yourself.'))}><Copy size={13} /> Copy</button></div>
         : <button type="button" className="button" onClick={() => void getLine()}>Get the line</button>)}
     </div>
   )

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 
 // How the notes screen is laid out: the notes list, the note and the panel beside it (chat or Distill), each resizable
 // or hidden, the panel wide; and one of them full screen. Remembered in this browser. A popped-out window shows one
@@ -27,6 +27,48 @@ export const poppedOut = (): Focus => {
 export function popOut(part: 'note' | 'chat', noteId: string) {
   const url = `${window.location.origin}${window.location.pathname}?popout=${part}#/notes/${noteId}`
   window.open(url, `binders-${part}-${noteId}`, part === 'chat' ? 'popup,width=520,height=820' : 'popup,width=980,height=1000')
+}
+
+const sideKey = 'binders-note-side'
+/** How long a request to open a note on Distill holds: it's for the screen about to draw, not one drawn much later. */
+const askedForMs = 10_000
+let asked: { noteId: string; at: number } | undefined
+const askers = new Set<() => void>()
+
+/**
+ * For another screen to call just before it goes to a note: the note opens with Distill showing, the panel open on a
+ * desktop and the Distill view on a phone. It also makes Distill the side tab to come back to.
+ */
+export function openOnDistill(noteId: string) {
+  try { window.localStorage.setItem(sideKey, 'distill') } catch { /* only a convenience */ }
+  asked = { noteId, at: Date.now() }
+  askers.forEach((answer) => answer())
+}
+
+/** Calls `open` once for each request to open this note on Distill: one made before it drew, or while it's showing. */
+export function useDistillAsked(noteId: string, open: () => void) {
+  const latest = useRef(open)
+  useEffect(() => { latest.current = open })
+  useEffect(() => {
+    const answer = () => {
+      if (!asked || asked.noteId !== noteId) return
+      const fresh = Date.now() - asked.at < askedForMs
+      asked = undefined
+      if (fresh) latest.current()
+    }
+    answer()
+    askers.add(answer)
+    return () => { askers.delete(answer) }
+  }, [noteId])
+}
+
+/** The tab the side panel last showed, in this browser. */
+export const rememberedSide = (): 'chat' | 'distill' => {
+  try { return window.localStorage.getItem(sideKey) === 'distill' ? 'distill' : 'chat' } catch { return 'chat' }
+}
+
+export const rememberSide = (side: 'chat' | 'distill') => {
+  try { window.localStorage.setItem(sideKey, side) } catch { /* only a convenience */ }
 }
 
 export function useNotesLayout() {

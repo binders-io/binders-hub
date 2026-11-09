@@ -4,16 +4,17 @@ import { Check, CircleDashed, ClipboardList, Copy, FlaskConical, Square, Volume2
 import { Github } from './Github'
 import { debriefable, debriefSpeech, outOfDate, setChangeSet, setOfCard, testPlanMarkdown, testTally, testTextMost, type Debrief, type Mark, type TestCase, type TestOutcome } from '../../../shared/changeSet.ts'
 import type { Card, ChangeSet } from '../data/model'
-import { nameFor, useActions, useHub, useStore } from '../data/store'
-import { ago } from './bits'
-import { attempt, toast } from './Toast'
+import { nameFor, useActions, useClock, useHub, useStore } from '../data/store'
+import { ago, quietWords, unpicked } from './bits'
+import { attempt, failure, toast } from './Toast'
 import { href } from '../route'
 
 // A debrief: what a change set proposes, all its pull requests together, written by an agent when a person asks (a card
 // not in a set yet has its own, of its worktree). Asking on a card in a set asks for its set's. The view shows its five
 // sections, on the card's full screen and the change set's, and reads them aloud.
 
-const pending = (debrief?: Debrief) => !!debrief && (debrief.state === 'asked' || debrief.state === 'writing')
+// Asked, and nothing came of it for half an hour (nobody started, or it started and went quiet), is not pending: the hub takes a new ask then, so the page does too.
+const pending = (debrief?: Debrief) => !!debrief && (debrief.state === 'asked' || debrief.state === 'writing') && !unpicked(debrief)
 
 /** Asks an agent for the card's debrief. `inline` is a chip for a card on the board: the click doesn't open the card too. */
 export function DebriefButton({ card, inline = false, className = 'button' }: { card: Card; inline?: boolean; className?: string }) {
@@ -87,7 +88,10 @@ export function SetDebriefButton({ set, className = 'button' }: { set: ChangeSet
  * writing it, or its five sections; out of date once new commits land.
  */
 export function DebriefView({ card, set }: { card?: Card; set?: ChangeSet }) {
-  const { state } = useStore()
+  const store = useStore()
+  const { state } = store
+  // Whether it has waited long enough to be asked again changes with the time alone.
+  useClock()
   // On a card in a set, the set's: as it's being written, and its last one.
   const inSet = set ?? (card ? setOfCard(state, card) : undefined)
   // A set's keeps its last sections while it's written again; a card from before it was in a set shows its own.
@@ -117,6 +121,12 @@ export function DebriefView({ card, set }: { card?: Card; set?: ChangeSet }) {
       {of && <p className="faint small">Of change set #{of.number}: all {of.prIds.length === 1 ? 'its pull request' : `its ${of.prIds.length} pull requests`} together{card && !set ? <>, <a href={href({ screen: 'changes', id: of.id })} onClick={() => { try { window.localStorage.setItem('binders-set-tab', 'debrief') } catch { /* only a convenience */ } }}>on its page</a></> : null}.</p>}
       {moved && !pending(debrief) && <p className="debrief-status moved">{of ? 'Its pull requests have' : 'The pull request has'} new commits since this debrief. Debrief again to see what changed.</p>}
       {pending(debrief) && <p className="debrief-status working">{agent} {debrief.state === 'asked' ? `will write it as soon as its runner is listening` : `is writing it${debrief.doing ? `: ${debrief.doing}` : ''}`}.{written ? ' The last one is below.' : ''}</p>}
+      {unpicked(debrief) && (
+        <p className="debrief-status moved">
+          {quietWords(agent, debrief)}{written ? ' The last one is below.' : ''}{' '}
+          <button type="button" className="text-button" onClick={() => void attempt(() => (inSet ? store.setDebrief(inSet.id) : store.debrief(card!.id)))}>Ask again</button>
+        </p>
+      )}
       {debrief.state === 'failed' && <p className="debrief-status failed">{agent} couldn’t write it: {debrief.failed}{written ? ' The last one is below.' : ''}</p>}
       {written && (
         <>
@@ -182,7 +192,7 @@ export function TestPlan({ id, plan, title }: { id: string; plan: TestCase[]; ti
     setNoting(undefined)
     setNote('')
   }
-  const copy = () => void navigator.clipboard.writeText(testPlanMarkdown(plan, title)).then(() => toast('Test plan copied as Markdown.'), () => toast('Couldn’t copy the test plan.'))
+  const copy = () => void navigator.clipboard.writeText(testPlanMarkdown(plan, title)).then(() => toast('Test plan copied as Markdown.'), () => failure('Couldn’t copy the test plan.'))
   return (
     <div className="test-plan" id="test-plan">
       <h3>

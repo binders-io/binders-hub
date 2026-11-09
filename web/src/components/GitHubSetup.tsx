@@ -289,7 +289,7 @@ function Overview({ me }: { me: Me }) {
 
       {me.github.admin && (
         <p className="setup-note">
-          Each binder’s repo is set in Settings → Binder, from the repos above.{' '}
+          Each binder’s repo is picked at the top of this section, from the repos above.{' '}
           {sure
             ? lender
               ? <><b>Stop using it?</b> This binder stops reaching GitHub through {lender}’s app; {lender} keeps it. <button className="text-button danger" onClick={() => void forget()}>Stop using it</button> <button className="text-button" onClick={() => setSure(false)}>Keep it</button></>

@@ -36,7 +36,34 @@ export interface PullInfo {
   headSha: string
   additions: number
   deletions: number
+  /** The commit a merged pull request made on its base. */
+  mergeSha?: string
 }
+
+/** A deployment GitHub lists for a repo. */
+export interface DeploymentInfo {
+  id: number
+  environment: string
+  ref: string
+  sha: string
+  payload?: { version?: string } | string
+  createdAt?: string
+  /** A throwaway environment, as GitHub marks it. */
+  transient?: boolean
+}
+
+/** A deployment's status, as GitHub gives it. */
+export interface DeploymentStatusInfo {
+  state: string
+  /** Where the environment is served. */
+  environmentUrl?: string
+  /** The run that deployed it. */
+  logUrl?: string
+  createdAt?: string
+}
+
+/** How long a call to GitHub may take: a slow GitHub shouldn't hold up whatever is waiting on it for good. */
+const callLimitMs = 20_000
 
 export class GitHub {
   private token: string
@@ -58,6 +85,7 @@ export class GitHub {
         ...(body ? { 'content-type': 'application/json' } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(callLimitMs),
     })
     if (response.status === 204) return undefined as T
     const text = await response.text()
@@ -79,6 +107,7 @@ export class GitHub {
         'user-agent': 'binders-hub',
         ...(etag ? { 'if-none-match': etag } : {}),
       },
+      signal: AbortSignal.timeout(callLimitMs),
     })
     if (response.status === 304) return { changed: false, etag }
     const text = await response.text()
@@ -124,8 +153,8 @@ export class GitHub {
   }
 
   async pull(repo: string, number: number): Promise<PullInfo> {
-    const p = await this.call<{ number: number; title: string; body: string | null; head: { ref: string; sha: string }; base?: { ref: string }; html_url: string; state: 'open' | 'closed'; merged: boolean; additions: number; deletions: number; mergeable: boolean | null; mergeable_state?: string }>('GET', `/repos/${repo}/pulls/${number}`)
-    return { number: p.number, title: p.title, body: p.body ?? '', branch: p.head.ref, headSha: p.head.sha, url: p.html_url, state: p.state, merged: p.merged, additions: p.additions, deletions: p.deletions, mergeable: p.mergeable, mergeableState: p.mergeable_state ?? 'unknown', base: p.base?.ref ?? 'main' }
+    const p = await this.call<{ number: number; title: string; body: string | null; head: { ref: string; sha: string }; base?: { ref: string }; html_url: string; state: 'open' | 'closed'; merged: boolean; merge_commit_sha?: string | null; additions: number; deletions: number; mergeable: boolean | null; mergeable_state?: string }>('GET', `/repos/${repo}/pulls/${number}`)
+    return { number: p.number, title: p.title, body: p.body ?? '', branch: p.head.ref, headSha: p.head.sha, url: p.html_url, state: p.state, merged: p.merged, additions: p.additions, deletions: p.deletions, mergeable: p.mergeable, mergeableState: p.mergeable_state ?? 'unknown', base: p.base?.ref ?? 'main', ...(p.merged && p.merge_commit_sha ? { mergeSha: p.merge_commit_sha } : {}) }
   }
 
   async files(repo: string, number: number): Promise<FileDiff[]> {
@@ -152,6 +181,28 @@ export class GitHub {
       additions: c.additions ?? 0,
       deletions: c.deletions ?? 0,
     }
+  }
+
+  /**
+   * Whether `head` has `base` in its history (it's ahead of it, or the same commit). Not known when GitHub can't say: a
+   * commit it has lost, or no answer.
+   */
+  async includes(repo: string, base: string, head: string): Promise<boolean> {
+    const c = await this.call<{ status?: string }>('GET', `/repos/${repo}/compare/${base}...${head}?per_page=1`)
+    return c.status === 'ahead' || c.status === 'identical'
+  }
+
+  /** A repo's newest deployments, newest first. */
+  async deployments(repo: string, count = 30): Promise<DeploymentInfo[]> {
+    const list = await this.call<{ id: number; environment: string; ref: string; sha: string; payload?: { version?: string } | string; created_at?: string; transient_environment?: boolean }[]>('GET', `/repos/${repo}/deployments?per_page=${count}`)
+    return list.map((d) => ({ id: d.id, environment: d.environment, ref: d.ref, sha: d.sha, payload: d.payload, createdAt: d.created_at, ...(d.transient_environment ? { transient: true } : {}) }))
+  }
+
+  /** A deployment's latest status, if it has one. */
+  async deploymentStatus(repo: string, id: number): Promise<DeploymentStatusInfo | undefined> {
+    const list = await this.call<{ state: string; environment_url?: string; log_url?: string; target_url?: string; created_at?: string }[]>('GET', `/repos/${repo}/deployments/${id}/statuses?per_page=1`)
+    const latest = list[0]
+    return latest ? { state: latest.state, environmentUrl: latest.environment_url || undefined, logUrl: latest.log_url || latest.target_url || undefined, createdAt: latest.created_at } : undefined
   }
 
   async checks(repo: string, ref: string): Promise<Check[]> {

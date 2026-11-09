@@ -7,6 +7,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react'
 // own menu (copy, paste, spelling).
 
 export type MenuItem =
+  /** `confirm` is what it says once pressed, worded as ConfirmButton's: a question ending "Press again". */
   | { label: string; icon?: ReactNode; onSelect: () => void; danger?: boolean; disabled?: boolean; confirm?: string }
   /** A long list of its own, opened in place of the menu, so it never pushes the rest of the menu out of reach. */
   | { label: string; icon?: ReactNode; submenu: MenuItem[] }

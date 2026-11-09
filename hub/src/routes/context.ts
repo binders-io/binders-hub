@@ -43,6 +43,8 @@ export function makeContext(spaces: Spaces, deps: { auth: Auth; options?: Option
     const admins = [...(firstGitHub()?.admins() ?? []), ...(options.admins ?? []), ...(hubOptions?.get().admins ?? [])].map((a) => a.toLowerCase())
     return admins.length ? admins.includes(login.toLowerCase()) : true
   }
+  /** Someone named as one of the hub's admins: not the "whoever can sign in" of a hub that has named nobody yet. */
+  const namedAdmin = (login: string) => [...(firstGitHub()?.admins() ?? []), ...(options.admins ?? []), ...(hubOptions?.get().admins ?? [])].some((a) => a.toLowerCase() === login.toLowerCase())
   /** Who may change how a Binder reaches GitHub: its owners and admins, and the hub's admins. */
   // A Binder on the hub's app (a personal one too) reaches GitHub through its home Binder's: changed there, by that
   // Binder's owners, not from here.
@@ -117,5 +119,5 @@ export function makeContext(spaces: Spaces, deps: { auth: Auth; options?: Option
   /** A note's or card's address in the web app: the first Binder's at the hub's own, as its links have always been. */
   const webUrl = (space: string, kind: 'note' | 'card', id: string) => `${options.publicUrl}${space === spaces.list()[0]?.id ? '' : `/${space}`}/#/${kind === 'note' ? 'notes' : 'work'}/${encodeURIComponent(id)}`
 
-  return { spaces, auth, hubOptions, brainSettings, brainMachines, webUrl, options, secure, callback, isLocal, terminals, backFor, sp, login, param, firstGitHub, isAdmin, mayManageGitHub, signInSpace, fail, act, bodyOf, mayLink, mayLinkAll }
+  return { spaces, auth, hubOptions, brainSettings, brainMachines, webUrl, options, secure, callback, isLocal, terminals, backFor, sp, login, param, firstGitHub, isAdmin, namedAdmin, mayManageGitHub, signInSpace, fail, act, bodyOf, mayLink, mayLinkAll }
 }

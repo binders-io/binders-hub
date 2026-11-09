@@ -100,3 +100,24 @@ export async function mount(children: ReactNode) {
 }
 
 export const settle = (ms = 300) => act(async () => { await new Promise((done) => setTimeout(done, ms)) })
+
+/**
+ * Has the stand-in hub answer one address its own way: `answer` gives what to send back (a body, or a Response for a
+ * status), or throws, as the browser's fetch does when the hub can't be reached. Gives the bodies it was sent.
+ */
+export function standInRoute(method: string, path: string | RegExp, answer: (body: unknown) => unknown = () => ({})) {
+  const hub = globalThis.fetch
+  const calls: unknown[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    const at = String(url).split('?')[0]
+    if ((init?.method ?? 'GET') !== method || !(typeof path === 'string' ? at === path : path.test(at))) return hub(url, init)
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined
+    calls.push(body)
+    const sent = await answer(body)
+    return sent instanceof Response ? sent : new Response(JSON.stringify(sent), { headers: { 'content-type': 'application/json' } })
+  }))
+  return calls
+}
+
+/** The calls the app has made to the hub so far, as "METHOD /path". */
+export const calledOn = () => vi.mocked(fetch).mock.calls.map(([url, init]) => `${init?.method ?? 'GET'} ${String(url).split('?')[0]}`)

@@ -10,7 +10,7 @@ import type { Context } from './context.ts'
 // What machines reach: the runner and its installer, agents and people over MCP, and GitHub's webhooks.
 
 export async function machineRoutes(app: FastifyInstance, context: Context) {
-  const { spaces, auth, options, backFor, isAdmin } = context
+  const { spaces, auth, options, backFor, isAdmin, namedAdmin } = context
   // The runner, as one file to download: code, no secrets, so no sign-in needed.
   app.get('/runner/binders-runner.mjs', async (_request, reply) => {
     try {
@@ -65,7 +65,11 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
     if (agent) {
       const space = spaces.get(agent.space ?? spaces.list()[0]?.id ?? '')
       if (space && named && named !== space.id) return setByHand(reply, 'This agent’s token is for another binder.')
-      if (!space || !space.hub.state.agents.some((a) => a.id === agent.id && !a.revoked)) return setByHand(reply, agentStale)
+      const there = space?.hub.state.agents.find((a) => a.id === agent.id && !a.revoked)
+      if (!space || !there) return setByHand(reply, agentStale)
+      // Its token speaks as its owner's agent, so only while its owner is in the Binder (one with no members is open to
+      // everyone), or is one of the hub's named admins, who may open any team Binder.
+      if (!spaces.roleOf(space.id, there.owner) && !(namedAdmin(there.owner) && !spaces.info(space.id)?.personal)) return setByHand(reply, `@${there.owner} isn’t in this binder any more, so ${there.name} can’t work in it. Ask one of its owners to add them back, or set the agent up again under someone who is in it.`)
       return serve(request, reply, mcpServer(space.hub, space.actions, agent.id, { issueToken: (id) => auth.issueAgentToken(id, space.id), publicUrl: options.publicUrl }, space.jira))
     }
     if (token?.startsWith('bnd_')) return setByHand(reply, agentStale)
@@ -159,8 +163,8 @@ $ErrorActionPreference = 'Stop'
 $Hub = '${hub}'
 $Dir = Join-Path $HOME '.binders'
 $Node = Get-Command node -ErrorAction SilentlyContinue
-if (-not $Node) { throw 'Binders needs Node 20 or newer: https://nodejs.org, or: winget install OpenJS.NodeJS' }
-if ([int](& node -p "process.versions.node.split('.')[0]") -lt 20) { throw "Binders needs Node 20 or newer; this is $(& node -v). https://nodejs.org" }
+if (-not $Node) { throw 'Binders needs Node 22 or newer: https://nodejs.org, or: winget install OpenJS.NodeJS' }
+if ([int](& node -p "process.versions.node.split('.')[0]") -lt 22) { throw "Binders needs Node 22 or newer; this is $(& node -v). https://nodejs.org" }
 New-Item -ItemType Directory -Force -Path (Join-Path $Dir 'bin') | Out-Null
 $Runner = Join-Path $Dir 'binders-runner.mjs'
 Invoke-WebRequest -UseBasicParsing -Uri "$Hub/runner/binders-runner.mjs" -OutFile "$Runner.new"
@@ -185,9 +189,9 @@ export function installer(publicUrl: string) {
 set -e
 HUB="${hub}"
 DIR="$HOME/.binders"
-command -v node >/dev/null 2>&1 || { echo "Binders needs Node 20 or newer: https://nodejs.org, or: brew install node"; exit 1; }
+command -v node >/dev/null 2>&1 || { echo "Binders needs Node 22 or newer: https://nodejs.org, or: brew install node"; exit 1; }
 MAJOR=$(node -p 'process.versions.node.split(".")[0]')
-[ "$MAJOR" -ge 20 ] || { echo "Binders needs Node 20 or newer; this is $(node -v). brew upgrade node, or https://nodejs.org"; exit 1; }
+[ "$MAJOR" -ge 22 ] || { echo "Binders needs Node 22 or newer; this is $(node -v). brew upgrade node, or https://nodejs.org"; exit 1; }
 mkdir -p "$DIR/bin"
 curl -fsSL "$HUB/runner/binders-runner.mjs" -o "$DIR/binders-runner.mjs.new"
 mv "$DIR/binders-runner.mjs.new" "$DIR/binders-runner.mjs"

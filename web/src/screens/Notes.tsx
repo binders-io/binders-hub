@@ -1,19 +1,21 @@
 import { space } from '../data/space'
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { ArrowUpRight, CalendarClock, Check, ChevronLeft, GitCommitHorizontal, GitPullRequest, LoaderCircle, Lock, ChevronsLeft, ChevronsRight, ExternalLink, Maximize2, MessageSquare, Minimize2, PanelLeft, PanelRight, Sparkles, Trash2, X } from 'lucide-react'
+import { ArrowUpRight, CalendarClock, Check, ChevronLeft, GitPullRequest, LoaderCircle, Lock, ChevronsLeft, ChevronsRight, ExternalLink, Maximize2, MessageSquare, Minimize2, PanelLeft, PanelRight, Sparkles, Trash2, X } from 'lucide-react'
 import { stages } from '../data/model'
 import { isOnline, nameFor, sameFields, sameValues, useActions, useClock, useHub, useLiveNote, usePresence, type State } from '../data/store'
 import { cardPrompt } from '../data/prompts'
 import type { Card, Note } from '../data/model'
 import { ago, usePhone } from '../components/bits'
 import { attempt, toast } from '../components/Toast'
+import { ConfirmButton } from '../components/ConfirmButton'
+import { NoteViews, type NoteView } from '../components/NoteViews'
 import { call } from '../data/api'
 import { NoteControls, useMayChange } from '../components/NoteControls'
 import { AgentAvatar, Who, stageTone } from '../components/bits'
 import { NoteTree } from '../components/NoteTree'
 import { NoteChat } from '../components/NoteChat'
-import { poppedOut, popOut, useNotesLayout } from '../components/notesLayout'
+import { openOnDistill, poppedOut, popOut, rememberedSide, rememberSide, useDistillAsked, useNotesLayout } from '../components/notesLayout'
 import { MarkdownEditor, type EditorHandle } from '../editor/MarkdownEditor'
 import { Toolbar } from '../editor/Toolbar'
 import type { Marks, WorkMark } from '../editor/workMarks'
@@ -39,12 +41,16 @@ const rememberNote = (binderId: string, noteId: string) => {
   } catch { /* only a convenience */ }
 }
 
-/** Which note to show: the one asked for, else the one you were last on in this binder, else its first. */
+/**
+ * Which note to show: the one asked for. With none asked for (Notes from the sidebar), the one you were last on in this
+ * binder, else its first. One asked for that isn't there is never swapped for another: `missing` says so.
+ */
 function pick(state: State, id: string, binder: string, last: string | undefined) {
   const inView = (binderId: string) => binder === 'all' || binderId === binder
   const asked = state.notes.find((n) => n.id === id)
-  const note = asked ?? state.notes.find((n) => n.id === last && inView(n.binderId)) ?? state.notes.find((n) => inView(n.binderId))
-  return { askedBinder: asked?.binderId, noteId: note?.id, noteBinder: note?.binderId }
+  const note = asked ?? (id ? undefined : state.notes.find((n) => n.id === last && inView(n.binderId)) ?? state.notes.find((n) => inView(n.binderId)))
+  // Until the hub has answered, a note not found may only not be here yet.
+  return { askedBinder: asked?.binderId, noteId: note?.id, noteBinder: note?.binderId, missing: !!id && !asked, loaded: state.sync.version > 0 }
 }
 
 /** A note, the work that came from it marked where it came from, and Distill beside it. */
@@ -55,7 +61,9 @@ export function Notes({ id }: { id: string }) {
   // Notes from the sidebar opens the note you were last on in this binder, else its first.
   const last = lastNote(binder)
   const phone = usePhone()
-  const { askedBinder, noteId, noteBinder } = useHub((state) => pick(state, id, binder, last), sameValues)
+  const { askedBinder, noteId, noteBinder, missing, loaded } = useHub((state) => pick(state, id, binder, last), sameValues)
+  // A note deleted from its own screen: the address still names it for a moment, which isn't worth a word.
+  const [deleted, setDeleted] = useState<string>()
   // A note opened from elsewhere (a link, search) takes you into its binder.
   useEffect(() => {
     if (askedBinder && binder !== 'all' && askedBinder !== binder) setBinder(askedBinder)
@@ -67,19 +75,36 @@ export function Notes({ id }: { id: string }) {
     // On a phone Notes opens on the list, whose address it keeps: picking the note it remembers still goes to it.
     if (!id && !phone) window.history.replaceState(null, '', href({ screen: 'notes', id: noteId }))
   }, [noteId, noteBinder, id, phone])
+  if (id && missing) {
+    if (id === deleted) return null
+    return (
+      <div className="notes empty">
+        {!phone && <NoteTree currentId="" />}
+        <div className="empty-screen">
+          {loaded ? (
+            <>
+              <h2>That note isn’t here any more</h2>
+              <p>It may have been deleted, or moved out of reach.</p>
+              <a className="button primary" href={href({ screen: 'notes', id: '' })}>Go to your notes</a>
+            </>
+          ) : <p role="status">Opening the note…</p>}
+        </div>
+      </div>
+    )
+  }
   if (!noteId) {
     return (
       <div className="notes empty">
         <NoteTree currentId="" />
         <div className="empty-screen">
           <h2>No notes yet</h2>
-          <p>{binders.length ? 'Write one, then Distill it into work for your agents.' : 'Make a binder first, in the notes list or in Settings.'}</p>
+          <p>{binders.length ? 'Write one, then Distill it into work for your agents.' : 'Make a binder first: “New binder…” is in the switcher at the top left.'}</p>
           {binders[0] && <button className="button primary" onClick={() => go({ screen: 'notes', id: store.addNote(binders[0].id) })}>New note</button>}
         </div>
       </div>
     )
   }
-  return <NoteScreen key="note" noteId={noteId} listFirst={!id} />
+  return <NoteScreen key="note" noteId={noteId} listFirst={!id} onDeleted={setDeleted} />
 }
 
 /**
@@ -116,7 +141,7 @@ function useKeyboardRoom(active: boolean) {
   }, [active])
 }
 
-function NoteScreen({ noteId, listFirst }: { noteId: string; listFirst: boolean }) {
+function NoteScreen({ noteId, listFirst, onDeleted }: { noteId: string; listFirst: boolean; onDeleted: (noteId: string) => void }) {
   const store = useActions()
   const { openItem } = useUI()
   const note = useHub((state) => state.notes.find((n) => n.id === noteId), sameShape)
@@ -151,14 +176,35 @@ function NoteScreen({ noteId, listFirst }: { noteId: string; listFirst: boolean 
   }, [listFirst, phone])
   const listOpen = phone && listFor !== undefined && listFor === noteId
   const [distiller, setDistiller] = useState('')
-  const [side, setSide] = useState<'chat' | 'distill'>(() => {
-    if (poppedOut() === 'chat') return 'chat'
-    try { return window.localStorage.getItem('binders-note-side') === 'distill' ? 'distill' : 'chat' } catch { return 'chat' }
-  })
+  const [side, setSide] = useState<'chat' | 'distill'>(() => (poppedOut() === 'chat' ? 'chat' : rememberedSide()))
   const chooseSide = (next: 'chat' | 'distill') => {
     setSide(next)
-    try { window.localStorage.setItem('binders-note-side', next) } catch { /* only a convenience */ }
+    rememberSide(next)
   }
+  // Writing, in the note or in the chat, on a phone: the page is as tall as what the keyboard leaves.
+  const [focused, setFocused] = useState(false)
+  const [chatFocused, setChatFocused] = useState(false)
+  // On a phone the note, its chat and Distill each fill the screen, one at a time; every note opens on itself.
+  const [shown, setShown] = useState<{ noteId: string; view: NoteView }>({ noteId, view: 'note' })
+  const view = phone && shown.noteId === noteId ? shown.view : 'note'
+  const chooseView = (next: NoteView) => {
+    // The box being left behind may not say it lost focus.
+    setFocused(false)
+    setChatFocused(false)
+    setShown({ noteId, view: next })
+    if (next !== 'note') chooseSide(next)
+  }
+  // Asked for from another screen (Home's proposed cards, a Proposed mark in the note): Distill, open.
+  useDistillAsked(noteId, () => {
+    chooseSide('distill')
+    if (phone) {
+      setListFor(undefined)
+      chooseView('distill')
+    } else {
+      change({ sideOpen: true })
+      if (focus === 'note') setFocus('none')
+    }
+  })
   // The one you picked, else one that's listening, else one you set up yourself, else one that says it distills.
   const chosen = agents.find((a) => a.id === distiller)
     ?? agents.find((a) => isOnline(a))
@@ -167,12 +213,21 @@ function NoteScreen({ noteId, listFirst }: { noteId: string; listFirst: boolean 
     ?? agents[0]
   const { discardIfEmpty } = store
 
-  // Leaving a note you never wrote in throws it away, as Notes on the Mac does.
+  // Leaving a note you never wrote in throws it away, as Notes on the Mac does: for another note, or for another screen.
   const previous = useRef(noteId)
+  const staying = useRef(false)
   useEffect(() => {
     if (previous.current !== noteId) discardIfEmpty(previous.current)
     previous.current = noteId
   }, [noteId, discardIfEmpty])
+  useEffect(() => {
+    staying.current = true
+    return () => {
+      staying.current = false
+      // In development the screen is set up, torn down and set up again at once: only one that stays gone counts.
+      window.setTimeout(() => { if (!staying.current) discardIfEmpty(previous.current) }, 0)
+    }
+  }, [discardIfEmpty])
 
   const editor = useRef<EditorHandle>(null)
   const [raw, setRaw] = useState(() => {
@@ -192,9 +247,8 @@ function NoteScreen({ noteId, listFirst }: { noteId: string; listFirst: boolean 
   }
 
   const mayChange = useMayChange(note ?? { id: noteId })
-  const [focused, setFocused] = useState(false)
-  const writing = phone && focused
-  useKeyboardRoom(writing)
+  const writing = phone && focused && view === 'note'
+  useKeyboardRoom(writing || (phone && chatFocused && view === 'chat'))
   if (!note) return null
 
   const binder = binders.find((b) => b.id === note.binderId)
@@ -210,23 +264,28 @@ function NoteScreen({ noteId, listFirst }: { noteId: string; listFirst: boolean 
     // The note next to it in the same binder opens, else the first anywhere.
     const rest = store.current().notes.filter((n) => n.id !== note.id)
     const next = rest.find((n) => n.binderId === note.binderId && n.folderId === note.folderId) ?? rest.find((n) => n.binderId === note.binderId) ?? rest[0]
+    onDeleted(note.id)
     store.deleteNote(note.id)
     go({ screen: 'notes', id: next?.id })
   }
 
   const showTree = phone ? listOpen : focus === 'none' && layout.treeOpen
-  const showNote = focus !== 'chat'
-  const showSide = focus === 'chat' || (!phone && focus === 'none' && layout.sideOpen)
+  // On a phone the note stays drawn (so its place and its caret are kept) and is hidden while its chat or Distill shows.
+  const showNote = phone || focus !== 'chat'
+  const showSide = phone ? !listOpen && view !== 'note' : focus === 'chat' || (focus === 'none' && layout.sideOpen)
+  const panel = phone && view !== 'note' ? view : side
+  const views = phone && !listOpen
   const columns = phone || focus === 'note' ? 'minmax(0, 1fr)' : focus === 'chat' ? 'minmax(0, 1fr)'
     : [showTree ? `${layout.tree}px` : '', 'minmax(0, 1fr)', showSide ? (layout.wide ? 'minmax(360px, 50%)' : `${layout.side}px`) : ''].filter(Boolean).join(' ')
 
   return (
-    <div className={`notes${focus !== 'none' ? ` focus-${focus}` : ''}${popped ? ' popped' : ''}${listOpen ? ' list-open' : ''}`} style={{ gridTemplateColumns: columns }}>
+    <div className={`notes${focus !== 'none' ? ` focus-${focus}` : ''}${popped ? ' popped' : ''}${listOpen ? ' list-open' : ''}${views ? ' views' : ''}`} style={{ gridTemplateColumns: columns }}>
       {showTree && <NoteTree currentId={note.id} />}
+      {views && <NoteViews view={view} onChange={chooseView} waiting={fresh.length} />}
 
-      {showNote && <article className="note">
+      {showNote && <article className="note" hidden={phone && view !== 'note'}>
         {showTree && !phone && <div className="resize-handle" onPointerDown={drag('tree')} role="separator" aria-orientation="vertical" aria-label="Resize the notes list" />}
-        <NoteMeta noteId={note.id} trail={[binder?.name, ...trail].join(' / ')}>
+        <NoteMeta noteId={note.id} trail={[binder?.name, ...trail].join(' / ')} where={`${space || 'notes'}/${path}`}>
           {phone ? (
             <>
               {focus === 'none' && <button type="button" className="note-back" onClick={() => setListFor(listOpen ? undefined : note.id)} aria-expanded={listOpen} aria-label={listOpen ? 'Hide the notes list' : 'Show the notes list'}><ChevronLeft size={18} /> Notes</button>}
@@ -234,7 +293,7 @@ function NoteScreen({ noteId, listFirst }: { noteId: string; listFirst: boolean 
                 { label: scheduled ? `Schedules (${scheduled})` : 'Schedule it', icon: <CalendarClock size={14} />, onSelect: () => setScheduling(true) },
                 { label: ownSet ? 'Join the open change set' : 'Give it its own change set', icon: <GitPullRequest size={14} />, onSelect: toggleOwnSet },
                 { separator: true },
-                { label: 'Delete this note', icon: <Trash2 size={14} />, danger: true, confirm: 'Delete for good?', onSelect: deleteThis },
+                { label: 'Delete this note', icon: <Trash2 size={14} />, danger: true, confirm: 'Delete this note for good?', onSelect: deleteThis },
               ]} />
             </>
           ) : (
@@ -248,11 +307,10 @@ function NoteScreen({ noteId, listFirst }: { noteId: string; listFirst: boolean 
                 <button type="button" className={`icon-button${ownSet ? ' on' : ''}`} aria-pressed={ownSet} onClick={toggleOwnSet} title={ownSet ? 'This note’s work gets its own change set. Click to add it to the open one instead.' : 'This note’s work joins the open change set. Click to give it its own.'} aria-label="Own change set"><GitPullRequest size={15} /></button>
                 {!popped && <button type="button" className="icon-button" onClick={() => popOut('note', note.id)} title="Open in a window of its own" aria-label="Pop out"><ExternalLink size={15} /></button>}
               </span>
-              <DeleteNote onDelete={deleteThis} />
+              <ConfirmButton className="note-delete" question="Delete this note for good? Press again" label="Delete this note" title="Delete this note" onConfirm={deleteThis}><Trash2 size={14} /></ConfirmButton>
             </>
           )}
         </NoteMeta>
-        {!phone && <div className="note-path mono" title="Where the hub keeps this note">{space || 'notes'}/{path}</div>}
         {note.locked && !mayChange && <p className="note-locked"><Lock size={13} /> Locked by @{note.locked.by}. Use the versions button to propose a change for review.</p>}
         {mayChange && !phone && <Toolbar editor={editor} raw={raw} onRaw={showRaw} />}
         <NoteEditor key={`${note.id}:${mayChange ? 'edit' : 'read'}`} noteId={note.id} binderId={note.binderId} folderId={note.folderId} editor={editor} raw={raw} readOnly={!mayChange} onFocusChange={setFocused} />
@@ -260,9 +318,9 @@ function NoteScreen({ noteId, listFirst }: { noteId: string; listFirst: boolean 
         {!writing && <Backlinks noteId={note.id} title={note.title} />}
       </article>}
 
-      {showSide && <aside className="distill" aria-label="Beside the note">
-        {focus === 'none' && <div className="resize-handle" onPointerDown={drag('side')} onDoubleClick={() => change({ wide: !layout.wide })} role="separator" aria-orientation="vertical" aria-label="Resize the side panel" />}
-        <div className="side-head">
+      {showSide && <aside className={`distill${phone ? ' view' : ''}`} aria-label={phone ? (panel === 'chat' ? 'Chat about the note' : 'Distill the note') : 'Beside the note'}>
+        {!phone && focus === 'none' && <div className="resize-handle" onPointerDown={drag('side')} onDoubleClick={() => change({ wide: !layout.wide })} role="separator" aria-orientation="vertical" aria-label="Resize the side panel" />}
+        {!phone && <div className="side-head">
           <div className="side-tabs" role="tablist">
             <button role="tab" aria-selected={side === 'chat'} className={side === 'chat' ? 'on' : ''} onClick={() => chooseSide('chat')}><MessageSquare size={14} /> Chat</button>
             <button role="tab" aria-selected={side === 'distill'} className={side === 'distill' ? 'on' : ''} onClick={() => chooseSide('distill')}><Sparkles size={14} /> Distill</button>
@@ -270,9 +328,9 @@ function NoteScreen({ noteId, listFirst }: { noteId: string; listFirst: boolean 
           {focus === 'none' && <button type="button" className="icon-button" onClick={() => change({ wide: !layout.wide })} title={layout.wide ? 'Narrower' : 'Wider'} aria-label={layout.wide ? 'Narrower' : 'Wider'}>{layout.wide ? <ChevronsRight size={15} /> : <ChevronsLeft size={15} />}</button>}
           {!popped && <button type="button" className="icon-button" onClick={() => { chooseSide('chat'); setFocus(focus === 'chat' ? 'none' : 'chat') }} title={focus === 'chat' ? 'Leave full screen (Esc)' : 'Chat full screen'} aria-label={focus === 'chat' ? 'Leave full screen' : 'Chat full screen'}>{focus === 'chat' ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>}
           {!popped && <button type="button" className="icon-button" onClick={() => popOut('chat', note.id)} title="Chat in a window of its own" aria-label="Pop out the chat"><ExternalLink size={15} /></button>}
-        </div>
-        {focus === 'chat' && <p className="chat-about">About <a href={href({ screen: 'notes', id: note.id })} onClick={() => setFocus('none')}>{note.title}</a></p>}
-        {side === 'chat' ? <NoteChat key={note.id} note={note} agents={agents} initial={chosen} /> : <>
+        </div>}
+        {!phone && focus === 'chat' && <p className="chat-about">About <a href={href({ screen: 'notes', id: note.id })} onClick={() => setFocus('none')}>{note.title}</a></p>}
+        {panel === 'chat' ? <NoteChat key={note.id} note={note} agents={agents} initial={chosen} onFocusChange={setChatFocused} /> : <>
         <header>
           <h2><Sparkles size={15} /> Distill</h2>
           <button className="button primary" onClick={() => chosen && void attempt(() => store.distill(note.id, chosen.id))} disabled={distilling || !chosen}>
@@ -349,29 +407,46 @@ function NoteScreen({ noteId, listFirst }: { noteId: string; listFirst: boolean 
   )
 }
 
-/** The line over a note: where it is, who edited it and when, and whether it's saved. All of it changes as you type. */
-function NoteMeta({ noteId, trail, children }: { noteId: string; trail: string; children: ReactNode }) {
+/**
+ * The line over a note: where it is, who edited it and when, and whether it's saved. All of it changes as you type.
+ * "Saved" is the word; its commit, branch and file are a hover or a press away, for whoever wants them.
+ */
+function NoteMeta({ noteId, trail, where, children }: { noteId: string; trail: string; /** The note's file in the notes repo. */ where: string; children: ReactNode }) {
   const note = useHub((state) => state.notes.find((n) => n.id === noteId))
+  const binder = useHub((state) => state.binders.find((b) => b.id === note?.binderId))
   const connection = useHub((state) => state.sync.connection)
+  const [detail, setDetail] = useState(false)
   if (!note) return null
+  // The hub pushes a binder's notes to its repo unless that's turned off, or there's no repo.
+  const toGitHub = !!binder?.repo && binder.notes !== false
+  const committed = !!note.commit && !note.committing
+  const branch = binder?.notesBranch || 'binders-notes'
+  const about = [
+    committed ? `Commit ${note.commit}.` : 'Not committed to the notes repo yet: the hub does it once typing pauses.',
+    toGitHub ? `Goes to ${binder!.repo}, on branch ${branch}.` : 'Kept in the hub: this binder has no repo for its notes.',
+    `File: ${where}`,
+  ].join(' ')
   return (
-    <div className="note-meta">
-      <span className="trail">{trail}</span>
-      <EditedAt note={note} />
-      <span className="note-saved">
-        {note.saving ? (
-          connection === 'live' ? <><LoaderCircle size={12} className="spin" /> Saving</> : <span title="Kept in this browser, and sent when the hub is back">Waiting for the hub</span>
-        ) : note.committing ? (
-          <span title="The hub has your words. It commits them to the notes repo once typing pauses for a minute.">Saved</span>
-        ) : (
-          <><GitCommitHorizontal size={13} /> <span className="mono">{note.commit ?? 'not saved'}</span></>
-        )}
-      </span>
-      <span className="note-editors">
-        {note.editors.map((e) => <Who key={e} id={e} size={22} />)}
-      </span>
-      {children}
-    </div>
+    <>
+      <div className="note-meta">
+        <span className="trail">{trail}</span>
+        <EditedAt note={note} />
+        <span className="note-saved">
+          {note.saving ? (
+            connection === 'live' ? <><LoaderCircle size={12} className="spin" /> Saving</> : <span className="pending" title="Kept in this browser, and sent when the hub is back">Waiting for the hub</span>
+          ) : (
+            <button type="button" className={`note-saved-button${!committed && toGitHub ? ' pending' : ''}`} aria-expanded={detail} aria-controls="note-saved-detail" title={about} onClick={() => setDetail((was) => !was)}>
+              <Check size={12} /> {!committed && toGitHub ? 'Saved, not on GitHub yet' : 'Saved'}
+            </button>
+          )}
+        </span>
+        <span className="note-editors">
+          {note.editors.map((e) => <Who key={e} id={e} size={22} />)}
+        </span>
+        {children}
+      </div>
+      {detail && <p id="note-saved-detail" className="note-path mono">{about}</p>}
+    </>
   )
 }
 
@@ -410,11 +485,12 @@ const NoteEditor = memo(function NoteEditor({ noteId, binderId, folderId, editor
   const marks = useMemo<Marks>(() => ({
     work,
     open: openItem,
+    distill: () => openOnDistill(noteId),
     menu: (itemId, event) => {
       const card = store.current().cards.find((c) => c.id === itemId)
       if (card) openMenu(event, cardMenuItems(card, store, openItem))
     },
-  }), [work, openItem, store])
+  }), [work, openItem, store, noteId])
   // What [[links]] reach: the notes by title. One that isn't there yet is made beside this note.
   const links = useMemo(() => ({
     titles: () => store.current().notes.map((n) => n.title),
@@ -494,7 +570,7 @@ function DistillStatus({ card }: { card: Card }) {
       </p>
       {!taken && !listening && (
         <p className="distill-hint">
-          {name} isn’t listening for work. In Claude Code (or wherever it runs), paste this:
+          Its runner isn’t running. In Claude Code (or wherever it runs), paste this:
           <code>{cardPrompt(card.id)}</code>
         </p>
       )}
@@ -507,7 +583,6 @@ function DistillStatus({ card }: { card: Card }) {
   )
 }
 
-/** Delete asks once more on the button itself, then deletes; the notes repo's history still has it. */
 /** When the note last changed and who changed it: "Edited 5m ago by ana", the full date and time on hover. */
 function EditedAt({ note }: { note: { editedAt: string; editedBy?: string; editors: string[] } }) {
   const agents = useHub((state) => state.agents)
@@ -518,18 +593,4 @@ function EditedAt({ note }: { note: { editedAt: string; editedBy?: string; edito
   const by = note.editedBy ?? (note.editors.length === 1 ? note.editors[0] : undefined)
   const full = new Date(note.editedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
   return <time className="note-edited" dateTime={note.editedAt} title={`Last edited ${full}`}>Edited {phrase}{by ? ` by ${nameFor({ agents }, by)}` : ''}</time>
-}
-
-function DeleteNote({ onDelete }: { onDelete: () => void }) {
-  const [sure, setSure] = useState(false)
-  useEffect(() => {
-    if (!sure) return
-    const timer = window.setTimeout(() => setSure(false), 4000)
-    return () => window.clearTimeout(timer)
-  }, [sure])
-  return (
-    <button type="button" className={`note-delete${sure ? ' sure' : ''}`} onClick={() => (sure ? onDelete() : setSure(true))} onBlur={() => setSure(false)} aria-label="Delete this note" title="Delete this note">
-      <Trash2 size={14} />{sure && ' Delete for good?'}
-    </button>
-  )
 }

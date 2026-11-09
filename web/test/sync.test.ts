@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyState, type Change, type Entry, type HubState } from '../../shared/state.ts'
-import { clientId, HubConnection, keys, queue, receive, remember, rememberCache, rememberOutbox, settled, shown, snapshot, startingSync, type Sync } from '../src/data/sync'
+import { clientId, heard, HubConnection, keys, queue, receive, remember, rememberCache, rememberOutbox, settled, shown, snapshot, startingSync, type Sync } from '../src/data/sync'
 
 // What the rest of the web app stands on: your changes stay on top of what the hub confirmed, whatever arrives and in
 // whatever order, and what's waiting survives a reload.
@@ -302,5 +302,14 @@ describe('what’s kept in the browser', () => {
     const back = startingSync(seed)
     expect(back.confirmed).toBe(seed)
     expect(back.version).toBe(0)
+  })
+})
+
+describe('whether the hub has answered yet', () => {
+  it('is no until its state or a copy kept from last time is here, or its live feed is open', () => {
+    expect(heard(start({ version: 0, connection: 'connecting' }))).toBe(false)
+    expect(heard(start({ version: 0, connection: 'offline' }))).toBe(false)
+    expect(heard(start({ version: 4, connection: 'connecting' }))).toBe(true)
+    expect(heard(start({ version: 0, connection: 'live' }))).toBe(true)
   })
 })

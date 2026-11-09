@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { asksOf, type Card } from '../../../shared/work.ts'
+import { asksOf, environmentBefore, promotion, repoEnvironments, type Agent, type Card, type Presence } from '../../../shared/work.ts'
+import { forAttention, waitingOn, type Waiting } from '../../../shared/waiting.ts'
 import type { Actions } from '../actions.ts'
 import { Refused, type Hub } from '../hub.ts'
 import { log } from '../logger.ts'
@@ -99,11 +100,23 @@ function setLine(state: WorkPlace['hub']['state'], set: WorkPlace['hub']['state'
   return [`- [${mark}] Change set #${set.number}, ${quoted(set.title)}: ${standing}`, `${pulls.length} pull request${pulls.length === 1 ? '' : 's'}${pulls.length !== open.length ? ` (${pulls.length - open.length} merged)` : ''}`, ...(failed.length ? [`checks failing: ${clip(failed.join(', '), 120)}`] : []), ...holdups].join('; ')
 }
 
+/**
+ * Whether an agent is there now: its runner is listening for work, or it called in the last two minutes. The hub keeps
+ * that live; an agent's lastSeen is written at most every thirty minutes, so on its own it calls a listening agent
+ * offline most of the time. It still counts, as the hub forgets presence when it restarts.
+ */
+export function agentOnline(presence: Record<string, Presence>, agent: Agent) {
+  const now = presence[agent.id]
+  const lately = (at?: string) => !!at && Date.now() - Date.parse(at) < 120_000
+  return !!now?.listening || lately(now?.at) || lately(agent.lastSeen)
+}
+
 function linesOf(place: WorkPlace, login: string, mark: (kind: Kind, id: string, number?: number) => string) {
   const state = place.hub.state
   const me = login.toLowerCase()
   const here = (binderId: string) => !place.binders || place.binders.includes(binderId)
   const cards = state.cards.filter((c) => here(c.binderId))
+  const presence = place.hub.presence()
   const nameOf = (id?: string) => state.agents.find((a) => a.id === id)?.name ?? 'An agent'
   const ownerOf = (id?: string) => state.agents.find((a) => a.id === id)?.owner
   const yours = (id?: string) => ownerOf(id)?.toLowerCase() === me
@@ -114,7 +127,7 @@ function linesOf(place: WorkPlace, login: string, mark: (kind: Kind, id: string,
     .sort((a, b) => Number(b.owner.toLowerCase() === me) - Number(a.owner.toLowerCase() === me) || holding(b.id).length - holding(a.id).length)
     .map((a) => {
       const on = holding(a.id)
-      const online = a.lastSeen ? Date.now() - Date.parse(a.lastSeen) < 120_000 : false
+      const online = agentOnline(presence, a)
       const titles = (cards: Card[]) => cards.map((c) => quoted(c.title)).join(', ')
       const waitingOn = on.filter((c) => asksOf(c))
       const blocked = on.filter((c) => c.stage === 'blocked' && !asksOf(c))
@@ -123,18 +136,13 @@ function linesOf(place: WorkPlace, login: string, mark: (kind: Kind, id: string,
       return `- ${a.name} (${a.owner.toLowerCase() === me ? 'yours' : `${a.owner}’s`}, ${online ? 'online' : 'offline'}): ${doing || 'not working on anything'}`
     })
 
-  const asking = cards.filter((c) => c.stage !== 'live' && asksOf(c))
-  const asks = asking.map((c) => (c.needsYou
-    ? `- [${mark('card', c.id)}] ${quoted(c.title)}: ${nameOf(c.agentId)} asks: ${clip(c.needsYou, 300)}`
-    : `- [${mark('card', c.id)}] ${quoted(c.title)}: ${nameOf(c.agentId)} asks to use ${c.permission!.tool}: ${clip(c.permission!.what, 200)}${yours(c.permission!.agent) ? '' : ` (only ${ownerOf(c.permission!.agent)} can answer it)`}`))
-  const suggested = state.proposals.filter((p) => p.state === 'new' && here(p.binderId)).length
   const sets = state.changeSets.filter((s) => here(s.binderId) && (s.state === 'assembling' || s.state === 'review' || s.state === 'merging')).sort((a, b) => b.number - a.number)
-  const toApprove = sets.filter((s) => s.state === 'review')
-  const waiting = [
-    ...asks,
-    ...toApprove.slice(0, 6).map((s) => `- Change set #${s.number}, ${quoted(s.title)}, is waiting for approval`),
-    ...(suggested ? [`- ${suggested} suggested card${suggested === 1 ? '' : 's'} to accept or dismiss on the board`] : []),
-  ]
+  // What waits is worked out in one place (shared/waiting.ts), so the brain says what Home shows. An environment has no
+  // binder of its own, so it's here only when this isn't limited to some binders. A card's row carries its mark, to answer it.
+  const rows = waitingOn(state, login).filter((r) => (r.binderId ? here(r.binderId) : !place.binders))
+  const said = (row: Waiting) => `- ${row.about.type === 'card' ? `[${mark('card', row.about.id)}] ` : ''}${quoted(row.title)}: ${clip(row.detail, 300)}`
+  const waiting = forAttention(rows).map(said)
+  const onOthers = rows.filter((r) => r.for === 'others').map(said)
 
   const working = cards
     .filter((c) => (c.stage === 'working' || c.stage === 'blocked') && !asksOf(c))
@@ -143,17 +151,18 @@ function linesOf(place: WorkPlace, login: string, mark: (kind: Kind, id: string,
   const ready = cards.filter((c) => c.stage === 'ready').map((c) => `- [${mark('card', c.id)}] ${quoted(c.title)}${c.meantFor ? `, for ${nameOf(c.meantFor)}` : ''}`)
   const review = cards.filter((c) => c.stage === 'review').map((c) => `- ${quoted(c.title)}${c.agentId ? `, from ${nameOf(c.agentId)}` : ''}`)
 
-  const envs = state.environments
-  const environments = envs.map((env, i) => {
-    const from = envs[i - 1]
-    const ahead = from && from.version !== env.version
-    return `- ${from ? `[${mark('env', env.id)}] ` : ''}${env.name}: ${env.version}, ${env.state}${ahead ? `; ${from.name} before it has ${from.version}` : ''}`
-  })
+  // Each repo's environments in the order they're deployed to. Only one the hub can deploy to (it has a workflow, and
+  // the one before it has something it doesn't) is offered to promote, so only that one is marked.
+  const environments = [...new Map(state.environments.filter((e) => e.repo).map((e) => [e.repo!.toLowerCase(), e.repo!])).values()].flatMap((repo) => repoEnvironments(state, repo).map((env) => {
+    const promote = promotion(state, env)
+    return `- ${promote ? `[${mark('env', env.id)}] ` : ''}${repo} ${clip(env.name, 60)}: ${clip(env.version, 60) || 'nothing deployed yet'}, ${env.state}${promote ? `; ${clip(promote.from.name, 60)} before it has ${clip(promote.version, 60)}` : ''}`
+  }))
   const binders = state.binders.filter((b) => here(b.id)).map((b) => `- [${mark('binder', b.id)}] ${clip(b.name, 80)}`)
 
   return [
     ...list('Agents', agents, most.agents, 'none set up', (n) => `and ${n} more`),
     ...list('Waiting on you', waiting, most.asks, 'nothing', (n) => `and ${n} more`),
+    ...(onOthers.length ? list('Waiting on someone else', onOthers, most.asks, '', (n) => `and ${n} more`) : []),
     ...list('Being worked on', working, most.working, 'nothing', (n) => `and ${n} more`),
     ...list('Ready for an agent', ready, most.ready, 'nothing', (n) => `and ${n} more`),
     ...(review.length ? list('Finished, in review', review, most.review, '', (n) => `and ${n} more`) : []),
@@ -340,16 +349,17 @@ export function propose(asked: Asked, board: Board, login: string, waitMs = 5000
       })
     }
     case 'promote': {
-      const envs = hub.state.environments
-      const index = target.kind === 'env' ? envs.findIndex((e) => e.id === id) : -1
-      const env = envs[index]
-      const from = envs[index - 1]
-      if (!env || !from) throw new Refused(env ? `Nothing comes before ${env.name}.` : notWhich)
+      const env = target.kind === 'env' ? hub.state.environments.find((e) => e.id === id) : undefined
+      if (!env) throw new Refused(notWhich)
+      if (!env.deploy) throw new Refused(`${env.name} has no deploy workflow, so the hub can’t deploy to it. It shows what GitHub deploys there.`)
+      const from = environmentBefore(hub.state, env)
+      if (!from) throw new Refused(`Nothing comes before ${env.name}.`)
       if (env.state === 'deploying') throw new Refused(`${env.name} is already deploying.`)
+      if (!from.version) throw new Refused(`Nothing has been deployed to ${from.name} yet.`)
       if (env.version === from.version) throw new Refused(`${env.name} already has ${from.version}.`)
       const version = from.version
       return made({
-        what: `Promote ${version} from ${from.name} to ${env.name}.`,
+        what: `Promote ${version} from ${from.name} to ${env.name} in ${env.repo}.`,
         button: `Promote to ${env.name}`,
         word: 'promote',
         heavy: true,

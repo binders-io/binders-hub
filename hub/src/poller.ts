@@ -42,6 +42,7 @@ interface DeploymentItem {
   ref: string
   sha: string
   payload?: { version?: string } | string
+  transient_environment?: boolean
 }
 
 export interface PollerOptions {
@@ -179,7 +180,7 @@ export class GitHubPoller {
         const known = this.hub.state.pulls.some((p) => sameRepo(p.repo, repo) && p.number === item.number)
         await this.webhooks.handle('pull_request', {
           action: known ? 'synchronize' : 'opened',
-          pull_request: { number: info.number, title: info.title, body: info.body, state: info.state, merged: info.merged, html_url: info.url, head: { ref: info.branch, sha: info.headSha }, additions: info.additions, deletions: info.deletions },
+          pull_request: { number: info.number, title: info.title, body: info.body, state: info.state, merged: info.merged, html_url: info.url, head: { ref: info.branch, sha: info.headSha }, merge_commit_sha: info.mergeSha, additions: info.additions, deletions: info.deletions },
           repository: { full_name: repo },
         })
         // It's been asked already: whether it merges as things are now.
@@ -233,13 +234,15 @@ export class GitHubPoller {
     this.baselined.add(repo)
     // With no new deployments, the recent ones still get their statuses checked.
     for (const deployment of this.recentDeployments.get(repo) ?? []) {
-      const statuses = await this.ask<{ state: string }[]>(github, `/repos/${repo}/deployments/${deployment.id}/statuses?per_page=1`)
+      // A throwaway environment (a preview for one pull request) isn't followed, and costs no request.
+      if (deployment.transient_environment) continue
+      const statuses = await this.ask<{ state: string; environment_url?: string; log_url?: string; target_url?: string; created_at?: string }[]>(github, `/repos/${repo}/deployments/${deployment.id}/statuses?per_page=1`)
       if (!statuses?.length) continue
       const state = statuses[0].state
       const before = this.deployments.get(deployment.id)
       this.deployments.set(deployment.id, state)
       if (first || before === state || !deployment.environment) continue
-      await this.webhooks.handle('deployment_status', { deployment_status: { state }, deployment })
+      await this.webhooks.handle('deployment_status', { deployment_status: statuses[0], deployment, repository: { full_name: repo } })
     }
   }
 }

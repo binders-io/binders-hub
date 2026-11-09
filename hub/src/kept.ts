@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { HubState } from '../../shared/state.ts'
 import type { Hub } from './hub.ts'
@@ -122,10 +122,14 @@ export class StateFile {
     }
   }
 
-  /** Saves it now, and again soon after each change. */
+  /**
+   * Saves it now, and again soon after each change. What the file held before this start is kept beside it first, as
+   * state.prev.json: one start back, should this one have read its log wrong.
+   */
   async follow(hub: Hub) {
     this.hub = hub
     hub.on('entries', this.changed)
+    await copyFile(this.file, this.file.replace(/(\.json)?$/, '.prev.json')).catch(() => undefined)
     await this.save()
   }
 

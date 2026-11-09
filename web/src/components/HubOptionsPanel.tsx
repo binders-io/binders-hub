@@ -1,19 +1,18 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Check } from 'lucide-react'
 import { call } from '../data/api'
 import type { HubOptions } from '../data/model'
 import { useStore } from '../data/store'
 import { attempt } from './Toast'
 import { PeopleInput } from './PeopleInput'
-
+import { Saved } from '../screens/settings/shared'
 
 type Locked = Partial<Record<keyof HubOptions, string>>
 
 /**
- * The hub's options: `access` is who gets in and who's admin, and `github`, tucked away and only an admin's to see, how
- * change sets merge and who agents commit as.
+ * The hub's options, the same for every binder on it and an admin's to change: `access` is who gets in and who's admin,
+ * and `agents` how change sets merge and who agents commit as. Everyone else sees them greyed, with who can.
  */
-export function HubOptionsPanel({ part }: { part: 'access' | 'github' }) {
+export function HubOptionsPanel({ part }: { part: 'access' | 'agents' }) {
   const { state } = useStore()
   const [options, setOptions] = useState<HubOptions>()
   const [locked, setLocked] = useState<Locked>({})
@@ -29,7 +28,7 @@ export function HubOptionsPanel({ part }: { part: 'access' | 'github' }) {
     }).catch(() => {})
   }, [])
 
-  if (!options || (part === 'github' && !admin)) return null
+  if (!options) return null
 
   const save = async (fields: Partial<HubOptions>) => {
     const result = await attempt(() => call<{ options: HubOptions; locked: Locked; implied: typeof implied}>('PATCH', '/api/options', fields))
@@ -40,22 +39,20 @@ export function HubOptionsPanel({ part }: { part: 'access' | 'github' }) {
     window.setTimeout(() => setSaved(undefined), 1500)
   }
   const off = (key: keyof HubOptions) => !admin || !!locked[key]
-  const note = (key: keyof HubOptions) => (locked[key] ? <span className="option-lock">Set on the hub by {locked[key]}</span> : saved === key ? <span className="option-saved"><Check size={12} strokeWidth={3} /> Saved</span> : null)
+  const note = (key: keyof HubOptions) => (locked[key] ? <span className="option-lock">Set on the hub by {locked[key]}</span> : <Saved show={saved === key} />)
 
-  if (part === 'github') {
+  if (part === 'agents') {
     return (
-      <details className="settings-more">
-        <summary>Merging, and who agents commit as</summary>
-        <div className="options">
-      <Option title="Merging change sets" detail="Merge commits keep each pull request’s history, so the ones after it clash less, and GitHub can bring the base in without help more often. Squash and rebase make a tidier history and more conflicts." aside={note('mergeMethod')}>
-        <Segmented id="merge-method" value={options.mergeMethod} disabled={off('mergeMethod')} onChange={(mergeMethod) => void save({ mergeMethod })} choices={[['merge', 'Merge commits'], ['squash', 'Squash'], ['rebase', 'Rebase']]} />
-      </Option>
+      <div className="options">
+        {!admin && <p className="setup-note">Only the hub’s admins can change these.</p>}
+        <Option title="Merging change sets" detail="Merge commits keep each pull request’s history, so the ones after it clash less, and GitHub can bring the base in without help more often. Squash and rebase make a tidier history and more conflicts." aside={note('mergeMethod')}>
+          <Segmented id="merge-method" value={options.mergeMethod} disabled={off('mergeMethod')} onChange={(mergeMethod) => void save({ mergeMethod })} choices={[['merge', 'Merge commits'], ['squash', 'Squash'], ['rebase', 'Rebase']]} />
+        </Option>
 
-      <Option title="Agents’ commits and pull requests" detail="Who agents push and open pull requests as. Each agent’s owner chooses on the Agents page, or set one for every agent here: their owner’s GitHub sign-in, or the hub’s GitHub App and its bot." aside={note('agentCommits')}>
-        <Segmented id="agent-commits" value={options.agentCommits} disabled={off('agentCommits')} onChange={(agentCommits) => void save({ agentCommits })} choices={[['agent', 'Each agent chooses'], ['owner', 'Always its owner'], ['app', 'Always the GitHub App']]} />
-      </Option>
-        </div>
-      </details>
+        <Option title="Agents’ commits and pull requests" detail="Who agents push and open pull requests as. Each agent’s owner chooses on the Agents page, or set one for every agent here: their owner’s GitHub sign-in, or the hub’s GitHub App and its bot." aside={note('agentCommits')}>
+          <Segmented id="agent-commits" value={options.agentCommits} disabled={off('agentCommits')} onChange={(agentCommits) => void save({ agentCommits })} choices={[['agent', 'Each agent chooses'], ['owner', 'Always its owner'], ['app', 'Always the GitHub App']]} />
+        </Option>
+      </div>
     )
   }
 

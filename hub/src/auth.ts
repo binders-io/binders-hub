@@ -107,6 +107,8 @@ export class Auth {
   readonly options: AuthOptions
   /** Renewals under way, by login: two requests at once share one, as GitHub takes each refresh token once. */
   private renewing = new Map<string, Promise<string | undefined>>()
+  /** When a renewal that failed may be tried again, by login: GitHub being slow or down isn't asked again at every request. */
+  private renewRetryAt = new Map<string, number>()
 
   constructor(kv: KV, sealer: Sealer, options: AuthOptions) {
     this.kv = kv
@@ -231,7 +233,7 @@ export class Auth {
 
   private client(via: 'oauth' | 'app' | 'personal' | 'connect', space?: string, own?: GitHubLogin) {
     const github = via === 'app' || via === 'connect' ? this.options.github(space) : via === 'personal' ? own : this.oauthLogin()
-    if (!github) throw new Refusal(via === 'app' || via === 'connect' ? 'Connecting GitHub isn’t set up for this binder: its GitHub App comes first.' : 'Signing in with GitHub isn’t set up on this hub: its OAuth App comes first (Settings → Access).')
+    if (!github) throw new Refusal(via === 'app' || via === 'connect' ? 'Connecting GitHub isn’t set up for this binder: its GitHub App comes first.' : 'Signing in with GitHub isn’t set up on this hub: its OAuth App comes first (Settings → GitHub).')
     return github
   }
 
@@ -394,13 +396,24 @@ export class Auth {
       return fromSession
     }
     if (!grant.expiresAt || Date.parse(grant.expiresAt) - Date.now() > 5 * 60_000) return grant.token
-    if (!grant.refresh || (grant.refreshExpiresAt && Date.parse(grant.refreshExpiresAt) <= Date.now())) return undefined
+    // Still good for a few minutes: it's used as it is, and a renewal happens beside the request. Only once it has run
+    // out is a request held up for the renewal, as it has nothing else to go on.
+    const expired = Date.parse(grant.expiresAt) <= Date.now()
+    if (!grant.refresh || (grant.refreshExpiresAt && Date.parse(grant.refreshExpiresAt) <= Date.now())) return expired ? undefined : grant.token
     const key = `${space}:${login.toLowerCase()}`
     let renewal = this.renewing.get(key)
     if (!renewal) {
-      renewal = this.renew(login, space, grant.refresh).finally(() => this.renewing.delete(key))
+      if ((this.renewRetryAt.get(key) ?? 0) > Date.now()) return expired ? undefined : grant.token
+      renewal = this.renew(login, space, grant.refresh)
+        .then((token) => {
+          if (token) this.renewRetryAt.delete(key)
+          else this.renewRetryAt.set(key, Date.now() + 60_000)
+          return token
+        })
+        .finally(() => this.renewing.delete(key))
       this.renewing.set(key, renewal)
     }
+    if (!expired) return grant.token
     return renewal
   }
 
@@ -412,6 +425,7 @@ export class Auth {
         method: 'POST',
         headers: { accept: 'application/json', 'content-type': 'application/json' },
         body: JSON.stringify({ client_id: github.clientId, client_secret: github.clientSecret, grant_type: 'refresh_token', refresh_token: refresh }),
+        signal: AbortSignal.timeout(10_000),
       })
       const body = (await response.json()) as TokenAnswer
       if (!body.access_token) {

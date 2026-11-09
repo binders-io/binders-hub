@@ -5,6 +5,7 @@ import { titleOf } from '../../../shared/notes.ts'
 import { call } from '../data/api'
 import { nameFor, useStore } from '../data/store'
 import { href } from '../route'
+import { ConfirmButton } from './ConfirmButton'
 import { Dialog, Field } from './Dialog'
 import { attempt, toast } from './Toast'
 import { ago } from './bits'
@@ -101,7 +102,7 @@ function ScheduleForm({ noteId, schedule, onDone }: { noteId: string; schedule?:
             <option value="daily">Every day</option>
             <option value="weekdays">Weekdays</option>
             <option value="weekly">Every week</option>
-            <option value="cron">Custom (cron)</option>
+            <option value="cron">Custom times</option>
           </select>
         </Field>
         {preset.kind === 'hourly' && (
@@ -215,7 +216,7 @@ export function ScheduleList({ schedules, onEdit, showNote = true }: { schedules
               <button type="button" className="icon-button" title="Run now" aria-label="Run now" onClick={() => void attempt(() => call('POST', `/api/schedules/${s.id}/run`)).then((card) => { if (card) toast('On the board.') })}><Zap size={15} /></button>
               <button type="button" className="icon-button" title={s.enabled ? 'Turn off' : 'Turn on'} aria-label={s.enabled ? 'Turn off' : 'Turn on'} onClick={() => void attempt(() => call('PATCH', `/api/schedules/${s.id}`, { enabled: !s.enabled }))}>{s.enabled ? <Pause size={15} /> : <Play size={15} />}</button>
               {onEdit && <button type="button" className="text-button" onClick={() => onEdit(s)}>Edit</button>}
-              <button type="button" className="icon-button" title="Delete" aria-label="Delete the schedule" onClick={() => void attempt(() => call('DELETE', `/api/schedules/${s.id}`))}><Trash2 size={15} /></button>
+              <ConfirmButton className="icon-button" question="Delete it? Press again" title="Delete" label="Delete the schedule" onConfirm={() => void attempt(() => call('DELETE', `/api/schedules/${s.id}`))}><Trash2 size={15} /></ConfirmButton>
             </div>
           </li>
         )

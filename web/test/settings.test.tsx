@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { hubState, me, mount, standInHub } from './harness'
 import { Settings } from '../src/screens/Settings'
 
-// Settings is a few sections, with what most people never change tucked away, and only an admin's to see.
+// Settings is two groups of sections, this binder's and the hub's, with what most people never change tucked away. The
+// hub's are an admin's to change, and everyone sees them greyed, with who can.
 
 const options = { mergeMethod: 'merge', allowedUsers: [], allowedOrgs: [], admins: [], agentCommits: 'agent' }
 
@@ -24,53 +25,99 @@ function hub(part: string, hubAdmin: boolean, lists: unknown = { installations: 
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  window.location.hash = ''
 })
 
 describe('Settings', () => {
-  it('has five sections', async () => {
-    hub('binder', true)
+  it('has two named groups, nine sections, each a link to its own address', async () => {
+    hub('general', true)
     await mount(<Settings />)
     const nav = screen.getByRole('navigation', { name: 'Settings' })
-    expect(within(nav).getAllByRole('button').map((b) => b.textContent?.trim())).toEqual(['Binder', 'GitHub', 'Brain', 'Jira', 'This hub'])
+    const binder = within(nav).getByRole('group', { name: 'This binder' })
+    const hubs = within(nav).getByRole('group', { name: 'This hub' })
+    // GitHub isn't set up in this hub, which a link says to a screen reader as well as with its dot.
+    expect(within(binder).getAllByRole('link').map((a) => a.textContent?.trim())).toEqual(['General', 'People', 'GitHub Needs a look', 'How work flows', 'Jira'])
+    expect(within(hubs).getAllByRole('link').map((a) => a.textContent?.trim())).toEqual(['Who gets in', 'Brain', 'Agents', 'Status'])
+    expect(within(nav).getByRole('link', { name: 'How work flows' }).getAttribute('href')).toBe('#/settings/flow')
+    expect(within(hubs).getByRole('link', { name: 'Status' }).getAttribute('href')).toBe('#/settings/status')
+    expect(within(nav).getByText('Server')).toBeTruthy()
+    expect(within(nav).getByText('The same for every binder here')).toBeTruthy()
   })
 
-  it.each([['sync', 'This hub'], ['access', 'This hub'], ['agents', 'This hub'], ['briefs', 'GitHub'], ['binders', 'Binder']])('takes a browser that remembers %s to %s', async (old, now) => {
+  it.each([['sync', 'Status'], ['access', 'Who gets in'], ['hub', 'Who gets in'], ['agents', 'Agents'], ['briefs', 'GitHub'], ['binders', 'General'], ['binder', 'General'], ['nonsense', 'General']])('takes a browser that remembers %s to %s', async (old, now) => {
     hub(old, true)
     await mount(<Settings />)
     expect(screen.getByRole('heading', { level: 2 }).textContent).toBe(now)
   })
 
-  it('shows an admin who may sign in, with agents’ addresses tucked away, and has no switch for what only the hub’s own environment sets', async () => {
-    hub('hub', true)
+  it('shows an admin who may sign in, and has no switch for what only the hub’s own environment sets', async () => {
+    hub('access', true)
     await mount(<Settings />)
     expect(await screen.findByRole('heading', { name: 'Who may sign in' })).toBeTruthy()
-    const addresses = (await screen.findByText('Addresses for agents and MCP clients')).closest('details')!
-    expect(addresses.open).toBe(false)
-    expect(within(addresses).getByText('The runner')).toBeTruthy()
     for (const name of ['Following GitHub', 'Committing notes', 'Signing in by name']) expect(screen.queryByRole('heading', { name, hidden: true })).toBeNull()
   })
 
-  it('tucks merging away under GitHub, and only for an admin', async () => {
-    hub('github', true)
+  it('has the hub’s status with agents’ addresses tucked away', async () => {
+    hub('status', true)
     await mount(<Settings />)
-    const merging = (await screen.findByText('Merging, and who agents commit as')).closest('details')!
-    expect(merging.open).toBe(false)
-    expect(within(merging).getByRole('heading', { name: 'Merging change sets', hidden: true })).toBeTruthy()
-    cleanup()
-    hub('github', false)
-    await mount(<Settings />)
-    expect(screen.queryByText('Merging, and who agents commit as')).toBeNull()
+    const addresses = (await screen.findByText('Addresses for agents and MCP clients')).closest('details')!
+    expect(addresses.open).toBe(false)
+    expect(within(addresses).getByText('The runner')).toBeTruthy()
+    expect(screen.getByText('Live connection')).toBeTruthy()
   })
 
-  it('keeps the repos a binder’s agents work in under GitHub, a tap away from the binder', async () => {
-    hub('binder', true)
+  it('puts merging and who agents commit as under Agents, in the hub’s group and not folded away', async () => {
+    hub('agents', true)
     await mount(<Settings />)
-    expect(screen.getByText(/Its agents work in 2 repos/)).toBeTruthy()
-    expect(screen.queryByRole('combobox', { name: /Repos its agents work in/ })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Choose them in GitHub' }))
-    expect(screen.getByRole('heading', { level: 2 }).textContent).toBe('GitHub')
+    expect(await screen.findByRole('heading', { name: 'Merging change sets' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Agents’ commits and pull requests' })).toBeTruthy()
+    expect(document.querySelector('details')).toBeNull()
+    expect(screen.getByRole('radio', { name: 'Squash' }).hasAttribute('disabled')).toBe(false)
+    // Nor is it under GitHub, which is this binder's alone.
+    cleanup()
+    hub('github', true)
+    await mount(<Settings />)
+    expect(screen.queryByText('Merging change sets')).toBeNull()
+  })
+
+  it('saves a change to merging at once and says so beside it, as every control in Settings does', async () => {
+    hub('agents', true)
+    const calls: { method?: string; body?: string }[] = []
+    const stand = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/options' && init?.method === 'PATCH') {
+        calls.push({ method: init.method, body: String(init.body) })
+        return new Response(JSON.stringify({ options: { ...options, mergeMethod: 'squash' }, locked: {}, implied: { admins: [], allowedUsers: [], allowedOrgs: [] } }), { headers: { 'content-type': 'application/json' } })
+      }
+      return stand(url, init)
+    }))
+    await mount(<Settings />)
+    fireEvent.click(await screen.findByRole('radio', { name: 'Squash' }))
+    await screen.findByText('Saved')
+    expect(calls).toEqual([{ method: 'PATCH', body: '{"mergeMethod":"squash"}' }])
+  })
+
+  it('shows merging greyed, with who can change it, to someone who isn’t an admin', async () => {
+    hub('agents', false)
+    await mount(<Settings />)
+    expect(await screen.findByText('Only the hub’s admins can change these.')).toBeTruthy()
+    expect(screen.getByRole('radio', { name: 'Squash' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('radio', { name: 'Always its owner' }).hasAttribute('disabled')).toBe(true)
+  })
+
+  it('keeps the repo a binder’s cards go to first under GitHub, and the repos its agents work in below', async () => {
+    hub('github', true)
+    await mount(<Settings />)
+    const heading = await screen.findByRole('heading', { name: 'Where its cards and notes go' })
     expect(screen.getByRole('heading', { name: 'Repos its agents work in' })).toBeTruthy()
+    expect(heading.compareDocumentPosition(screen.getByRole('heading', { name: 'Repos its agents work in' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByText(/Its agents work in 2 repos, chosen below/)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Remove acme/api' })).toBeTruthy()
+    // The binder's name, repo and switches aren't a section of their own any more.
+    cleanup()
+    hub('general', true)
+    await mount(<Settings />)
+    expect(screen.queryByText(/Its agents work in/)).toBeNull()
   })
 
   it('says what the app reaches on each account, and what its custom properties need', async () => {
@@ -89,7 +136,7 @@ describe('Settings', () => {
   })
 
   it('says who can change it to someone who can’t', async () => {
-    hub('hub', false)
+    hub('access', false)
     await mount(<Settings />)
     expect(await screen.findByText('Only the hub’s admins can change these.')).toBeTruthy()
   })

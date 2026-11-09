@@ -1,6 +1,6 @@
 import './tidy.ts'
 import { mkdtempSync } from 'node:fs'
-import { describe, it } from 'node:test'
+import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { rm, writeFile, mkdtemp, readFile, readdir, realpath, stat } from 'node:fs/promises'
 import { execFile, execFileSync } from 'node:child_process'
@@ -13,6 +13,7 @@ import { basename, join } from 'node:path'
 // Cards are always worked in worktrees: the tests' go in a folder of their own, never in ~/.binders.
 process.env.BINDERS_WORKTREES_DIR = mkdtempSync(join(tmpdir(), 'binders-test-worktrees-'))
 import type { AddressInfo } from 'node:net'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { Actions } from '../../hub/src/actions.ts'
 import { Auth } from '../../hub/src/auth.ts'
 import { GitHubConnection } from '../../hub/src/githubConnection.ts'
@@ -22,8 +23,9 @@ import { MemoryLog } from '../../hub/src/log.ts'
 import { Sealer } from '../../hub/src/secrets.ts'
 import { buildServer } from '../../hub/src/server.ts'
 import { Spaces } from '../../hub/src/spaces.ts'
+import { Terminals } from '../src/terminal.ts'
 import { Webhooks } from '../../hub/src/webhooks.ts'
-import { Runner, finishingInJira, withBinderContext, withJiraAsk, actionsFromReply, agentFile, dshPatch, dshTooOld, allBindersAmong, bindersAmong, bypassTurnedOff, carryClaudeSettings, noteFromReply, parseMcpList, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
+import { Runner, HubRefused, knownCause, sleptThrough, stoppedWith, tokenRefusal, finishingInJira, withBinderContext, withJiraAsk, actionsFromReply, agentFile, dshPatch, dshTooOld, allBindersAmong, bindersAmong, bypassTurnedOff, carryClaudeSettings, noteFromReply, parseMcpList, challengeFindings, debriefSections, findingReplies, managedBinders, managedMcpPath, refusedByManagedMcp, reviewCheckout, worktreeDiff } from '../src/runner.ts'
 
 // The runner's own files (~/.binders/run) in a home of the tests' own, not this machine's.
 process.env.BINDERS_HOME ??= mkdtempSync(join(tmpdir(), 'binders-home-'))
@@ -55,6 +57,11 @@ if (mode === 'github') {
   const filled = execFileSync('git', ['credential', 'fill'], { input: 'protocol=https\\nhost=github.com\\npath=acme/web.git\\n\\n' }).toString()
   const url = execFileSync('git', ['ls-remote', '--get-url', 'git@github.com:acme/web.git']).toString().trim()
   writeFileSync(process.argv[3], JSON.stringify({ gh: process.env.GH_TOKEN, filled, url }))
+}
+if (mode === 'signedout') {
+  say({ type: 'result', is_error: true, result: 'Invalid API key · Please run /login' })
+  await client.close()
+  process.exit(1)
 }
 if (mode === 'ask' && process.env.BINDERS_RESUME !== '1') {
   await call('ask', { id: process.env.BINDERS_CARD, question: 'Which port?' })
@@ -180,6 +187,355 @@ describe('the runner and GitHub', () => {
     assert.ok(lines.some((l) => l.includes('with a token for that repo alone')))
     assert.deepEqual(await tokenDirs(), before, 'its token file is gone')
     await close()
+  })
+})
+
+/** What a runner sends the hub, kept as it goes (a give-back's `failed`, say), once it has connected. */
+function watched(runner: Runner) {
+  const calls: { name: string; args: Record<string, unknown> }[] = []
+  const client = (runner as unknown as { client: { callTool: (params: { name: string; arguments?: Record<string, unknown> }, ...rest: unknown[]) => Promise<unknown> } }).client
+  const real = client.callTool.bind(client)
+  client.callTool = (params, ...rest) => {
+    calls.push({ name: params.name, args: params.arguments ?? {} })
+    return real(params, ...rest)
+  }
+  return { calls, released: () => calls.filter((c) => c.name === 'release_task').map((c) => c.args) }
+}
+
+describe('cards a runner that died left', () => {
+  it('puts back what the hub says its agent holds when nothing here runs it, not as a failure', async () => {
+    const { hub, actions, url, dir, agent, card, close } = await setUp()
+    const { agent: me, token } = await agent('finish')
+    const left = await card('Left behind', me.id)
+    await actions.claim(me.id, left.id)
+    const lines: string[] = []
+    const runner = new Runner({ hubUrl: url, token, workspace: dir, log: (line) => lines.push(line), waitSeconds: 1 })
+    await runner.connect()
+    const seen = watched(runner)
+    const running = runner.start()
+    await until(() => hub.state.cards.find((c) => c.id === left.id)?.stage === 'ready', 8000)
+    runner.stop()
+    await running
+    assert.deepEqual(seen.released(), [{ id: left.id, reason: 'Its runner stopped while it was working on this, so it went back on the board.' }])
+    assert.equal(hub.state.cards.find((c) => c.id === left.id)!.activity.find((a) => a.kind === 'released')!.text, 'Its runner stopped while it was working on this, so it went back on the board.')
+    assert.ok(lines.some((l) => l.includes('Put “Left behind” back on the board')))
+    await close()
+  })
+
+  it('leaves a card a person has just written on, which the hub hands this runner to carry on with', async () => {
+    const { hub, actions, url, dir, agent, card, close } = await setUp()
+    const { agent: me, token } = await agent('finish')
+    const left = await card('Answered while it was down', me.id)
+    await actions.claim(me.id, left.id)
+    await actions.comment('you', left.id, 'Use 8080.')
+    const runner = new Runner({ hubUrl: url, token, workspace: dir, log: () => {}, waitSeconds: 1 })
+    await runner.connect()
+    const seen = watched(runner)
+    const running = runner.start()
+    await until(() => hub.state.cards.find((c) => c.id === left.id)?.stage === 'live', 8000)
+    runner.stop()
+    await running
+    assert.deepEqual(seen.released(), [], 'carried on, not given back')
+    await close()
+  })
+
+  it('leaves them while another runner works as the same agent, and says why, then looks again once it has gone', async () => {
+    const { hub, actions, url, dir, agent, card, close } = await setUp()
+    const { agent: me, token } = await agent('finish')
+    const left = await card('Maybe the other one’s', me.id)
+    await actions.claim(me.id, left.id)
+    hub.runnerSeen(me.id, 'the-other-runner', 'Other Mac · ~/code')
+    const lines: string[] = []
+    const runner = new Runner({ hubUrl: url, token, workspace: dir, log: (line) => lines.push(line), waitSeconds: 1, lookAgainMs: 1500 })
+    const running = runner.start()
+    await until(() => lines.some((l) => l.includes('Another runner is working as')), 8000)
+    assert.match(lines.find((l) => l.includes('Another runner is working as'))!, /Other Mac · ~\/code.*leaving them/)
+    assert.equal(hub.state.cards.find((c) => c.id === left.id)!.stage, 'working', 'untouched while it’s there')
+    hub.runnerGone(me.id, 'the-other-runner')
+    await until(() => hub.state.cards.find((c) => c.id === left.id)?.stage === 'ready', 12_000)
+    assert.equal(lines.filter((l) => l.includes('Another runner is working as')).length, 1, 'said once')
+    runner.stop()
+    await running
+    await close()
+  })
+
+  it('looks again when the hub comes back after not answering', async () => {
+    const { hub, actions, url, dir, agent, card, close } = await setUp()
+    const { agent: me, token } = await agent('finish')
+    const runner = new Runner({ hubUrl: url, token, workspace: dir, log: () => {}, waitSeconds: 1 })
+    const running = runner.start()
+    await new Promise((done) => setTimeout(done, 1500))
+    // A card its runner dropped while the hub couldn't be reached: working, and nothing here runs it. Another agent
+    // takes it first, so this runner doesn't take it itself, and the hub then says this agent holds it.
+    const other = await actions.putAgent('you', { name: 'Someone else' })
+    const left = await card('Dropped while the hub was away', other.id)
+    await actions.claim(other.id, left.id)
+    await hub.record({ kind: 'user', login: 'you' }, { type: 'card.update', id: left.id, fields: { agentId: me.id } })
+    ;(runner as unknown as { hubLost: boolean }).hubLost = true
+    await until(() => hub.state.cards.find((c) => c.id === left.id)?.stage === 'ready', 8000)
+    runner.stop()
+    await running
+    await close()
+  })
+})
+
+describe('whether giving a card back was a failure', () => {
+  it('says so when the tool errored', async () => {
+    const { hub, url, dir, agent, card, close } = await setUp()
+    const { agent: me, token } = await agent('quit')
+    const made = await card('Something hard', me.id)
+    const runner = new Runner({ hubUrl: url, token, workspace: dir, log: () => {}, waitSeconds: 5 })
+    await runner.connect()
+    const seen = watched(runner)
+    await runner.start(true)
+    assert.deepEqual(seen.released().map((r) => [r.id, r.failed]), [[made.id, true]])
+    assert.equal(hub.state.cards.find((c) => c.id === made.id)!.stage, 'ready')
+    await close()
+  })
+
+  it('says so when the tool can’t start, as when it isn’t installed or is too old', async () => {
+    const { hub, actions, url, dir, card, issued, close } = await setUp()
+    const bin = join(dir, 'bin')
+    execFileSync('mkdir', ['-p', bin])
+    await writeFile(join(bin, 'dsh'), '#!/bin/sh\necho 0.1.5-rc.2\n', { mode: 0o755 })
+    const path = process.env.PATH
+    process.env.PATH = `${bin}:${path}`
+    try {
+      const made = await actions.putAgent('you', { name: 'Harness', runner: { tool: 'dsh', access: 'full', timeoutMinutes: 1, worktrees: false } })
+      const job = await card('Too old for this', made.id)
+      const runner = new Runner({ hubUrl: url, token: await issued(made.id), workspace: dir, log: () => {}, waitSeconds: 1 })
+      await runner.connect()
+      const seen = watched(runner)
+      await runner.start(true)
+      assert.match(hub.state.cards.find((c) => c.id === job.id)!.activity.find((a) => a.kind === 'released')!.text, /too old/)
+      assert.deepEqual(seen.released().map((r) => r.failed), [true])
+    } finally {
+      process.env.PATH = path
+      await close()
+    }
+  })
+
+  it('says so when the tool said nothing for too long', async () => {
+    const { hub, actions, url, dir, card, issued, close } = await setUp()
+    const made = await actions.putAgent('you', { name: 'Quiet', runner: { tool: 'custom', access: 'full', timeoutMinutes: 1, idleMinutes: 0.02, worktrees: false, command: `node ${join(dir, 'stand-in.mjs')} silent` } })
+    const job = await card('Never answered', made.id)
+    const runner = new Runner({ hubUrl: url, token: await issued(made.id), workspace: dir, log: () => {}, waitSeconds: 1 })
+    await runner.connect()
+    const seen = watched(runner)
+    await runner.start(true)
+    assert.match(hub.state.cards.find((c) => c.id === job.id)!.activity.find((a) => a.kind === 'released')!.text, /stopped as stuck/)
+    assert.deepEqual(seen.released().map((r) => r.failed), [true])
+    await close()
+  })
+
+  it('says so when its worktree couldn’t be made', async () => {
+    const { hub, actions, url, dir, card, issued, close } = await setUp()
+    const workspace = await mkdtemp(join(tmpdir(), 'binders-a-repo-'))
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: workspace })
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'first'], { cwd: workspace })
+    // Where worktrees go is a file, not a folder: git can't put one there.
+    const notAFolder = join(dir, 'a-file')
+    await writeFile(notAFolder, 'x')
+    const made = await actions.putAgent('you', { name: 'No worktree', runner: { tool: 'custom', access: 'full', timeoutMinutes: 1, worktrees: true, command: `node ${join(dir, 'stand-in.mjs')} finish` } })
+    const job = await card('Nowhere to work', made.id)
+    const runner = new Runner({ hubUrl: url, token: await issued(made.id), workspace, worktreesDir: join(notAFolder, 'inside'), log: () => {}, waitSeconds: 5 })
+    await runner.connect()
+    const seen = watched(runner)
+    await runner.start(true)
+    assert.match(hub.state.cards.find((c) => c.id === job.id)!.activity.find((a) => a.kind === 'released')!.text, /Couldn’t make its worktree/)
+    assert.deepEqual(seen.released().map((r) => r.failed), [true])
+    await close()
+  })
+
+  it('leaves it out when its runner was stopped on purpose, and says where', async () => {
+    const { hub, url, dir, agent, card, close } = await setUp()
+    const { agent: me, token } = await agent('silent')
+    const job = await card('Long one', me.id)
+    const runner = new Runner({ hubUrl: url, token, workspace: dir, machine: 'Test Mac', log: () => {}, waitSeconds: 1 })
+    await runner.connect()
+    const seen = watched(runner)
+    const running = runner.start()
+    // Once the agent has started, and said what it read.
+    await until(() => hub.state.cards.find((c) => c.id === job.id)?.activity.some((a) => a.kind === 'step') === true, 8000)
+    // As its service stopping or SIGTERM does: told to leave what's held, which a run with no holder isn't.
+    runner.stop(true)
+    await running
+    const back = hub.state.cards.find((c) => c.id === job.id)!
+    assert.equal(back.stage, 'ready')
+    assert.equal(back.activity.find((a) => a.kind === 'released')!.text, 'Its runner was stopped on Test Mac, so this went back on the board.')
+    assert.deepEqual(seen.released().map((r) => Object.keys(r).sort()), [['id', 'reason']], 'no failed')
+    await close()
+  })
+
+  it('leaves it out when its runner was restarted from the web', async () => {
+    const { hub, actions, url, dir, agent, card, close } = await setUp()
+    const { agent: made, token } = await agent('silent')
+    const file = join(dir, 'binders-runner.mjs')
+    await writeFile(file, '// the runner as installed')
+    const runner = new Runner({ hubUrl: url, token, workspace: dir, log: () => {}, waitSeconds: 1, selfUpdate: file })
+    await runner.connect()
+    const seen = watched(runner)
+    const running = runner.start()
+    await actions.restartRunner('you', made.id)
+    const job = await card('Long one', made.id)
+    await until(() => hub.state.cards.find((c) => c.id === job.id)?.stage === 'working', 8000)
+    await actions.restartRunner('you', made.id)
+    await running
+    assert.deepEqual(seen.released().map((r) => Object.keys(r).sort()), [['id', 'reason']])
+    await close()
+  })
+
+  it('leaves it out for cards handed back when its runner is removed', async () => {
+    const { hub, actions, url, dir, agent, card, close } = await setUp()
+    const { agent: me, token } = await agent('finish')
+    const job = await card('Handed back', me.id)
+    await actions.claim(me.id, job.id)
+    // handBack connects and closes a client of its own, so what it sends is read off the client class.
+    const sent: Record<string, unknown>[] = []
+    const real = Client.prototype.callTool
+    const spy = mock.method(Client.prototype, 'callTool', function (this: Client, params: { name: string; arguments?: Record<string, unknown> }, ...rest: never[]) {
+      if (params.name === 'release_task') sent.push(params.arguments ?? {})
+      return (real as (...args: unknown[]) => Promise<unknown>).call(this, params, ...rest)
+    })
+    try {
+      await new Runner({ hubUrl: url, token, workspace: dir, log: () => {} }).handBack([job.id], 'Its runner was removed from this machine.')
+    } finally {
+      spy.mock.restore()
+    }
+    assert.deepEqual(sent, [{ id: job.id, reason: 'Its runner was removed from this machine.' }])
+    assert.equal(hub.state.cards.find((c) => c.id === job.id)!.stage, 'ready')
+    await close()
+  })
+})
+
+describe('naming why an agent stopped', () => {
+  const ran = (reader: StreamReader, errors = '') => ({ exit: { code: 1 }, errors, reader })
+
+  it('leads with what to do when Claude Code is signed out, out of credit, over its limit or rate limited', () => {
+    const said = (result: string) => {
+      const reader = new StreamReader()
+      reader.line(JSON.stringify({ type: 'result', is_error: true, result }))
+      return stoppedWith(ran(reader), 'https://hub.test', 'claude')
+    }
+    assert.equal(said('Invalid API key · Please run /login'), 'Not signed in on this machine: sign in to Claude Code here (run claude, then /login), then the agent can take it again. Its last line: Invalid API key · Please run /login.')
+    assert.match(said('OAuth token has expired. Please obtain a new token or refresh your existing token.'), /^Not signed in on this machine/)
+    assert.match(said('Credit balance is too low'), /^Out of credit or over its usage limit: add credit, or wait for the limit to reset \(Claude Code says when\).* Its last line: Credit balance is too low\.$/)
+    assert.match(said('Claude AI usage limit reached|1760000000'), /^Out of credit or over its usage limit/)
+    assert.match(said('You’ve hit your limit · resets 5pm (Europe/London)'), /^Out of credit or over its usage limit/)
+    assert.match(said('5-hour limit reached ∙ resets 3pm'), /^Out of credit or over its usage limit/)
+    assert.match(said('API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"Number of request tokens has exceeded your per-minute rate limit"}}'), /^Rate limited for now: it should work again in a few minutes.* Its last line: API Error: 429/)
+  })
+
+  it('does the same for Codex, from its events and its errors', () => {
+    const events = (message: string) => {
+      const reader = new StreamReader()
+      reader.line(JSON.stringify({ type: 'turn.failed', error: { message } }))
+      return stoppedWith(ran(reader), 'https://hub.test', 'codex')
+    }
+    assert.match(events('unexpected status 401 Unauthorized: Missing bearer or basic authentication in header'), /^Not signed in on this machine: sign in to Codex here \(run codex login\)/)
+    assert.match(events('You’ve hit your usage limit. Upgrade to Pro, or try again at 3:40 PM.'), /^Out of credit or over its usage limit/)
+    assert.match(events('You exceeded your current quota, please check your plan and billing details.'), /^Out of credit or over its usage limit/)
+    assert.match(events('Rate limit reached for gpt-5 in organization org-x on tokens per min (TPM): Limit 30000'), /^Rate limited for now/)
+    assert.match(stoppedWith(ran(new StreamReader(), 'Reading prompt from stdin...\nERROR: refresh token was already used. Please log out and sign in again.'), 'https://hub.test', 'codex'), /^Not signed in on this machine/)
+  })
+
+  it('keeps today’s words when it’s none of those, and leaves another MCP server’s sign-in noise out of it', () => {
+    const reader = new StreamReader()
+    reader.line(JSON.stringify({ type: 'result', is_error: true, result: 'The model fable-9 does not exist.' }))
+    assert.equal(stoppedWith(ran(reader), 'https://hub.test', 'claude'), 'The agent stopped with exit code 1: The model fable-9 does not exist.')
+    const noise = 'ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(… 401 Unauthorized …)'
+    assert.equal(stoppedWith(ran(new StreamReader(), `a real problem\n${noise}\n`), 'https://hub.test', 'codex'), 'The agent stopped with exit code 1: a real problem.')
+    // The agent’s own words, quoting such an error, aren’t the tool’s.
+    const quoting = new StreamReader()
+    quoting.line(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'The test says: rate limit exceeded, not signed in' }] } }))
+    assert.equal(stoppedWith(ran(quoting, 'it broke'), 'https://hub.test', 'claude'), 'The agent stopped with exit code 1: it broke.')
+    assert.equal(knownCause('everything is fine', 'claude'), undefined)
+  })
+
+  it('is on the card a signed-out run leaves behind', async () => {
+    const { hub, url, dir, agent, card, close } = await setUp()
+    const { agent: me, token } = await agent('signedout')
+    const made = await card('Signed out', me.id)
+    await new Runner({ hubUrl: url, token, workspace: dir, log: () => {}, waitSeconds: 5 }).start(true)
+    const after = hub.state.cards.find((c) => c.id === made.id)!
+    assert.equal(after.stage, 'ready')
+    assert.match(after.activity.find((a) => a.kind === 'released')!.text, /^Not signed in on this machine: sign in to the agent’s tool here, then the agent can take it again\. Its last line: Invalid API key/)
+    await close()
+  })
+})
+
+describe('a GitHub token the hub refuses', () => {
+  it('tells the hub having no GitHub to give from the hub refusing this card', () => {
+    assert.equal(tokenRefusal(new HubRefused('This hub doesn’t hand out repo tokens: use this machine’s own GitHub login.')), undefined)
+    assert.equal(tokenRefusal(new HubRefused('This hub can’t make a token for acme/web alone (no GitHub App, or it isn’t installed there): use this machine’s own GitHub login.')), undefined)
+    assert.equal(tokenRefusal(new HubRefused('That card’s binder has no repo, and no repo was named.')), undefined)
+    assert.equal(tokenRefusal(new Error('fetch failed')), undefined, 'a hub that didn’t answer isn’t a refusal')
+    assert.deepEqual(tokenRefusal(new HubRefused('acme/other isn’t one of this card’s binder’s repos or Bot’s: add it.')), { why: 'acme/other isn’t one of this card’s binder’s repos or Bot’s: add it.', failed: true })
+    assert.equal(tokenRefusal(new HubRefused('you, who set this agent up, can’t push to acme/web (read only), so it doesn’t work there.'))!.failed, true)
+    assert.equal(tokenRefusal(new HubRefused('This hub’s admins have agents commit as their owners, and the hub holds no GitHub sign-in of @you’s: they connect it.'))!.failed, true)
+    assert.equal(tokenRefusal(new HubRefused('GitHub didn’t say whether you can push to acme/web. Try again in a moment.'))!.failed, false)
+    assert.equal(tokenRefusal(new HubRefused('Take the card first with claim_task: it isn’t yours.'))!.gone, true)
+  })
+
+  it('gives the card back as failed, in the hub’s words, and never starts the agent', async () => {
+    const { hub, actions, url, dir, issued, card, close } = await setUp()
+    await hub.record({ kind: 'hub' }, { type: 'binder.put', binder: { id: 'b1', name: 'Server', repo: 'acme/web' } })
+    // Its folder is a repo that is neither the binder’s nor one of the agent’s.
+    const workspace = await mkdtemp(join(tmpdir(), 'binders-other-repo-'))
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: workspace })
+    execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:acme/other.git'], { cwd: workspace })
+    const seenFile = join(dir, 'ran.txt')
+    const made = await actions.putAgent('you', { name: 'Elsewhere', repos: ['acme/app'], runner: { tool: 'custom', access: 'full', timeoutMinutes: 1, worktrees: false, command: `node ${join(dir, 'stand-in.mjs')} where ${seenFile}` } })
+    const job = await card('Push a fix', made.id)
+    const lines: string[] = []
+    const runner = new Runner({ hubUrl: url, token: await issued(made.id), workspace, log: (line) => lines.push(line), waitSeconds: 5 })
+    await runner.connect()
+    const seen = watched(runner)
+    await runner.start(true)
+    const back = hub.state.cards.find((c) => c.id === job.id)!
+    assert.equal(back.stage, 'ready')
+    assert.match(back.activity.find((a) => a.kind === 'released')!.text, /^acme\/other isn’t one of this card’s binder’s repos or Elsewhere’s/)
+    assert.deepEqual(seen.released().map((r) => r.failed), [true])
+    assert.equal(await stat(seenFile).then(() => true, () => false), false, 'the agent never started')
+    assert.ok(lines.some((l) => l.startsWith('Put “Push a fix” back: acme/other')))
+    await close()
+  })
+
+  it('goes on with this machine’s own GitHub login when the hub has none to give', async () => {
+    const { hub, actions, url, dir, issued, card, close } = await setUp()
+    await hub.record({ kind: 'hub' }, { type: 'binder.put', binder: { id: 'b1', name: 'Server', repo: 'acme/web' } })
+    const workspace = await mkdtemp(join(tmpdir(), 'binders-own-repo-'))
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: workspace })
+    execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:acme/web.git'], { cwd: workspace })
+    const made = await actions.putAgent('you', { name: 'Own login', runner: { tool: 'custom', access: 'full', timeoutMinutes: 1, worktrees: false, command: `node ${join(dir, 'stand-in.mjs')} finish` } })
+    const job = await card('Push a fix', made.id)
+    const lines: string[] = []
+    await new Runner({ hubUrl: url, token: await issued(made.id), workspace, log: (line) => lines.push(line), waitSeconds: 5 }).start(true)
+    assert.equal(hub.state.cards.find((c) => c.id === job.id)!.stage, 'live', lines.join('\n'))
+    assert.ok(lines.some((l) => l.includes('runs with this machine’s own GitHub login')))
+    await close()
+  })
+})
+
+describe('a laptop that slept', () => {
+  it('counts the time between quiet-time checks, and takes one far longer than the check’s own for a sleep', () => {
+    assert.equal(sleptThrough(1_000, 3_000), false, 'two seconds is the check itself')
+    assert.equal(sleptThrough(1_000, 12_000), false, 'a busy moment')
+    assert.equal(sleptThrough(1_000, 15 * 60_000), true, 'a closed lid')
+  })
+})
+
+describe('the terminal link on an older Node', () => {
+  it('says once that cards work and the terminal needs Node 22, and doesn’t try to link', async () => {
+    const lines: string[] = []
+    const terminals = new Terminals({ hubUrl: 'http://127.0.0.1:1', token: 'bnd_x', version: '0', log: (line) => lines.push(line), start: async () => { throw new Error('none') }, webSocket: false, nodeVersion: '20.11.0' })
+    let linked = 0
+    ;(terminals as unknown as { link: () => void }).link = () => { linked++ }
+    await terminals.start()
+    await new Promise((done) => setTimeout(done, 1300))
+    assert.equal(linked, 0)
+    assert.deepEqual(lines, ['This runner is on Node 20.11.0. Cards work, but the terminal link to the hub needs Node 22 or newer, so terminals opened from the web app won’t reach this machine until Node is updated.'])
+    terminals.stop()
   })
 })
 

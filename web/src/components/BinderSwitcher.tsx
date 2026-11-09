@@ -8,11 +8,6 @@ import { Logo } from './Logo'
 import { Dialog } from './Dialog'
 import { NewSpace } from './SpacePanel'
 
-const toSettings = (part: string) => {
-  try { window.localStorage.setItem('binders-settings-part', part) } catch { /* only a convenience */ }
-  go({ screen: 'settings' })
-}
-
 /**
  * Where you are, at the top of the sidebar: the binder you're in (its notes, board, repo and members) and your other
  * binders, each at its own address, and a new one. A binder made before a binder was one notebook may hold several
@@ -102,7 +97,7 @@ export function BinderSwitcher({ binder, onPick }: { binder: string; onPick: (id
             </li>
           </>}
           <li className="binder-menu-sep">
-            <button type="button" onClick={() => { setOpen(false); toSettings('binder') }}>
+            <button type="button" onClick={() => { setOpen(false); go({ screen: 'settings', id: 'people' }) }}>
               <span className="binder-initial"><Users size={13} /></span>
               <span className="binder-menu-name"><b>Members, repo and settings…</b></span>
             </button>

@@ -7,7 +7,7 @@ import App from '../src/App'
 import { phoneQuery } from '../src/components/bits'
 import { ContextMenuHost, openMenu } from '../src/components/ContextMenu'
 import { Dialog } from '../src/components/Dialog'
-import { Toast, toast } from '../src/components/Toast'
+import { Toast, failure, toast } from '../src/components/Toast'
 
 // Where focus goes: someone on a keyboard or a screen reader is wherever it is, so it never gets lost or left behind.
 
@@ -148,12 +148,15 @@ describe('a right-click menu', () => {
 })
 
 describe('a toast', () => {
-  it('has its live region in the page before there’s anything to say, or a screen reader may not read it', async () => {
+  it('has its live regions in the page before there’s anything to say, or a screen reader may not read them', async () => {
     render(<Toast />)
-    const region = screen.getByRole('alert')
-    expect(region.textContent).toBe('')
-    toast('The hub refused that.')
-    await waitFor(() => expect(region.textContent).toBe('The hub refused that.'))
+    const alert = screen.getByRole('alert')
+    const status = screen.getByRole('status')
+    expect(alert.textContent).toBe('')
+    expect(status.textContent).toBe('')
+    failure('The hub refused that.')
+    await waitFor(() => expect(alert.textContent).toBe('The hub refused that.'))
+    expect(status.textContent).toBe('')
   })
 
   it('says it once', async () => {
@@ -183,15 +186,16 @@ describe('moving between screens', () => {
 
   it('names the page after the screen', async () => {
     await opened()
-    expect(document.title).toBe('Home · Binders Hub')
+    // The card that asks a question waits on you, so its count is in front.
+    expect(document.title).toBe('(1) Home · Binders Hub')
     await goTo('#/agents')
-    await waitFor(() => expect(document.title).toBe('Agents · Binders Hub'))
+    await waitFor(() => expect(document.title).toBe('(1) Agents · Binders Hub'))
   })
 
   it('names the page after the card that’s open', async () => {
     await opened()
     await goTo('#/work/c1')
-    await waitFor(() => expect(document.title).toBe('Fix the login · Binders Hub'))
+    await waitFor(() => expect(document.title).toBe('(1) Fix the login · Binders Hub'))
   })
 
   it('moves focus to the new screen’s heading, not on first opening', async () => {

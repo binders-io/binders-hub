@@ -1,7 +1,11 @@
 import { useEffect, useRef } from 'react'
 import { motion } from 'motion/react'
 
-/** An agent's session as Claude Code shows it: your words after ›, what it says after a dot, tool output under ⎿. The dot it writes is an emoji on an iPhone: it's drawn as ●. */
+/**
+ * An agent's session as Claude Code shows it: your words after ›, what it says after a dot, tool output under ⎿. The dot
+ * it writes is an emoji on an iPhone: it's drawn as ●. It only shows the session, so it doesn't say "esc to interrupt":
+ * Escape does nothing here.
+ */
 export function Terminal({ lines, working, doing }: { lines: string[]; working: boolean; doing?: string }) {
   const box = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -20,7 +24,7 @@ export function Terminal({ lines, working, doing }: { lines: string[]; working: 
       })}
       {working && (
         <div className="t-line working">
-          <span className="t-star">✻</span> {doing ?? 'Working'}… <span className="t-hint">esc to interrupt</span>
+          <span className="t-star">✻</span> {doing ?? 'Working'}…
         </div>
       )}
     </div>

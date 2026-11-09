@@ -6,7 +6,7 @@ import type { Profile } from '../../../shared/people.ts'
 import type { Stage } from '../../../shared/work.ts'
 
 export const stages: { id: Stage; title: string; hint: string }[] = [
-  { id: 'proposed', title: 'Proposed', hint: 'Distilled from notes or suggested by agents, waiting for you' },
+  { id: 'proposed', title: 'Proposed', hint: 'From notes or suggested by agents, waiting for you' },
   { id: 'ready', title: 'Ready', hint: 'An agent can take these' },
   { id: 'working', title: 'Agents working', hint: 'Claimed, being built' },
   { id: 'blocked', title: 'Blocked', hint: 'Waiting on you: an agent’s question, or put here. Answer, or write on it, to carry on' },
@@ -61,13 +61,17 @@ export interface Me {
 
 export type Role = 'owner' | 'admin' | 'member'
 
-/** A Binder as Settings shows it: its members only where you may change them. */
+/** A Binder as Settings shows it: who runs it, which everyone in it sees, and its members only where you may change them. */
 export interface SpaceView {
   id: string
   name: string
   role: Role
   createdAt: string
   members?: { login: string; role: Role }[]
+  /** Its owners and admins. */
+  managers: { login: string; role: Role }[]
+  /** The hub's own first binder, which the hub keeps: it can't be taken off. */
+  first?: boolean
 }
 
 /** The hub's options, as Settings changes them. */

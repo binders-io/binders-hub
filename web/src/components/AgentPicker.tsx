@@ -22,12 +22,19 @@ export function AgentPicker({ card, working }: { card: Card; working: boolean })
   useEffect(() => {
     if (!open) return
     const away = (event: MouseEvent) => { if (!box.current?.contains(event.target as Node)) setOpen(false) }
-    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false) }
+    // Escape closes this and goes no further: the page behind would otherwise take the same press and leave the card.
+    // Caught on the way down, before anything else has it, so which was listening first doesn't matter.
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.stopImmediatePropagation()
+      setOpen(false)
+      box.current?.querySelector<HTMLElement>('.work-agent')?.focus()
+    }
     // pointerdown too: a tap on nothing in particular has no mousedown on an iPhone.
     window.addEventListener('pointerdown', away)
     window.addEventListener('mousedown', away)
-    window.addEventListener('keydown', escape)
-    return () => { window.removeEventListener('pointerdown', away); window.removeEventListener('mousedown', away); window.removeEventListener('keydown', escape) }
+    window.addEventListener('keydown', escape, true)
+    return () => { window.removeEventListener('pointerdown', away); window.removeEventListener('mousedown', away); window.removeEventListener('keydown', escape, true) }
   }, [open])
 
   const give = (agentId: string) => {

@@ -2,11 +2,12 @@ import { shownName } from '../../../shared/people.ts'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { emptyState, type Change, type HubState } from '../../../shared/state.ts'
 import { isBlank, titleOf } from '../../../shared/notes.ts'
-import type { Agent, Card, Me, Note, Provider } from './model'
+import type { Agent, Card, Environment, Me, Note, Provider } from './model'
 import { handMove, type Presence, type RunnerSettings } from '../../../shared/work.ts'
 import type { TestOutcome } from '../../../shared/changeSet.ts'
 import { call } from './api'
 import { askedReasoning } from '../components/Reasoning'
+import { failure } from '../components/Toast'
 import { clientId, HubConnection, queue, receive, rememberCache, rememberOutbox, settled, shown, snapshot, startingSync, type AgentTerminals, type Connection, type Sync } from './sync'
 import { LiveNotes, type LiveNote, type Waiting } from './liveNote'
 import { spaceHeaders } from './space'
@@ -29,13 +30,15 @@ export interface State extends HubState {
   me?: Me
   /** Not signed in: the sign-in screen shows. */
   signedOut: boolean
+  /** The hub gave no answer to the first request: that isn't being signed out, and the sign-in screen says so. */
+  unreachable: boolean
 }
 
 type Step = (state: State) => State
 
 const withShown = (s: State): State => ({ ...s, ...shown(s.sync, s) })
 
-const starting = (): State => withShown({ ...emptyState(), sync: startingSync(emptyState()), presence: {}, terminals: {}, signedOut: false })
+const starting = (): State => withShown({ ...emptyState(), sync: startingSync(emptyState()), presence: {}, terminals: {}, signedOut: false, unreachable: false })
 
 export const isEmpty = (note: Note) => isBlank(note.text)
 
@@ -51,6 +54,8 @@ export interface NewCard {
   meantFor?: string
   noteId?: string
   quote?: string
+  /** Where it starts: a person's card is Ready unless this says Proposed, where nothing picks it up. */
+  stage?: Card['stage']
 }
 
 export interface NewAgent {
@@ -61,6 +66,36 @@ export interface NewAgent {
   skills: string[]
   runsOn?: string
   runner?: RunnerSettings
+}
+
+/** How the hub deploys to an environment: a workflow it runs, on a branch or tag. `repo` is left out for the environment's own. */
+export interface DeployFrom {
+  repo?: string
+  workflow: string
+  ref: string
+}
+
+export interface NewEnvironment {
+  repo: string
+  name: string
+  url?: string
+  needsApproval?: boolean
+  deploy?: DeployFrom
+}
+
+/** What may change on an environment. `deploy: null` stops the hub deploying to it; `order` is the place to move it to among its repo's, from 0. */
+export interface EnvironmentChange {
+  name?: string
+  url?: string
+  needsApproval?: boolean
+  deploy?: DeployFrom | null
+  order?: number
+}
+
+/** What looking on GitHub found: the repos it looked at, and those it couldn't, with why. */
+export interface DeploymentLook {
+  looked: string[]
+  failed: { repo: string; why: string }[]
 }
 
 export interface NotesSaved {
@@ -99,6 +134,10 @@ export interface Actions {
   /** Gives a card to an agent (or opens it to any): one held by another agent goes back on the board for it. */
   giveCard: (id: string, agentId: string) => void
   comment: (cardId: string, text: string) => Promise<void>
+  /** Ends an agent's work on a card and keeps it from being taken again: it waits in Proposed. */
+  stopCard: (cardId: string) => Promise<void>
+  /** Sends a card in review back to its agent with words on what to change: it takes it up again. */
+  sendBack: (cardId: string, text: string) => Promise<void>
   answerPermission: (cardId: string, request: string, allow: boolean) => Promise<void>
   /** Splits a card into parts for a swarm of agents; each part a card, the card waiting for them. */
   splitCard: (id: string, parts: { title: string; brief?: string; agent?: string }[]) => Promise<void>
@@ -114,8 +153,13 @@ export interface Actions {
   setReplies: (setId: string) => Promise<void>
   /** Sends a Challenge finding back to the card's agent, dismisses it (or opens it again), or makes a card of it. */
   finding: (cardId: string, findingId: string, action: 'send back' | 'dismiss' | 'card' | 'reopen') => Promise<void>
-  acceptProposal: (id: string) => Promise<void>
+  /** Accepts a proposal: a card in Ready, which an agent can take at once. */
+  acceptProposal: (id: string) => Promise<Card>
+  /** Accepts a proposal as a card in Proposed instead, where nothing takes it, so a person can fix its words first. */
+  editFirst: (id: string) => Promise<Card>
   dismissProposal: (id: string) => void
+  /** Puts a dismissed proposal back, as it was. */
+  restoreProposal: (id: string) => void
   distill: (noteId: string, agentId?: string) => Promise<Card>
   /** Save all: the hub commits every note still waiting for typing to pause, and pushes each binder's notes to its repo. */
   saveNotes: () => Promise<NotesSaved>
@@ -124,6 +168,13 @@ export interface Actions {
   deleteSet: (setId: string) => Promise<void>
   approveSet: (setId: string) => Promise<void>
   promote: (envId: string) => Promise<void>
+  /** Environments are for the binder's owners and admins: the hub refuses anyone else in words to show as they are. */
+  addEnvironment: (environment: NewEnvironment) => Promise<Environment>
+  /** Its name is part of its id, so the one it answers with may have a new id. */
+  changeEnvironment: (envId: string, fields: EnvironmentChange) => Promise<Environment>
+  removeEnvironment: (envId: string) => Promise<void>
+  /** Has the hub ask GitHub what it has deployed, for one repo or all that count. Slow: it asks one repo after another. */
+  lookForDeployments: (repo?: string) => Promise<DeploymentLook>
   // Agents
   createAgent: (agent: NewAgent) => Promise<{ agent: Agent; token: string }>
   updateAgent: (id: string, fields: Partial<NewAgent>) => Promise<void>
@@ -131,6 +182,8 @@ export interface Actions {
   revokeAgent: (id: string) => Promise<void>
   // Signing in
   signInByName: (login: string) => Promise<void>
+  /** Asks the hub again for who you are, after it couldn't be reached, and carries on from there. */
+  reconnect: () => Promise<void>
   signOut: () => Promise<void>
 }
 
@@ -219,7 +272,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           held.step((s) => withShown({ ...s, sync: settled(s.sync, batch.map((p) => p.id)) }))
           // An open note whose changes were refused takes the hub's document again.
           lives.reset(batch.flatMap(({ change }) => (change.type === 'note.edit' ? [change.id] : [])))
-          window.dispatchEvent(new CustomEvent('binders-refused', { detail: said ? `${said} It was undone here.` : 'The hub refused a change. It was undone here.' }))
+          failure(said ? `${said} It was undone here.` : 'The hub refused a change. It was undone here.')
         } else flushTimer.current = window.setTimeout(() => void flush(), 3000)
       }
     })()
@@ -242,10 +295,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const loadMe = useCallback(async () => {
     try {
       const me = await call<Me>('GET', '/api/me')
-      held.step((s) => ({ ...s, me, signedOut: false }))
+      held.step((s) => ({ ...s, me, signedOut: false, unreachable: false }))
       return true
-    } catch {
-      held.step((s) => ({ ...s, signedOut: true }))
+    } catch (error) {
+      // No answer, or the hub's front door answering for a hub that's down, is not the hub saying you're signed out.
+      const status = (error as { status?: number }).status
+      const unreachable = status === 0 || (status !== undefined && status >= 500)
+      held.step((s) => ({ ...s, signedOut: true, unreachable }))
       return false
     }
   }, [held])
@@ -411,6 +467,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
       },
       comment: (cardId, text) => call('POST', `/api/cards/${cardId}/comment`, { text }),
+      stopCard: (cardId) => call('POST', `/api/cards/${cardId}/stop`),
+      sendBack: (cardId, text) => call('POST', `/api/cards/${cardId}/send-back`, { text }),
       answerPermission: (cardId, request, allow) => call('POST', `/api/cards/${cardId}/permission`, { request, allow }),
       splitCard: (id, parts) => call('POST', `/api/cards/${id}/split`, { parts }).then(() => undefined),
       debrief: (cardId, agentId) => call('POST', `/api/cards/${cardId}/debrief`, { ...(agentId ? { agentId } : {}), ...askedReasoning() }),
@@ -420,8 +478,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setChallenge: (setId, agentId) => call('POST', `/api/sets/${setId}/challenge`, { ...(agentId ? { agentId } : {}), ...askedReasoning() }),
       setReplies: (setId) => call('POST', `/api/sets/${setId}/challenge/replies`),
       finding: (cardId, findingId, action) => call('POST', `/api/cards/${cardId}/findings/${findingId}`, { action }),
-      acceptProposal: (id) => call('POST', `/api/proposals/${id}/accept`),
+      acceptProposal: (id) => call<Card>('POST', `/api/proposals/${id}/accept`),
+      editFirst: async (id) => {
+        const proposal = now().proposals.find((p) => p.id === id)
+        if (proposal?.state !== 'new') throw new Error('That proposal was already accepted or dismissed.')
+        // Off the board's Proposed column at once, so a second press can't make a second card; put back if the hub says no.
+        change({ type: 'proposal.update', id, fields: { state: 'accepted' } })
+        try {
+          const made = await call<Card>('POST', '/api/cards', { binderId: proposal.binderId, title: proposal.title, brief: proposal.brief, doneWhen: proposal.doneWhen, size: proposal.size, meantFor: proposal.meantFor, noteId: proposal.noteId, quote: proposal.quote, stage: 'proposed' })
+          // A hub that doesn't start it in Proposed has made it Ready: moved there at once, so an agent has hardly a moment to take it.
+          const fields = made.stage === 'proposed' ? undefined : handMove(made, 'proposed')
+          if (fields) change({ type: 'card.update', id: made.id, fields, activity: { at: new Date().toISOString(), by: login(), kind: 'moved', text: 'Moved it to Proposed' } })
+          change({ type: 'proposal.update', id, fields: { cardId: made.id } })
+          return made
+        } catch (error) {
+          change({ type: 'proposal.update', id, fields: { state: 'new' } })
+          throw error
+        }
+      },
       dismissProposal: (id) => change({ type: 'proposal.update', id, fields: { state: 'dismissed' } }),
+      restoreProposal: (id) => change({ type: 'proposal.update', id, fields: { state: 'new' } }),
       saveNotes: () => call<NotesSaved>('POST', '/api/notes/save'),
       distill: (noteId, agentId) => {
         const note = now().notes.find((n) => n.id === noteId)
@@ -439,7 +515,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       sendForReview: (setId) => call('POST', `/api/sets/${setId}/review`),
       deleteSet: (setId) => call('DELETE', `/api/sets/${setId}`),
       approveSet: (setId) => call('POST', `/api/sets/${setId}/approve`),
-      promote: (envId) => call('POST', `/api/environments/${envId}/promote`),
+      // An environment's id has a / and a # in it, so it goes in the path encoded.
+      promote: (envId) => call('POST', `/api/environments/${encodeURIComponent(envId)}/promote`),
+      addEnvironment: (environment) => call<Environment>('POST', '/api/environments', environment),
+      changeEnvironment: (envId, fields) => call<Environment>('PUT', `/api/environments/${encodeURIComponent(envId)}`, fields),
+      removeEnvironment: async (envId) => {
+        await call('DELETE', `/api/environments/${encodeURIComponent(envId)}`)
+      },
+      lookForDeployments: (repo) => call<DeploymentLook>('POST', '/api/environments/look', repo ? { repo } : {}),
       createAgent: (agent) => call('POST', '/api/agents', agent),
       updateAgent: async (id, fields) => {
         await call('PATCH', `/api/agents/${id}`, fields)
@@ -457,8 +540,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         await call('POST', '/auth/logout')
         window.location.reload()
       },
+      reconnect: async () => {
+        if (await loadMe()) await hub.current?.start()
+      },
     }
-  }, [held, change])
+  }, [held, change, loadMe])
 
   return (
     <LiveContext.Provider value={lives}>

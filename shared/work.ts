@@ -178,6 +178,11 @@ export interface Card {
   plan?: PlanStep[]
   /** A question waiting for a person. */
   needsYou?: string
+  /**
+   * The last time its work stopped without finishing: why, when, and how many times running. Twice running and it
+   * waits in Blocked for a person, with why as its question. Gone once it's finished or a person moves it on.
+   */
+  stopped?: { why: string; at: string; times: number }
   /** A live run waiting on a permission: what it wants to do, until its agent's owner answers or the run moves on. */
   permission?: { request: string; agent: string; tool: string; what: string; at: string; answer?: 'allow' | 'deny'; by?: string }
   activity: Activity[]
@@ -295,6 +300,8 @@ export interface PullRequest {
    * without help), with conflicts someone has to resolve, blocked by the repo's rules, or not known yet.
    */
   mergeable?: 'clean' | 'behind' | 'conflicts' | 'blocked' | 'unknown'
+  /** The commit it made on its base when it merged, as GitHub says: what an environment's deployed commit is compared with. Missing from before it was kept. */
+  mergeSha?: string
 }
 
 export type ChangeSetState = 'assembling' | 'review' | 'merging' | 'merged' | 'shipped'
@@ -323,17 +330,75 @@ export interface ChangeSet {
 export type EnvState = 'healthy' | 'deploying' | 'waiting' | 'failed'
 
 export interface Environment {
+  /** `<owner/name>#<name>`, in lower case (`environmentId`). */
   id: string
+  /** The repo it's an environment of, as owner/name. One without is from before environments were per repo, and is dropped. */
+  repo?: string
+  /** As GitHub names it. */
   name: string
+  /** Where it's served, when GitHub or a person says: an http or https address, else empty. */
   url: string
+  /** What's on it: the version its deploy named, else the tag or branch, else the commit's first seven. Empty until GitHub reports a deployment to it. */
   version: string
+  /** The commit that's on it. */
+  sha?: string
+  /** The pull requests of its repo that are on it. */
+  pullIds?: string[]
+  /** The change sets with a pull request on it. */
   changeSetIds: string[]
   state: EnvState
+  /** When it was deployed, as GitHub says; empty until it has been. */
   deployedAt: string
+  /** The run that deployed it, on GitHub. */
+  logUrl?: string
+  /** A person presses Promote before the hub deploys to it. Only with `deploy`. */
   needsApproval: boolean
   progress?: number
-  /** How a promotion is carried out: a GitHub Actions workflow run with the version. None: the hub records it. */
+  /** How the hub deploys to it: a workflow run with the version. None: the hub only follows what GitHub deploys there. */
   deploy?: { repo: string; workflow: string; ref: string }
+  /** Its place among its repo's environments: lower is deployed to first. */
+  order?: number
+  /** Found on GitHub, or set up by a person. */
+  by?: 'github' | 'person'
+}
+
+/** An environment's id: its repo and its name, in lower case, so GitHub's capitals and a person's are the same one. */
+export const environmentId = (repo: string, name: string) => `${repo.trim().toLowerCase()}#${name.trim().toLowerCase()}`
+
+/** A repo's environments, in the order they're deployed to. One with no place yet comes after those that have one. */
+export function repoEnvironments(state: Pick<WorkState, 'environments'>, repo: string | undefined): Environment[] {
+  if (!repo) return []
+  return state.environments
+    .map((env, at) => ({ env, at }))
+    .filter(({ env }) => sameRepo(env.repo, repo))
+    .sort((a, b) => (a.env.order ?? Infinity) - (b.env.order ?? Infinity) || a.at - b.at)
+    .map(({ env }) => env)
+}
+
+/** The environment a deploy to this one comes from: the one before it in its repo. */
+export function environmentBefore(state: Pick<WorkState, 'environments'>, env: Pick<Environment, 'id' | 'repo'>): Environment | undefined {
+  const all = repoEnvironments(state, env.repo)
+  return all[all.findIndex((e) => e.id === env.id) - 1]
+}
+
+/** What Promote would put on an environment: the one before it's version, when it has a deploy workflow and differs. */
+export function promotion(state: Pick<WorkState, 'environments'>, env: Environment): { from: Environment; version: string } | undefined {
+  const from = environmentBefore(state, env)
+  if (!env.deploy || !from || !from.version || from.version === env.version || env.state === 'deploying') return undefined
+  return { from, version: from.version }
+}
+
+/**
+ * The repos a binder's delivery follows: its own, those its agents work in, its agents' own, and those its pull requests
+ * are in. Each once, as it was first written.
+ */
+export function deliveryRepos(state: Pick<WorkState, 'agents' | 'pulls'> & { binders: { repo?: string; repos?: string[] }[] }): string[] {
+  const all = [
+    ...state.binders.flatMap((b) => binderRepos(b)),
+    ...state.agents.filter((a) => !a.revoked).flatMap((a) => a.repos),
+    ...state.pulls.map((p) => p.repo),
+  ].filter(Boolean)
+  return all.filter((r, i) => all.findIndex((x) => sameRepo(x, r)) === i)
 }
 
 export interface Run {
@@ -475,7 +540,7 @@ export type WorkChange =
   | { type: 'card.update'; id: string; fields: Partial<Omit<Card, 'id' | 'activity'>>; activity?: Activity }
   /** An agent taking a card: only the first one applied gets it, so two agents asking at once never both do. */
   | { type: 'card.claim'; id: string; agentId: string; at: string }
-  | { type: 'card.release'; id: string; agentId: string; at: string; why: string }
+  | { type: 'card.release'; id: string; agentId: string; at: string; why: string; failed?: boolean }
   | { type: 'card.activity'; id: string; activity: Activity }
   | { type: 'card.delete'; id: string }
   | { type: 'proposal.put'; proposal: Proposal }
@@ -534,6 +599,15 @@ export function forWire<C extends { type: string }>(change: C): C {
 
 const upsert = <T extends { id: string }>(list: T[], item: T) => (list.some((x) => x.id === item.id) ? list.map((x) => (x.id === item.id ? item : x)) : [...list, item])
 const patch = <T extends { id: string }>(list: T[], id: string, fields: object): T[] => list.map((x) => (x.id === id ? merge(x, fields) : x))
+/** How many runs in a row may fail before the card waits for a person instead of going back to Ready. */
+export const stoppedTwice = 2
+
+/** What a card stopped by failing runs asks, in Blocked: why, and that any answer puts it back in Ready. */
+export const stoppedQuestion = (why: string) => {
+  const reason = why.trim().slice(0, 600)
+  return `It stopped twice without finishing: ${/[.!?]$/.test(reason) ? reason : `${reason}.`} Fix what’s wrong, then answer here and it goes back to Ready.`
+}
+
 const withActivity = (card: Card, activity: Activity): Card => ({ ...card, activity: [...card.activity, activity].slice(-activityKept), updatedAt: activity.at })
 
 export function applyWork<S extends WorkState>(state: S, change: WorkChange): S {
@@ -581,9 +655,15 @@ export function applyWork<S extends WorkState>(state: S, change: WorkChange): S 
     case 'card.release':
       return {
         ...state,
-        cards: state.cards.map((c) => (c.id === change.id && c.agentId === change.agentId
-          ? withActivity({ ...c, agentId: undefined, stage: 'ready', doing: undefined, progress: undefined, permission: undefined }, { at: change.at, by: change.agentId, kind: 'released', text: change.why })
-          : c)),
+        cards: state.cards.map((c) => {
+          if (c.id !== change.id || c.agentId !== change.agentId) return c
+          // A run that failed is counted; the second one in a row stops the card, in Blocked, for a person to look at.
+          const times = change.failed ? (c.stopped?.times ?? 0) + 1 : 0
+          const stopped = change.failed ? { why: change.why, at: change.at, times } : c.stopped
+          const waits = times >= stoppedTwice
+          const back = { ...c, agentId: undefined, stage: waits ? 'blocked' as const : 'ready' as const, doing: undefined, progress: undefined, permission: undefined, ...(stopped ? { stopped } : {}), ...(waits ? { needsYou: stoppedQuestion(change.why) } : {}) }
+          return withActivity(back, { at: change.at, by: change.agentId, kind: 'released', text: change.why })
+        }),
       }
     case 'card.activity':
       return { ...state, cards: state.cards.map((c) => (c.id === change.id ? withActivity(c, change.activity) : c)) }
@@ -771,7 +851,7 @@ export function handMove(card: Pick<Card, 'stage' | 'agentId'>, stage: Stage): P
   if (card.stage === stage) return undefined
   if (stage === 'working' && !(card.stage === 'blocked' && card.agentId)) return undefined
   const keep = stage === 'review' || stage === 'live' || stage === 'blocked' || stage === 'working'
-  return { stage, needsYou: undefined, permission: undefined, doing: undefined, ...(keep ? {} : { agentId: undefined, progress: undefined }) }
+  return { stage, needsYou: undefined, permission: undefined, doing: undefined, stopped: undefined, ...(keep ? {} : { agentId: undefined, progress: undefined }) }
 }
 
 /** What a card is waiting on from a person, in a line: an agent's question, or a permission nobody has answered yet. */

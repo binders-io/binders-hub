@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { card, entry, hear, hubState, mount, settle, standInHub } from './harness'
-import type { Card, Proposal } from '../src/data/model'
+import { agent, card, entry, hear, hubState, mount, settle, standInHub } from './harness'
+import type { Card, ChangeSet, Proposal } from '../src/data/model'
 import { UIContext } from '../src/ui'
 import { Flow } from '../src/screens/Flow'
 
@@ -121,13 +121,16 @@ describe('what Distill proposed', () => {
     standInHub(withBoard([card('An agent’s suggestion', 'proposed')]))
     await open()
     expect(headerCount()).toBe('3')
-    press('Hide distilled')
+    press('Hide proposed')
     await waitFor(() => expect(screen.queryByText('First idea')).toBeNull()) // It animates out.
     expect(within(column('Proposed')).getByText('An agent’s suggestion')).toBeTruthy()
     expect(headerCount()).toBe('1')
     expect(chipCount()).toBe('1')
-    press('Show 2 distilled')
+    press('Show 2 proposed')
     expect(within(column('Proposed')).getByText('First idea')).toBeTruthy()
+    // What came from a note says so; the old word for it is gone.
+    expect(within(column('Proposed')).getAllByText('From a note')).toHaveLength(2)
+    expect(screen.queryByText('Distilled')).toBeNull()
     expect(headerCount()).toBe('3')
     expect(chipCount()).toBe('3')
   })
@@ -135,8 +138,8 @@ describe('what Distill proposed', () => {
   it('says what’s hidden when that leaves the column empty', async () => {
     standInHub(withBoard([]))
     await open()
-    press('Hide distilled')
-    expect(within(column('Proposed')).getByText('2 distilled hidden')).toBeTruthy()
+    press('Hide proposed')
+    expect(within(column('Proposed')).getByText('2 proposed hidden')).toBeTruthy()
     expect(within(column('Ready')).getByText('Nothing here')).toBeTruthy()
   })
 
@@ -144,11 +147,11 @@ describe('what Distill proposed', () => {
     standInHub(withBoard([]))
     await open()
     expect(within(column('Proposed')).getByText('First idea')).toBeTruthy()
-    press('Hide distilled')
+    press('Hide proposed')
     cleanup()
     await open()
     expect(screen.queryByText('First idea')).toBeNull()
-    expect(screen.getByRole('button', { name: 'Show 2 distilled' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Show 2 proposed' })).toBeTruthy()
   })
 
   it('draws no card when they’re hidden', async () => {
@@ -156,13 +159,73 @@ describe('what Distill proposed', () => {
     await open()
     await settle(50)
     const before = { ...drawn.cards }
-    press('Hide distilled')
+    press('Hide proposed')
     expect(drawn.cards['Ready one']).toBe(before['Ready one'])
   })
 
   it('offers nothing to hide when nothing is waiting in this binder', async () => {
     standInHub(() => hubState({ proposals: [proposal('Dismissed', { state: 'dismissed' }), proposal('Elsewhere', { binderId: 'b2' })] }))
     await open()
-    expect(screen.queryByRole('button', { name: /distilled/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /proposed/ })).toBeNull()
+  })
+})
+
+describe('what waits on you, at the top of the board', () => {
+  const mine = { ...agent, name: 'Mine' }
+  const sams = { ...agent, id: 'a2', name: 'Sam’s', owner: 'sam' }
+  const strip = () => document.querySelector('.attention') as HTMLElement
+  const open = (binder = 'all') => mount(<UIContext.Provider value={ui(binder)}><Flow /></UIContext.Provider>)
+  const set: ChangeSet = { id: 'cs1', binderId: 'b1', number: 4, title: 'Login work', summary: '', state: 'review', prIds: ['o/r#1'], noteIds: [] }
+  const env = (name: string, order: number, over: object = {}) => ({ id: `o/r#${name}`, repo: 'o/r', name, url: '', version: '1.0', changeSetIds: [], state: 'healthy', deployedAt: '', needsApproval: false, order, ...over })
+
+  it('says an agent of yours asks, and goes to the card, as Home does', async () => {
+    window.location.hash = ''
+    standInHub(() => hubState({ agents: [mine], cards: [card('q1', 'blocked', { agentId: 'a1', needsYou: 'Left or right?', title: 'Which one' })] }))
+    await open()
+    fireEvent.click(within(strip()).getByRole('button', { name: /Mine asks you/ }))
+    expect(window.location.hash).toBe('#/work/q1')
+  })
+
+  it('leaves out a question that’s on someone else, which Home folds away', async () => {
+    standInHub(() => hubState({ agents: [mine, sams], cards: [card('Sam’s question', 'blocked', { agentId: 'a2', needsYou: 'Up or down?', createdBy: 'sam' })] }))
+    await open()
+    expect(within(strip()).queryByText(/asks you/)).toBeNull()
+    expect(within(strip()).queryByText('Sam’s question')).toBeNull()
+  })
+
+  it('counts two questions in one button, going to the first', async () => {
+    window.location.hash = ''
+    standInHub(() => hubState({ agents: [mine], cards: [card('first', 'blocked', { agentId: 'a1', needsYou: 'A?', updatedAt: '2026-11-01T00:00:00.000Z' }), card('second', 'blocked', { agentId: 'a1', needsYou: 'B?', updatedAt: '2026-11-02T00:00:00.000Z' })] }))
+    await open()
+    fireEvent.click(within(strip()).getByRole('button', { name: /2 questions for you/ }))
+    expect(window.location.hash).toBe('#/work/first')
+  })
+
+  it('has a change set that’s ready to approve, and opens it', async () => {
+    window.location.hash = ''
+    standInHub(() => hubState({ changeSets: [set] }))
+    await open()
+    fireEvent.click(within(strip()).getByRole('button', { name: /Change set #4: Login work/ }))
+    expect(window.location.hash).toBe('#/changes/cs1')
+  })
+
+  it('has no change set that’s still assembling with work left on it', async () => {
+    standInHub(() => hubState({ changeSets: [{ ...set, state: 'assembling' }], pulls: [{ id: 'o/r#1', repo: 'o/r', number: 1, checks: [] }] as never, cards: [card('Still going', 'working', { prId: 'o/r#1' })] }))
+    await open()
+    expect(within(strip()).queryByText(/Change set/)).toBeNull()
+  })
+
+  it('has a promotion Promote can make, and goes to Delivery', async () => {
+    window.location.hash = ''
+    standInHub(() => hubState({ environments: [env('staging', 0, { version: '1.1' }), env('production', 1, { needsApproval: true, deploy: { repo: 'o/r', workflow: 'deploy.yml', ref: 'main' } })] as never }))
+    await open()
+    fireEvent.click(within(strip()).getByRole('button', { name: /Promote 1\.1 to production/i }))
+    expect(window.location.hash).toBe('#/delivery')
+  })
+
+  it('has nothing for an environment that only differs, with no workflow to promote with', async () => {
+    standInHub(() => hubState({ environments: [env('staging', 0, { version: '1.1' }), env('production', 1, { needsApproval: true })] as never }))
+    await open()
+    expect(within(strip()).queryByText(/Promote/)).toBeNull()
   })
 })

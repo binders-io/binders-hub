@@ -35,6 +35,10 @@ export async function workRoutes(app: FastifyInstance, context: Context) {
     return sp(request).actions.actOnFinding(login(request), param(request, 'id'), param(request, 'finding'), action)
   }))
   app.post('/api/cards/:id/comment', act(async (request) => sp(request).actions.comment(login(request), param(request, 'id'), bodyOf(bodies.comment, request).text ?? '')))
+  // Stops what an agent is doing on a card, which then waits in Proposed.
+  app.post('/api/cards/:id/stop', act(async (request) => sp(request).actions.stopCard(login(request), param(request, 'id'))))
+  // A card in review goes back to its agent, with what to change.
+  app.post('/api/cards/:id/send-back', act(async (request) => sp(request).actions.sendBackFromReview(login(request), param(request, 'id'), bodyOf(bodies.sendBack, request).text)))
   // Splits a card into parts for a swarm of agents; each part a card of its own, the card waiting for them.
   app.post('/api/cards/:id/permission', act(async (request) => {
     const { request: asked, allow } = bodyOf(bodies.permission, request)
@@ -105,7 +109,40 @@ export async function workRoutes(app: FastifyInstance, context: Context) {
   app.post('/api/pulls/:repo/:number/update-branch', act(async (request) => sp(request).actions.updateBranch(`${decodeURIComponent(param(request, 'repo'))}#${param(request, 'number')}`, request.githubToken)))
   app.post('/api/pulls/:repo/:number/resolve', act(async (request) => sp(request).actions.sendBackToResolve(login(request), `${decodeURIComponent(param(request, 'repo'))}#${param(request, 'number')}`)))
   app.post('/api/sets/:id/approve', act(async (request) => sp(request).actions.approveSet(login(request), param(request, 'id'), request.githubToken)))
-  app.post('/api/environments/:id/promote', act(async (request) => sp(request).actions.promote(login(request), param(request, 'id'), request.githubToken)))
+
+  // Delivery: the environments each repo is deployed to. GitHub says what's on them; a Binder's owners and admins say
+  // what GitHub can't (where one is served, a workflow the hub may run to deploy to it, their order), as they run its
+  // GitHub, and may have the hub look at GitHub now. Anyone in the Binder reads them, in its state, and promotes.
+  const mayChangeDelivery = (request: FastifyRequest) => {
+    if (!spaces.mayManage(sp(request).id, login(request), isAdmin(login(request)))) throw new Refused('Only this Binder’s owners and admins can change its environments.')
+  }
+  // An environment's id has a # and a / in it, so it comes encoded.
+  const environmentOf = (request: FastifyRequest) => {
+    try {
+      return decodeURIComponent(param(request, 'id'))
+    } catch {
+      return param(request, 'id')
+    }
+  }
+  app.post('/api/environments', act(async (request) => {
+    mayChangeDelivery(request)
+    const body = bodyOf(bodies.newEnvironment, request)
+    return sp(request).actions.addEnvironment(login(request), { repo: body.repo, name: body.name, url: body.url, needsApproval: body.needsApproval, deploy: body.deploy })
+  }))
+  app.post('/api/environments/look', act(async (request) => {
+    mayChangeDelivery(request)
+    return sp(request).actions.lookNow(bodyOf(bodies.lookNow, request).repo || undefined)
+  }))
+  app.put('/api/environments/:id', act(async (request) => {
+    mayChangeDelivery(request)
+    const body = bodyOf(bodies.changeEnvironment, request)
+    return sp(request).actions.changeEnvironment(login(request), environmentOf(request), { name: body.name, url: body.url, needsApproval: body.needsApproval, deploy: body.deploy, order: body.order })
+  }))
+  app.delete('/api/environments/:id', act(async (request) => {
+    mayChangeDelivery(request)
+    return sp(request).actions.removeEnvironment(login(request), environmentOf(request))
+  }))
+  app.post('/api/environments/:id/promote', act(async (request) => sp(request).actions.promote(login(request), environmentOf(request), request.githubToken)))
 
   // A note's Automerge document as the hub has it now: an editor makes its changes on top of it and sends them in a
   // note.edit, then keeps it in step with the edits' changes from the live feed.

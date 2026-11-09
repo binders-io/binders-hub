@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { Check, ExternalLink, Lock } from 'lucide-react'
 import { call } from '../data/api'
 import { attempt, toast } from './Toast'
+import { ConfirmButton } from './ConfirmButton'
 import { Github } from './Github'
 
 type Status = { repo?: string; suggested: string; oauth: boolean; oauthApp: { set: boolean; clientId?: string }; callback: string; connected: boolean }
@@ -74,7 +75,7 @@ export function PersonalGitHub() {
           <span className="step-mark">{step > 2 ? <Check size={13} strokeWidth={3} /> : 2}</span>
           <div>
             <h3>Connect your GitHub</h3>
-            {status.connected ? <p>Connected. <button className="text-button" onClick={() => void call('DELETE', '/api/me/personal-github').then(() => setStatus({ ...status, connected: false }))}>Disconnect</button></p>
+            {status.connected ? <p>Connected. <ConfirmButton className="text-button" question="Disconnect it? Press again" onConfirm={() => void call('DELETE', '/api/me/personal-github').then(() => setStatus({ ...status, connected: false }))}>Disconnect</ConfirmButton></p>
               : step === 2 ? <><p>GitHub asks to let your OAuth App reach your repos, so the hub can make {status.suggested} and push your notes to it.</p><a className="button primary" href="/auth/github?personal=1"><Github size={14} /> Connect my GitHub</a></>
               : <p>After your OAuth App is set.</p>}
           </div>

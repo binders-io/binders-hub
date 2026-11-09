@@ -43,7 +43,7 @@ export const tools: ToolInfo[] = [
 export const toolInfo = (id: AgentTool | undefined) => tools.find((t) => t.id === id) ?? tools[0]
 
 /** The runner the hub hands out; one older than this lacks things the app offers (several cards at once, chats). */
-export const runnerVersion = '0.15.2'
+export const runnerVersion = '0.16.0'
 
 /** The first runner that restarts when asked from the Agents page. */
 export const restartSince = '0.8.1'
@@ -60,3 +60,10 @@ export function atLeast(version: string | undefined, least: string) {
 }
 
 export const accessNames: Record<Access, string> = { full: 'Full access: no prompts', auto: 'Auto: it decides what’s safe', edits: 'Edits only' }
+
+/** What each access level lets an agent do on its machine without asking anyone, in a line under the choice. */
+export const accessLines: Record<Access, string> = {
+  full: 'It runs commands and changes files on that machine without asking anyone.',
+  auto: 'It runs commands and changes files without asking, but the tool checks each one first and stops what looks risky.',
+  edits: 'It may change files in the folder it works in. Other commands are held back.',
+}

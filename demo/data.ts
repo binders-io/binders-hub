@@ -3,7 +3,7 @@ import { runnerVersion, type AgentTool } from '../shared/agents.ts'
 import { briefNoteText, docsFolderName } from '../shared/briefs.ts'
 import type { Schedule } from '../shared/schedule.ts'
 import type { Change } from '../shared/state.ts'
-import type { Activity, Agent, Card, ChangeSet, Chat, FileDiff, FolderRule, Proposal, PullRequest, Run } from '../shared/work.ts'
+import { environmentId, type Activity, type Agent, type Card, type ChangeSet, type Chat, type Environment, type FileDiff, type FolderRule, type Proposal, type PullRequest, type Run } from '../shared/work.ts'
 
 // Everything the demo hub shows, and all of it invented: Harbor, its people and its repos are the same made-up team the
 // Mac app's demo uses (Binders/App/DemoData.swift in binders-io/app). One piece of work runs through every screen:
@@ -249,8 +249,11 @@ export function demoChanges(now = Date.now()): Change[] {
     ...fields,
   })
 
+  // The commits the two merged pull requests made on api's main: what its environments' own commits are compared with.
+  const mergeShas: Record<string, string> = { [`${api}#311`]: 'c4e91a07b2d83f56a1904c7be28d5f3a96b07e41', [`${api}#318`]: '9a3f60d2e7b14c85f20a6d913be4780c5a1fd2e6' }
   const pull = (repo: string, number: number, title: string, branch: string, cardId: string, agentId: string, state: PullRequest['state'], files: FileDiff[]): PullRequest => ({
     id: `${repo}#${number}`, repo, number, title, branch: `binders/${branch}`, url: '', state, cardId, agentId, files, mergeable: state === 'merged' ? undefined : 'clean', head: `${number}f3a9c`,
+    ...(state === 'merged' ? { mergeSha: mergeShas[`${repo}#${number}`] } : {}),
     checks: [{ name: 'test', state: 'passed', seconds: 148 }, { name: 'typecheck', state: 'passed', seconds: 41 }, { name: 'e2e', state: 'passed', seconds: 263 }],
   })
   const pulls = [
@@ -404,6 +407,15 @@ export function demoChanges(now = Date.now()): Change[] {
     { id: 'r1', workflow: 'deploy', target: 'production v2.40.2', repo: api, state: 'passed', seconds: 213, at: ago(2 * days) },
   ]
 
+  // The api repo's two environments, in the order they're deployed to. Staging has everything merged; production is a
+  // version behind, and its deploy workflow waits for someone to press Promote. The web and emails repos have no
+  // pull request merged yet and nothing deployed, so they have none.
+  const [shaOf311, shaOf318] = [mergeShas[`${api}#311`], mergeShas[`${api}#318`]]
+  const environments: Environment[] = [
+    { id: environmentId(api, 'Staging'), repo: api, order: 0, name: 'Staging', url: 'https://api.staging.harbor.example', version: 'v2.41.0', sha: shaOf318, pullIds: [`${api}#318`, `${api}#311`], changeSetIds: ['cs-11', 'cs-10'], state: 'healthy', deployedAt: ago(40), needsApproval: false, by: 'github' },
+    { id: environmentId(api, 'Production'), repo: api, order: 1, name: 'Production', url: 'https://api.harbor.example', version: 'v2.40.2', sha: shaOf311, pullIds: [`${api}#311`], changeSetIds: ['cs-10'], state: 'healthy', deployedAt: ago(2 * days), needsApproval: true, deploy: { repo: api, workflow: 'deploy.yml', ref: 'main' }, by: 'person' },
+  ]
+
   // What Distill proposed from the note that people took: each is a card on the board now.
   const accepted = cards.filter((c) => c.quote && c.stage !== 'live').map((c): Proposal => ({
     id: `p-${c.id}`, binderId: demoBinder.id, noteId: demoIds.note, title: c.title, quote: c.quote!, brief: c.brief, doneWhen: c.doneWhen, size: c.size, by: 'codex', state: 'accepted', cardId: c.id,
@@ -471,8 +483,7 @@ export function demoChanges(now = Date.now()): Change[] {
     ...pulls.map((p): Change => ({ type: 'pr.put', pull: p })),
     ...sets.map((s): Change => ({ type: 'set.put', set: s })),
     ...cards.map((c): Change => ({ type: 'card.put', card: c })),
-    { type: 'env.put', environment: { id: 'staging', name: 'Staging', url: 'staging.harbor.example', version: 'v2.41.0', changeSetIds: ['cs-11', 'cs-10'], state: 'healthy', deployedAt: ago(40), needsApproval: false } },
-    { type: 'env.put', environment: { id: 'production', name: 'Production', url: 'harbor.example', version: 'v2.40.2', changeSetIds: ['cs-10'], state: 'waiting', deployedAt: ago(2 * days), needsApproval: true } },
+    ...environments.map((environment): Change => ({ type: 'env.put', environment })),
     ...[...runs].reverse().map((r): Change => ({ type: 'run.put', run: r })),
     ...schedules.map((schedule): Change => ({ type: 'schedule.put', schedule })),
     ...rules.map((rule): Change => ({ type: 'rule.put', rule })),

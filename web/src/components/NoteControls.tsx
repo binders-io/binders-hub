@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { BookMarked, Ellipsis, History, Lock, LockOpen } from 'lucide-react'
+import { BookMarked, Ellipsis, History, Link2, Lock, LockOpen } from 'lucide-react'
 import { guideMost } from '../../../shared/guide.ts'
 import { lineDiff, fromMarkdown, type Note, type NoteProposal } from '../../../shared/notes.ts'
 import { call } from '../data/api'
@@ -7,10 +7,17 @@ import { spaceHeaders } from '../data/space'
 import { useActions, useHub } from '../data/store'
 import { openMenuUnder, type MenuItem } from './ContextMenu'
 import { Dialog } from './Dialog'
-import { attempt } from './Toast'
+import { href } from '../route'
+import { attempt, failure, toast } from './Toast'
 
 // What's kept around a note: its lock, its versions, what's proposed for it while it's locked, and whether it's the
 // guide every agent in its binder reads first.
+
+/** Puts a note's link on the clipboard, and says so. */
+export const copyNoteLink = (id: string) => {
+  const link = new URL(href({ screen: 'notes', id }), window.location.href).toString()
+  void navigator.clipboard.writeText(link).then(() => toast('Link copied.'), () => failure('Couldn’t copy the link.'))
+}
 
 /** Whether you may change a note. Only a locked one needs asking, and until the hub says, you may not. */
 export function useMayChange(note: Pick<Note, 'id' | 'locked'>) {
@@ -59,7 +66,7 @@ function ProposalRow({ proposal, note, mayChange, agents }: { proposal: NoteProp
   const comment = () => void attempt(() => call('POST', `/api/note-proposals/${proposal.id}/comments`, { text: said })).then((done) => { if (done) setSaid('') })
   return (
     <section className="note-proposal">
-      <p><b>{whoIs(proposal.by, agents)}</b> <span className="faint">proposes{open ? '' : `, ${proposal.state} by ${whoIs(proposal.decidedBy ?? '', agents)}`}</span></p>
+      <p><b>{whoIs(proposal.by, agents)}</b> <span className="faint">suggests{open ? '' : `, ${proposal.state} by ${whoIs(proposal.decidedBy ?? '', agents)}`}</span></p>
       <p>{proposal.why}</p>
       <Diff before={proposal.base} after={proposal.text} />
       {proposal.comments.map((c, index) => <p key={index} className="note-proposal-said"><b>{whoIs(c.by, agents)}</b> {c.text}</p>)}
@@ -68,7 +75,7 @@ function ProposalRow({ proposal, note, mayChange, agents }: { proposal: NoteProp
           <label className="field"><span className="field-label">Talk it over</span>
             <textarea id={`proposal-comment-${proposal.id}`} rows={2} value={said} onChange={(e) => setSaid(e.target.value)} />
           </label>
-          {stale && <p className="field-hint">The note has changed since this was proposed, so accepting it would undo that. Ask for it to be proposed again.</p>}
+          {stale && <p className="field-hint">The note has changed since this was suggested, so accepting it would undo that. Ask for it to be suggested again.</p>}
           <div className="note-proposal-actions">
             <button type="button" className="button" disabled={!said.trim()} onClick={comment}>Comment</button>
             {mayChange && <button type="button" className="button" onClick={() => decide(false)}>Turn down</button>}
@@ -116,7 +123,7 @@ function Versions({ note, mayChange, onPropose }: { note: Note; mayChange: boole
           {chosen.text.trim() !== note.text.trim() && (
             mayChange
               ? <button type="button" className="button" onClick={() => void attempt(() => call('POST', `/api/notes/${note.id}/restore`, { sha: chosen.sha }))}>Go back to this version</button>
-              : <button type="button" className="button" onClick={() => onPropose(chosen.text)}>Propose going back to this version</button>
+              : <button type="button" className="button" onClick={() => onPropose(chosen.text)}>Suggest going back to this version</button>
           )}
         </div>
       )}
@@ -138,7 +145,7 @@ function ProposeForm({ note, start, onDone }: { note: Note; start: string; onDon
       </label>
       <div className="note-proposal-actions">
         <button type="button" className="button" onClick={onDone}>Cancel</button>
-        <button type="button" className="button primary" disabled={!why.trim() || text === note.text} onClick={send}>Propose</button>
+        <button type="button" className="button primary" disabled={!why.trim() || text === note.text} onClick={send}>Suggest</button>
       </div>
     </div>
   )
@@ -158,15 +165,15 @@ function NoteReview({ note, mayChange, onClose, opening }: { note: Note; mayChan
         : (
           <>
             <div className="note-review-tabs" role="tablist">
-              <button type="button" role="tab" aria-selected={tab === 'proposals'} className={`button${tab === 'proposals' ? ' primary' : ''}`} onClick={() => setTab('proposals')}>Proposals</button>
+              <button type="button" role="tab" aria-selected={tab === 'proposals'} className={`button${tab === 'proposals' ? ' primary' : ''}`} onClick={() => setTab('proposals')}>Suggested changes</button>
               <button type="button" role="tab" aria-selected={tab === 'versions'} className={`button${tab === 'versions' ? ' primary' : ''}`} onClick={() => setTab('versions')}>Versions</button>
-              {note.locked && !mayChange && <button type="button" className="button" onClick={() => setProposing(note.text)}>Propose a change</button>}
+              {note.locked && !mayChange && <button type="button" className="button" onClick={() => setProposing(note.text)}>Suggest a change</button>}
             </div>
             {tab === 'versions'
               ? <Versions note={note} mayChange={mayChange} onPropose={setProposing} />
               : mine.length
                 ? mine.map((p) => <ProposalRow key={p.id} proposal={p} note={note} mayChange={mayChange} agents={agents} />)
-                : <p className="faint">{note.locked ? 'Nothing proposed. Anyone in this binder can propose a change, and agents do it with propose_note_change.' : 'Proposals are for locked notes. This one can be edited directly.'}</p>}
+                : <p className="faint">{note.locked ? 'No suggested changes. Anyone in this binder can suggest one, and agents do it with propose_note_change.' : 'Suggested changes are for locked notes. This one can be edited directly.'}</p>}
           </>
         )}
     </Dialog>
@@ -181,16 +188,17 @@ export function NoteControls({ note, mayChange, more }: { note: Note; mayChange:
   const [review, setReview] = useState<'proposals' | 'versions'>()
   const guide = binder?.guideNoteId === note.id
   const lockTitle = note.locked
-    ? mayChange ? `Locked by @${note.locked.by}: only they and this Binder’s owners and admins can change it. Unlock it` : `Locked by @${note.locked.by}: propose changes for review`
-    : 'Lock it: others, agents included, can only propose changes'
+    ? mayChange ? `Locked by @${note.locked.by}: only they and this Binder’s owners and admins can change it. Unlock it` : `Locked by @${note.locked.by}: suggest changes for review`
+    : 'Lock it: others, agents included, can only suggest changes'
   const toggleGuide = () => store.updateBinder(note.binderId, { guideNoteId: guide ? '' : note.id })
   const toggleLock = () => void attempt(() => call('POST', `/api/notes/${note.id}/lock`, { locked: !note.locked }))
   const openReview = () => setReview(open || note.locked ? 'proposals' : 'versions')
   if (more) {
     const items: MenuItem[] = [
-      { label: open ? `Review ${open} proposed change${open === 1 ? '' : 's'}` : 'Versions and proposals', icon: <History size={14} />, onSelect: openReview },
+      { label: open ? `Review ${open} suggested change${open === 1 ? '' : 's'}` : 'Versions and suggested changes', icon: <History size={14} />, onSelect: openReview },
       { label: note.locked ? 'Unlock' : 'Lock', icon: note.locked ? <LockOpen size={14} /> : <Lock size={14} />, disabled: !!note.locked && !mayChange, onSelect: toggleLock },
       { label: guide ? 'Stop using as the guide' : 'Make it the binder’s guide', icon: <BookMarked size={14} />, onSelect: toggleGuide },
+      { label: 'Copy link', icon: <Link2 size={14} />, onSelect: () => copyNoteLink(note.id) },
       ...more,
     ]
     return (
@@ -206,7 +214,7 @@ export function NoteControls({ note, mayChange, more }: { note: Note; mayChange:
     <>
       <button type="button" className={`icon-button${guide ? ' on' : ''}`} aria-pressed={guide} onClick={toggleGuide} title={guide ? 'This is the binder’s guide: every agent here reads it first. Stop using it as the guide' : 'Make this the binder’s guide: every agent here reads it first'} aria-label="Binder guide"><BookMarked size={15} /></button>
       <button type="button" className={`icon-button${note.locked ? ' on' : ''}`} aria-pressed={!!note.locked} disabled={!!note.locked && !mayChange} onClick={toggleLock} title={lockTitle} aria-label={note.locked ? 'Locked' : 'Lock'}>{note.locked ? <Lock size={15} /> : <LockOpen size={15} />}</button>
-      <button type="button" className={`icon-button${open ? ' on' : ''}`} onClick={openReview} title={open ? `${open} proposed change${open === 1 ? '' : 's'} to review` : 'Versions and proposals'} aria-label="Versions and proposals"><History size={15} />{open > 0 && <i className="waiting num">{open}</i>}</button>
+      <button type="button" className={`icon-button${open ? ' on' : ''}`} onClick={openReview} title={open ? `${open} suggested change${open === 1 ? '' : 's'} to review` : 'Versions and suggested changes'} aria-label="Versions and suggested changes"><History size={15} />{open > 0 && <i className="waiting num">{open}</i>}</button>
       {guide && note.text.length > guideMost && <span className="note-guide-long" title={`Agents are given the first ${guideMost.toLocaleString()} characters, and can read the rest`}>Long for a guide</span>}
       {review && <NoteReview note={note} mayChange={mayChange} opening={review} onClose={() => setReview(undefined)} />}
     </>

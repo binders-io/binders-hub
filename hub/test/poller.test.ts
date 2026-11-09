@@ -22,7 +22,7 @@ async function setUp(mode: PollMode = 'on') {
     { type: 'binder.put', binder: { id: 'b1', name: 'Server', repo: 'acme/web' } },
     { type: 'card.put', card },
     { type: 'pr.put', pull: { id: 'acme/web#7', repo: 'acme/web', number: 7, title: 'Pull 7', branch: 'agent/7-work', url: '', state: 'open', cardId: 'c1', checks: [{ name: 'test', state: 'running' }], files: [] } },
-    { type: 'env.put', environment: { id: 'staging', name: 'Staging', url: '', version: '0.1.0', changeSetIds: [], state: 'healthy', deployedAt: '', needsApproval: false } },
+    { type: 'env.put', environment: { id: 'acme/web#staging', repo: 'acme/web', name: 'Staging', url: '', version: '0.1.0', changeSetIds: [], state: 'healthy', deployedAt: '', needsApproval: false, order: 0, by: 'github' } },
   ])
   const connection = new GitHubConnection(new MemoryKV(), new Sealer('x'), { webUrl: github.url, apiUrl: github.url }, { token: 'ghs_server' })
   const actions = new Actions(hub, connection)

@@ -2,9 +2,11 @@ import { guideTemplate } from '../../../shared/guide.ts'
 import type { NoteProposal } from '../../../shared/notes.ts'
 import { createElement, useEffect, useState, type DragEvent, type ReactNode } from 'react'
 import { ArrowUpRight, BookPlus, ChevronRight, CloudUpload, FilePlus, LoaderCircle, FileText, BookMarked, Lock, Folder as FolderIcon, FolderOpen, FolderCog, FolderInput, FolderPlus, Link2, MoreHorizontal, Pencil, Search, Settings2, Trash2, X } from 'lucide-react'
+import { ConfirmButton } from './ConfirmButton'
+import { copyNoteLink } from './NoteControls'
 import { openMenu, openMenuUnder, type MenuItem } from './ContextMenu'
 import { FolderRuleDialog } from './FolderRules'
-import { attempt, toast } from './Toast'
+import { attempt, failure, toast } from './Toast'
 import type { Folder, Note } from '../data/model'
 import { sameFields, useActions, useHub, type NotesSaved } from '../data/store'
 import { go, href } from '../route'
@@ -24,14 +26,18 @@ function readCollapsed(): Set<string> {
   }
 }
 
-/** What a save did, in a line: committed, and where each binder's notes went or why they didn't. */
+/**
+ * What a save did, in a line a person reads as "saved" and "on GitHub": the commit's own words are for `detail`, which
+ * says where each binder's notes went.
+ */
 export function savedWords(saved: NotesSaved) {
-  const done = saved.committed ? `Committed ${saved.committed} note${saved.committed === 1 ? '' : 's'}` : 'Every note was committed already'
-  const pushed = saved.binders.filter((b) => b.push && !b.push.error).map((b) => `${b.push!.to} (${b.push!.branch})`)
+  const done = saved.committed ? `${saved.committed} note${saved.committed === 1 ? '' : 's'} saved` : 'Every note was already saved'
+  const pushed = saved.binders.filter((b) => b.push && !b.push.error)
   const failed = saved.binders.find((b) => b.push?.error)
-  if (failed) return { ok: false, text: `${done}, but pushing to ${failed.push!.to ?? failed.repo ?? 'its repo'} failed: ${failed.push!.error}` }
-  if (pushed.length) return { ok: true, text: `${done} and pushed to ${pushed.join(', ')}.` }
-  return { ok: true, text: `${done}, in the hub. No repo is set for these notes to go to (Settings → Binder).` }
+  const where = pushed.map((b) => `${b.push!.to ?? b.repo ?? 'its repo'}${b.push!.branch ? ` (${b.push!.branch})` : ''}`).join(', ')
+  if (failed) return { ok: false, text: `${done}, but not on GitHub: pushing to ${failed.push!.to ?? failed.repo ?? 'its repo'} failed: ${failed.push!.error}`, detail: where && `Pushed to ${where}.` }
+  if (pushed.length) return { ok: true, text: `${done} to GitHub`, detail: `Pushed to ${where}.` }
+  return { ok: true, text: `${done}, but not on GitHub yet. Set a repo for these notes in Settings → GitHub.`, detail: '' }
 }
 
 /** Save all, and ⌘S: commits every note now rather than when typing pauses, and pushes them. Shows how many wait. */
@@ -44,7 +50,12 @@ export function SaveAll() {
     setBusy(true)
     const saved = await attempt(() => store.saveNotes())
     setBusy(false)
-    if (saved) toast(savedWords(saved).text)
+    if (!saved) return
+    const { ok, text, detail } = savedWords(saved)
+    // Which repo and branch is for whoever wants it: one press away.
+    const options = detail ? { action: { label: 'Where to', run: () => toast(detail) } } : {}
+    if (ok) toast(text, options)
+    else failure(text, options)
   }
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -101,7 +112,6 @@ export function NoteTree({ currentId }: { currentId: string }) {
     })
   }
 
-  const [deleting, setDeleting] = useState<string>()
 
   const newNote = (binderId: string, folderId?: string) => {
     if (folderId) toggle(folderId, true)
@@ -136,7 +146,6 @@ export function NoteTree({ currentId }: { currentId: string }) {
 
   // Right-click menus, as on the Mac: the same things the row's buttons do, and a few more.
   const icon = (component: typeof FilePlus) => createElement(component, { size: 13 })
-  const copyLink = (url: string) => void navigator.clipboard.writeText(new URL(url, window.location.href).toString()).then(() => toast('Link copied.'), () => toast('Couldn’t copy the link.'))
   const folderPath = (folderId?: string) => {
     const names: string[] = []
     let folder = folders.find((f) => f.id === folderId)
@@ -157,7 +166,7 @@ export function NoteTree({ currentId }: { currentId: string }) {
   }
   const noteMenu = (note: Note): MenuItem[] => [
     { label: 'Open', icon: icon(ArrowUpRight), onSelect: () => go({ screen: 'notes', id: note.id }) },
-    { label: 'Copy link', icon: icon(Link2), onSelect: () => copyLink(href({ screen: 'notes', id: note.id })) },
+    { label: 'Copy link', icon: icon(Link2), onSelect: () => copyNoteLink(note.id) },
     { separator: true },
     { label: 'New note beside it', icon: icon(FilePlus), onSelect: () => newNote(note.binderId, note.folderId) },
     ...moveItems({ binderId: note.binderId, folderId: note.folderId }, (binderId, folderId) => store.moveNote(note.id, binderId, folderId)),
@@ -183,7 +192,7 @@ export function NoteTree({ currentId }: { currentId: string }) {
     } }]),
     { label: 'New folder', icon: icon(FolderPlus), onSelect: () => newFolder(binderId) },
     { separator: true },
-    { label: 'Binder settings', icon: icon(Settings2), onSelect: () => { try { window.localStorage.setItem('binders-settings-part', 'binder') } catch { /* only a convenience */ } go({ screen: 'settings' }) } },
+    { label: 'Binder settings', icon: icon(Settings2), onSelect: () => go({ screen: 'settings', id: 'general' }) },
   ]
 
   const waiting = (note: Note) => proposals.filter((p) => p.noteId === note.id && p.state === 'new').length
@@ -210,7 +219,7 @@ export function NoteTree({ currentId }: { currentId: string }) {
         </span>
         {waiting(note) > 0 && <i className="waiting num">{waiting(note)}</i>}
         {note.locked && <Lock size={11} className="tree-lock" aria-label="Locked" />}
-        {reviewing(note.id) > 0 && <i className="waiting num" title="Proposed changes to review">{reviewing(note.id)}</i>}
+        {reviewing(note.id) > 0 && <i className="waiting num" title="Suggested changes to review">{reviewing(note.id)}</i>}
         {note.saving && <i className="saving-dot" title="Saving" />}
       </a>
       {more(note.title || 'Untitled', () => noteMenu(note))}
@@ -256,10 +265,7 @@ export function NoteTree({ currentId }: { currentId: string }) {
             <button onClick={() => newNote(folder.binderId, folder.id)} aria-label={`New note in ${folder.name}`} title="New note"><FilePlus size={13} /></button>
             <button onClick={() => newFolder(folder.binderId, folder.id)} aria-label={`New folder in ${folder.name}`} title="New folder"><FolderPlus size={13} /></button>
             <button onClick={() => setRenaming(folder.id)} aria-label={`Rename ${folder.name}`} title="Rename"><Pencil size={13} /></button>
-            <button className={deleting === folder.id ? 'sure' : ''} onClick={() => (deleting === folder.id ? (store.deleteFolder(folder.id), setDeleting(undefined)) : setDeleting(folder.id))} onBlur={() => setDeleting(undefined)}
-              aria-label={`Delete ${folder.name}`} title={deleting === folder.id ? 'Click again: the folder goes, what’s in it moves up' : 'Delete the folder (what’s in it moves up)'}>
-              <Trash2 size={13} />{deleting === folder.id && <span>Delete?</span>}
-            </button>
+            <ConfirmButton className="" question="Delete? Press again" label={`Delete ${folder.name}`} title="Delete the folder (what’s in it moves up)" onConfirm={() => store.deleteFolder(folder.id)}><Trash2 size={13} /></ConfirmButton>
           </span>
           {renaming !== folder.id && more(folder.name, () => folderMenu(folder))}
         </div>
@@ -297,7 +303,7 @@ export function NoteTree({ currentId }: { currentId: string }) {
       </div>
       {newBinder !== undefined && (
         <form className="tree-new-binder" onSubmit={(event) => { event.preventDefault(); if (newBinder.trim()) store.addBinder(newBinder); setNewBinder(undefined) }}>
-          <input id="new-binder" autoFocus value={newBinder} onChange={(e) => setNewBinder(e.target.value)} onBlur={() => !newBinder.trim() && setNewBinder(undefined)} onKeyDown={(e) => e.key === 'Escape' && setNewBinder(undefined)} placeholder="New project’s name" />
+          <input id="new-binder" autoFocus value={newBinder} onChange={(e) => setNewBinder(e.target.value)} onBlur={() => !newBinder.trim() && setNewBinder(undefined)} onKeyDown={(e) => e.key === 'Escape' && setNewBinder(undefined)} placeholder="New part’s name" />
         </form>
       )}
 

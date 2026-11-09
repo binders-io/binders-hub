@@ -80,6 +80,10 @@ export async function fakeGitHub(options: {
     runs: [] as Record<string, unknown>[],
     deployments: [] as Record<string, unknown>[],
     statuses: {} as Record<number, string>,
+    /** What else a deployment's latest status carries, by deployment: where it's served, the run that made it, when. */
+    statusFields: {} as Record<number, { environment_url?: string; log_url?: string; target_url?: string; created_at?: string }>,
+    /** The merge commit of each pull request that's merged on GitHub, by number. */
+    mergedPulls: {} as Record<number, string>,
     /** Review comments on lines are refused, as when new commits moved them out of the diff. */
     linesGone: false,
     /** What the signed-in person may do in each repo (push unless set); none answers as if it weren't there. */
@@ -90,7 +94,7 @@ export async function fakeGitHub(options: {
     /** The commit at the head of each pull request, by number: tests move it to land new commits. */
     heads: {} as Record<number, string>,
     /** What `compare` answers, by "from...to". */
-    compares: {} as Record<string, { commits: { sha: string; commit: { message: string; author?: { name?: string; date?: string } } }[]; files?: { filename: string; additions: number; deletions: number; patch?: string }[]; additions?: number; deletions?: number }>,
+    compares: {} as Record<string, { status?: 'ahead' | 'behind' | 'identical' | 'diverged'; commits: { sha: string; commit: { message: string; author?: { name?: string; date?: string } } }[]; files?: { filename: string; additions: number; deletions: number; patch?: string }[]; additions?: number; deletions?: number }>,
     /** The branch each pull request is aimed at, by number (main unless set). */
     bases: {} as Record<number, string>,
     /** Whether each pull request merges, by number: GitHub's mergeable_state (clean unless set). */
@@ -136,7 +140,8 @@ export async function fakeGitHub(options: {
   app.get('/repos/:owner/:repo/deployments', async () => world.deployments)
   app.get('/repos/:owner/:repo/deployments/:id/statuses', async (request) => {
     const state = world.statuses[Number((request.params as { id: string }).id)]
-    return state ? [{ state }] : []
+    const id = Number((request.params as { id: string }).id)
+    return state ? [{ state, ...world.statusFields[id] }] : []
   })
   let issues = 100
   app.addHook('preHandler', async (request) => {
@@ -200,7 +205,7 @@ export async function fakeGitHub(options: {
   app.get('/repos/:owner/:repo/pulls/:n', async (request) => {
     const { owner, repo, n } = request.params as { owner: string; repo: string; n: string }
     const merging = world.mergeable[Number(n)] ?? 'clean'
-    return { number: Number(n), title: `Pull ${n}`, body: '', head: { ref: `agent/${n}-work`, sha: world.heads[Number(n)] ?? `sha${n}` }, html_url: `https://github.test/${owner}/${repo}/pull/${n}`, state: 'open', merged: false, additions: 12, deletions: 3, mergeable: merging !== 'dirty', mergeable_state: merging, base: { ref: world.bases[Number(n)] ?? 'main' } }
+    return { number: Number(n), title: `Pull ${n}`, body: '', head: { ref: `agent/${n}-work`, sha: world.heads[Number(n)] ?? `sha${n}` }, html_url: `https://github.test/${owner}/${repo}/pull/${n}`, state: world.mergedPulls[Number(n)] ? 'closed' : 'open', merged: !!world.mergedPulls[Number(n)], merge_commit_sha: world.mergedPulls[Number(n)] ?? null, additions: 12, deletions: 3, mergeable: merging !== 'dirty', mergeable_state: merging, base: { ref: world.bases[Number(n)] ?? 'main' } }
   })
   app.get('/repos/:owner/:repo/compare/:range', async (request, reply) => {
     const answer = world.compares[(request.params as { range: string }).range]

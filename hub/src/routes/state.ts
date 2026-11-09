@@ -6,10 +6,25 @@ import { slug } from '../../../shared/notes.ts'
 import { isChange } from '../log.ts'
 import { Refused, type Hub } from '../hub.ts'
 import type { FastifyInstance } from 'fastify'
+import type { Binder } from '../../../shared/notes.ts'
 import type { Change, Entry, Outgoing } from '../../../shared/state.ts'
 import type { Context } from './context.ts'
 
 const repoName = /^[\w.-]+\/[\w.-]+$/
+
+/**
+ * Where a binder's cards and notes go, as a change would leave them: a field left out or cleared is what it comes to
+ * (notes and issues are on, review comments off, unless set), so a client that writes a default out in full isn't
+ * taken to have changed anything.
+ */
+const whereItGoes = (binder?: Binder) => JSON.stringify([
+  binder?.repo?.toLowerCase() || undefined,
+  binder?.repos ?? undefined,
+  binder?.notes !== false,
+  binder?.notesBranch || undefined,
+  binder?.issues !== false,
+  binder?.reviewComments === true,
+])
 
 // The state, its changes and its live feed, and the pictures in notes.
 
@@ -43,6 +58,12 @@ export async function stateRoutes(app: FastifyInstance, context: Context) {
       // A project's repo changes only to one the person can push to.
       // Its agents' repos too, at most 500: each new one, only by someone who can push to it, as an agent's own repos.
       const vet = async (change: Change) => {
+        // Where a Binder's cards and notes go, and taking a binder away, are its owners' and admins' to change (and the
+        // hub's admins'); a Binder with no members is open to everyone, so anyone may.
+        if (change.type === 'binder.delete' || (change.type === 'binder.put' && whereItGoes(change.binder) !== whereItGoes(hub.state.binders.find((b) => b.id === change.binder.id)))) {
+          const info = spaces.info(sp(request).id)
+          if (info?.members.length && !spaces.mayManage(info.id, login(request), isAdmin(login(request)))) throw new Refused('Only this Binder’s owners and admins can change where its cards and notes go.')
+        }
         if (change.type !== 'binder.put') return
         const was = hub.state.binders.find((b) => b.id === change.binder.id)
         if (change.binder.repo && was?.repo?.toLowerCase() !== change.binder.repo.toLowerCase()) await mayLink(request, change.binder.repo, true)

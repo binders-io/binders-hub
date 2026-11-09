@@ -85,12 +85,6 @@ export function checkedRunner(runner: Partial<RunnerSettings>): RunnerSettings {
   return { tool, access, timeoutMinutes, ...(runner.held ? { held: true } : {}), ...(runner.cli ? { cli: true } : {}), ...(runner.live ? { live: true } : {}), ...(idle !== undefined ? { idleMinutes: idle } : {}), parallel, worktrees: true, model: runner.model?.trim() || undefined, command: tool === 'custom' ? runner.command!.trim() : undefined, workspace: runner.workspace?.trim() || undefined, ...(runner.commitAs === 'app' ? { commitAs: 'app' as const } : {}), ...(allow.length ? { allow } : {}) }
 }
 
-/** 0.1.0 → 0.2.0: what a recorded deploy calls the next version. */
-export function bump(version: string) {
-  const parts = /^(\d+)\.(\d+)\.(\d+)$/.exec(version)
-  return parts ? `${parts[1]}.${Number(parts[2]) + 1}.0` : '0.1.0'
-}
-
 /** What every part of the hub's actions stands on: the hub, GitHub, and finding what an action is about. */
 export abstract class ActionsBase {
   protected hub: Hub
@@ -98,7 +92,7 @@ export abstract class ActionsBase {
 
   /** What agents may reach on GitHub: their owners' reach. None: no limit (a hub without GitHub, and tests). */
   reach?: AgentReach
-  /** Who agents' commits are by, as the hub's admins set it (Settings → Options): each agent's choice, or one for all. */
+  /** Who agents' commits are by, as the hub's admins set it (Settings → Agents): each agent's choice, or one for all. */
   agentCommits: () => 'agent' | 'owner' | 'app' = () => 'agent'
   /** Cards an agent was turned away from for its owner's reach, until when, so they aren't offered again meanwhile. */
   protected turnedAway = new Map<string, number>()

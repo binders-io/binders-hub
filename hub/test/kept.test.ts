@@ -8,8 +8,8 @@ import { Redis } from 'ioredis'
 import { Hub } from '../src/hub.ts'
 import { KeptKV, StateFile } from '../src/kept.ts'
 import { MemoryKV } from '../src/kv.ts'
-import { MemoryLog } from '../src/log.ts'
-import type { Change } from '../../shared/state.ts'
+import { MemoryLog, type ChangeLog, type Unnumbered } from '../src/log.ts'
+import type { Change, Entry } from '../../shared/state.ts'
 import { startRedis, tempDir, until } from './helpers.ts'
 
 // Redis is a working copy: what has to last is in files on the hub's disk, and a hub with an empty Redis carries on.
@@ -118,6 +118,78 @@ describe('a Binder’s saved state', () => {
     assert.deepEqual(hub.state.folders.map((f) => f.id), ['x', 'y', 'z'])
   })
 
+  /** A log that holds only these entries, numbered as given: one that lost some of what it had. */
+  const logOf = (versions: [number, string][], latest = versions.at(-1)?.[0] ?? 0): ChangeLog => {
+    const entries: Entry[] = versions.map(([version, id]) => ({ version, id: `c${version}`, client: 'hub', at: '2026-11-09T00:00:00.000Z', change: folder(id) }))
+    let last = latest
+    return {
+      kind: 'memory',
+      append: async (entry: Unnumbered) => { entries.push({ ...entry, version: ++last }); return last },
+      read: async (after: number, limit = 1000) => entries.filter((e) => e.version > after).slice(0, limit),
+      latest: async () => last,
+      startAt: async (version: number) => { last = Math.max(last, version) },
+      onAppend: () => {},
+      close: async () => {},
+    }
+  }
+  const savedAt = (version: number, ids: string[]) => ({ version, state: { ...new Hub(new MemoryLog()).state, binders: [{ id: 'b1', name: 'Server' }], folders: ids.map((id) => ({ id, binderId: 'b1', name: id })) } })
+
+  it('keeps what it had before its log was lost, on every start after, not only the first', async () => {
+    // Redis was emptied at version 2 and the hub carried on: the log now begins at 3, and is as far on as the file.
+    const hub = new Hub(logOf([[3, 'f3'], [4, 'f4']]))
+    await hub.start([folder('seeded')], savedAt(4, ['f1', 'f2', 'f3', 'f4']))
+    assert.deepEqual(hub.state.folders.map((f) => f.id), ['f1', 'f2', 'f3', 'f4'])
+    assert.equal(hub.state.binders.length, 1)
+    assert.equal(hub.version, 4)
+  })
+
+  it('reads what the log has after the saved state, when the file is a little behind it', async () => {
+    const hub = new Hub(logOf([[3, 'f3'], [4, 'f4'], [5, 'f5']]))
+    await hub.start(undefined, savedAt(3, ['f1', 'f2', 'f3']))
+    assert.deepEqual(hub.state.folders.map((f) => f.id), ['f1', 'f2', 'f3', 'f4', 'f5'])
+    assert.equal(hub.version, 5)
+  })
+
+  it('carries on from the saved state over a hole in the middle of the log, as an older Redis put back leaves', async () => {
+    // An older copy of Redis held 1 and 2; the file was at 4; the hub has written 5 since.
+    const hub = new Hub(logOf([[1, 'f1'], [2, 'f2'], [5, 'f5']]))
+    await hub.start(undefined, savedAt(4, ['f1', 'f2', 'f3', 'f4']))
+    assert.deepEqual(hub.state.folders.map((f) => f.id), ['f1', 'f2', 'f3', 'f4', 'f5'])
+    assert.equal(hub.version, 5)
+  })
+
+  it('goes by a log that’s whole, though a saved state is there', async () => {
+    const hub = new Hub(logOf([[1, 'f1'], [2, 'f2'], [3, 'f3']]))
+    const saved = savedAt(2, ['stale'])
+    await hub.start(undefined, { ...saved, state: { ...saved.state, binders: [] } })
+    assert.deepEqual(hub.state.folders.map((f) => f.id), ['f1', 'f2', 'f3'])
+  })
+
+  it('takes the saved state when the log reads back less than was saved', async () => {
+    // The log says it's at 4 and gives nothing: its entries are gone and its count isn't.
+    const hub = new Hub(logOf([], 4))
+    await hub.start([folder('seeded')], savedAt(4, ['f1', 'f2']))
+    assert.deepEqual(hub.state.folders.map((f) => f.id), ['f1', 'f2'])
+    assert.equal(hub.version, 4)
+    await hub.record({ kind: 'hub' }, folder('f5'))
+    assert.equal(hub.version, 5)
+  })
+
+  it('keeps the file as it was before this start beside the new one', async () => {
+    const dir = await tempDir('state')
+    const file = new StateFile(join(dir, 'state.json'))
+    await run(file)
+    const before = await readFile(join(dir, 'state.json'), 'utf8')
+    const hub = new Hub(new MemoryLog())
+    await hub.start()
+    await hub.record({ kind: 'hub' }, folder('other'))
+    const again = new StateFile(join(dir, 'state.json'))
+    await again.follow(hub)
+    await again.stop()
+    assert.equal(await readFile(join(dir, 'state.prev.json'), 'utf8'), before)
+    assert.ok((await readFile(join(dir, 'state.json'), 'utf8')).includes('other'))
+  })
+
   it('starts from the log when the file can’t be read', async () => {
     const dir = await tempDir('state')
     const { writeFile } = await import('node:fs/promises')
@@ -210,6 +282,16 @@ describe('a whole hub with Redis rebuilt', () => {
     await start(dir, redis.url)
     cookie = await signIn()
     assert.deepEqual(ids(await stateAs(cookie)), ['n1', 'n2', 'welcome'])
+
+    // And an ordinary restart after that, with Redis left alone: its log now begins where it was emptied.
+    await addNote(cookie, 'n3', binder)
+    await until(async () => ids(await stateAs(cookie)).includes('n3'))
+    await stop()
+    await start(dir, redis.url)
+    cookie = await signIn()
+    const later = await stateAs(cookie)
+    assert.deepEqual(ids(later), ['n1', 'n2', 'n3', 'welcome'])
+    assert.equal(later.state.binders.length, 1)
     await stop()
   })
 })

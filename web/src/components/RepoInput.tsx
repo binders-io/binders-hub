@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Lock, Plus, X } from 'lucide-react'
-import { attempt, toast } from './Toast'
+import { attempt, failure } from './Toast'
 import { call } from '../data/api'
 import { useStore } from '../data/store'
 
@@ -165,7 +165,7 @@ export function RepoInput({ id, value, single = false, placeholder, within, bind
     if (!checked) return
     const fresh = checked.ok.filter((n) => !chosen(n))
     if (fresh.length) onChange([...value, ...fresh])
-    if (checked.refused.length) toast(leftOut(fresh.length, checked.refused))
+    if (checked.refused.length) failure(leftOut(fresh.length, checked.refused))
     setIndex(0)
     // This button goes with what it added: focus stays in the field.
     document.getElementById(id)?.focus()

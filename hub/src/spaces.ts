@@ -34,6 +34,12 @@ export interface SpaceInfo {
   personal?: string
   /** For a personal Binder: the Binder whose GitHub App it reaches GitHub through (the one its person signs in by). */
   home?: string
+  /**
+   * When it was taken off the hub, and by whom. It stays in the list so its address stays taken, but it isn't listed,
+   * opened or started; its files and its GitHub repo are left as they were.
+   */
+  removedAt?: string
+  removedBy?: string
 }
 
 /** A Binder's running parts. */
@@ -72,14 +78,17 @@ const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
 export async function firstSpaceIn(kv: KV) {
   const raw = await kv.get(listKey).catch(() => undefined)
   const infos = raw ? (JSON.parse(raw) as SpaceInfo[]) : []
-  return (infos.find((i) => i.createdBy === 'hub') ?? infos.find((i) => !i.personal))?.id
+  return (infos.find((i) => i.createdBy === 'hub' && !i.removedAt) ?? infos.find((i) => !i.personal && !i.removedAt))?.id
 }
 
 export class Spaces {
   private kv: KV
   private make: (id: string, info: SpaceInfo) => Promise<Space>
+  /** Every Binder the hub has made, those taken off it too: their addresses stay taken. */
   private infos: SpaceInfo[] = []
   private running = new Map<string, Space>()
+  /** The Binder the hub started with: kept for good, as its files are the hub's own folders. */
+  private firstId?: string
 
   /** `make` starts a Binder's parts; the first Binder is the one this hub had before it held several. */
   constructor(kv: KV, make: (id: string, info: SpaceInfo) => Promise<Space>) {
@@ -91,18 +100,21 @@ export class Spaces {
   async load(first: { id: string; name: string; members: Member[] }) {
     const raw = await this.kv.get(listKey)
     this.infos = raw ? (JSON.parse(raw) as SpaceInfo[]) : []
+    this.firstId = first.id
     if (!this.infos.length) {
       this.infos = [{ id: first.id, name: first.name, createdAt: new Date().toISOString(), createdBy: 'hub', members: first.members }]
       await this.save()
     }
     // Team Binders first: a personal one reaches GitHub through one of them.
-    for (const info of [...this.infos.filter((i) => !i.personal), ...this.infos.filter((i) => i.personal)]) this.running.set(info.id, await this.make(info.id, info))
+    const live = this.list()
+    for (const info of [...live.filter((i) => !i.personal), ...live.filter((i) => i.personal)]) this.running.set(info.id, await this.make(info.id, info))
     return this
   }
 
   /** For tests and hubs started by hand: Binders already running, kept in memory. */
   static of(kv: KV, spaces: { info: Omit<SpaceInfo, 'createdAt' | 'createdBy'>; space: Space }[]) {
     const made = new Spaces(kv, async () => { throw new Refused('This hub can’t make Binders.') })
+    made.firstId = spaces[0]?.info.id
     for (const { info, space } of spaces) {
       made.infos.push({ ...info, createdAt: new Date().toISOString(), createdBy: 'hub' })
       made.running.set(info.id, space)
@@ -114,12 +126,18 @@ export class Spaces {
     await this.kv.set(listKey, JSON.stringify(this.infos))
   }
 
+  /** The Binders on the hub: not those taken off it. */
   list() {
-    return this.infos
+    return this.infos.filter((s) => !s.removedAt)
   }
 
   info(id: string) {
-    return this.infos.find((s) => s.id === id)
+    return this.infos.find((s) => s.id === id && !s.removedAt)
+  }
+
+  /** Whether an address is used, by a Binder or by one that was taken off the hub: nothing new is made over it. */
+  private taken(id: string) {
+    return this.infos.some((s) => s.id === id)
   }
 
   get(id: string) {
@@ -132,7 +150,7 @@ export class Spaces {
 
   /** Everyone who's a member of a Binder: let in to sign in, like the hub's allowed people. */
   people() {
-    return [...new Set(this.infos.flatMap((s) => s.members.map((m) => m.login)))]
+    return [...new Set(this.list().flatMap((s) => s.members.map((m) => m.login)))]
   }
 
   roleOf(id: string, login: string): Role | undefined {
@@ -144,7 +162,7 @@ export class Spaces {
 
   /** The Binders a person may open, theirs first in the order they were made. Hub admins may open all. */
   forPerson(login: string, hubAdmin = false) {
-    return this.infos
+    return this.list()
       .map((info) => ({ info, role: this.roleOf(info.id, login) ?? (hubAdmin && !info.personal ? ('admin' as const) : undefined) }))
       .filter((s): s is { info: SpaceInfo; role: Role } => !!s.role)
   }
@@ -162,7 +180,7 @@ export class Spaces {
     if (base.length < 3) base = `${base}-binder`
     for (let n = 1; ; n++) {
       const id = n === 1 ? base : `${base}-${n}`
-      if (spaceIdPattern.test(id) && !reserved.has(id) && !this.info(id)) return id
+      if (spaceIdPattern.test(id) && !reserved.has(id) && !this.taken(id)) return id
     }
   }
 
@@ -175,7 +193,7 @@ export class Spaces {
     const id = (fields.id?.trim() || this.freeId(name)).toLowerCase()
     const owner = fields.owner.trim().replace(/^@/, '')
     if (!spaceIdPattern.test(id) || reserved.has(id)) throw new Refused('A Binder’s address is 3 to 40 lowercase letters, digits and dashes, starting with a letter, and not one of the hub’s own (api, auth, mcp…).')
-    if (this.info(id)) throw new Refused(`There’s a Binder at /${id} already.`)
+    if (this.taken(id)) throw new Refused(`There’s a Binder at /${id} already.`)
     if (!name) throw new Refused('Give the Binder a name.')
     if (!loginPattern.test(owner)) throw new Refused('Its owner is a GitHub login.')
     const info: SpaceInfo = { id, name, createdAt: new Date().toISOString(), createdBy: by, members: [{ login: owner, role: 'owner' }], ...(fields.home ? { home: fields.home } : {}) }
@@ -245,6 +263,30 @@ export class Spaces {
     if (!members.some((m) => m.role === 'owner')) throw new Refused('A Binder keeps at least one owner.')
     info.members = members
     await this.save()
+    return info
+  }
+
+  /** Whether this is the Binder the hub started with. */
+  isFirst(id: string) {
+    return id === this.firstId
+  }
+
+  /**
+   * Takes a Binder off the hub: its running parts stop, and it's marked removed in the list, so it isn't listed, opened
+   * or started again. Nothing of it is destroyed (its files and its GitHub repo stay as they are), and its address stays
+   * taken.
+   */
+  async remove(id: string, by: string) {
+    const info = this.need(id)
+    if (this.isFirst(id)) throw new Refused('The hub’s first Binder can’t be removed: its files are the hub’s own.')
+    if (info.personal) throw new Refused('A personal Binder can’t be removed.')
+    info.removedAt = new Date().toISOString()
+    info.removedBy = by
+    await this.save()
+    const space = this.running.get(id)
+    this.running.delete(id)
+    // Already out of reach; a part that won't stop is left to end with the hub.
+    await space?.stop?.().catch(() => undefined)
     return info
   }
 

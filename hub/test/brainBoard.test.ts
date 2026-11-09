@@ -16,6 +16,7 @@ import { ask, askText, SpaceBrain, talk, type AskPlace } from '../src/brain/brai
 import { answerIn, boardFor, isAsking, propose, readDo, takeProposal, withoutMarks, type WorkPlace } from '../src/brain/board.ts'
 import type { BrainModel } from '../src/brain/models.ts'
 import type { Change } from '../../shared/state.ts'
+import { forAttention, waitingOn } from '../../shared/waiting.ts'
 import { nextFor, type Agent, type Card, type PullRequest } from '../../shared/work.ts'
 import { oneSpace, seed } from './helpers.ts'
 
@@ -85,6 +86,9 @@ async function setUp() {
   return { hub, actions, settings, seen, say, place, places, url, cardNow, close: async () => { brain.stop(); await app.close() } }
 }
 
+/** The lines under one heading of the board, up to the next. */
+const under = (board: string, heading: string) => board.split(`\n${heading}:\n`)[1]?.split(/\n(?=[A-Z][^\n]*:\n)/)[0] ?? ''
+
 const marked = (board: string, words: string) => new RegExp(`\\[([a-z]\\d+(?:-\\d+)?)\\][^\\n]*${words}`).exec(board)?.[1]
 
 describe('how the work stands, for the brain', () => {
@@ -96,12 +100,55 @@ describe('how the work stands, for the brain', () => {
       assert.match(text, /Grok \(sam’s, online\): waiting for an answer on “Update the docs”/)
       assert.match(text, /Waiting on you:\n[^]*“Move the database”: Sonnet asks: Which region should it go to\?/)
       assert.match(text, /“Clear the cache”: Sonnet asks to use Bash: rm -rf build\n/)
-      assert.match(text, /“Update the docs”: Grok asks to use Bash: ls \(only sam can answer it\)/)
+      // Sam’s permission is sam’s to answer, so it isn’t among what waits on this person.
+      assert.match(text, /Waiting on someone else:\n- \[c\d+\] “Update the docs”: Grok asks to use Bash: ls\n/)
+      assert.doesNotMatch(text.split('Waiting on someone else:')[0], /Update the docs”: Grok asks/)
       assert.match(text, /Being worked on:\n[^]*“Fix the login page”: Sonnet, running the tests/)
       assert.match(text, /\[s18\] Change set #18, “The November release”: in review/)
       assert.match(text, /\[s19\] Change set #19, “Failing”: in review[^\n]*checks failing: tests/)
-      assert.match(text, /Change set #18, “The November release”, is waiting for approval/)
+      assert.match(text, /Waiting on you:\n[^]*- “Change set #18: The November release”: 1 pull request to approve/)
       assert.doesNotMatch(text, /Shipped long ago|Out already/)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('says what waits the way Home does, from the one function, and nothing it doesn’t count', async () => {
+    const set = await setUp()
+    try {
+      const { text } = boardFor([set.place], 'you').passage
+      const waiting = under(text, 'Waiting on you')
+      const rows = forAttention(waitingOn(set.hub.state, 'you'))
+      assert.equal(waiting.trim().split('\n').length, rows.length)
+      for (const row of rows) assert.ok(waiting.includes(`“${row.title}”: ${row.detail}`), row.id)
+      // Not a card that’s only being worked on or ready.
+      assert.doesNotMatch(waiting, /Fix the login page|Write the changelog/)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('says it for whoever is asking: a question is waiting on the agent’s owner, and the same one is on someone else for another person', async () => {
+    const set = await setUp()
+    try {
+      const theirs = boardFor([set.place], 'sam').passage.text
+      const mine = under(theirs, 'Waiting on you')
+      assert.match(mine, /“Update the docs”: Grok asks to use Bash: ls/)
+      assert.doesNotMatch(mine, /Move the database/)
+      assert.match(theirs, /Waiting on someone else:\n[^]*“Move the database”/)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('says a promotion that waits, and keeps an environment out of a place limited to some binders', async () => {
+    const set = await setUp()
+    try {
+      const workflow = { repo: 'acme/web', workflow: 'deploy.yml', ref: 'main' }
+      const env = (name: string, order: number, fields: object) => ({ type: 'env.put', environment: { id: `acme/web#${name}`, repo: 'acme/web', name, url: '', version: '1.0', changeSetIds: [], state: 'healthy', deployedAt: '', needsApproval: false, order, ...fields } }) as Change
+      for (const change of [env('staging', 0, { name: 'Staging', version: '1.1' }), env('production', 1, { name: 'Production', needsApproval: true, deploy: workflow })]) await set.hub.record({ kind: 'hub' }, change)
+      assert.match(under(boardFor([set.place], 'you').passage.text, 'Waiting on you'), /“Promote 1\.1 to Production”: acme\/web/)
+      assert.doesNotMatch(under(boardFor([{ ...set.place, binders: ['b1'] }], 'you').passage.text, 'Waiting on you'), /Promote/)
     } finally {
       await set.close()
     }

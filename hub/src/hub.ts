@@ -42,6 +42,8 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
   private skipped = new Set<number>()
   /** Agents' presence: live, so not in the log. How many waits each has open says whether it's listening. */
   private seen = new Map<string, { at: number; waiting: number }>()
+  /** When this hub started: what it hasn't heard since then, it hasn't heard at all, as `seen` begins empty. */
+  readonly startedAt = Date.now()
   /** Each agent's runners heard from, by the id each gives itself, with where it runs. */
   private runners = new Map<string, Map<string, { at: number; on?: string }>>()
 
@@ -52,8 +54,16 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
   }
 
   /**
+   * The state saved before this start, while the log is first read: where the log turns out to have a hole in it, the
+   * hub carries on from here. A log loses its beginning when its Redis is emptied, and its middle when an older copy of
+   * Redis is put back; either way every later start reads that same holed log.
+   */
+  private fallback?: SavedState
+
+  /**
    * Reads the whole log; a hub whose log is empty starts with what `seed` gives. A log behind the state saved in `saved`
-   * lost what it had: the hub takes that state, and the log goes on from its version.
+   * lost what it had: the hub takes that state, and the log goes on from its version. So does a log with a hole in it,
+   * whenever that hole was made: what's before the hole is in the saved state, and only what's after it is read.
    */
   async start(seed?: Change[], saved?: SavedState) {
     // Listening first, then reading: a change made between the two would otherwise wait for the next one to be heard of.
@@ -62,17 +72,35 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
       const latest = await this.log.latest().catch(() => undefined)
       if (latest !== undefined && latest < saved.version) {
         log.warn({ log: this.log.kind, latest, saved: saved.version }, 'The change log is behind this Binder’s saved state: carrying on from the saved state')
-        this.state = saved.state
-        this.version = saved.version
+        this.take(saved)
         await this.log.startAt(saved.version)
-      }
+      } else this.fallback = saved
     }
     await this.catchUp()
+    this.fallback = undefined
+    // Read through, and still short of what was saved, or with none of the binders it had: the log didn't give what
+    // it should have. The saved state stands, with whatever the log has after it.
+    if (saved && (this.version < saved.version || (saved.state.binders.length > 0 && !this.state.binders.length))) {
+      log.error({ log: this.log.kind, read: this.version, saved: saved.version }, 'The change log gave less than this Binder’s saved state holds: carrying on from the saved state')
+      const further = this.version
+      this.take(saved)
+      await this.log.startAt(Math.max(saved.version, further))
+      await this.catchUp()
+    }
     if (this.version === 0 && seed?.length) {
       const at = new Date().toISOString()
       for (const [index, change] of seed.entries()) await this.log.append({ id: `seed-${index}`, client: 'hub', at, change })
       await this.catchUp()
     }
+  }
+
+  /** Carries on from a saved state: its notes' documents are made again from their text as they're next edited. */
+  private take(saved: SavedState) {
+    this.state = saved.state
+    this.version = saved.version
+    this.docs = new NoteDocs()
+    this.merged.clear()
+    this.skipped.clear()
   }
 
   catchUp() {
@@ -81,7 +109,24 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
         const read = await this.log.read(this.version)
         if (!read.length) return
         const entries: Entry[] = []
+        let at = this.version
         for (const entry of read) {
+          // A hole: the log goes on from further than the change after the last one read.
+          if (entry.version > at + 1) {
+            const saved = this.fallback
+            this.fallback = undefined
+            if (saved && saved.version > at) {
+              const lost = entry.version - 1 - saved.version
+              log.warn({ log: this.log.kind, after: at, next: entry.version, saved: saved.version, ...(lost > 0 ? { lost } : {}) }, 'The change log has a hole in it: carrying on from this Binder’s saved state')
+              this.take(saved)
+              at = saved.version
+              // What was read so far is of a history the saved state replaces, and the rest is read again from there.
+              entries.length = 0
+              break
+            }
+            log.error({ log: this.log.kind, after: at, next: entry.version }, 'The change log has a hole in it, and no saved state covers it')
+          }
+          at = entry.version
           try {
             // An edit's Automerge changes go into its note's document, and the edit takes the note's text as merged.
             const change = this.docs.apply(this.state, entry.change)
@@ -95,7 +140,7 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
             log.error({ err: error, version: entry.version, type: entry.change?.type }, 'Skipped a change in the log that can’t be applied')
           }
         }
-        this.version = read[read.length - 1].version
+        this.version = at
         if (entries.length) this.emit('entries', entries)
       }
     }).catch((err) => {
@@ -214,6 +259,16 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
     this.seen.set(agentId, now)
     // Others hear when listening starts or stops, or when an agent shows up after a while.
     if (!was || waiting !== 0 || now.at - was.at > 60_000) this.emit('presence', this.presence())
+  }
+
+  /**
+   * The last time this agent was heard from, in milliseconds: a call of its own or its runner's, or now while it has a
+   * wait open. Never before the hub started, so a restart doesn't make every agent look gone.
+   */
+  lastHeard(agentId: string, now = Date.now()) {
+    const seen = this.seen.get(agentId)
+    if (seen && seen.waiting > 0) return now
+    return Math.max(this.startedAt, seen?.at ?? 0, ...[...(this.runners.get(agentId)?.values() ?? [])].map((r) => r.at))
   }
 
   /** A runner of an agent was heard from: one more running for it, if it's new. */

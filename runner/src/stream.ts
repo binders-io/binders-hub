@@ -25,7 +25,7 @@ export interface Reading {
   /** Its final answer in full, for a chat reply. */
   reply?: string
   failed?: boolean
-  /** What the agent itself said went wrong (Codex's error events), for saying why it stopped. */
+  /** What the agent itself said went wrong (Codex's error events, Claude Code's failed result), for saying why it stopped. */
   error?: string
   /** What Claude Code refused it for want of a permission (its result's permission_denials), as a person would read it. */
   denied?: string[]
@@ -127,7 +127,11 @@ export class StreamReader {
       const usage = event.usage as Record<string, unknown> | undefined
       if (usage) this.reading.tokens = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'].reduce((sum, k) => sum + (typeof usage[k] === 'number' ? (usage[k] as number) : 0), 0)
       if (typeof event.duration_ms === 'number') this.reading.minutes = Math.max(1, Math.round(event.duration_ms / 60_000))
-      if (event.is_error) this.reading.failed = true
+      if (event.is_error) {
+        this.reading.failed = true
+        // What Claude Code says went wrong is its result (signed out, out of credit, rate limited), not its stderr.
+        if (typeof event.result === 'string' && event.result.trim()) this.reading.error = short(unwrapped(event.result), 400)
+      }
       const denials = event.permission_denials as { tool_name?: string; tool_input?: Record<string, unknown> }[] | undefined
       if (Array.isArray(denials) && denials.length) this.reading.denied = [...new Set(denials.map(deniedAs))].slice(0, 20)
       if (typeof event.result === 'string' && event.result.trim()) {

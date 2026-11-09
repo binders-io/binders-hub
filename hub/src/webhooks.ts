@@ -3,11 +3,12 @@ import type { Change } from '../../shared/state.ts'
 import type { Card, PullRequest } from '../../shared/work.ts'
 import { checkOf, type CheckRunJSON } from './github.ts'
 import type { Actions } from './actions.ts'
+import { versionIn } from './actions/environments.ts'
 import type { Hub } from './hub.ts'
 import { readBody, readMetadata, withoutMetadata, type IssuesSaver } from './savers/issues.ts'
 import { log } from './logger.ts'
 import { whatsWrongWithWebhook } from './schemas.ts'
-import { sameRepo } from '../../shared/work.ts'
+import { handMove, sameRepo } from '../../shared/work.ts'
 
 // GitHub telling the hub what happened there: an issue edited or closed, a pull request opened or merged, a check
 // finished, a workflow run, a deployment. Each becomes changes in the log. A delivery whose signature doesn't match the
@@ -22,7 +23,12 @@ export function verify(secret: string, raw: Buffer, signature: string | undefine
 
 interface Repo { full_name: string }
 interface IssueJSON { number: number; title: string; body: string | null; state: 'open' | 'closed'; html_url: string; pull_request?: unknown }
-interface PullJSON { number: number; title: string; body: string | null; state: 'open' | 'closed'; merged?: boolean; html_url: string; head: { ref: string; sha?: string }; additions?: number; deletions?: number }
+type DeploymentPayload = {
+  deployment_status: { state: string; environment_url?: string | null; log_url?: string | null; target_url?: string | null; created_at?: string; updated_at?: string }
+  deployment: { environment: string; ref: string; sha: string; payload?: { version?: string } | string; transient_environment?: boolean }
+  repository: Repo
+}
+interface PullJSON { number: number; title: string; body: string | null; state: 'open' | 'closed'; merged?: boolean; html_url: string; head: { ref: string; sha?: string }; merge_commit_sha?: string | null; additions?: number; deletions?: number }
 
 const hubActor = { kind: 'hub' } as const
 
@@ -53,7 +59,7 @@ export class Webhooks {
       case 'workflow_run':
         return this.workflowRun(payload as { workflow_run: { id: number; name: string; head_branch: string; event: string; status: string; conclusion: string | null; run_started_at?: string; updated_at?: string; html_url: string }; repository: Repo })
       case 'deployment_status':
-        return this.deployment(payload as { deployment_status: { state: string }; deployment: { environment: string; ref: string; sha: string; payload?: { version?: string } | string } })
+        return this.deployment(payload as DeploymentPayload)
       default:
         return 'ignored'
     }
@@ -121,6 +127,7 @@ export class Webhooks {
       cardId: card?.id ?? known?.cardId, agentId: known?.agentId ?? card?.agentId,
       head: p.head.sha ?? known?.head,
       additions: p.additions ?? known?.additions, deletions: p.deletions ?? known?.deletions,
+      ...(p.merged && p.merge_commit_sha ? { mergeSha: p.merge_commit_sha } : {}),
     }
     if (!known && card) {
       // New to the hub: the actions read its files and checks and put it in the binder's change set.
@@ -128,13 +135,34 @@ export class Webhooks {
     }
     // New commits on it (a conflict resolved, say): whether it merges is asked again.
     const fresh = action === 'synchronize' || action === 'reopened' ? { mergeable: undefined } : {}
-    await this.hub.record(hubActor, { type: 'pr.put', pull: { ...(this.hub.state.pulls.find((x) => x.id === id) ?? pull), title: pull.title, branch: pull.branch, url: pull.url, state: pull.state, head: pull.head, additions: pull.additions, deletions: pull.deletions, ...fresh } })
+    await this.hub.record(hubActor, { type: 'pr.put', pull: { ...(this.hub.state.pulls.find((x) => x.id === id) ?? pull), title: pull.title, branch: pull.branch, url: pull.url, state: pull.state, head: pull.head, additions: pull.additions, deletions: pull.deletions, ...(pull.mergeSha ? { mergeSha: pull.mergeSha } : {}), ...fresh } })
     const changes: Change[] = []
     const at = new Date().toISOString()
     if (card && action === 'opened' && card.stage === 'working') changes.push({ type: 'card.update', id: card.id, fields: { stage: 'review', prId: id }, activity: { at, by: 'hub', kind: 'pr', text: `Opened ${repo.split('/')[1]}#${p.number}` } })
     if (card && p.merged && card.stage !== 'live') changes.push({ type: 'card.update', id: card.id, fields: { stage: 'live' }, activity: { at, by: 'hub', kind: 'merged', text: `Merged ${repo.split('/')[1]}#${p.number}` } })
+    // Closed on GitHub without merging: out of its change set, and its card waits in Proposed for a person to decide.
+    if (action === 'closed' && !p.merged) changes.push(...this.closedUnmerged(id, repo, p.number, card, at))
     if (changes.length) await this.hub.recordAll(hubActor, changes)
     return action
+  }
+
+  /**
+   * What a pull request closed without merging changes. Nothing picks its card up again until a person moves it on, as it
+   * may have been closed because the work was wrong. A set it leaves empty goes with it; the work that merged elsewhere
+   * is left as it is.
+   */
+  private closedUnmerged(prId: string, repo: string, number: number, card: Card | undefined, at: string): Change[] {
+    const changes: Change[] = []
+    for (const set of this.hub.state.changeSets.filter((s) => s.prIds.includes(prId))) {
+      const rest = set.prIds.filter((id) => id !== prId)
+      changes.push(rest.length || (set.state !== 'assembling' && set.state !== 'review')
+        ? { type: 'set.update', id: set.id, fields: { prIds: rest } }
+        : { type: 'set.delete', id: set.id })
+    }
+    if (card && (card.stage === 'review' || card.stage === 'working' || card.stage === 'blocked')) {
+      changes.push({ type: 'card.update', id: card.id, fields: handMove(card, 'proposed') ?? {}, activity: { at, by: 'hub', kind: 'comment', text: `${repo.split('/')[1]}#${number} was closed on GitHub without merging.` } })
+    }
+    return changes
   }
 
   private async checkRun({ check_run, repository }: { check_run: CheckRunJSON & { pull_requests: { number: number }[] }; repository: Repo }) {
@@ -159,28 +187,11 @@ export class Webhooks {
     return 'recorded'
   }
 
-  private async deployment({ deployment_status: status, deployment }: { deployment_status: { state: string }; deployment: { environment: string; ref: string; sha: string; payload?: { version?: string } | string } }) {
-    const envs = this.hub.state.environments
-    const env = envs.find((e) => e.id.toLowerCase() === deployment.environment.toLowerCase() || e.name.toLowerCase() === deployment.environment.toLowerCase())
-    if (!env) return 'no environment'
-    if (status.state === 'queued' || status.state === 'in_progress' || status.state === 'pending') {
-      await this.hub.record(hubActor, { type: 'env.update', id: env.id, fields: { state: 'deploying', progress: 0.3 } })
-      return 'deploying'
-    }
-    if (status.state === 'failure' || status.state === 'error') {
-      await this.hub.record(hubActor, { type: 'env.update', id: env.id, fields: { state: 'failed', progress: undefined } })
-      return 'failed'
-    }
-    if (status.state !== 'success') return 'ignored'
-    const payload = typeof deployment.payload === 'string' ? (() => { try { return JSON.parse(deployment.payload as string) } catch { return {} } })() : deployment.payload ?? {}
-    const version = (payload as { version?: string }).version ?? deployment.ref ?? deployment.sha.slice(0, 7)
-    // What it now has: what the environment before it had, or, for the first after previews, every merged set.
-    const index = envs.indexOf(env)
-    const before = envs[index - 1]
-    const sets = before && before.id !== 'preview'
-      ? before.changeSetIds
-      : this.hub.state.changeSets.filter((s) => s.state === 'merged' || s.state === 'shipped').map((s) => s.id)
-    await this.actions.recordDeployed(hubActor, env.id, sets, version)
-    return 'deployed'
+  /** What GitHub says of a deployment: the environments, and what's on them, are the actions'. */
+  private async deployment({ deployment_status: status, deployment, repository }: DeploymentPayload) {
+    return this.actions.deploymentSeen(repository.full_name, {
+      environment: deployment.environment, ref: deployment.ref, sha: deployment.sha, version: versionIn(deployment.payload),
+      state: status.state, url: status.environment_url ?? undefined, logUrl: status.log_url ?? status.target_url ?? undefined, at: status.created_at ?? status.updated_at, transient: deployment.transient_environment === true,
+    })
   }
 }

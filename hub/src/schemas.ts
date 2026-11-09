@@ -83,14 +83,19 @@ const maybe = text.nullish().transform((value) => value ?? undefined)
 const texts = z.array(text).optional()
 const flag = z.boolean().optional()
 
+/** How the hub deploys to an environment: a workflow file in a repo (the environment's own unless named), run on a ref. */
+const deployWith = z.looseObject({ repo: optional, workflow: optional, ref: optional })
+
 export const bodies = {
   newSpace: z.looseObject({ id: maybe, name: maybe, owner: maybe }),
   named: z.looseObject({ name: maybe }),
+  removeSpace: z.looseObject({ name: maybe }),
   member: z.looseObject({ role: z.enum(['owner', 'admin', 'member']).optional() }),
   newCard: z.looseObject({ binderId: text, title: text, brief: maybe, doneWhen: maybe, size: z.enum(['S', 'M', 'L']).optional(), meantFor: maybe, waitsFor: texts, noteId: maybe, quote: maybe }),
   ask: z.looseObject({ agentId: maybe, effort: maybe }),
   finding: z.looseObject({ action: maybe }),
   comment: z.looseObject({ text: maybe }),
+  sendBack: z.looseObject({ text: maybe }),
   permission: z.looseObject({ request: z.string().max(64), allow: z.boolean() }),
   chat: z.looseObject({ agentId: maybe, text: maybe }),
   newSchedule: z.looseObject({ noteId: maybe, agentId: maybe, cron: maybe, tz: maybe, enabled: flag, folderId: maybe, staleHours: z.number().optional() }),
@@ -102,6 +107,9 @@ export const bodies = {
   }),
   noteChangeSet: z.looseObject({ changeSet: z.enum(['shared', 'own']).nullable() }),
   order: z.looseObject({ prIds: z.array(text) }),
+  newEnvironment: z.looseObject({ repo: text, name: text, url: optional, needsApproval: flag, deploy: deployWith.nullish() }),
+  changeEnvironment: z.looseObject({ name: optional, url: optional, needsApproval: flag, deploy: deployWith.nullish(), order: number }),
+  lookNow: z.looseObject({ repo: maybe }),
   newAgent: z.looseObject({ name: text, provider: maybe, repos: texts, binders: texts, skills: texts, runsOn: maybe, runner: z.looseObject({}).optional() }),
   changeAgent: z.looseObject({ name: maybe, provider: maybe, repos: texts, binders: texts, skills: texts, runsOn: maybe, runner: z.looseObject({}).optional() }),
   options: z.looseObject({}),
@@ -157,7 +165,7 @@ const webhooks: Record<string, z.ZodType> = {
   pull_request: z.looseObject({ action: text, repository, pull_request: z.looseObject({ number: z.number(), title: text, head: z.looseObject({ ref: text }) }) }),
   check_run: z.looseObject({ repository, check_run: z.looseObject({ pull_requests: z.array(z.looseObject({ number: z.number() })) }) }),
   workflow_run: z.looseObject({ repository, workflow_run: z.looseObject({ id: z.number(), name: text }) }),
-  deployment_status: z.looseObject({ deployment_status: z.looseObject({ state: text }), deployment: z.looseObject({ environment: text }) }),
+  deployment_status: z.looseObject({ repository, deployment_status: z.looseObject({ state: text }), deployment: z.looseObject({ environment: text }) }),
 }
 
 /** What's wrong with a delivery of an event the hub acts on, or undefined. */

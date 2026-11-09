@@ -16,7 +16,7 @@ import { mcpServer, StreamReader } from './stream.ts'
 import { blastRadius, blastSummary } from './blast.ts'
 import { behindBy, briefCheckout, briefDue, briefPrompt, briefSection, changesSince, type BriefJSON, type BriefRead } from './briefs.ts'
 import type { BlastRadius, Effort } from '../../shared/changeSet.ts'
-import { runnerVersion, toolInfo, tools } from '../../shared/agents.ts'
+import { runnerVersion, toolInfo, tools, type AgentTool } from '../../shared/agents.ts'
 import { plainText, Terminals, type Started } from './terminal.ts'
 import { briefMost, defaultRunner, type RunnerSettings } from '../../shared/work.ts'
 
@@ -26,6 +26,10 @@ import { briefMost, defaultRunner, type RunnerSettings } from '../../shared/work
 // too long puts it back with why. An agent that asks a person and stops is started again on that card with the answer.
 
 const exec = promisify(execFile)
+
+/** A call the hub answered with a refusal, in its own words: as against one that never got there. */
+export class HubRefused extends Error {}
+
 /** A program, started as it can be here: on Windows, what an npm command really runs. */
 const run = ((command: string, args: string[], options?: object) => {
   const start = startable(command, args)
@@ -327,6 +331,8 @@ export interface RunnerOptions {
   idleMinutes?: number
   /** The runner's own file, when it may replace itself with a newer one from the hub and ask to be started again. */
   selfUpdate?: string
+  /** How long it waits before it looks again for cards left by a runner that died, when another runner shares its agent (a minute). */
+  lookAgainMs?: number
   /** Where an enterprise's managed MCP config would be (this platform's place); tests point it elsewhere. */
   managedMcp?: string
   /**
@@ -408,15 +414,67 @@ const short = (text: string, most: number) => (text.length > most ? `${text.slic
 const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`
 
 /**
+ * Whether the time since the last quiet-time check is far longer than its own two seconds: the machine was asleep (a
+ * closed laptop) or stopped, and what it didn't hear meanwhile isn't the agent's silence.
+ */
+export function sleptThrough(lastCheck: number, now: number, every = 2000) {
+  return now - lastCheck > Math.max(30_000, every * 10)
+}
+
+/** Why the hub refused a run a GitHub token, and whether that counts as the run failing; `gone`: the card isn't this agent's. */
+export interface TokenRefusal {
+  why: string
+  failed: boolean
+  gone?: boolean
+}
+
+/**
+ * What the hub's answer to repo_token means for the run: undefined when it just has no GitHub to hand out (or the
+ * folder isn't one repo), where the machine's own login carries on, else the hub's own words for why this card's run
+ * mustn't start. GitHub not answering for a moment isn't the card's failure, and nor is a card taken back meanwhile.
+ */
+export function tokenRefusal(error: unknown): TokenRefusal | undefined {
+  if (!(error instanceof HubRefused)) return undefined
+  const said = error.message
+  if (/own GitHub login|has no repo/i.test(said)) return undefined
+  if (/^Take the card first|^No card /.test(said)) return { why: said, failed: false, gone: true }
+  if (/Try again in a moment/.test(said)) return { why: said, failed: false }
+  return { why: said, failed: true }
+}
+
+/**
+ * What a person should do about a failure the tools say in their own words, when it's one of the usual three: not signed
+ * in, out of credit or over a usage limit, or rate limited for now. Claude Code and Codex are matched on what they print
+ * (their messages change, so it's the plain words and codes each has used); anything else is left to the tool's own line.
+ */
+export function knownCause(text: string, tool?: AgentTool) {
+  const name = tool && tool !== 'custom' ? toolInfo(tool).name : 'the agent’s tool'
+  if (/not (signed|logged) in|\/login\b|invalid api key|invalid x-api-key|authentication[_ ]error|unauthori[sz]ed|oauth token (has )?(expired|been revoked)|refresh token|sign in again|log in again|codex login|missing bearer/i.test(text)) {
+    const how = tool === 'claude' ? ' (run claude, then /login)' : tool === 'codex' ? ' (run codex login)' : ''
+    return `Not signed in on this machine: sign in to ${name} here${how}, then the agent can take it again.`
+  }
+  if (/credit balance|out of credits?|insufficient[_ ]quota|exceeded your current quota|payment required|(usage|session|weekly|monthly|daily|spending|plan|5-hour) limits?\b|hit your (usage |session )?limit/i.test(text)) {
+    return `Out of credit or over its usage limit: add credit, or wait for the limit to reset (${name} says when), then the agent can take it again.`
+  }
+  if (/rate[ _-]?limit|too many requests|\b429\b/i.test(text)) return 'Rate limited for now: it should work again in a few minutes, and the agent can take it again then.'
+  return undefined
+}
+
+/**
  * Why an agent exited with an error: what it said went wrong, else its last line of errors. Lines about another MCP
  * server of the user's (one that wants a sign-in, say) are left out: the agent carries on without it, so they're not why.
+ * When it's one of the usual causes (see knownCause), that leads, with the tool's own line after it.
  */
-export function stoppedWith(ran: { exit: { code: number | null }; errors: string; reader: StreamReader; cutOff?: string; managedMcp?: boolean }, hubUrl: string) {
+export function stoppedWith(ran: { exit: { code: number | null }; errors: string; reader: StreamReader; cutOff?: string; managedMcp?: boolean }, hubUrl: string, tool?: AgentTool) {
   if (ran.cutOff) return ran.cutOff
   if (ran.managedMcp) return 'Claude Code on this machine has an enterprise MCP config, which doesn’t let Binders add its MCP server. Its runner works without it from now on, reporting for it: try again.'
   const host = new URL(hubUrl).host
-  const line = ran.errors.trim().split('\n').reverse().find((l) => l.trim() && (!/\brmcp::/.test(l) || l.includes(host)))
+  const lines = ran.errors.trim().split('\n').filter((l) => l.trim() && (!/\brmcp::/.test(l) || l.includes(host)))
+  const line = lines[lines.length - 1]
   const why = (ran.reader.summary.error ?? line?.trim())?.replace(/\.$/, '')
+  // Only what the tool itself said went wrong, never the agent's own words, which may quote such an error.
+  const known = knownCause([ran.reader.summary.error ?? '', ...lines.slice(-5)].join('\n'), tool)
+  if (known) return `${known}${why ? ` Its last line: ${why}.` : ''}`
   return `The agent stopped with exit code ${ran.exit.code}${why ? `: ${why}` : ''}.`
 }
 
@@ -792,6 +850,10 @@ export class Runner {
   }
   /** How many cards it takes at once, as it last told the hub. */
   private parallel = 3
+  /** The name this machine goes by in what a card says. */
+  private machine() {
+    return this.options.machine ?? hostname().replace(/\.local$/, '')
+  }
 
   constructor(options: RunnerOptions) {
     this.options = { ...options, workspace: resolve(options.workspace), hubUrl: options.hubUrl.replace(/\/$/, '') }
@@ -801,7 +863,7 @@ export class Runner {
   private async call<T = Record<string, unknown>>(name: string, args: Record<string, unknown> = {}): Promise<T> {
     const result = (await this.client!.callTool({ name, arguments: args })) as { content: { text: string }[]; isError?: boolean }
     const text = result.content[0]?.text ?? ''
-    if (result.isError) throw new Error(text)
+    if (result.isError) throw new HubRefused(text)
     try {
       return JSON.parse(text) as T
     } catch {
@@ -810,14 +872,24 @@ export class Runner {
   }
 
   /** Who its token is, as the hub says (the agent's name and id): for setting an agent up on a machine. */
-  /** Gives cards back, for a runner that's gone for good. */
+  /** Gives cards back, for a runner that's gone for good. Not a failure of theirs: they're only handed back. */
   async handBack(cards: string[], why: string) {
     await this.connect()
     try {
-      for (const id of cards) await this.call('release_task', { id, reason: why }).catch(() => undefined)
+      for (const id of cards) await this.giveBack(id, why, false)
     } finally {
       await this.client?.close().catch(() => undefined)
     }
+  }
+
+  /**
+   * Gives a card back to the board with why. `failed` says the run itself failed (the tool errored, ran too long, went
+   * quiet, wasn't there, or its worktree couldn't be made): after two of those in a row the hub stops offering the card
+   * and asks a person. A card handed back for a reason that isn't its own (its runner stopped, restarted or was removed)
+   * leaves it out, so it isn't counted against the card.
+   */
+  private async giveBack(id: string, reason: string, failed: boolean) {
+    await this.call('release_task', { id, reason, ...(failed ? { failed: true } : {}) }).catch(() => undefined)
   }
 
   async identity() {
@@ -879,7 +951,7 @@ export class Runner {
     this.agentId = me.id
     // Not given a workspace, it works where the agent's settings say the code is.
     if (!this.options.workspaceGiven && me.runner?.workspace) this.options.workspace = resolve(me.runner.workspace.replace(/^~(?=\/|$)/, homedir()))
-    await this.call('update_profile', { runs_on: `${this.options.machine ?? hostname().replace(/\.local$/, '')} · ${this.options.workspace.replace(homedir(), '~')}` })
+    await this.call('update_profile', { runs_on: `${this.machine()} · ${this.options.workspace.replace(homedir(), '~')}` })
     if (me.runner) await this.tellModels(me.runner)
     // Claude Code's own Binders servers, learned beside the work rather than before it (it checks each server it has).
     if ((me.runner?.tool ?? defaultRunner.tool) === 'claude') void this.learnOtherBinders()
@@ -929,7 +1001,10 @@ export class Runner {
       this.terminals = new Terminals({ hubUrl: this.options.hubUrl, token: this.options.token, version: runnerVersion, log: (line) => this.log(line), start: (sid, by) => this.terminal(sid, by), heldRoot: () => this.heldRoot(), finished: (meta) => this.terminalFinished(meta) })
       await this.terminals.start()
     }
-    const cards = new Map<string, Promise<void>>()
+    const cards = this.working
+    // What the hub says it holds, looked at once the cards a runner before this one left running are picked up (below).
+    this.sweepDue = !once
+    this.sweepAt = 0
     // Cards a runner before this one left running: it carries on watching them.
     await this.loadSessions()
     const left = await heldIn(this.heldRoot())
@@ -954,6 +1029,13 @@ export class Runner {
       let most = 1
       try {
         const settings = await this.settings()
+        // Back after the hub didn't answer: what it holds may have changed meanwhile, so it's looked at again.
+        if (this.hubLost) {
+          this.hubLost = false
+          this.sweepDue = true
+          this.sweepAt = 0
+        }
+        if (this.sweepDue && Date.now() >= this.sweepAt) await this.giveBackLeft()
         // Idle, and the hub hands out a newer runner: this one replaces itself and is started again on it.
         // Cards in holders don't wait for it: they carry on, and the new runner picks them up.
         if ([chats, debriefs, challenges, replying, briefing].every((m) => m.size === 0) && [...cards.keys()].every((key) => this.held.has(key)) && await this.updateIfNewer()) break
@@ -967,6 +1049,7 @@ export class Runner {
         most = Math.max(1, settings.parallel ?? 3)
       } catch {
         // The hub will answer again in a moment.
+        this.hubLost = true
       }
       // Cards up to the agent's limit; chats, debriefs and Challenges beside them, so a person is answered while cards
       // are worked.
@@ -991,6 +1074,7 @@ export class Runner {
         })
       } catch (error) {
         this.log(`The hub didn’t answer (${reasonOf(error)}); trying again in 5 s.`)
+        this.hubLost = true
         await new Promise((done) => setTimeout(done, 5000))
         continue
       }
@@ -1085,8 +1169,12 @@ export class Runner {
     await Promise.race([said, new Promise((done) => setTimeout(done, 2000).unref())])
   }
 
-  stop(leaveHeld = false) {
+  stop(leaveHeld = false, why?: string) {
     this.stopped = true
+    // What the cards it's running say when they go back: it was a person or its service that stopped it, not the card.
+    this.stopWhy ??= why ?? (this.updated
+      ? `Its runner was updating on ${this.machine()}, so this went back on the board.`
+      : `Its runner was stopped on ${this.machine()}, so this went back on the board.`)
     this.leaving = this.leaving || leaveHeld
     this.terminals?.stop(leaveHeld)
     this.desk?.close()
@@ -1097,6 +1185,51 @@ export class Runner {
     }, 10_000).unref()
     if (leaveHeld) for (const leave of [...this.leaveRuns.values()]) leave()
     else for (const holder of this.held.values()) void holder.signal('SIGTERM')
+  }
+
+  /** The cards (and the jobs on them) it runs now, by id: adopted runs too. */
+  private working = new Map<string, Promise<void>>()
+  /** Whether it should look at what the hub says it holds, and not before when. */
+  private sweepDue = false
+  private sweepAt = 0
+  /** Said once that another runner shares its agent, so a minute's wait for it to go isn't said every minute. */
+  private sweepSaid = false
+  /** The hub didn't answer a moment ago. */
+  private hubLost = false
+
+  /**
+   * The cards the hub says this agent holds, working, which this runner isn't running: a runner that died (killed, the
+   * power went, the machine never came back) left them, and nothing else would put them back. They go back on the board,
+   * not as a failure of theirs. Left alone while another runner works as the same agent, as they may be its cards; the
+   * hub counts a runner that has just crashed as running for a couple of minutes, so it's looked at again a minute later.
+   * Cards the hub would hand this runner to carry on with (a person wrote last) are its to take, so they stay.
+   */
+  private async giveBackLeft() {
+    const told = await this.call<{ other_runners?: { on?: string; at: string }[] }>('update_profile', { runner: this.profile(this.parallel) })
+    const others = typeof told === 'object' ? told?.other_runners ?? [] : []
+    if (others.length) {
+      if (!this.sweepSaid) this.log(`Another runner is working as ${this.name}${others[0].on ? ` (${others.map((o) => o.on).filter(Boolean).join('; ')})` : ''}, so cards the hub says ${this.name} holds may be its: leaving them. It looks again each minute.`)
+      this.sweepSaid = true
+      this.sweepAt = Date.now() + (this.options.lookAgainMs ?? 60_000)
+      return
+    }
+    this.sweepSaid = false
+    const me = await this.call<{ holding?: { id: string; title?: string; needs_you?: string }[] }>('whoami')
+    const running = new Set([...this.working.keys(), ...this.held.keys()])
+    const left = (me.holding ?? []).filter((c) => !running.has(c.id) && !c.needs_you)
+    // Asked of the hub as the loop below asks it, for what it would give this runner to carry on with.
+    const resumable = new Set<string>()
+    for (let tries = 0; left.length && tries <= left.length; tries++) {
+      const next = await this.call<CardJSON | string>('wait_for_work', { runner_id: this.id, timeout_seconds: 0, chats: false, debriefs: false, challenges: false, replies: false, briefs: false, cards: true, busy: [...running, ...resumable].slice(0, 50) })
+      if (typeof next === 'string' || !next || !next.resume || resumable.has(next.id)) break
+      resumable.add(next.id)
+    }
+    this.sweepDue = false
+    for (const card of left) {
+      if (resumable.has(card.id)) continue
+      await this.giveBack(card.id, 'Its runner stopped while it was working on this, so it went back on the board.', false)
+      this.log(`Put “${card.title ?? card.id}” back on the board: its runner had stopped while it was working on it.`)
+    }
   }
 
   /** The cards a runner before this one left in holders, watched again: its own, that is, and still in hand. */
@@ -1125,6 +1258,14 @@ export class Runner {
     let left = false
     const github = await this.repoAccess(card.id, card.title, holder.meta.dir, holder.meta.github)
     try {
+      if (github.refused) {
+        // The run it left can't push any more: it stops here, and the card goes back.
+        await holder.stopAndWait()
+        if (holder.meta.github) await rm(holder.meta.github, { recursive: true, force: true })
+        if (holder.meta.config) await rm(holder.meta.config, { force: true })
+        await holder.remove()
+        return await this.tokenRefused(card, github.refused)
+      }
       left = (await this.workIn(card, settings, toolInfo(settings.tool), holder.meta.dir, github.env, { adopt: holder, github: github.folder })) === 'left'
     } finally {
       this.running--
@@ -1177,6 +1318,12 @@ export class Runner {
 
   private running = 0
 
+  /** The hub wouldn't give a card's run a GitHub token: the run doesn't start, and the card goes back with the hub's words. */
+  private async tokenRefused(card: { id: string; title: string }, refused: TokenRefusal) {
+    if (!refused.gone) await this.giveBack(card.id, refused.why, refused.failed)
+    this.log(`${refused.gone ? 'Left' : 'Put'} “${card.title}” ${refused.gone ? 'alone' : 'back'}: ${refused.why}`)
+  }
+
   private async workTaken(card: CardJSON, settings: RunnerSettings, tool: ReturnType<typeof toolInfo>) {
     let dir: string
     try {
@@ -1185,11 +1332,12 @@ export class Runner {
       // What git said (fatal: …), not just the command that failed.
       const lines = String((error as Error).message).split('\n').map((l) => l.trim()).filter(Boolean)
       const why = `Couldn’t make its worktree: ${lines.find((l) => /^(fatal|error):/.test(l)) ?? lines[0] ?? 'git failed'}`
-      await this.call('release_task', { id: card.id, reason: why }).catch(() => {})
+      await this.giveBack(card.id, why, true)
       this.log(`Put “${card.title}” back: ${why}`)
       return
     }
     const github = await this.repoAccess(card.id, card.title, dir)
+    if (github.refused) return this.tokenRefused(card, github.refused)
     let left = false
     try {
       left = (await this.workIn(card, settings, tool, dir, github.env, { github: github.folder })) === 'left'
@@ -1281,7 +1429,7 @@ export class Runner {
         }, { held: !!settings.held, adopt, before, github: how.github, card: card.id, cli: !!settings.cli, hooks: hears && settings.tool === 'claude', live: !!settings.live && !!settings.held && reports && canHold() && (settings.tool === 'claude' || settings.tool === 'custom') })
       } catch (error) {
         // It couldn't start (the tool isn't there, say): the card goes back on the board with why.
-        await this.call('release_task', { id: card.id, reason: (error as Error).message }).catch(() => {})
+        await this.giveBack(card.id, (error as Error).message, true)
         this.log(`Put “${card.title}” back: ${(error as Error).message}`)
         return
       }
@@ -1444,7 +1592,7 @@ export class Runner {
         : ran.timedOut
         ? `It ran past ${job.id.startsWith('set-') ? `its ${settings.timeoutMinutes}-minute limit` : '20 minutes'} and was stopped.`
         : ran.exit.code
-          ? stoppedWith(ran, this.options.hubUrl)
+          ? stoppedWith(ran, this.options.hubUrl, settings.tool)
           : `The agent stopped without sending it${ran.reader.summary.last ? `. Its last words: ${ran.reader.summary.last}` : ''}.`
     } catch (error) {
       why = (error as Error).message
@@ -1556,7 +1704,7 @@ export class Runner {
         : ran.timedOut
         ? `It ran past ${job.id.startsWith('set-') ? `its ${settings.timeoutMinutes}-minute limit` : '20 minutes'} and was stopped.`
         : ran.exit.code
-          ? stoppedWith(ran, this.options.hubUrl)
+          ? stoppedWith(ran, this.options.hubUrl, settings.tool)
           : `The agent stopped without sending its findings${ran.reader.summary.last ? `. Its last words: ${ran.reader.summary.last}` : ''}.`
     } catch (error) {
       why = (error as Error).message
@@ -1652,7 +1800,7 @@ export class Runner {
         : ran.timedOut
         ? 'It ran past 30 minutes and was stopped.'
         : ran.exit.code
-          ? stoppedWith(ran, this.options.hubUrl)
+          ? stoppedWith(ran, this.options.hubUrl, settings.tool)
           : `The agent stopped without sending its replies${ran.reader.summary.last ? `. Its last words: ${ran.reader.summary.last}` : ''}.`
     } catch (error) {
       why = (error as Error).message
@@ -1698,9 +1846,10 @@ export class Runner {
    * GitHub for a card's run: the hub's token for the card's repo alone, for an hour and renewed while the run lasts,
    * given only while the agent's owner can push there. The agent's git reads it through a credential helper (SSH
    * addresses of that GitHub go over HTTPS, so they use it too), gh through GH_TOKEN; this machine's own GitHub login
-   * isn't used. A hub that hands out no such token leaves the machine's login in place, and the log says so.
+   * isn't used. A hub that hands out no such token leaves the machine's login in place, and the log says so. A hub that
+   * refuses it for this card stops the run: `refused` says why, in the hub's own words.
    */
-  private async repoAccess(cardId: string, title: string, dir: string, folder?: string): Promise<{ env: Record<string, string>; done: () => Promise<void>; leave: () => Promise<void>; folder?: string }> {
+  private async repoAccess(cardId: string, title: string, dir: string, folder?: string): Promise<{ env: Record<string, string>; done: () => Promise<void>; leave: () => Promise<void>; folder?: string; refused?: TokenRefusal }> {
     const none = { env: {}, done: async () => {}, leave: async () => {} }
     // The token is for the repo it works in: the folder's origin. A folder of repos, or one not on GitHub, keeps the
     // machine's login, as one token can't cover them.
@@ -1713,6 +1862,10 @@ export class Runner {
     try {
       first = await this.call<RepoToken>('repo_token', { id: cardId, repo })
     } catch (error) {
+      // The hub saying no for this card (not the binder's repo, its owner can't push there) isn't something this
+      // machine's own login should get round: the run doesn't start. No GitHub to hand out, or no answer, does.
+      const refused = tokenRefusal(error)
+      if (refused) return { ...none, refused }
       this.log(`“${title}” runs with this machine’s own GitHub login: ${(error as Error).message}`)
       return none
     }
@@ -1784,6 +1937,15 @@ export class Runner {
     // stopped, so its card, debrief or Challenge says so rather than sitting at working for its whole time limit.
     const idleMinutes = settings.idleMinutes ?? this.options.idleMinutes ?? 15
     let heard = Date.now()
+    // A laptop asleep isn't a quiet agent: after a sleep the wait for its next word starts again.
+    let checked = Date.now()
+    const asleep = () => {
+      const now = Date.now()
+      const slept = sleptThrough(checked, now)
+      checked = now
+      if (slept) heard = now
+      return slept
+    }
     let idle = false
     let exit: { code: number | null; signal: NodeJS.Signals | null } = { code: null, signal: null }
     try {
@@ -1845,6 +2007,7 @@ export class Runner {
             return refusedOnScreen
           }
           const every = setInterval(() => {
+            asleep()
             void refused().then((now) => {
               if (now) stop('Claude Code refused Binders’ MCP server for an enterprise MCP config: stopping its run.')
             })
@@ -1933,6 +2096,7 @@ export class Runner {
           }, Math.max(1000, startedAt + minutes * 60_000 - Date.now()))
           let quietErrors = 0
           const every = setInterval(() => {
+            asleep()
             if (!idle && Date.now() - heard > idleMinutes * 60_000) {
               idle = true
               timedOut = true
@@ -2010,6 +2174,7 @@ export class Runner {
           setTimeout(() => stopTree(child, 'SIGKILL'), 10_000).unref()
         }, minutes * 60_000)
         const every = setInterval(() => {
+          asleep()
           if (!idle && Date.now() - heard > idleMinutes * 60_000) {
             idle = true
             timedOut = true
@@ -2185,9 +2350,10 @@ export class Runner {
       : ran.timedOut
       ? `It ran past its ${settings.timeoutMinutes}-minute limit and was stopped.`
       : ran.exit.code
-        ? stoppedWith(ran, this.options.hubUrl)
+        ? stoppedWith(ran, this.options.hubUrl, settings.tool)
         : `The agent stopped without finishing it${last ? `. Its last words: ${last}` : ''}.`)
-    await this.call('release_task', { id: card.id, reason: why }).catch(() => {})
+    // Stopped on purpose (restarted, updating, switched off) isn't the card's failure; anything else the run did is.
+    await this.giveBack(card.id, why, !this.stopWhy)
     this.log(`Put “${card.title}” back: ${why}`)
   }
 
@@ -2483,7 +2649,7 @@ export class Runner {
           : ran.timedOut
             ? 'It ran past 30 minutes and was stopped.'
             : ran.exit.code
-              ? stoppedWith(ran, this.options.hubUrl)
+              ? stoppedWith(ran, this.options.hubUrl, settings.tool)
               : `The agent stopped without writing the brief to its file${ran.reader.summary.last ? `. Its last words: ${ran.reader.summary.last}` : ''}.`
       }
     } catch (error) {

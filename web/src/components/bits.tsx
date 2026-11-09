@@ -1,8 +1,10 @@
 import { shownName } from '../../../shared/people.ts'
 import { useEffect, useState } from 'react'
 import { Check as CheckIcon, CircleDashed, LoaderCircle, X } from 'lucide-react'
-import type { Agent, Check, CheckState, Stage } from '../data/model'
+import type { Agent, Card, Check, CheckState, Stage } from '../data/model'
+import { stoppedTwice } from '../../../shared/work.ts'
 import { useHub } from '../data/store'
+import { go } from '../route'
 import { ToolIcon } from './ToolIcon'
 
 const tints: Record<Agent['provider'], string> = {
@@ -166,6 +168,58 @@ export function ago(iso?: string) {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+/** How long the hub waits on a debrief or Challenge, started or not, before it takes a new ask for it. */
+const unpickedAfterMs = 30 * 60_000
+
+/**
+ * Asked of an agent, and nothing has come of it in all that time: it never started, or it started and went quiet. The
+ * hub takes a new ask then, so the page offers one.
+ */
+export const unpicked = (asked?: { state: string; askedAt: string }) => (asked?.state === 'asked' || asked?.state === 'writing' || asked?.state === 'reviewing') && Date.now() - Date.parse(asked.askedAt) > unpickedAfterMs
+
+/** When it was asked, as words: "42m ago", or "on Nov 3" once it is days. */
+export function askedWords(askedAt: string) {
+  const how = ago(askedAt)
+  return /\d[smh]$/.test(how) ? `${how} ago` : how === 'now' ? 'just now' : `on ${how}`
+}
+
+/** What to say of an ask nothing came of, by whether its agent ever started on it. */
+export const quietWords = (who: string, asked: { state: string; askedAt: string }) =>
+  asked.state === 'asked' ? `${who} hasn’t started on it since it was asked ${askedWords(asked.askedAt)}.` : `${who} started on it, then went quiet. It was asked ${askedWords(asked.askedAt)}.`
+
+/**
+ * A blocked card no agent holds because its runs stopped twice without finishing: it waits for a person to fix what's
+ * wrong, so it isn't an agent asking something.
+ */
+export const stoppedBlock = (card: Pick<Card, 'stage' | 'agentId' | 'stopped' | 'needsYou'>) =>
+  card.stage === 'blocked' && !card.agentId && (card.stopped ? card.stopped.times >= stoppedTwice : !!card.needsYou?.startsWith('It stopped twice without finishing:'))
+
+/** How often a card's work stopped without finishing, as a label: "Stopped twice". */
+export const stoppedWords = (times: number) => (times === 1 ? 'Stopped once' : times === 2 ? 'Stopped twice' : `Stopped ${times} times`)
+
+// How many screens of the app this entry of the browser's history is in: 0 for the first one, which a link from another
+// site opens. It's kept in the entry itself, so it survives a reload and coming back to it.
+let depth = 0
+if (typeof window !== 'undefined') {
+  depth = window.history.state?.appDepth ?? 0
+  if (window.history.state?.appDepth === undefined) window.history.replaceState({ ...window.history.state, appDepth: depth }, '')
+  window.addEventListener('hashchange', () => {
+    const known = window.history.state?.appDepth
+    // An entry seen before has its own; a new one is a screen further in than the last.
+    depth = known ?? depth + 1
+    if (known === undefined) window.history.replaceState({ ...window.history.state, appDepth: depth }, '')
+  })
+}
+
+/**
+ * Back from a card: to the screen before it when that was this app, and to the board when it wasn't, as the browser's
+ * Back would go to the other site a link to the card came from.
+ */
+export function leaveCard() {
+  if ((window.history.state?.appDepth ?? 0) > 0) window.history.back()
+  else go({ screen: 'flow' })
 }
 
 export function Kbd({ children }: { children: string }) {

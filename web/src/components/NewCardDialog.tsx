@@ -1,16 +1,20 @@
 import { useState, type FormEvent } from 'react'
-import type { Card } from '../data/model'
+import { stages, type Card } from '../data/model'
 import { useStore } from '../data/store'
+import { go } from '../route'
 import { Dialog, Field } from './Dialog'
-import { attempt } from './Toast'
+import { attempt, toast } from './Toast'
 
-/** A card put on a board by hand: what it is, what done looks like, and who it's for. */
-export function NewCardDialog({ binderId, onClose }: { binderId?: string; onClose: () => void }) {
+/**
+ * A card put on a board by hand: what it is, what done looks like, and who it's for. It can start with a title and a
+ * brief already in (an answer from Ask), for the person to fix before it goes on the board.
+ */
+export function NewCardDialog({ binderId, title: start = '', brief: startBrief = '', onClose }: { binderId?: string; title?: string; brief?: string; onClose: () => void }) {
   const store = useStore()
   const { state } = store
   const [binder, setBinder] = useState(binderId ?? state.binders[0]?.id ?? '')
-  const [title, setTitle] = useState('')
-  const [brief, setBrief] = useState('')
+  const [title, setTitle] = useState(start)
+  const [brief, setBrief] = useState(startBrief)
   const [doneWhen, setDoneWhen] = useState('')
   const [size, setSize] = useState<Card['size']>('M')
   const [meantFor, setMeantFor] = useState('')
@@ -21,7 +25,11 @@ export function NewCardDialog({ binderId, onClose }: { binderId?: string; onClos
     setBusy(true)
     const made = await attempt(() => store.createCard({ binderId: binder, title, brief, doneWhen, size, meantFor: meantFor || undefined }))
     setBusy(false)
-    if (made) onClose()
+    if (!made) return
+    // Said where it went, as it isn't in view once the dialog closes: a person's card is Ready, an agent can take it at once.
+    const column = stages.find((s) => s.id === made.stage)?.title ?? 'Ready'
+    toast(`On the board, in ${column}.`, made.id ? { action: { label: 'Open', run: () => go({ screen: 'work', id: made.id }) } } : {})
+    onClose()
   }
 
   return (

@@ -866,8 +866,11 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
     inputSchema: { id: z.string().describe('the card you hold'), text: z.string() },
   }, run(async ({ id, text: body }: { id: string; text: string }) => text(await actions.writeRunNote(agentId, id, body))))
 
-  server.registerTool('release_task', { description: 'Gives back a card you hold, with why, so another agent or a person can take it.', inputSchema: { id: z.string(), reason: z.string() } }, run(async ({ id, reason }: { id: string; reason: string }) => {
-    await actions.release(agentId, id, reason)
+  server.registerTool('release_task', {
+    description: 'Gives back a card you hold, with why, so another agent or a person can take it. failed: true when the run itself failed (the tool exited badly, ran past its limit or couldn’t start): a card that fails twice in a row waits in Blocked for a person. Leave it out when you give a card back for a reason that isn’t the card’s, such as a runner restarting.',
+    inputSchema: { id: z.string(), reason: z.string(), failed: z.boolean().optional() },
+  }, run(async ({ id, reason, failed }: { id: string; reason: string; failed?: boolean }) => {
+    await actions.release(agentId, id, reason, failed === true)
     return text('Released.')
   }))
 

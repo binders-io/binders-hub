@@ -34,7 +34,7 @@ import type { Binder } from '../../shared/notes.ts'
 //   PUBLIC_URL              the web app's address as people reach it (http://localhost:5173)
 //   REDIS_URL               the change log's Redis, a working copy of what's kept in .data; without it the log lives in
 //                           this process and is gone when it stops
-//   HUB_SPACE, HUB_NAME     the first Binder's address and name (main, or what the hub's store already has); more are made in Settings
+//   HUB_SPACE, HUB_NAME     the first Binder's address and name (main, or what the hub's store already has); more are made from the binder switcher’s “New binder…”
 //   HUB_SECRET              seals what the hub keeps; without it, one is made in .data/secret and kept
 //   HUB_ADMINS              GitHub logins who may change GitHub's setup, besides whoever made the app
 //   HUB_ALLOWED_USERS, HUB_ALLOWED_ORGS      who may sign in, besides the app's maker and its organization
@@ -179,6 +179,9 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   // Without webhooks reaching it, the hub asks GitHub instead (HUB_POLL: auto, on or off; HUB_POLL_SECONDS: how often).
   const poller = new GitHubPoller(hub, github, webhooks, { settings: () => ({ mode: options.get().pollMode, everyMs: options.get().pollSeconds * 1000 }) })
   poller.start()
+  // Environments come from GitHub's deployments: the hub looks for them itself (the scheduler's timer) unless webhooks tell it.
+  actions.webhooksHeard = () => poller.webhookHeard
+  await actions.followDeliveries()
   // The brain: this binder's notes and cards indexed in its own store, kept up as they change.
   // A personal binder is its person's alone: its passages aren't sent to an embeddings server the hub's admins chose.
   // Each binder's notes go to its own repo, on a branch of their own.
