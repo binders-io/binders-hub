@@ -126,6 +126,8 @@ export interface AppLinkDeps {
   login: string
   settings?: BrainSettingsStore
   webUrl: (space: string, kind: SourceKind, id: string) => string
+  /** The person's own GitHub in a Binder, when they've connected it: what merges and deploys goes as them. */
+  githubIn?: (space: string) => Promise<string | undefined>
   hubName: string
   version: string
   /** Sends a message to the iPhone (a reply or a notification). */
@@ -866,13 +868,14 @@ export class AppLinkSession {
         brain,
         url: (kind: SourceKind, id: string) => this.deps.webUrl(spaceId, kind, id),
         keep: (kind: SourceKind, id: string) => (kind === 'note' ? state.notes : state.cards).some((x) => x.id === id && ids.has(x.binderId)),
+        work: { id: spaceId, name: places.length === 1 ? places[0].name : places[0].spaceName, hub: places[0].space.hub, actions: places[0].space.actions, binders: [...ids], github: () => this.deps.githubIn?.(spaceId) ?? Promise.resolve(undefined) },
       }]
     })
   }
 
   private async answerQuestion(question: string, onSources?: (sources: AskSource[]) => void) {
     if (!this.deps.settings) throw new Refused('Your hub has no brain to ask.')
-    const result = await ask(this.deps.settings, this.askPlaces(), question, { onSources })
+    const result = await ask(this.deps.settings, this.askPlaces(), question, { onSources, person: this.login })
     const text = result.answer
       ? result.answer.parts.map((p) => `${p.text.replace(/\s+$/, '')}${p.sources.length ? ` ${p.sources.map((n) => `[${n}]`).join('')}` : ''}${/\s$/.test(p.text) ? p.text.match(/\s+$/)![0] : ''}`).join('').trim()
       : result.sources.length ? (result.problem ? `No answer (${result.problem}). What matches best:` : 'Your hub has no model to answer with, so here’s what matches best.') : 'Nothing in your binders matches that.'
@@ -909,6 +912,7 @@ export class AppLinkSession {
     let seq = 0
     try {
       const result = await talk(this.deps.settings, this.askPlaces(), turns, {
+        person: this.login,
         onSources: (sources) => {
           if (token) this.deps.send({ jsonrpc: '2.0', method: 'binders/ask-progress', params: { token, seq: ++seq, stage: 'sources', sources: sources.map(AppLinkSession.passage) } })
         },

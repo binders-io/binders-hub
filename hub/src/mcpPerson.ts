@@ -53,7 +53,7 @@ How to work:
 1. list_binders, list_notes, list_tasks and get_task show what's here. get_note reads a note in full.
 2. create_note, append_to_note, edit_note, create_folder and move_note write notes, as the person would in the editor.
 3. create_task puts a card on a binder's board (ready for an agent); comment_task says something on a card; assign_task
-   gives a ready card to an agent by name.
+   gives a ready card to an agent by name; stop_task ends the work on a card and keeps it from being picked up.
 4. get_change_set, get_debrief, get_challenge_set and get_challenge show what a card's work proposes, how it was
    explained, and what a second agent found wrong with it.
 5. propose_work_items is Distill: it reads a note and proposes cards, which the person accepts on the board.
@@ -390,11 +390,20 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
     const to = any ? undefined : hub.state.agents.find((a) => !a.revoked && a.id === ref) ?? agentNamed(hub.state.agents, ref)
     if (!any && !to) throw new Refused(`No agent ${ref} in ${place.name}. These are: ${hub.state.agents.filter((a) => !a.revoked).map((a) => a.name).join(', ')}.`)
     if (to && to.binders.length && !to.binders.includes(card.binderId)) throw new Refused(`${to.name} doesn’t work in this binder.`)
-    if (card.agentId && (card.stage === 'working' || card.stage === 'blocked')) throw new Refused(`${nameOf(card.agentId)} is working on it: give it back first.`)
+    if (card.agentId && (card.stage === 'working' || card.stage === 'blocked')) throw new Refused(`${nameOf(card.agentId)} is working on it: stop_task first.`)
     if (card.stage !== 'ready' && card.stage !== 'proposed') throw new Refused(`That card is ${card.stage}: only a ready or proposed card is given to an agent.`)
     const who = to?.name ?? 'any agent'
     await hub.record(actor, { type: 'card.update', id: card.id, fields: { meantFor: to?.id, stage: 'ready', agentId: undefined, needsYou: undefined, doing: undefined, progress: undefined }, activity: { at: new Date().toISOString(), by: login, kind: 'moved', text: to ? `Gave it to ${who}` : 'Opened it to any agent' } })
     return text(`Gave “${card.title}” to ${who}.`)
+  }))
+
+  server.registerTool('stop_task', {
+    description: 'Stops a card: its agent’s run ends, and the card waits in Proposed, where nothing picks it up, until a person moves it back to Ready. A ready card is held back the same way.',
+    inputSchema: { id: z.string(), binder: whichBinder },
+  }, run(async ({ id, binder }: { id: string; binder?: string }) => {
+    const { place, card } = cardAt(id, binder)
+    await place.actions.stopCard(login, card.id)
+    return text(`Stopped “${card.title}”. It’s in Proposed.`)
   }))
 
   // What a card's work proposes, and how it was explained and reviewed ------------------------------------------------
@@ -600,7 +609,7 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
 
   if (brain) {
     server.registerTool('ask', {
-      description: 'Answers a question from the notes and cards in your binders (or the one named), citing them: the answer, then the notes and cards it rests on, with their ids for get_note and get_task. Without a model on the hub, the passages that match best.',
+      description: 'Answers a question from the notes and cards in your binders (or the one named), citing them, and how the work stands now: what agents are on, what’s waiting on you. The answer, then the notes and cards it rests on, with their ids for get_note and get_task. Without a model on the hub, the passages that match best.',
       inputSchema: { question: z.string().max(2000), binder: z.string().optional() },
     }, run(async ({ question, binder }: { question: string; binder?: string }) => {
       const only = binder ? binderNamed(binder) : undefined
@@ -610,9 +619,10 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
         brain: place.brain,
         url: (kind: 'note' | 'card', id: string) => brain.url(place.id, kind, id),
         ...(only ? { keep: keepIn(place, only.binder.id) } : {}),
+        work: { id: place.id, name: only ? only.binder.name : place.name, hub: place.hub, actions: place.actions, ...(only ? { binders: [only.binder.id] } : {}) },
       }] : []))
       if (!asking.length) throw new Refused('These binders have no brain to ask.')
-      return text(askText(await ask(brain.settings, asking, question)))
+      return text(askText(await ask(brain.settings, asking, question, { person: login })))
     }))
 
     server.registerTool('capture', {

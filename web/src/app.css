@@ -1856,6 +1856,12 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
 .ask-passage.clipped .md { max-height: 7.2em; overflow: hidden; mask-image: linear-gradient(to bottom, #000 62%, transparent); -webkit-mask-image: linear-gradient(to bottom, #000 62%, transparent); }
 .ask-more { display: inline-flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 12.5px; font-weight: 600; color: var(--muted); }
 .ask-more:hover { color: var(--text); }
+.ask-do { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--fill-1); }
+.ask-do p { margin: 0; overflow-wrap: anywhere; }
+.ask-do-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.ask-did { display: flex; align-items: flex-start; gap: 6px; color: var(--muted); }
+.ask-did svg { flex: none; margin-top: 3px; }
+@media (max-width: 600px) { .ask-do-buttons .button { flex: 1; min-height: 44px; justify-content: center; } }
 .ask-how { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; overflow-wrap: anywhere; }
 
 /* Markdown to read: an answer, a passage. */

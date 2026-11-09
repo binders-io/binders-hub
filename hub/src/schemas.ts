@@ -132,6 +132,7 @@ export const bodies = {
   }),
   brainAsk: z.looseObject({ question: text.max(2000), everywhere: flag }),
   brainSearch: z.looseObject({ query: text.max(500), everywhere: flag }),
+  brainDo: z.looseObject({ id: text.max(100), go: z.boolean() }),
   capture: z.looseObject({
     kind: z.enum(['dictation', 'conversation', 'meeting', 'note']), text: text.max(400_000), title: z.string().max(300).nullish().transform((v) => v ?? undefined),
     recordedAt: maybe, durationSeconds: z.number().nonnegative().max(7 * 24 * 3600).optional(), device: z.string().max(120).nullish().transform((v) => v ?? undefined),

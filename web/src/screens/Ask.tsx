@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { ArrowUp, ArrowUpRight, Brain, ChevronDown, FileText, LoaderCircle, SquareKanban } from 'lucide-react'
+import { ArrowUp, ArrowUpRight, Brain, Check, ChevronDown, FileText, LoaderCircle, SquareKanban } from 'lucide-react'
 import { call } from '../data/api'
 import { attempt } from '../components/Toast'
 import { citeMark, Rendered } from '../components/Rendered'
@@ -7,8 +7,9 @@ import { usePhone } from '../components/bits'
 import { space } from '../data/space'
 
 // Ask: a question answered from this binder's notes and cards, or from every binder you're in, with the notes and cards
-// the answer rests on numbered under it. Without a model on the hub, the passages that match best. ⌘K is the way in: it
-// searches as you type, and its Ask row brings the question here.
+// the answer rests on numbered under it, and from how the work stands now. Without a model on the hub, the passages that
+// match best. ⌘K is the way in: it searches as you type, and its Ask row brings the question here. Asked to do something,
+// it says what that would do, in the hub's own words, and does it only when you say so here.
 
 interface Source {
   n: number
@@ -28,6 +29,14 @@ interface Result {
   model?: string
   searchedBy: 'words' | 'words and meaning'
   problem?: string
+  proposal?: Proposal
+}
+
+/** Something it would do, once you say so. */
+interface Proposal {
+  id: string
+  what: string
+  button: string
 }
 
 interface Answered {
@@ -81,6 +90,30 @@ function Passage({ source, opened, onToggle }: { source: Source; opened: boolean
         <button type="button" className="ask-more" aria-expanded={opened} onClick={onToggle}>
           <ChevronDown size={13} style={{ transform: opened ? 'rotate(180deg)' : undefined }} /> {opened ? 'Show less' : 'Show all of it'}
         </button>
+      )}
+    </div>
+  )
+}
+
+function Proposed({ proposal }: { proposal: Proposal }) {
+  const [busy, setBusy] = useState(false)
+  const [said, setSaid] = useState<string>()
+  const answer = async (go: boolean) => {
+    setBusy(true)
+    const done = await attempt(() => call<{ said: string }>('POST', '/api/brain/do', { id: proposal.id, go }))
+    setBusy(false)
+    if (done) setSaid(done.said)
+  }
+  return (
+    <div className="ask-do">
+      <p>{proposal.what}</p>
+      {said ? (
+        <p className="ask-did" role="status"><Check size={14} /> {said}</p>
+      ) : (
+        <div className="ask-do-buttons">
+          <button type="button" className="button primary" disabled={busy} onClick={() => void answer(true)}>{busy ? <LoaderCircle size={14} className="spin" /> : null} {proposal.button}</button>
+          <button type="button" className="button" disabled={busy} onClick={() => void answer(false)}>Not now</button>
+        </div>
       )}
     </div>
   )
@@ -143,7 +176,7 @@ export function Ask({ asked: fromPalette }: { asked?: { question: string; at: nu
         {empty && (
           <header className="ask-intro">
             <h2>Ask your binders</h2>
-            <p>Answers come from your notes and cards, with each source numbered so you can check it.</p>
+            <p>Ask about your notes and cards, or how the work stands now. It can stop a card or start a release too, and asks you first.</p>
           </header>
         )}
         <form className="ask-form" onSubmit={ask}>
@@ -180,7 +213,9 @@ export function Ask({ asked: fromPalette }: { asked?: { question: string; at: nu
         {!asking && answered && result && (
           <section className="ask-result" aria-live="polite">
             <h2 className="ask-question">{answered.question}</h2>
-            {result.answer ? (
+            {result.proposal ? (
+              <Proposed key={result.proposal.id} proposal={result.proposal} />
+            ) : result.answer ? (
               <Rendered
                 className="ask-answer"
                 text={answerMarkdown(result.answer.parts)}

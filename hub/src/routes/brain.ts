@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { Refused } from '../hub.ts'
 import { bodies } from '../schemas.ts'
 import { ask, search, type AskPlace } from '../brain/brain.ts'
+import { carryOut, takeProposal } from '../brain/board.ts'
 import type { BrainSettings } from '../brain/settings.ts'
 import { candidates, isGateway, jobs, offers } from '../brain/autoPick.ts'
 import { runnerVersion } from '../../../shared/agents.ts'
@@ -19,7 +20,7 @@ const askLimit = { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }
 const searchLimit = { config: { rateLimit: { max: 240, timeWindow: '1 minute' } } }
 
 export async function brainRoutes(app: FastifyInstance, context: Context) {
-  const { spaces, brainSettings, brainMachines, sp, login, isAdmin, act, bodyOf, webUrl, param, options } = context
+  const { spaces, auth, brainSettings, brainMachines, sp, login, isAdmin, act, bodyOf, webUrl, param, options } = context
 
   // Your machines serving the brain's models: an admin's to add and remove, with the line that sets the daemon up on one.
   const admin = (request: Parameters<typeof login>[0], what: string) => {
@@ -125,14 +126,27 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
     const ids = everywhere ? spaces.forPerson(login(request), false).map((s) => s.info.id) : [sp(request).id]
     return ids.flatMap((id) => {
       const space = spaces.get(id)
-      return space?.brain ? [{ id, name: spaces.info(id)?.name ?? id, brain: space.brain, url: (kind, item) => webUrl(id, kind, item) }] : []
+      if (!space?.brain) return []
+      const info = spaces.info(id)
+      const name = info?.name ?? id
+      const who = login(request)
+      return [{ id, name, brain: space.brain, url: (kind, item) => webUrl(id, kind, item), work: { id, name, hub: space.hub, actions: space.actions, github: () => (info?.personal ? Promise.resolve(undefined) : auth.githubFor(who, id)) } }]
     })
   }
 
   app.post('/api/brain/ask', askLimit, act(async (request) => {
     if (!brainSettings) throw new Refused('This hub has no brain.')
     const body = bodyOf<{ question: string; everywhere?: boolean }>(bodies.brainAsk, request)
-    return ask(brainSettings, placesFor(request, body.everywhere), body.question)
+    return ask(brainSettings, placesFor(request, body.everywhere), body.question, { person: login(request), may: true })
+  }))
+
+  // A person's answer to what a question came to: theirs alone, once, and still in a Binder they can open.
+  app.post('/api/brain/do', askLimit, act(async (request) => {
+    const body = bodyOf<{ id: string; go: boolean }>(bodies.brainDo, request)
+    const who = login(request)
+    const proposal = takeProposal(who, body.id)
+    if (!proposal || !spaces.forPerson(who, isAdmin(who)).some((s) => s.info.id === proposal.place)) throw new Refused('That isn’t waiting any more: ask again.')
+    return { said: body.go ? await carryOut(proposal) : 'All right, I’ve left it.' }
   }))
 
   // The passages that match, by their words and what they mean, with no model's answer: ⌘K's, as someone types.

@@ -143,6 +143,31 @@ describe('the palette', () => {
     expect(await violations()).toEqual([])
   })
 
+  it('says what something would do in the hub’s words, and does it only on the button', async () => {
+    const stand = vi.mocked(fetch).getMockImplementation()!
+    const answered: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } })
+      if (url === '/api/brain/ask') return json({ answer: { text: 'Stop “Fix login”.', parts: [{ text: 'Stop “Fix login”.', sources: [] }] }, sources: [], searchedBy: 'words', model: 'stand-in', proposal: { id: 'p1', what: 'Stop “Fix login”.', button: 'Stop it' } })
+      if (url === '/api/brain/do') {
+        answered.push(JSON.parse(String(init?.body)))
+        return json({ said: 'Stopped “Fix login”.' })
+      }
+      return stand(url, init)
+    }))
+    const box = await opened()
+    fireEvent.change(box, { target: { value: 'stop the login work' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    const go = await screen.findByRole('button', { name: 'Stop it' })
+    expect(screen.getByRole('button', { name: 'Not now' })).toBeTruthy()
+    expect(answered).toEqual([])
+    expect(await violations()).toEqual([])
+    fireEvent.click(go)
+    expect(await screen.findByText('Stopped “Fix login”.')).toBeTruthy()
+    expect(answered).toEqual([{ id: 'p1', go: true }])
+    expect(screen.queryByRole('button', { name: 'Stop it' })).toBeNull()
+  })
+
   it('keeps a title first for words that aren’t a question', async () => {
     answering()
     const box = await opened()

@@ -11,7 +11,7 @@ const audioLimit = 100 * 1024 * 1024
 // token, which the /api hook has checked). Each frame is one JSON-RPC message, or several on lines of their own.
 
 export async function appLinkRoutes(app: FastifyInstance, context: Context) {
-  const { spaces, brainSettings, webUrl, options, fail } = context
+  const { spaces, auth, brainSettings, webUrl, options, fail } = context
   // A recording's bytes as they came: only the audio route reads them, and every other route refuses a body like that.
   app.addContentTypeParser(/^audio\//, { parseAs: 'buffer', bodyLimit: audioLimit }, (_request, body, done) => done(null, body))
   const hubName = (() => {
@@ -34,6 +34,7 @@ export async function appLinkRoutes(app: FastifyInstance, context: Context) {
       login: user.login,
       settings: brainSettings,
       webUrl,
+      githubIn: (id) => (spaces.info(id)?.personal ? Promise.resolve(undefined) : auth.githubFor(user.login, id)),
       hubName,
       version: process.env.BINDERS_COMMIT?.slice(0, 7) ?? 'dev',
       send: (message) => {

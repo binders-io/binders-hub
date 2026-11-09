@@ -366,7 +366,8 @@ in, and a Challenge's reviewer and the author it's judging can't message each ot
 ## The brain (built)
 
 The hub's own model, for what needs no agent: summing up what a phone or Mac captured, and answering a question from the
-binders. Distill and every other piece of work stay with agents on runners; the brain only reads and sums up.
+binders. Distill and every other piece of work stay with agents on runners; the brain reads, sums up, and can ask a person
+whether to do something on the board.
 
 - **Models** (`hub/src/brain/models.ts`). Claude through Anthropic's SDK by default (`claude-opus-5-5`, with Anthropic's
   server-side fallback for a declined request), or any server that speaks OpenAI's chat API. Summaries come back in a
@@ -382,6 +383,15 @@ binders. Distill and every other piece of work stay with agents on runners; the 
 - **Captures.** A note in the binder's folder for its kind, with the transcript under its own heading and the summary
   above it under another, so the hub writes the summary again without touching what people added. Its id comes from
   the device's own id for it, so an outbox sending twice makes one note.
+- **How the work stands, and what's done about it** (`hub/src/brain/board.ts`). Ask and Talk get one more document: the
+  person's agents, what's waiting on them, what's being worked on, their change sets and environments, read from the state
+  for that reply. A document rather than tools, so any model can answer "what are my agents working on?", on the first try,
+  with no extra round trip while someone waits to hear it. What the model can have done is one plain line (`DO stop c1`),
+  which only proposes: everything a model reads was written by anyone in a binder, so the hub works out what the line would
+  mean, says so in its own words, and does it only on the person's answer, read by the hub from what they said, or a button
+  on Ask. What merges, deploys or lets an agent use a tool takes that word itself ("approve"), and anything else they say
+  drops it. It's checked again when it's carried out. A release is a change set, so "put release 18 into motion" approves
+  #18. Stopping a card puts it in Proposed: its runner ends the run, and Ready would have an agent take it straight back.
 - **Settings** (`hub/src/brain/settings.ts`). The hub's, an admin's, with the keys sealed; environment variables fix
   them, as with the hub's options. A hosted brain, for people without a hub of their own, would be this same hub run
   for them.

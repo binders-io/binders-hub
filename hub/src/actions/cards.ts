@@ -3,7 +3,7 @@ import type { Change } from '../../../shared/state.ts'
 import { isBlank, titleOf } from '../../../shared/notes.ts'
 import { checkTimeZone, defaultStaleHours, describeCron, parseCron, type Schedule, type ScheduleRun } from '../../../shared/schedule.ts'
 import { parseDiff } from '../../../shared/changeSet.ts'
-import { agentNamed, goesBy, outsideBinders, worksIn, type Agent, type Card, type PlanStep, type Stage, type PullRequest } from '../../../shared/work.ts'
+import { agentNamed, goesBy, handMove, outsideBinders, worksIn, type Agent, type Card, type PlanStep, type Stage, type PullRequest } from '../../../shared/work.ts'
 import { parsePullRef } from '../github.ts'
 import { Refused, type Actor } from '../hub.ts'
 import { ActionsBase, checkedRunner } from './base.ts'
@@ -235,6 +235,19 @@ export abstract class CardService extends ActionsBase {
   }
 
   /** A person's answer to an agent's question, or a comment. */
+  /**
+   * A person stops a card: its runner sees it's gone and ends the run, and it waits in Proposed, where nothing picks it
+   * up. Ready would have an agent take it straight back.
+   */
+  async stopCard(login: string, cardId: string) {
+    const card = this.card(cardId)
+    const fields = card.stage === 'working' || card.stage === 'blocked' || card.stage === 'ready' ? handMove(card, 'proposed') : undefined
+    if (!fields) throw new Refused(`“${card.title}” isn’t being worked on.`)
+    const holder = this.hub.state.agents.find((a) => a.id === card.agentId)?.name
+    await this.hub.record({ kind: 'user', login }, { type: 'card.update', id: card.id, fields, activity: { at: this.now(), by: login, kind: 'moved', text: holder ? `Stopped ${holder}: Proposed` : 'Moved it to Proposed' } })
+    return this.card(card.id)
+  }
+
   async comment(login: string, cardId: string, text: string) {
     const card = this.card(cardId)
     const answering = !!card.needsYou

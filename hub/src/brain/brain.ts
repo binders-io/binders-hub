@@ -8,6 +8,7 @@ import { log } from '../logger.ts'
 import { BrainIndex, type Hit, type IndexSource, type SourceKind } from './index.ts'
 import { captureNote, firstWords, withSummary, withTranscript, type Capture } from './captures.ts'
 import { conversation, type Summary, type Turn } from './models.ts'
+import { askPerson, boardFor, boardRules, doRules, heardAnswer, onlyTellRules, propose, proposalView, readDo, spoken, type Asked, type Board, type Proposal, type WorkPlace } from './board.ts'
 import type { BrainSettingsStore } from './settings.ts'
 import type { VectorFiles } from './vectorFiles.ts'
 
@@ -353,6 +354,8 @@ export interface AskPlace {
   url: (kind: SourceKind, id: string) => string
   /** Which of its notes and cards may be used, when not all. */
   keep?: (kind: SourceKind, id: string) => boolean
+  /** Its work, for how things stand now and what can be done about it. */
+  work?: WorkPlace
 }
 
 export interface AskSource {
@@ -377,6 +380,8 @@ export interface AskResult {
   searchedBy: 'words' | 'words and meaning'
   /** Why there's no answer, in words, when the model couldn't give one. */
   problem?: string
+  /** Something it would do, asked for in the question, for the person to answer with a button. */
+  proposal?: ReturnType<typeof proposalView>
 }
 
 /**
@@ -434,16 +439,56 @@ export async function search(settings: BrainSettingsStore, places: AskPlace[], q
   return { sources, searchedBy }
 }
 
-export async function ask(settings: BrainSettingsStore, places: AskPlace[], question: string, options: { most?: number; onSources?: (sources: AskSource[]) => void } = {}): Promise<AskResult> {
+/** How the work stands in these places for this person, when any of them has its work to hand. */
+function boardOf(places: AskPlace[], person?: string) {
+  const work = places.flatMap((p) => (p.work ? [p.work] : []))
+  return person && work.length ? boardFor(work, person) : undefined
+}
+
+/** What a model's line comes to: something to ask the person, or why it can't be. */
+function proposalFrom(wanted: Asked, board: Board, person: string): { proposal: Proposal } | { refused: string } {
+  try {
+    const proposal = propose(wanted, board, person)
+    askPerson(proposal)
+    return { proposal }
+  } catch (err) {
+    if (err instanceof Refused) return { refused: err.message }
+    throw err
+  }
+}
+
+/**
+ * `person`: who's asking, so it goes by how their work stands too. `may`: they can answer it here, so a question can
+ * come to something it would do, which waits for their answer.
+ */
+export async function ask(settings: BrainSettingsStore, places: AskPlace[], question: string, options: { most?: number; onSources?: (sources: AskSource[]) => void; person?: string; may?: boolean } = {}): Promise<AskResult> {
   const asked = question.trim().slice(0, 2000)
   if (!asked) throw new Refused('Ask a question.')
   const { sources, passages, searchedBy } = await find(settings, places, asked, options.most ?? 8)
   options.onSources?.(sources)
   const model = settings.model()
-  if (!model || !sources.length) return { sources, searchedBy, ...(model ? { model: model.label } : {}) }
+  const board = boardOf(places, options.person)
+  if (!model || (!sources.length && !board)) return { sources, searchedBy, ...(model ? { model: model.label } : {}) }
   try {
-    const answer = await model.answer(asked, passages)
-    return { answer: { text: answer.text, parts: answer.parts.map((p) => ({ text: p.text, sources: p.sources.map((s) => s + 1) })) }, sources, model: answer.model ?? model.label, searchedBy }
+    const answer = await model.answer(asked, board ? [...passages, board.passage] : passages, board ? `${boardRules}\n${options.may ? doRules : onlyTellRules}` : undefined)
+    const said = (words: string, proposal?: Proposal) => ({ answer: { text: words, parts: [{ text: words, sources: [] }] }, sources, model: answer.model ?? model.label, searchedBy, ...(proposal ? { proposal: proposalView(proposal) } : {}) })
+    // The board isn't a source to show: it's only what's so now. A line a model gave is taken out of what's shown.
+    let wanted: Asked | undefined
+    const parts = answer.parts.flatMap((part) => {
+      const read = readDo(part.text)
+      wanted ??= read.asked
+      if (read.asked && !read.words) return []
+      return [{ text: read.asked ? read.words : part.text, sources: part.sources.filter((s) => s < sources.length).map((s) => s + 1) }]
+    })
+    if (wanted) {
+      if (!options.may || !board || !options.person) {
+        if (!parts.length) return said('You can’t do that from here. Talk can, on the iPhone, and so can Ask on the hub.')
+      } else {
+        const came = proposalFrom(wanted, board, options.person)
+        return 'proposal' in came ? said(came.proposal.what, came.proposal) : said(came.refused)
+      }
+    }
+    return { answer: { text: parts.map((p) => p.text).join('').trim(), parts }, sources, model: answer.model ?? model.label, searchedBy }
   } catch (err) {
     return { sources, model: model.label, searchedBy, problem: err instanceof Error ? err.message : String(err) }
   }
@@ -461,28 +506,37 @@ export interface TalkResult {
  * Binders for it (with what they said before it, for a short follow-up such as "and the second one?"), and its model
  * answers as people talk: from the passages when they help, and from what it knows when they don't.
  */
-export async function talk(settings: BrainSettingsStore, places: AskPlace[], turns: Turn[], options: { onSources?: (sources: AskSource[]) => void } = {}): Promise<TalkResult> {
+export async function talk(settings: BrainSettingsStore, places: AskPlace[], turns: Turn[], options: { onSources?: (sources: AskSource[]) => void; person?: string } = {}): Promise<TalkResult> {
   const said = conversation(turns.slice(-12).map((t): Turn => ({ role: t.role === 'assistant' ? 'assistant' : 'user', text: String(t.text ?? '').slice(0, 2000) })))
   if (!said.length) throw new Refused('Say something first.')
   const model = settings.model()
   if (!model) throw new Refused('Your hub has no model to talk with.')
   const theirs = said.filter((t) => t.role === 'user').map((t) => t.text)
   const latest = theirs[theirs.length - 1]
+  // Their answer to what they were just asked is read here, from their own words, and goes nowhere near the model.
+  const answered = options.person ? await heardAnswer(options.person, latest) : undefined
+  if (answered) return { reply: answered, sources: [], model: model.label }
   const query = theirs.length > 1 && latest.split(/\s+/).length < 8 ? `${theirs[theirs.length - 2]} ${latest}` : latest
   const { sources, passages } = await find(settings, places, query.slice(0, 2000), 5)
   options.onSources?.(sources)
-  const reply = await model.talk(said, passages)
-  return { reply, sources, model: model.label }
+  const board = boardOf(places, options.person)
+  if (!board || !options.person) return { reply: await model.talk(said, passages), sources, model: model.label }
+  const reply = await model.talk(said, [...passages, board.passage], `${boardRules}\n${doRules}`)
+  const { words, asked } = readDo(reply)
+  if (!asked) return { reply: words, sources, model: model.label }
+  // What's read out is the hub's words for what would happen, whatever else the model said.
+  const came = proposalFrom(asked, board, options.person)
+  return { reply: 'proposal' in came ? spoken(came.proposal) : came.refused, sources, model: model.label }
 }
 
 /** An answer as plain text, for an MCP client: the answer with [n] after what each source supports, then the sources. */
 export function askText(result: AskResult) {
-  if (!result.sources.length) return 'Nothing in these binders matches that question.'
+  if (!result.sources.length && !result.answer) return 'Nothing in these binders matches that question.'
   const answer = result.answer
     ? result.answer.parts.map((p) => `${p.text.replace(/\s+$/, '')}${p.sources.length ? ` [${p.sources.join(', ')}]` : ''}${/\s$/.test(p.text) ? p.text.match(/\s+$/)![0] : ''}`).join('').trim()
     : result.problem
       ? `No answer from the model (${result.problem}). The passages that match best:`
       : 'The hub has no model to answer with, so here are the passages that match best:'
   const list = result.sources.map((s) => `[${s.n}] ${s.kind === 'note' ? 'Note' : 'Card'} “${s.title}” in ${s.binderName}${s.context ? ` (${s.context})` : ''}, id ${s.id}${result.answer ? '' : `\n${s.text.slice(0, 600)}`}`).join('\n')
-  return `${answer}\n\nSources:\n${list}`
+  return list ? `${answer}\n\nSources:\n${list}` : answer
 }

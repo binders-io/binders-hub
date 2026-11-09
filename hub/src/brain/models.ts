@@ -49,11 +49,12 @@ export interface BrainModel {
   /** Which model, as Settings shows it. */
   readonly label: string
   summarize(capture: { kind: CaptureKind; text: string; title?: string; at?: string }): Promise<Summary>
-  answer(question: string, passages: Passage[]): Promise<Answer>
+  /** `more`: what else goes with its rules, such as what one of the passages is. */
+  answer(question: string, passages: Passage[], more?: string): Promise<Answer>
   /** Sorts a moment: something a person said to Binders on its own ("Binders, remind me to…"). */
   sortMoment(said: string): Promise<MomentSort>
   /** What it says back in a conversation out loud, `turns` ending with what the person just said: words to read out. */
-  talk(turns: Turn[], passages: Passage[]): Promise<string>
+  talk(turns: Turn[], passages: Passage[], more?: string): Promise<string>
   /** Gets ready to answer quickly: a model on one of your machines loads when it's first asked for. */
   warm?(): Promise<void>
 }
@@ -219,7 +220,7 @@ export class ClaudeModel implements BrainModel {
     return tidy(parsed.data, capture.title ?? 'Captured')
   }
 
-  async answer(question: string, passages: Passage[]): Promise<Answer> {
+  async answer(question: string, passages: Passage[], more?: string): Promise<Answer> {
     const documents: Anthropic.Beta.BetaRequestDocumentBlock[] = passages.map((p) => ({
       type: 'document',
       source: { type: 'text', media_type: 'text/plain', data: p.text || ' ' },
@@ -232,7 +233,7 @@ export class ClaudeModel implements BrainModel {
       max_tokens: 16000,
       ...this.fallback(),
       output_config: { effort: 'medium' },
-      system: answerRules,
+      system: more ? `${answerRules}\n${more}` : answerRules,
       messages: [{ role: 'user', content: [...documents, { type: 'text', text: question }] }],
     }))
     if (response.stop_reason === 'refusal') throw new BrainUnavailable('The model declined to answer that.')
@@ -253,7 +254,7 @@ export class ClaudeModel implements BrainModel {
     return { parts: parts.filter((p) => p.text.trim()), text, ...(response.model !== this.model ? { model: response.model } : {}) }
   }
 
-  async talk(turns: Turn[], passages: Passage[]): Promise<string> {
+  async talk(turns: Turn[], passages: Passage[], more?: string): Promise<string> {
     const said = conversation(turns)
     if (!said.length) throw new BrainUnavailable('Nothing was said to answer.')
     const documents: Anthropic.Beta.BetaRequestDocumentBlock[] = passages.map((p) => ({
@@ -269,7 +270,7 @@ export class ClaudeModel implements BrainModel {
       max_tokens: 2000,
       ...this.fallback(),
       output_config: { effort: 'low' },
-      system: talkRules,
+      system: more ? `${talkRules}\n${more}` : talkRules,
       messages: [
         ...said.slice(0, -1).map((t) => ({ role: t.role, content: t.text })),
         { role: 'user' as const, content: [...documents, { type: 'text' as const, text: last.text }] },
@@ -402,13 +403,13 @@ export class OpenAICompatibleModel implements BrainModel {
     return this.complete([{ role: 'system', content: system }, { role: 'user', content: user }], json ? { response_format: { type: 'json_object' } } : {})
   }
 
-  async talk(turns: Turn[], passages: Passage[]): Promise<string> {
+  async talk(turns: Turn[], passages: Passage[], more?: string): Promise<string> {
     const said = conversation(turns)
     if (!said.length) throw new BrainUnavailable('Nothing was said to answer.')
     const documents = passages.map((p) => `${p.title}${p.context ? ` (${p.context})` : ''}\n${p.text}`).join('\n\n')
     const last = said[said.length - 1]
     const messages = [
-      { role: 'system', content: talkRules },
+      { role: 'system', content: more ? `${talkRules}\n${more}` : talkRules },
       ...said.slice(0, -1).map((t) => ({ role: t.role, content: t.text })),
       { role: 'user', content: documents ? `<documents>\n${documents}\n</documents>\n\n${last.text}` : last.text },
     ]
@@ -446,10 +447,10 @@ export class OpenAICompatibleModel implements BrainModel {
     return parsed.success ? { kind: parsed.data.kind, title: parsed.data.title.trim().slice(0, 200) } : { kind: 'none', title: '' }
   }
 
-  async answer(question: string, passages: Passage[]): Promise<Answer> {
+  async answer(question: string, passages: Passage[], more?: string): Promise<Answer> {
     const numbered = passages.map((p, i) => `[${i + 1}] ${p.title}${p.context ? ` (${p.context})` : ''}\n${p.text}`).join('\n\n')
     const cite = 'Cite the documents you use with their numbers in square brackets, like [2], right after what they support.'
-    const words = await this.chat(`${answerRules}\n${cite}`, `<documents>\n${numbered}\n</documents>\n\n${question}`, false)
+    const words = await this.chat(`${answerRules}\n${cite}${more ? `\n${more}` : ''}`, `<documents>\n${numbered}\n</documents>\n\n${question}`, false)
     if (!words) throw new BrainUnavailable('The model gave no answer.')
     const parts = words.split(/\n{2,}/).map((paragraph) => {
       const sources = new Set<number>()
