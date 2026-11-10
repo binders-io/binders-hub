@@ -3,7 +3,7 @@ import { ReasoningPicker, reasoningWords } from './Reasoning'
 import { ArrowUpRight, Ban, CornerUpLeft, MessageSquareReply, SquarePlus, Swords, Undo2 } from 'lucide-react'
 import { authorOf, authorsOf, byWorst, cardsOfSet, challengeable, openFindings, pullOf, repliable, replying, setOfCard, type BlastRadius, type Challenge, type Finding } from '../../../shared/changeSet.ts'
 import type { Card, ChangeSet, PullRequest } from '../data/model'
-import { nameFor, useClock, useStore } from '../data/store'
+import { nameFor, useBlastSymbols, useClock, useStore } from '../data/store'
 import { ago, quietWords, unpicked } from './bits'
 import { attempt } from './Toast'
 import { href } from '../route'
@@ -129,7 +129,7 @@ export function ChallengeView({ card, under = false }: { card: Card; under?: boo
           <span className="debrief-actions"><RepliesButton card={card} challenge={challenge} /><ChallengeButton card={card} pick className="text-button" /></span>
         </h2>
       )}
-      {!under && !set && challenge.blast && <BlastView blast={challenge.blast} />}
+      {!under && !set && challenge.blast && <BlastView blast={challenge.blast} of={{ kind: 'card', id: card.id }} />}
       {set && !under && <p className="faint small">From change set #{set.number}’s Challenge of all its pull requests together: these are the findings on this one. <a href={href({ screen: 'changes', id: set.id })} onClick={() => { try { window.localStorage.setItem('binders-set-tab', 'review') } catch { /* only a convenience */ } }}>All of them</a>.</p>}
       {again && <p className="debrief-status working">{nameFor(state, again.agentId)} is challenging change set #{set!.number} again. The last findings are below.</p>}
       {pending(challenge) && <p className="debrief-status working">{agent} {challenge.state === 'asked' ? 'will review it as soon as its runner is listening' : `is reviewing it${challenge.doing ? `: ${challenge.doing}` : ''}`}.{reviewed ? ' The last findings are below.' : ''}</p>}
@@ -283,7 +283,7 @@ export function SetChallenge({ set }: { set: ChangeSet }) {
       )}
       {challenge?.state === 'failed' && <p className="debrief-status failed">{nameFor(state, challenge.agentId)} couldn’t review it: {challenge.failed}</p>}
       {answering && <p className="debrief-status working">{nameFor(state, answering.agentId)} is replying to the findings.</p>}
-      {challenge?.blast && <BlastView blast={challenge.blast} />}
+      {challenge?.blast && <BlastView blast={challenge.blast} of={{ kind: 'set', id: set.id }} />}
       {done && challenge!.summary && <p className="debrief-does">{challenge!.summary}</p>}
       {withFindings.map((card) => <ChallengeView key={card.id} card={card} under />)}
     </section>
@@ -295,14 +295,17 @@ export function SetChallenge({ set }: { set: ChangeSet }) {
  * often they're used elsewhere, which removed ones are still used, and which no test mentions; each symbol's uses on
  * asking. Found by name with git grep, so a first look and not a proof, which it says.
  */
-export function BlastView({ blast }: { blast: BlastRadius }) {
+export function BlastView({ blast, of }: { blast: BlastRadius; of: { kind: 'card' | 'set'; id: string } }) {
   const [open, setOpen] = useState(false)
-  const worth = blast.symbols.filter((s) => s.uses.length > 0 || s.change === 'removed' || !s.tests.length)
+  // The state a browser holds leaves the symbols out and counts them: they're asked for when the list is opened.
+  const { symbols, loading, failed, again } = useBlastSymbols(of, blast, open)
+  const count = blast.symbolCount ?? blast.symbols.length
+  const worth = symbols.filter((s) => s.uses.length > 0 || s.change === 'removed' || !s.tests.length)
   return (
     <div className="blast">
       <button type="button" className="blast-head" aria-expanded={open} onClick={() => setOpen(!open)}>
         <b>What else this touches</b>
-        <span className="blast-chip">{blast.symbols.length} changed symbol{blast.symbols.length === 1 ? '' : 's'}</span>
+        <span className="blast-chip">{count} changed symbol{count === 1 ? '' : 's'}</span>
         <span className="blast-chip">{blast.outside} use{blast.outside === 1 ? '' : 's'} outside the change</span>
         {blast.stillUsed > 0 && <span className="blast-chip bad">{blast.stillUsed} removed but still used</span>}
         {blast.untested > 0 && <span className="blast-chip warn">{blast.untested} with no test</span>}
@@ -311,7 +314,9 @@ export function BlastView({ blast }: { blast: BlastRadius }) {
       {open && (
         <>
           <p className="faint small">Found by name with git grep in {blast.repo ?? 'the reviewer’s folder'}, so a first look rather than a proof: a name used for two things counts both.{blast.elsewhere?.length ? ` Not searched: ${blast.elsewhere.join(', ')} (not on the reviewer’s machine).` : ''}{blast.cut ? ` ${blast.cut} more symbols weren’t followed.` : ''}</p>
-          <ul className="blast-list">
+          {loading && <p className="faint small">Loading…</p>}
+          {failed && <p className="faint small">The symbols couldn’t be loaded. <button type="button" className="text-button" onClick={again}>Try again</button></p>}
+          {!loading && !failed && <ul className="blast-list">
             {worth.map((sym) => (
               <li key={`${sym.file}:${sym.name}`} className={sym.change === 'removed' && sym.uses.length ? 'bad' : ''}>
                 <div><code>{sym.name}</code> <span className="faint">{sym.change} in {sym.file}</span>{!sym.tests.length && sym.change !== 'removed' && <span className="blast-chip warn">no test</span>}</div>
@@ -324,7 +329,7 @@ export function BlastView({ blast }: { blast: BlastRadius }) {
               </li>
             ))}
             {!worth.length && <li className="faint">Nothing it changed is used elsewhere, and every change has a test that mentions it.</li>}
-          </ul>
+          </ul>}
         </>
       )}
     </div>

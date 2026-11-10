@@ -30,6 +30,18 @@ export async function workRoutes(app: FastifyInstance, context: Context) {
     if (!card) return reply.code(404).send({ error: 'No such card.' })
     return { activity: card.activity }
   })
+  // A Challenge's whole blast radius: a browser's state has its counts and not its symbols, and asks for them when they're shown.
+  // Reads, so a reader may ask too: the hook lets every GET through.
+  app.get('/api/cards/:id/blast', async (request, reply) => {
+    const card = sp(request).hub.state.cards.find((c) => c.id === param(request, 'id'))
+    if (!card) return reply.code(404).send({ error: 'No such card.' })
+    return { blast: card.challenge?.blast }
+  })
+  app.get('/api/sets/:id/blast', async (request, reply) => {
+    const set = sp(request).hub.state.changeSets.find((s) => s.id === param(request, 'id'))
+    if (!set) return reply.code(404).send({ error: 'No such change set.' })
+    return { blast: set.challenge?.blast }
+  })
   app.get('/api/cards/:id/change-set', act(async (request) => sp(request).actions.changeSet(param(request, 'id'))))
   app.get('/api/cards/:id/debrief', act(async (request) => sp(request).actions.debriefOf(param(request, 'id'))))
   app.post('/api/cards/:id/debrief', act(async (request) => askFor(request, sp(request).actions.askDebrief)))

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import type { AddressInfo } from 'node:net'
 import { emptyState, type HubState } from '../../shared/state.ts'
 import { lightChange, lightState, newestActivity, recentActivityMs } from '../../shared/light.ts'
-import type { Activity, Agent, Card, FileDiff, PullRequest } from '../../shared/work.ts'
+import type { BlastRadius, BlastSymbol, Challenge } from '../../shared/changeSet.ts'
+import type { Activity, Agent, Card, ChangeSet, FileDiff, PullRequest } from '../../shared/work.ts'
 import { Actions } from '../src/actions.ts'
 import { Auth } from '../src/auth.ts'
 import { GitHubConnection } from '../src/githubConnection.ts'
@@ -28,6 +29,11 @@ const card = (id: string, extra: Partial<Card> = {}): Card => ({ id, binderId: '
 const agent: Agent = { id: 'builder', name: 'Builder', provider: 'claude', owner: 'ana', repos: [], binders: [], skills: [], createdAt: days(40) }
 const diff = (path: string, lines = 6): FileDiff => ({ path, added: lines, removed: 0, lines: Array.from({ length: lines }, (_, n) => ({ kind: '+' as const, text: `line ${n} of ${path}`, n: n + 1 })) })
 const pull = (number: number, extra: Partial<PullRequest> = {}): PullRequest => ({ id: `acme/web#${number}`, repo: 'acme/web', number, title: `Pull ${number}`, branch: `agent/${number}`, url: `https://github.test/acme/web/pull/${number}`, state: 'merged', cardId: `c${number}`, checks: [], files: [diff('src/a.ts'), diff('src/b.ts')], ...extra })
+
+const symbol = (name: string): BlastSymbol => ({ name, file: 'src/a.ts', change: 'changed', uses: [{ file: 'src/b.ts', line: 3, text: `${name}()` }], more: 2, tests: ['test/a.test.ts'] })
+const blast = (count = 4): BlastRadius => ({ at: hours(2), repo: 'acme/web', symbols: Array.from({ length: count }, (_, n) => symbol(`fn${n}`)), outside: 9, stillUsed: 1, untested: 2, elsewhere: ['acme/api'], cut: 5 })
+const challenged = (b?: BlastRadius): Challenge => ({ state: 'done', askedBy: 'ana', askedAt: hours(3), agentId: 'builder', authors: [], picked: 'person', ...(b ? { blast: b } : {}) }) as Challenge
+const set = (id: string, challenge?: Challenge): ChangeSet => ({ id, binderId: 'b1', number: 1, title: `Set ${id}`, summary: '', state: 'review', prIds: [], noteIds: [], ...(challenge ? { challenge } : {}) })
 
 /** A hub and its actions, with the clock at `now`. */
 async function setUp(github?: Awaited<ReturnType<typeof fakeGitHub>>) {
@@ -119,6 +125,93 @@ describe('a card in a browser’s state', () => {
     assert.ok(before > 3_000_000, 'about the size measured')
     assert.ok(after < before / 2, `${after} of ${before}`)
     assert.ok(after < before / 4, 'well under half')
+  })
+})
+
+describe('a Challenge’s blast radius in a browser’s state', () => {
+  it('keeps its counts and loses its symbols, saying how many there were, on a card and on a change set', () => {
+    const light = lightState({ ...emptyState(), cards: [card('c1', { challenge: challenged(blast(4)) })], changeSets: [set('s1', challenged(blast(7)))] }, now)
+    const { symbols, symbolCount, ...counts } = light.cards[0].challenge!.blast!
+    assert.deepEqual(symbols, [])
+    assert.equal(symbolCount, 4)
+    const { symbols: _symbols, ...whole } = blast(4)
+    assert.deepEqual(counts, whole, 'outside, stillUsed, untested, cut, repo, elsewhere and at stay')
+    const forSet = light.changeSets[0].challenge!.blast!
+    assert.deepEqual(forSet.symbols, [])
+    assert.equal(forSet.symbolCount, 7)
+    assert.equal(forSet.outside, 9)
+    assert.equal(light.cards[0].challenge!.state, 'done')
+  })
+
+  it('leaves what it can’t cut as the same object: no blast, no symbols, a card with no Challenge', () => {
+    const bare = card('c1')
+    const noBlast = card('c2', { challenge: challenged() })
+    const empty = card('c3', { challenge: challenged(blast(0)) })
+    const odd = card('c4', { challenge: challenged({ ...blast(), symbols: undefined } as unknown as BlastRadius) })
+    const mine = set('s1', challenged(blast(0)))
+    const none = set('s2')
+    const light = lightState({ ...emptyState(), cards: [bare, noBlast, empty, odd], changeSets: [mine, none] }, now)
+    assert.deepEqual(light.cards, [bare, noBlast, empty, odd])
+    light.cards.forEach((c, n) => assert.equal(c, [bare, noBlast, empty, odd][n]))
+    assert.equal(light.changeSets[0], mine)
+    assert.equal(light.changeSets[1], none)
+  })
+
+  it('is cut in the live feed’s card.put, card.update, set.put and set.update, and passed along when there’s nothing to cut', () => {
+    const put = lightChange({ type: 'card.put', card: card('c1', { challenge: challenged(blast(3)) }) }, now)
+    assert.ok(put.type === 'card.put' && put.card.challenge!.blast!.symbols.length === 0 && put.card.challenge!.blast!.symbolCount === 3)
+    const update = lightChange({ type: 'card.update', id: 'c1', fields: { challenge: challenged(blast(3)), title: 'New' } }, now)
+    assert.ok(update.type === 'card.update' && update.fields.title === 'New' && update.fields.challenge!.blast!.symbolCount === 3 && update.fields.challenge!.blast!.symbols.length === 0)
+    const setPut = lightChange({ type: 'set.put', set: set('s1', challenged(blast(5))) }, now)
+    assert.ok(setPut.type === 'set.put' && setPut.set.challenge!.blast!.symbolCount === 5 && setPut.set.challenge!.blast!.symbols.length === 0)
+    const setUpdate = lightChange({ type: 'set.update', id: 's1', fields: { challenge: challenged(blast(5)) } }, now)
+    assert.ok(setUpdate.type === 'set.update' && setUpdate.fields.challenge!.blast!.symbolCount === 5 && setUpdate.fields.challenge!.blast!.symbols.length === 0)
+
+    // Nothing to cut: the same change, or the same card, back.
+    const cardChange = { type: 'card.update' as const, id: 'c1', fields: { challenge: challenged(blast(0)) } }
+    assert.equal(lightChange(cardChange, now), cardChange)
+    const noChallenge = { type: 'card.update' as const, id: 'c1', fields: { title: 'New' } }
+    assert.equal(lightChange(noChallenge, now), noChallenge)
+    const cleared = { type: 'card.update' as const, id: 'c1', fields: { challenge: undefined } }
+    assert.equal(lightChange(cleared, now), cleared)
+    const bare = card('c2')
+    const putBare = { type: 'card.put' as const, card: bare }
+    assert.equal((lightChange(putBare, now) as typeof putBare).card, bare)
+    const quiet = set('s2', challenged(blast(0)))
+    assert.equal((lightChange({ type: 'set.put', set: quiet }, now) as { set: ChangeSet }).set, quiet)
+    const setNone = { type: 'set.update' as const, id: 's2', fields: { title: 'New' } }
+    assert.equal(lightChange(setNone, now), setNone)
+  })
+})
+
+describe('GET /api/cards/:id/blast and /api/sets/:id/blast', () => {
+  it('give the whole blast radius, while the state a browser loads has the counts alone, and the apps’ state all of it', async () => {
+    const set0 = await setUp()
+    await set0.hub.record({ kind: 'hub' }, { type: 'card.put', card: card('c1', { challenge: challenged(blast(4)) }) })
+    await set0.hub.record({ kind: 'hub' }, { type: 'card.put', card: card('c2') })
+    await set0.hub.record({ kind: 'hub' }, { type: 'set.put', set: set('s1', challenged(blast(6))) })
+    await set0.hub.record({ kind: 'hub' }, { type: 'set.put', set: set('s2') })
+    const { as, close } = await serve(set0)
+    assert.deepEqual((await as('/api/cards/c1/blast')).body.blast, blast(4))
+    assert.deepEqual((await as('/api/sets/s1/blast')).body.blast, blast(6))
+    // No Challenge, so no blast: an answer, with nothing in it.
+    const none = await as('/api/cards/c2/blast')
+    assert.equal(none.status, 200)
+    assert.equal(none.body.blast, undefined)
+    assert.equal((await as('/api/sets/s2/blast')).body.blast, undefined)
+    assert.equal((await as('/api/cards/nope/blast')).status, 404)
+    assert.equal((await as('/api/cards/nope/blast')).body.error, 'No such card.')
+    assert.equal((await as('/api/sets/nope/blast')).status, 404)
+    assert.equal((await as('/api/sets/nope/blast')).body.error, 'No such change set.')
+    const light = (await as('/api/state?light=1')).body.state
+    assert.equal(light.cards[0].challenge.blast.symbols.length, 0)
+    assert.equal(light.cards[0].challenge.blast.symbolCount, 4)
+    assert.equal(light.changeSets[0].challenge.blast.symbolCount, 6)
+    const whole = (await as('/api/state')).body.state
+    assert.equal(whole.cards[0].challenge.blast.symbols.length, 4, 'the Mac app sees no change')
+    assert.equal(whole.cards[0].challenge.blast.symbolCount, undefined)
+    assert.equal(whole.changeSets[0].challenge.blast.symbols.length, 6)
+    await close()
   })
 })
 

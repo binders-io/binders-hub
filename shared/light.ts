@@ -1,9 +1,11 @@
 import type { Change, HubState } from './state.ts'
-import type { Card, FileDiff, PullRequest } from './work.ts'
+import type { BlastRadius, Challenge } from './changeSet.ts'
+import type { Card, ChangeSet, FileDiff, PullRequest } from './work.ts'
 
-// What a browser holds of the state: all of it but the lines of its diffs and the older lines of each card's activity,
-// which are most of its weight and which a screen asks for when they're opened. Each file keeps its name and counts, so
-// lists and totals still add up, and a card says how many of its lines were left out. The Binder's history and its trash
+// What a browser holds of the state: all of it but the lines of its diffs, the older lines of each card's activity and
+// the symbols of each Challenge's blast radius, which are most of its weight and which a screen asks for when they're
+// opened. Each file keeps its name and counts, so lists and totals still add up, a card says how many of its lines were
+// left out, and a blast keeps its counts and says how many symbols it has. The Binder's history and its trash
 // are left out altogether: they're asked for in Settings, when someone looks. The apps and agents that ask for the state as
 // it is still get everything else.
 
@@ -33,9 +35,26 @@ function lightActivity(card: Card, now: number): Card {
   return kept.length === lines.length ? card : { ...card, activity: kept, activityMore: lines.length - kept.length }
 }
 
+/** A blast radius without its symbols, which are the most of it, and how many there were. Anything else is passed along. */
+const lightBlast = (blast: BlastRadius | undefined): BlastRadius | undefined =>
+  Array.isArray(blast?.symbols) && blast.symbols.length ? { ...blast, symbols: [], symbolCount: blast.symbols.length } : blast
+
+/** A Challenge as a browser holds it: the same, with a lighter blast radius when it has one. */
+const lightChallenge = (challenge: Challenge | undefined): Challenge | undefined => {
+  const blast = lightBlast(challenge?.blast)
+  return challenge && blast !== challenge.blast ? { ...challenge, blast } : challenge
+}
+
 const lightCard = (card: Card, now: number): Card => {
   const trimmed = lightActivity(card, now)
-  return trimmed.worktree?.files ? { ...trimmed, worktree: { ...trimmed.worktree, files: listed(trimmed.worktree.files) } } : trimmed
+  const challenge = lightChallenge(trimmed.challenge)
+  const worked = challenge === trimmed.challenge ? trimmed : { ...trimmed, challenge }
+  return worked.worktree?.files ? { ...worked, worktree: { ...worked.worktree, files: listed(worked.worktree.files) } } : worked
+}
+
+const lightSet = (set: ChangeSet): ChangeSet => {
+  const challenge = lightChallenge(set.challenge)
+  return challenge === set.challenge ? set : { ...set, challenge }
 }
 
 /**
@@ -48,7 +67,7 @@ export function withoutKept<S extends HubState>(state: S): S {
 }
 
 /** The state for a browser. `now` is the clock, for tests. */
-export const lightState = <S extends HubState>(state: S, now = Date.now()): S => ({ ...withoutKept(state), pulls: state.pulls.map(lightPull), cards: state.cards.map((card) => lightCard(card, now)) })
+export const lightState = <S extends HubState>(state: S, now = Date.now()): S => ({ ...withoutKept(state), pulls: state.pulls.map(lightPull), changeSets: state.changeSets.map(lightSet), cards: state.cards.map((card) => lightCard(card, now)) })
 
 /** A change as the live feed sends it to a browser holding the light state. */
 export function lightChange(change: Change, now = Date.now()): Change {
@@ -59,13 +78,24 @@ export function lightChange(change: Change, now = Date.now()): Change {
       return change.fields?.files ? { ...change, fields: { ...change.fields, files: listed(change.fields.files) } } : change
     case 'card.put':
       return { ...change, card: lightCard(change.card, now) }
+    case 'set.put':
+      return { ...change, set: lightSet(change.set) }
+    case 'set.update': {
+      const challenge = lightChallenge(change.fields?.challenge)
+      return challenge === change.fields?.challenge ? change : { ...change, fields: { ...change.fields, challenge } }
+    }
     // Who deleted it and when are for the trash, which a browser doesn't hold: its own copy of the change is the plain one.
     case 'note.delete':
     case 'card.delete':
       return { type: change.type, id: change.id }
     case 'card.update': {
       const worktree = change.fields?.worktree
-      return worktree?.files ? { ...change, fields: { ...change.fields, worktree: { ...worktree, files: listed(worktree.files) } } } : change
+      const challenge = lightChallenge(change.fields?.challenge)
+      if (!worktree?.files && challenge === change.fields?.challenge) return change
+      return {
+        ...change,
+        fields: { ...change.fields, ...(worktree?.files ? { worktree: { ...worktree, files: listed(worktree.files) } } : {}), ...(challenge !== change.fields?.challenge ? { challenge } : {}) },
+      }
     }
     default:
       return change

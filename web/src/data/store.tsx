@@ -4,7 +4,7 @@ import { emptyState, type Change, type HubState } from '../../../shared/state.ts
 import { isBlank, titleOf } from '../../../shared/notes.ts'
 import type { Activity, Agent, Card, Environment, Me, Note, Provider } from './model'
 import { handMove, type Presence, type RunnerSettings } from '../../../shared/work.ts'
-import type { TestOutcome } from '../../../shared/changeSet.ts'
+import type { BlastRadius, BlastSymbol, TestOutcome } from '../../../shared/changeSet.ts'
 import { call } from './api'
 import { askedReasoning } from '../components/Reasoning'
 import { attempt, failure, toast } from '../components/Toast'
@@ -674,6 +674,39 @@ export function useCardHistory(card: Card | undefined) {
   const activity = useMemo(() => (held && whole ? withHistory(held, whole) : held ?? []), [held, whole])
   const again = useCallback(() => setTries((n) => n + 1), [])
   return { activity, failed: failed && !whole, again }
+}
+
+/**
+ * A Challenge's blast radius symbols. The state a browser holds has a blast's counts and not its symbols, so when they're
+ * wanted (the list is open) and were left out, they're asked for from the card's or change set's own address. A copy is
+ * kept only while the blast is the one it was asked for: a new one on the live feed is asked for again.
+ */
+export function useBlastSymbols(of: { kind: 'card' | 'set'; id: string }, blast: BlastRadius, wanted: boolean) {
+  const left = wanted && blast.symbolCount !== undefined && blast.symbols.length === 0
+  const { kind, id } = of
+  const at = blast.at
+  const [got, setGot] = useState<{ kind: string; id: string; at: string; symbols: BlastSymbol[] }>()
+  const [failed, setFailed] = useState(false)
+  const [tries, setTries] = useState(0)
+  useEffect(() => {
+    if (!left) return
+    let gone = false
+    setFailed(false)
+    call<{ blast?: BlastRadius }>('GET', `/api/${kind === 'card' ? 'cards' : 'sets'}/${encodeURIComponent(id)}/blast`).then(
+      (answer) => {
+        if (!gone) setGot({ kind, id, at, symbols: answer.blast?.symbols ?? [] })
+      },
+      () => {
+        if (!gone) setFailed(true)
+      },
+    )
+    return () => {
+      gone = true
+    }
+  }, [left, kind, id, at, tries])
+  const fresh = got && got.kind === kind && got.id === id && got.at === at ? got.symbols : undefined
+  const again = useCallback(() => setTries((n) => n + 1), [])
+  return { symbols: left ? fresh ?? blast.symbols : blast.symbols, loading: left && !fresh && !failed, failed: left && !fresh && failed, again }
 }
 
 const everything = (state: State) => state

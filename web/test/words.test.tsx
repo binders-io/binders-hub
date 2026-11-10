@@ -118,7 +118,7 @@ describe('a schedule', () => {
 
 describe('what a Challenge says a change reaches', () => {
   it('is What else this touches', () => {
-    render(<BlastView blast={{ at: 'then', symbols: [], outside: 0, stillUsed: 0, untested: 0 }} />)
+    render(<BlastView blast={{ at: 'then', symbols: [], outside: 0, stillUsed: 0, untested: 0 }} of={{ kind: 'card', id: 'c1' }} />)
     expect(screen.getByText('What else this touches')).toBeTruthy()
     expect(document.body.textContent).not.toMatch(/blast/i)
   })
