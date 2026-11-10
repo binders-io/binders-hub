@@ -15,7 +15,7 @@ const repoName = /^[\w.-]+\/[\w.-]+$/
 
 /**
  * Where a binder's cards and notes go, as a change would leave them: a field left out or cleared is what it comes to
- * (notes and issues are on, review comments off, unless set), so a client that writes a default out in full isn't
+ * (notes and issues are on, review comments and copies off, unless set), so a client that writes a default out in full isn't
  * taken to have changed anything.
  */
 const whereItGoes = (binder?: Binder) => JSON.stringify([
@@ -25,6 +25,7 @@ const whereItGoes = (binder?: Binder) => JSON.stringify([
   binder?.notesBranch || undefined,
   binder?.issues !== false,
   binder?.reviewComments === true,
+  binder?.copies === true,
 ])
 
 // The state, its changes and its live feed, and the pictures in notes.

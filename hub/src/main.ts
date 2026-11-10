@@ -1,3 +1,4 @@
+import { stat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { startingSeed } from '../../shared/seed.ts'
 import { Actions } from './actions.ts'
@@ -7,6 +8,7 @@ import { JiraConnection } from './jira.ts'
 import { Hub } from './hub.ts'
 import { HubLease, MemoryKV, RedisKV, type KV } from './kv.ts'
 import { MemoryLog, RedisLog, RedisPair, type ChangeLog } from './log.ts'
+import { CopyKeeper } from './copies.ts'
 import { GitNotesSaver } from './savers/gitNotes.ts'
 import { IssuesSaver } from './savers/issues.ts'
 import { JiraSaver } from './savers/jira.ts'
@@ -155,10 +157,13 @@ const author = /^(.*)<(.+)>$/.exec(env.GIT_AUTHOR ?? '')
 const gitAuthor = author ? { name: author[1].trim(), email: author[2].trim() } : { name: 'Binders Hub', email: 'hub@binders.invalid' }
 const notesRoot = resolve(env.NOTES_DIR ?? '.data/notes')
 
+/** Where a Binder other than the first keeps its files. */
+const binderDir = (id: string) => resolve(`.data/binders/${id}`)
+
 /** A Binder's parts, started. The first keeps the folders it had before a hub held several; others get their own. */
 async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   const first = id === space
-  const dir = (name: string) => (first ? resolve(`.data/${name}`) : resolve(`.data/binders/${id}/${name}`))
+  const dir = (name: string) => (first ? resolve(`.data/${name}`) : join(binderDir(id), name))
   const log = first ? firstLog : env.REDIS_URL ? new RedisLog(env.REDIS_URL, id, redisPair) : new MemoryLog()
   // Each binder's GitHub is its own: its app, its installations and its people's sign-ins to it, seen by no other
   // binder, so a binder set up for one organization shows its repos to nobody outside it. A personal binder has no
@@ -174,7 +179,9 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   }
   // This Binder's own store: one, as its parts share keys and a file.
   const ownKv: KV = log instanceof RedisLog ? await keptIn(new RedisKV(log.redis, id), dir('kept.json')) : new MemoryKV()
-  const stateFile = log instanceof RedisLog ? new StateFile(dir('state.json')) : undefined
+  // A Binder made from a copy has its saved state put in its folder before it starts, whether or not there's a Redis.
+  const planted = !first && !(log instanceof RedisLog) && (await stat(dir('state.json')).then(() => true, () => false))
+  const stateFile = log instanceof RedisLog || planted ? new StateFile(dir('state.json')) : undefined
   const github = new GitHubConnection(ownKv, sealer, endpoints, first ? manual : {}, first ? undefined : id, { id, binder: (other) => spaces.get(other)?.github, linked })
   await github.load()
   // An app made while the hub was only on this machine, or a tunnel with a new address: point its webhook here.
@@ -224,15 +231,20 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   await actions.followDeliveries()
   // The brain: this binder's notes and cards indexed in its own store, kept up as they change.
   // A personal binder is its person's alone: its passages aren't sent to an embeddings server the hub's admins chose.
-  // Each binder's notes go to its own repo, on a branch of their own.
-  const pushTo = async (binder: Binder) => {
-    if (!binder.repo || binder.notes === false) return undefined
+  // Each binder's notes go to its own repo, on a branch of their own, and so do its daily copies.
+  const reach = async (binder: Binder) => {
+    if (!binder.repo) return undefined
     // A personal binder pushes with its person's own GitHub, connected through the OAuth App, when it is.
     const own = info.personal ? await auth.personalToken(info.personal) : undefined
-    if (own) return { url: `${endpoints.webUrl}/${binder.repo}.git`, token: own, branch: binder.notesBranch || 'main', name: binder.repo }
+    if (own) return { url: `${endpoints.webUrl}/${binder.repo}.git`, token: own, name: binder.repo, own: true }
     const access = await github.gitAccess(binder.repo)
     if (!access) throw new Error(`The hub can’t reach ${binder.repo}: install the GitHub App on it.`)
-    return { ...access, branch: binder.notesBranch || 'binders-notes', name: binder.repo }
+    return { ...access, name: binder.repo, own: false }
+  }
+  const pushTo = async (binder: Binder) => {
+    if (!binder.repo || binder.notes === false) return undefined
+    const { own, ...target } = (await reach(binder))!
+    return { ...target, branch: binder.notesBranch || (own ? 'main' : 'binders-notes') }
   }
   // Its vectors outlive Redis: on the hub's disk, and in the binder's repo beside its notes, on a branch of their own.
   const files = info.personal ? undefined : new VectorFiles({
@@ -258,13 +270,28 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   await notes.start()
   // Notes run as cards on a timer.
   const scheduler = new Scheduler(hub, actions)
+  // A daily copy of the whole binder on the hub's disk, and in its repo when the binder says so: asked on the timer.
+  const copies = new CopyKeeper({
+    dir: dir('copies'),
+    hub,
+    of: () => ({ id, name: spaces.info(id)?.name ?? info.name, people: spaces.info(id)?.members ?? [] }),
+    pushTo: async (binder) => {
+      const found = await reach(binder)
+      if (!found) return undefined
+      const { own: _own, ...target } = found
+      return target
+    },
+    author: gitAuthor,
+  })
+  scheduler.copies = copies
   scheduler.start()
   const running: Space = {
-    id, hub, actions, webhooks, github, notes, poller, issues, jira, jiraIssues, tell, filesDir: join(notesDir, 'files'), brain,
+    id, hub, actions, webhooks, github, notes, poller, issues, jira, jiraIssues, tell, filesDir: join(notesDir, 'files'), brain, copies,
     stop: async () => {
       // First: the rest of stopping can take longer than a server gives it.
       await stateFile?.save().catch(() => undefined)
       scheduler.stop()
+      await copies.stop()
       tell.stop()
       brain.stop()
       poller.stop()
@@ -283,6 +310,7 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
 // A hub with no list of Binders yet: the one it had, with no members, so whoever the hub let in still gets in, as
 // before. Adding its first member, as owner, closes it to everyone else.
 const spaces = new Spaces(kv, startSpace)
+spaces.dirOf = binderDir
 
 // Listening comes first and the Binders start after: with thousands of them that takes a while, and a server that
 // watches /health must see a hub that's busy rather than one that's gone. Until they're up, /ready and every other

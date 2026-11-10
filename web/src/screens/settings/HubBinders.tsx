@@ -1,10 +1,11 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { UserPlus } from 'lucide-react'
-import { call } from '../../data/api'
+import { FileUp, UserPlus } from 'lucide-react'
+import { call, upload } from '../../data/api'
 import { spaceHref } from '../../data/space'
 import { useStore } from '../../data/store'
 import { Dialog, Field } from '../../components/Dialog'
 import { attempt, toast } from '../../components/Toast'
+import { nameFromCopy } from './access'
 
 /** A binder as the hub lists it for its admins. */
 export interface HubBinder {
@@ -36,6 +37,7 @@ export function HubBinders() {
   const [binders, setBinders] = useState<HubBinder[]>()
   const [failed, setFailed] = useState<string>()
   const [naming, setNaming] = useState<HubBinder>()
+  const [fromCopy, setFromCopy] = useState(false)
 
   useEffect(() => {
     if (!admin) return
@@ -47,13 +49,15 @@ export function HubBinders() {
   if (!admin) return null
   if (failed) return <p className="setup-note" role="alert">{failed}</p>
   if (!binders) return null
-  if (!binders.length) return <p className="setup-note">No binders on this hub yet.</p>
 
   // Those with no owner come first; the hub's own order holds within each.
   const ordered = [...binders.filter((b) => !b.owners.length), ...binders.filter((b) => b.owners.length)]
+  const made = (list?: HubBinder[]) => { if (list) setBinders(list) }
   return (
     <>
-      <ul className="binder-cards" aria-label="Binders on this hub">
+      <div><button type="button" className="button" onClick={() => setFromCopy(true)}><FileUp size={14} /> New binder from a copy</button></div>
+      {!binders.length && <p className="setup-note">No binders on this hub yet.</p>}
+      {binders.length > 0 && <ul className="binder-cards" aria-label="Binders on this hub">
         {ordered.map((b) => (
           <li key={b.id} className="settings-card hub-binder">
             <div className="hub-binder-head">
@@ -67,7 +71,8 @@ export function HubBinders() {
             </span>
           </li>
         ))}
-      </ul>
+      </ul>}
+      {fromCopy && <FromCopy onClose={() => setFromCopy(false)} onMade={made} />}
       {naming && <NameOwner binder={naming} onClose={() => setNaming(undefined)} onDone={(list) => { if (list) setBinders(list); setNaming(undefined) }} />}
     </>
   )
@@ -101,6 +106,56 @@ function NameOwner({ binder, onClose, onDone }: { binder: HubBinder; onClose: ()
         <footer className="form-actions">
           <button type="button" className="button" onClick={onClose}>Cancel</button>
           <button type="submit" className="button primary" disabled={busy || !login}>{login ? `Make @${login} an owner` : 'Make an owner'}</button>
+        </footer>
+      </form>
+    </Dialog>
+  )
+}
+
+/** A file and a name, and a new binder started from them, paused so it can sit beside the one the copy was taken from. */
+function FromCopy({ onClose, onMade }: { onClose: () => void; onMade: (list?: HubBinder[]) => void }) {
+  const [file, setFile] = useState<File>()
+  const [name, setName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [made, setMade] = useState<{ id: string; name: string }>()
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!file || !name.trim()) return
+    setBusy(true)
+    // A refusal shows as a toast, in the hub's own words, and the dialog stays for another try.
+    const done = await attempt(() => upload<{ binders: HubBinder[]; created: { id: string; name: string } }>(`/api/hub/binders/from-copy?name=${encodeURIComponent(name.trim())}`, file, 'application/gzip'))
+    setBusy(false)
+    if (!done) return
+    toast(`Made ${done.created.name} from the copy.`)
+    onMade(Array.isArray(done.binders) ? done.binders : undefined)
+    setMade(done.created)
+  }
+  if (made) {
+    return (
+      <Dialog title="New binder from a copy" onClose={onClose}>
+        <div className="form">
+          <p className="field-hint">It doesn’t write to GitHub until that’s turned on in its Settings.</p>
+          <p><a href={spaceHref(made.id, '#/home')}>Open {made.name}</a></p>
+        </div>
+      </Dialog>
+    )
+  }
+  return (
+    <Dialog title="New binder from a copy" onClose={onClose}>
+      <form className="form" onSubmit={submit}>
+        <Field label="The copy">
+          <input id="copy-file" type="file" accept=".gz,application/gzip" onChange={(e) => {
+            const chosen = e.target.files?.[0]
+            setFile(chosen)
+            if (chosen) setName(nameFromCopy(chosen.name))
+          }} />
+        </Field>
+        <Field label="Name">
+          <input id="copy-name" value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" />
+        </Field>
+        <footer className="form-actions">
+          <button type="button" className="button" onClick={onClose}>Cancel</button>
+          <button type="submit" className="button primary" disabled={busy || !file || !name.trim()}>{busy ? 'Making it…' : 'Make the binder'}</button>
         </footer>
       </form>
     </Dialog>

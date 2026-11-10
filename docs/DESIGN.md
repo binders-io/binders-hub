@@ -48,6 +48,35 @@ issue body, so the issue alone can rebuild the card. A card mirrored to Jira is 
 Who sees a binder is its members, kept by the hub. What a person may do on a repo is GitHub's word, asked with their own
 sign-in: linking a repo to a binder or an agent takes push access to it, and approving and merging happen as them.
 
+### A binder's copies
+
+A copy is one gzip file of JSON (`format: 1`): a header (which binder, when, at what version and hub commit, how many
+notes, cards, change sets and agents, who's in it), the binder's whole state with its history and trash, and each note's
+Automerge document in base64. Named `<binder address>-<YYYY-MM-DD>.binder-copy.json.gz`. It holds no connection (the
+binder's GitHub App, Jira, the channel it tells) and no token, since those are in the hub's own store, which a copy never
+reads: the state is only the log applied. Pictures and files in notes stay with the notes in their repo.
+
+`hub/src/copies.ts` makes and reads copies, so all four uses agree:
+
+- **Download.** `GET /api/spaces/:id/copy`, for a binder's owners and admins. The state and documents are taken in one
+  step and packed with the async gzip, so the hub isn't held up longer than `JSON.stringify` takes. The binder's history
+  says who took it.
+- **Seven days on the disk.** The scheduler's tick asks each binder's `CopyKeeper` whether a copy is due: one for each day
+  the state changed in, a day turning at 03:00 in the hub's own time, and a binder's first at once. It writes
+  `copies/copy-<mon..sun>.binder-copy.json.gz` in the binder's data folder, over last week's, and `copies/latest.json`
+  (which file, when, how big, at what version). One copy is written at a time across the hub, a failure is logged and
+  tried again an hour later, and nothing it does stops or waits on the hub. `GET /api/copies` says what's there.
+- **In GitHub.** With `copies` on in the binder (owners' and admins' to change, as where its notes and cards go), the
+  `copies/` folder is committed in a throwaway Git folder as one commit and force-pushed to a `binders-copies` branch of
+  its repo, with the push target and token handling of the notes saver (the token goes in Git's environment, never on its
+  command line). A push that fails is kept in words for `GET /api/copies` and tried again an hour later.
+- **A new binder from a copy.** `POST /api/hub/binders/from-copy?name=…`, for the hub's admins, with the file as the body
+  (at most 200 MB). The file is read and checked before anything is made. The new binder gets a new address and is owned by
+  the one who sent it. Its state, documents and the `.saved` mark are written into its data folder as a `StateFile` would,
+  and it starts the way a hub does with an empty log and a saved state. It starts paused: `notes`, `issues`,
+  `reviewComments` and `copies` are off, every agent is revoked, and it has no Jira or channel, so it can sit beside the
+  original without writing over it. Its repo stays named, so its cards still link to their pull requests.
+
 ## The hub
 
 - **Change log.** Every write appends to a Redis Stream per binder with a version, and goes out live over WebSocket.

@@ -126,6 +126,16 @@ code a binder at its own address is a space, which holds one `binder` (its notes
 called it; one made before a binder was one notebook may hold several, shown as its parts. A binder goes by its name in
 both places: renaming either renames the other.
 
+Each binder keeps **copies** of itself: its notes (with their shared-editing documents), board, change sets, history
+and trash in one `.binder-copy.json.gz` file, without its connections to GitHub or Jira, any token, or the pictures and
+files in notes. Its owners and admins download one from Settings → General. The hub also writes one a day for a binder
+that changed (after 03:00 in its own time) into the binder's `copies` folder, keeping seven, and when a binder's owners
+turn on "Keep a daily copy of the whole binder" in Settings → How work flows, pushes them to a `binders-copies` branch of
+its repo as one commit. The hub's admins start a new binder from a copy in Settings → This hub → Binders: it gets an
+address of its own and starts paused, so it can sit beside the original without writing over it (its notes aren't pushed,
+its cards aren't kept as issues, review comments and copies aren't posted or pushed, and its agents are revoked) until its
+owners turn those on.
+
 ## Working in a binder
 
 **What waits on you.** Home lists what waits on a person in three groups: what's for you, what anyone in the binder

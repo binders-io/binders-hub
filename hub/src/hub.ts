@@ -135,6 +135,16 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
     return new Map([...this.docs.takeChanged()].map(([noteId, doc]) => [noteId, doc ? saveDoc(doc) : undefined]))
   }
 
+  /** Every note's document the hub holds now, as it's saved: for a copy of the whole Binder. A note with none is made again from its text. */
+  heldDocs(): Map<string, Uint8Array> {
+    const held = new Map<string, Uint8Array>()
+    for (const note of this.state.notes) {
+      const doc = this.docs.peek(note.id)
+      if (doc) held.set(note.id, saveDoc(doc))
+    }
+    return held
+  }
+
   docsChangedAgain(noteIds: Iterable<string>) {
     this.docs.changedAgain(noteIds)
   }

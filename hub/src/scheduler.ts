@@ -1,5 +1,6 @@
 import { nextRun } from '../../shared/schedule.ts'
 import type { Actions } from './actions.ts'
+import type { CopyKeeper } from './copies.ts'
 import { emptyTrash } from './history.ts'
 import type { Hub } from './hub.ts'
 import { log } from './logger.ts'
@@ -7,8 +8,8 @@ import { log } from './logger.ts'
 // The timer behind what runs without being asked: every half minute, each schedule that's on and due fires once. Due is
 // the first time its cron gives after its last run (or its making), so runs missed while the hub was down come to one
 // run, not one for each time missed. Then the notes a folder's rule says to Distill, and a note's own change sets that
-// have everything in, the cards whose agent has gone quiet, the diffs nobody needs kept any more, and the repos whose
-// deployments are due a look on GitHub. Each step's failure stays its own.
+// have everything in, the cards whose agent has gone quiet, the diffs nobody needs kept any more, the Binder's daily copy when one is due,
+// and the repos whose deployments are due a look on GitHub. Each step's failure stays its own.
 
 /** How long an agent can go unheard before the card it works on goes back on the board. */
 export const quietMs = 20 * 60_000
@@ -22,6 +23,8 @@ export const tidyBatch = 20
 export class Scheduler {
   private timer?: NodeJS.Timeout
   private ticking = false
+  /** The Binder's daily copies: asked each tick whether one is due, and not waited for. */
+  copies?: CopyKeeper
 
   private hub: Hub
   private actions: Actions
@@ -67,6 +70,8 @@ export class Scheduler {
       await this.tidyDiffs(now).catch((err: Error) => log.warn({ err }, 'Letting go of old diffs failed'))
       await emptyTrash(this.hub, now.getTime(), this.options.trashKeptMs, this.options.tidyBatch).catch((err: Error) => log.warn({ err }, 'Emptying the old trash failed'))
       await this.actions.sendFinishedSets().catch((err: Error) => log.warn({ err }, 'Sending a note’s change set for review failed'))
+      // A daily copy takes its own time, and fails on its own: it's started here and left to finish.
+      if (this.copies) void this.copies.tick(now)
       // Looking at GitHub for deployments paces itself, a repo at a time with a pause between, so it isn't waited for here.
       if (this.actions.deliveryLooks) void this.actions.lookDue(now.getTime()).catch((err: Error) => log.warn({ err }, 'Looking for deployments failed'))
     } finally {

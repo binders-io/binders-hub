@@ -69,3 +69,10 @@ export function useSaved() {
 export function agentsOf<T extends { owner: string; revoked?: boolean }>(agents: T[], login: string) {
   return agents.filter((a) => !a.revoked && a.owner.toLowerCase() === login.toLowerCase())
 }
+
+/** The binder's name as its copy's file says it: "my-team-2026-11-09.binder-copy.json.gz" is "My team". */
+export function nameFromCopy(file: string) {
+  const dated = /^(.+?)-\d{4}-\d{2}-\d{2}\.binder-copy/.exec(file)
+  const base = (dated?.[1] ?? file.split('.')[0]).replace(/-+/g, ' ').trim()
+  return base.charAt(0).toUpperCase() + base.slice(1)
+}

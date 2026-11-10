@@ -15,6 +15,15 @@ import { Changeable, Saved, WhoCan } from './shared'
 import { useBinderAccess, useSaved } from './access'
 import { sectionHref } from './sections'
 
+/** The hub's copies of the binder you're in: its newest on its own disk, and the daily one in the binder's repo. */
+interface CopiesStatus { latest?: { at: string; bytes: number; version: number }; days: number; inRepo?: { on: boolean; repo?: string; branch: string; at?: string; failed?: string } }
+
+/** When, as a line says it: "3h ago", "just now", or "on Nov 2" once it's more than a day. */
+const when = (iso: string) => {
+  const how = ago(iso)
+  return how === 'now' ? 'just now' : /^\d+[smh]$/.test(how) ? `${how} ago` : `on ${how}`
+}
+
 interface IssueStatus { on: boolean; kept: number; waiting: number; problem?: string; notes?: { to?: string; branch?: string; at?: string; error?: string } }
 
 /**
@@ -27,9 +36,12 @@ export function Flow() {
   const { may, managers } = useBinderAccess()
   const { saved, shown } = useSaved()
   const [issues, setIssues] = useState<Record<string, IssueStatus>>()
+  const [copies, setCopies] = useState<CopiesStatus>()
   const refresh = () => void call<{ binders: Record<string, IssueStatus> }>('GET', '/api/issues').then((r) => setIssues(r.binders)).catch(() => {})
   // Follows the board, so counts move as cards become issues.
   useEffect(refresh, [state.sync.version, state.binders])
+  // Follows the binders, so the daily copy's line is the hub's after the switch is turned.
+  useEffect(() => { void call<CopiesStatus>('GET', '/api/copies').then((found) => { if (found && typeof found === 'object') setCopies(found) }).catch(() => {}) }, [state.binders])
   const several = state.binders.length > 1
   const change = (binder: Binder, fields: Parameters<typeof store.updateBinder>[1], key: string) => {
     store.updateBinder(binder.id, fields)
@@ -52,6 +64,7 @@ export function Flow() {
               ) : (
                 <p className="field-hint">Notes and cards go to GitHub once there’s a repo for them: <a href={sectionHref('github')}>pick one in GitHub</a>.</p>
               )}
+              <CopiesRow binder={binder} status={copies} onChange={(on) => change(binder, { copies: on }, 'copies')} saved={<Saved show={shown(`${binder.id}-copies`)} />} />
               <ReviewCommentsRow binderId={binder.id} on={binder.reviewComments === true} onChange={(on) => change(binder, { reviewComments: on }, 'reviews')} saved={<Saved show={shown(`${binder.id}-reviews`)} />} />
             </li>
           ))}
@@ -115,6 +128,39 @@ function IssuesRow({ binderId, repo, on, status, onChange, onSync, saved }: { bi
           {' · '}<button type="button" className="text-button" onClick={onSync}>Sync now</button>
         </p>
       )}
+    </div>
+  )
+}
+
+/**
+ * A daily copy of the whole binder in its repo, on a branch of its own, and under it, for everyone in the binder, the
+ * hub's own seven days on its disk.
+ */
+function CopiesRow({ binder, status, onChange, saved }: { binder: Binder; status?: CopiesStatus; onChange: (on: boolean) => void; saved: ReactNode }) {
+  const repo = binder.repo
+  const on = binder.copies === true
+  const inRepo = status?.inRepo
+  return (
+    <div className="issues-row">
+      <div className="issues-head">
+        <label className="switch" htmlFor={`binder-copies-${binder.id}`}>
+          <input id={`binder-copies-${binder.id}`} type="checkbox" checked={!!repo && on} disabled={!repo} onChange={(e) => onChange(e.target.checked)} />
+          <span aria-hidden="true" />
+          Keep a daily copy of the whole binder in {repo ?? 'its repo'}
+        </label>
+        {saved}
+      </div>
+      {repo ? (
+        <>
+          <p className="issues-status">On branch <span className="mono">{inRepo?.branch ?? 'binders-copies'}</span>. Seven days are kept. Anyone who can read {repo} can read them.</p>
+          {on && (inRepo?.failed || inRepo?.at) && (
+            <p className={`issues-status${inRepo.failed ? ' problem' : ''}`}>{inRepo.failed ?? `Last copy ${when(inRepo.at!)}.`}</p>
+          )}
+        </>
+      ) : (
+        <p className="issues-status">This binder has no repo yet.</p>
+      )}
+      <p className="issues-status faint">The hub also keeps seven days of copies on its own disk.{status?.latest ? ` Last one ${when(status.latest.at)}.` : ''}</p>
     </div>
   )
 }

@@ -31,6 +31,11 @@ export async function call<T = unknown>(method: string, path: string, body?: unk
     if (isNetworkFailure(error)) throw new HubError(0, unreachable)
     throw error
   }
+  return read<T>(response)
+}
+
+/** The hub's answer as JSON, or its `error` in words when it refused. */
+async function read<T>(response: Response): Promise<T> {
   const text = await response.text()
   let parsed: unknown
   try {
@@ -40,4 +45,21 @@ export async function call<T = unknown>(method: string, path: string, body?: unk
   }
   if (!response.ok) throw new HubError(response.status, (parsed as { error?: string })?.error ?? `The hub answered ${response.status}.`)
   return parsed as T
+}
+
+/** Sends a file as the whole body of a POST, as the type it is, and reads the hub's JSON answer as `call` does. */
+export async function upload<T = unknown>(path: string, file: Blob, type: string): Promise<T> {
+  let response: Response
+  try {
+    response = await fetch(path, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'x-binders': '1', accept: 'application/json', ...spaceHeaders, 'content-type': type },
+      body: file,
+    })
+  } catch (error) {
+    if (isNetworkFailure(error)) throw new HubError(0, unreachable)
+    throw error
+  }
+  return read<T>(response)
 }

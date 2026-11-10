@@ -1128,8 +1128,11 @@ a.button { text-decoration: none; }
 .switch input:checked + span { background: var(--text); }
 .switch input:checked + span::after { transform: translateX(14px); }
 .switch input:focus-visible + span { outline: 2px solid var(--text); outline-offset: 2px; }
+.switch:has(input:disabled) { color: var(--faint); cursor: not-allowed; }
+.switch input:disabled + span { opacity: 0.45; }
 .issues-status { margin: 0 0 0 42px; font-size: 12.5px; color: var(--muted); }
 .issues-status.problem { color: var(--red); }
+.issues-status.faint { color: var(--faint); }
 .issues-status a { display: inline-flex; align-items: center; gap: 2px; color: var(--text); font-weight: 600; }
 /* Settings → How work flows → Tell a channel: the address's box, its buttons, and how the last post went. */
 .tell-form { max-width: 640px; }

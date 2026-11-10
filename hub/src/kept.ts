@@ -10,7 +10,7 @@ import { log } from './logger.ts'
 // keeps beside it (KeptKV). What's only for now stays in Redis: sign-ins, one-time codes, and what can be made again.
 
 /** Written whole and then moved into place: a stop halfway leaves the file as it was. Only the hub's user may read it. */
-async function writeWhole(file: string, text: string | Uint8Array) {
+export async function writeWhole(file: string, text: string | Uint8Array) {
   await mkdir(dirname(file), { recursive: true })
   const next = `${file}.new`
   await writeFile(next, text, { mode: 0o600 })
@@ -273,3 +273,15 @@ export class StateFile {
 
 /** A note's document on disk: its id, made safe for a file's name, with this at the end. */
 const docEnd = '.automerge'
+
+/**
+ * Writes into a Binder's folder what a StateFile would have written there, in the order it writes it (the documents,
+ * the state, then the mark), so a Binder started from this folder takes the ordinary path for a hub whose log is empty.
+ */
+export async function writeSaved(dir: string, saved: SavedState, docs: Map<string, Uint8Array>) {
+  const docsDir = join(dir, 'note-docs')
+  await mkdir(docsDir, { recursive: true })
+  for (const [noteId, bytes] of docs) await writeWhole(join(docsDir, `${encodeURIComponent(noteId)}${docEnd}`), bytes)
+  await writeWhole(join(dir, 'state.json'), JSON.stringify({ version: saved.version, at: new Date().toISOString(), state: saved.state }))
+  await writeWhole(join(docsDir, '.saved'), '')
+}

@@ -42,6 +42,7 @@ function binderLines(was: Binder, now: Binder): string[] {
   if ((now.notesBranch || undefined) !== (was.notesBranch || undefined)) lines.push(now.notesBranch ? `Set the notes branch of ${name} to ${now.notesBranch}.` : `Put the notes branch of ${name} back to the usual one.`)
   if ((now.issues !== false) !== (was.issues !== false)) lines.push(`${now.issues !== false ? 'Turned on' : 'Turned off'} keeping the cards of ${name} as GitHub issues.`)
   if ((now.reviewComments === true) !== (was.reviewComments === true)) lines.push(`${now.reviewComments === true ? 'Turned on' : 'Turned off'} review comments on the pull requests of ${name}.`)
+  if ((now.copies === true) !== (was.copies === true)) lines.push(`${now.copies === true ? 'Turned on' : 'Turned off'} keeping a daily copy of ${name} in GitHub.`)
   return lines
 }
 

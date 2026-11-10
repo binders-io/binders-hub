@@ -24,6 +24,8 @@ export interface Binder {
   notesBranch?: string
   /** Whether a Challenge's findings are posted as a review on its card's pull request: off unless turned on. */
   reviewComments?: boolean
+  /** Whether a daily copy of the whole binder is pushed to that repo, on a branch of its own (binders-copies): off unless turned on. */
+  copies?: boolean
   createdBy?: string
   /** The note every agent in this binder reads first (shared/guide.ts). */
   guideNoteId?: string

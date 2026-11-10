@@ -10,6 +10,24 @@ import type { Context } from './context.ts'
 /** A role as a sentence says it. */
 const aRole = { owner: 'an owner', admin: 'an admin', member: 'a member', reader: 'a reader' }
 
+/**
+ * Every team Binder on the hub with who owns it, for the hub's admins: the ones they don't look after too, so they can
+ * name an owner for any. `yours` is whether the asker can open it: they're in it, it's open, or it has no owner.
+ */
+export function hubBindersFor({ spaces, login, isAdmin }: Context, request: FastifyRequest) {
+  if (!isAdmin(login(request))) throw new Refused('Only the hub’s admins see every Binder.')
+  return {
+    binders: spaces.list().filter((info) => !info.personal).map((info) => ({
+      id: info.id, name: info.name, createdAt: info.createdAt,
+      ...(spaces.isFirst(info.id) ? { first: true } : {}),
+      people: info.members.length,
+      owners: info.members.filter((m) => m.role === 'owner').map((m) => m.login),
+      admins: info.members.filter((m) => m.role === 'admin').map((m) => m.login),
+      yours: !!spaces.roleFor(info.id, login(request), true),
+    })),
+  }
+}
+
 export async function binderRoutes(app: FastifyInstance, context: Context) {
   const { spaces, auth, login, param, isAdmin, act, bodyOf } = context
   // The hub's Binders: each person sees the ones they're in, with who's in them where they may change that. The hub's
@@ -38,21 +56,7 @@ export async function binderRoutes(app: FastifyInstance, context: Context) {
     // The hub's admins stand in for the owner a Binder doesn't have.
     return { id, byOwner: spaces.roleOf(id, login(request)) === 'owner' || (admin && !spaces.hasOwner(id)) }
   }
-  // Every team Binder on the hub with who owns it, for the hub's admins: the ones they don't look after too, so they can
-  // name an owner for any. `yours` is whether the asker can open it: they're in it, it's open, or it has no owner.
-  const hubBinders = (request: FastifyRequest) => {
-    if (!isAdmin(login(request))) throw new Refused('Only the hub’s admins see every Binder.')
-    return {
-      binders: spaces.list().filter((info) => !info.personal).map((info) => ({
-        id: info.id, name: info.name, createdAt: info.createdAt,
-        ...(spaces.isFirst(info.id) ? { first: true } : {}),
-        people: info.members.length,
-        owners: info.members.filter((m) => m.role === 'owner').map((m) => m.login),
-        admins: info.members.filter((m) => m.role === 'admin').map((m) => m.login),
-        yours: !!spaces.roleFor(info.id, login(request), true),
-      })),
-    }
-  }
+  const hubBinders = (request: FastifyRequest) => hubBindersFor(context, request)
   /** Revokes every agent a person owns in a Binder, as the agents route revokes one, and says which. `why` finishes the history line. */
   const revokeAgentsOf = async (id: string, owner: string, by: string, why = 'is no longer in this Binder') => {
     const hub = spaces.get(id)?.hub

@@ -1,4 +1,5 @@
 import type { SpaceBrain } from './brain/brain.ts'
+import type { CopyKeeper } from './copies.ts'
 import type { Actions } from './actions.ts'
 import type { GitHubConnection } from './githubConnection.ts'
 import type { JiraConnection } from './jira.ts'
@@ -65,6 +66,8 @@ export interface Space {
   tell?: Teller
   /** Where pictures put in its notes are kept. */
   filesDir?: string
+  /** Its daily copies on the hub's disk, and in its repo when it says so. */
+  copies?: CopyKeeper
   /** Its brain: the index of its notes and cards, what's captured put in as notes, questions answered. */
   brain?: SpaceBrain
   stop?: () => Promise<void>
@@ -106,6 +109,8 @@ export class Spaces {
   private ownerless = new Set<string>()
   /** Who runs the hub, set once by the server: nobody until then. */
   hubAdmin: (login: string) => boolean = () => false
+  /** The folder a new Binder keeps its state and documents in, where a Binder started from a copy is put before it starts. None: this hub can't. */
+  dirOf?: (id: string) => string
   /** `list()`, until a Binder is made, taken off the hub or loaded. */
   private live?: readonly SpaceInfo[]
   /** Set once every Binder has started: until then the hub answers only that it's starting. */
@@ -211,9 +216,12 @@ export class Spaces {
     return info && !info.removedAt ? info : undefined
   }
 
+  /** Addresses of Binders being made right now: taken, though they aren't in the list yet. */
+  private starting = new Set<string>()
+
   /** Whether an address is used, by a Binder or by one that was taken off the hub: nothing new is made over it. */
   private taken(id: string) {
-    return this.byId.has(id)
+    return this.byId.has(id) || this.starting.has(id)
   }
 
   get(id: string) {
@@ -290,8 +298,10 @@ export class Spaces {
   /**
    * A new Binder: one notebook with its own board, notes, repo and members, its maker its owner. `home`: the Binder
    * whose GitHub App it reaches GitHub through (the hub's one app), else it has none of its own until one is made.
+   * `before` is run with its address once that's settled and before it starts: a Binder made from a copy has its saved
+   * state put in its folder there. If it, or the start, fails, nothing is left of the Binder in the list.
    */
-  async create(fields: { id?: string; name: string; owner: string; home?: string }, by: string) {
+  async create(fields: { id?: string; name: string; owner: string; home?: string }, by: string, before?: (id: string) => Promise<void>) {
     const name = fields.name.trim().slice(0, 60)
     const id = (fields.id?.trim() || this.freeId(name)).toLowerCase()
     const owner = fields.owner.trim().replace(/^@/, '')
@@ -300,7 +310,13 @@ export class Spaces {
     if (!name) throw new Refused('Give the Binder a name.')
     if (!loginPattern.test(owner)) throw new Refused('Its owner is a GitHub login.')
     const info: SpaceInfo = { id, name, createdAt: new Date().toISOString(), createdBy: by, members: [{ login: owner, role: 'owner' }], ...(fields.home ? { home: fields.home } : {}) }
-    this.running.set(id, await this.make(id, info))
+    this.starting.add(id)
+    try {
+      await before?.(id)
+      this.running.set(id, await this.make(id, info))
+    } finally {
+      this.starting.delete(id)
+    }
     this.add(info)
     await this.save()
     return info

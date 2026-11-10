@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
+import { Download, Plus, Trash2 } from 'lucide-react'
 import { call } from '../../data/api'
 import type { SpaceView } from '../../data/model'
 import { spaceHref } from '../../data/space'
@@ -79,6 +79,13 @@ export function General() {
                 <span className="field-label">Address</span>
                 <div className="token-value mono"><span>{window.location.origin}/{here.id}</span></div>
               </div>
+            </section>
+          )}
+          {here && may && (
+            <section className="settings-card space-card">
+              <h3 className="settings-sub">Download a copy</h3>
+              <p className="field-hint">Everything in this binder as one file: its notes, its board, its change sets and its history. Not its connections to GitHub or Jira, no tokens, and not the pictures and files in notes, which are kept with the notes.</p>
+              <div><a className="button" href={`/api/spaces/${encodeURIComponent(here.id)}/copy`} download><Download size={14} /> Download a copy</a></div>
             </section>
           )}
           {several && (

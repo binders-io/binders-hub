@@ -8,6 +8,7 @@ import { RedisLog } from './log.ts'
 import type { OptionsStore } from './options.ts'
 import { agentRoutes } from './routes/agents.ts'
 import { binderRoutes } from './routes/binders.ts'
+import { copyRoutes } from './routes/copies.ts'
 import { makeContext } from './routes/context.ts'
 import { githubRoutes } from './routes/github.ts'
 import { jiraRoutes } from './routes/jira.ts'
@@ -205,6 +206,7 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
   await signInRoutes(app, context)
   await stateRoutes(app, context)
   await binderRoutes(app, context)
+  await copyRoutes(app, context)
   await workRoutes(app, context)
   await agentRoutes(app, context)
   await githubRoutes(app, context)

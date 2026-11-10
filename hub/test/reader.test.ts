@@ -299,6 +299,8 @@ const theirOwnOrOnlyAsks = [
   'POST /api/spaces',
   // Naming a Binder's owner is the hub's, and the route asks for a hub admin.
   'PUT /api/hub/binders/:id/owners/:login',
+  // So is starting a Binder from a copy.
+  'POST /api/hub/binders/from-copy',
 ]
 /** Addresses that find out which Binder they’re for, and refuse a reader there: the hook leaves them to. */
 const decidedInTheRoute = ['POST /api/captures', 'POST /api/app/audio', 'POST /api/brain/do']

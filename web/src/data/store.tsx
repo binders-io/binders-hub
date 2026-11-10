@@ -134,7 +134,7 @@ export interface Actions {
   /** A note's text from the hub, with its `editedAt`: one request at a time for each note, shared by whoever asks while it's out. */
   askForText: (noteId: string) => Promise<{ text: string; editedAt: string }>
   addBinder: (name: string, repo?: string) => string
-  updateBinder: (id: string, fields: { guideNoteId?: string; name?: string; repo?: string; repos?: string[]; issues?: boolean; notes?: boolean; notesBranch?: string; reviewComments?: boolean }) => void
+  updateBinder: (id: string, fields: { guideNoteId?: string; name?: string; repo?: string; repos?: string[]; issues?: boolean; notes?: boolean; notesBranch?: string; reviewComments?: boolean; copies?: boolean }) => void
   deleteBinder: (id: string) => Promise<void>
   // Cards
   createCard: (card: NewCard) => Promise<Card>
@@ -507,7 +507,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       updateBinder: (id, fields) => {
         const binder = now().binders.find((b) => b.id === id)
-        if (binder) change({ type: 'binder.put', binder: { ...binder, ...(fields.guideNoteId === undefined ? {} : { guideNoteId: fields.guideNoteId || undefined }), name: fields.name?.trim() || binder.name, repo: fields.repo === undefined ? binder.repo : fields.repo.trim() || undefined, repos: fields.repos === undefined ? binder.repos : fields.repos.length ? fields.repos : undefined, issues: fields.issues ?? binder.issues, notes: fields.notes ?? binder.notes, notesBranch: fields.notesBranch ?? binder.notesBranch, reviewComments: fields.reviewComments ?? binder.reviewComments } })
+        if (binder) change({ type: 'binder.put', binder: { ...binder, ...(fields.guideNoteId === undefined ? {} : { guideNoteId: fields.guideNoteId || undefined }), name: fields.name?.trim() || binder.name, repo: fields.repo === undefined ? binder.repo : fields.repo.trim() || undefined, repos: fields.repos === undefined ? binder.repos : fields.repos.length ? fields.repos : undefined, issues: fields.issues ?? binder.issues, notes: fields.notes ?? binder.notes, notesBranch: fields.notesBranch ?? binder.notesBranch, reviewComments: fields.reviewComments ?? binder.reviewComments, ...(fields.copies === undefined ? {} : { copies: fields.copies }) } })
       },
       deleteBinder: async (id) => {
         // Sent at once, not queued, so a refusal (it isn't empty) shows here.
