@@ -177,6 +177,9 @@ describe('what a reader may do', () => {
     await hub.record({ kind: 'hub' }, { type: 'agent.put', agent: { id: 'a1', name: 'Sonnet', owner: 'cy', binders: [], repos: [], skills: [] } as never })
     await hub.record({ kind: 'hub' }, { type: 'card.put', card: { id: 'k1', title: 'Which one?', binderId: 'b1', brief: '', doneWhen: '', size: 'M', stage: 'blocked', agentId: 'a1', needsYou: 'Which region?', waitsFor: [], activity: [], updatedAt: '2026-11-09T09:00:00.000Z' } as never })
     assert.ok(forAttention(waitingOn(hub.state, 'cy')).length > 0, 'it would wait on them')
+    // A card as the hub has it, asked for when a finished card is opened: a read like the rest.
+    assert.equal((await cy('GET', '/api/cards/k1/whole')).body.card.title, 'Which one?')
+    assert.equal((await cy('GET', '/api/cards/nope/whole')).status, 404)
     const waiting = await cy('GET', '/api/me/waiting')
     assert.deepEqual(waiting.body.binders.find((b: { id: string }) => b.id === 'acme'), { id: 'acme', name: 'Acme', count: 0 })
     await close()

@@ -75,6 +75,8 @@ export async function stateRoutes(app: FastifyInstance, context: Context) {
       const vet = async (change: Change) => {
         // A note held without its text is a browser's own: writing it whole would replace the note with nothing.
         if (change.type === 'note.put' && change.note?.left) throw new Refused('This note’s text isn’t loaded in this browser, so it can’t be saved from it.')
+        // A card held without its detail is a browser's own: writing it whole would replace the card with a shell.
+        if (change.type === 'card.put' && change.card?.left) throw new Refused('This card isn’t loaded in this browser, so it can’t be saved from it.')
         // Where a Binder's cards and notes go, and taking a binder away, are its owners' and admins' to change (the
         // hub's admins', while it has no owner).
         if (change.type === 'binder.delete' || (change.type === 'binder.put' && whereItGoes(change.binder) !== whereItGoes(hub.state.binders.find((b) => b.id === change.binder.id)))) {
@@ -122,8 +124,37 @@ export async function stateRoutes(app: FastifyInstance, context: Context) {
       sent = fresh[fresh.length - 1].version
       socket.send(JSON.stringify({ type: 'entries', entries: light === '1' ? fresh.map((e) => ({ ...e, change: lightChange(e.change) })) : fresh }))
     }
-    void hub.read(sent, 5000).then(send)
-    hub.on('entries', send)
+    // What happens while it's catching up waits its turn: sent at once it would go ahead of the changes before it, and
+    // those would then be taken for old and left out.
+    let caughtUp = false
+    const waiting: Entry[] = []
+    const live = (entries: Entry[]) => {
+      if (caughtUp) send(entries)
+      else waiting.push(...entries)
+    }
+    hub.on('entries', live)
+    void (async () => {
+      try {
+        // The log may not go back as far as this client, or the client may be ahead of a log that started over: it's
+        // told, so it asks for the state whole and comes back, and until then it gets what happens from now.
+        if (sent > hub.version || (sent < hub.version && (await hub.read(sent, 1))[0]?.version !== sent + 1)) {
+          sent = hub.version
+          if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ type: 'behind', version: sent }))
+        } else {
+          // Everything it missed, a few thousand at a time, however far behind it is.
+          const upTo = hub.version
+          while (sent < upTo && socket.readyState === socket.OPEN) {
+            const missed = await hub.read(sent, liveBatch)
+            if (!missed.length) break
+            send(missed)
+          }
+        }
+      } catch {
+        // The log couldn't be read just now: what happens from here still goes.
+      }
+      caughtUp = true
+      send(waiting.splice(0))
+    })()
     // Agents' presence: what it is now, then each change.
     const presence = (now: Record<string, unknown>) => socket.readyState === socket.OPEN && socket.send(JSON.stringify({ type: 'presence', presence: now }))
     presence(hub.presence())
@@ -131,7 +162,7 @@ export async function stateRoutes(app: FastifyInstance, context: Context) {
     const ping = setInterval(() => socket.readyState === socket.OPEN && socket.ping(), 25_000)
     socket.on('close', () => {
       terminals.off('change', terminalsOf)
-      hub.off('entries', send)
+      hub.off('entries', live)
       hub.off('presence', presence)
       clearInterval(ping)
     })
@@ -175,6 +206,8 @@ export async function stateRoutes(app: FastifyInstance, context: Context) {
 
 /** How far behind a page may be and still catch up from the live feed, which replays up to 5000 changes. */
 const catchUpMost = 2000
+/** How many changes the live feed reads from the log at a time for a client that's behind. */
+const liveBatch = 2000
 
 /** Whether the log still has every change after this version: the next one is there, or it was lost with its Redis. */
 export async function canCatchUp(hub: Hub, have: number) {

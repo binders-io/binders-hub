@@ -9,6 +9,7 @@ import { ago, quietWords, unpicked } from './bits'
 import { attempt, failure, toast } from './Toast'
 import { href } from '../route'
 import { useMayChangeBinder } from '../screens/settings/access'
+import { debriefStateOf } from '../data/cardDetail'
 
 // A debrief: what a change set proposes, all its pull requests together, written by an agent when a person asks (a card
 // not in a set yet has its own, of its worktree). Asking on a card in a set asks for its set's. The view shows its five
@@ -28,7 +29,8 @@ export function DebriefButton({ card, inline = false, className = 'button' }: { 
   const writer = useHub((state) => (live ? nameFor(state, live.agentId) : ''))
   if (!may || !debriefable(card.stage)) return null
   const busy = pending(live)
-  const label = busy ? 'Debriefing…' : live?.state === 'done' ? 'Debrief again' : 'Debrief'
+  // A card held without its detail still says how its debrief stood.
+  const label = busy ? 'Debriefing…' : (live ? live.state : debriefStateOf(card)) === 'done' ? 'Debrief again' : 'Debrief'
   const title = busy ? `${writer} is writing its debrief` : set ? `An agent reads all of change set #${set.number}’s pull requests together and writes one debrief` : 'An agent reads what this card’s work proposes and writes a debrief'
   const ask = (event: MouseEvent) => {
     event.stopPropagation()

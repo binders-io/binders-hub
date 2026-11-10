@@ -8,6 +8,7 @@ import { ago, quietWords, unpicked } from './bits'
 import { attempt } from './Toast'
 import { href } from '../route'
 import { useMayChangeBinder } from '../screens/settings/access'
+import { challengeStateOf } from '../data/cardDetail'
 
 // A Challenge: an adversarial review by an agent that didn't write the work, which gets the diff, the brief and the
 // done-when but never the authors' plan or log. Of a whole change set, all its pull requests together, so what goes
@@ -57,7 +58,8 @@ export function ChallengeButton({ card, inline = false, pick = false, className 
       </button>
     )
   }
-  const label = busy ? 'Challenging…' : live?.state === 'done' ? 'Challenge again' : 'Challenge'
+  // A card held without its detail still says how its Challenge stood.
+  const label = busy ? 'Challenging…' : (live ? live.state : challengeStateOf(card)) === 'done' ? 'Challenge again' : 'Challenge'
   const button = <button type="button" className={className} disabled={busy || !reviewers.length} title={title} onClick={ask}><Swords size={13} /> {label}</button>
   if (busy || !reviewers.length) return button
   if (!pick) return <span className="challenge-ask"><ReasoningPicker />{button}</span>
@@ -223,6 +225,8 @@ function FindingActions({ card, finding }: { card: Card; finding: Finding }) {
 
 /** On the Change sets screen: how many of the card's last Challenge's findings are still open, linking to them. */
 export function FindingsLink({ card }: { card: Card }) {
+  // A card held without its detail has no findings open (one with some is sent whole), and its count isn't here.
+  if (card.left) return card.left.challenge === 'done' ? <a className="findings-link" href={href({ screen: 'work', id: card.id })} onClick={(e) => e.stopPropagation()}>No open findings</a> : null
   const findings = card.challenge?.findings
   if (!findings) return null
   const open = openFindings(card.challenge)
@@ -286,6 +290,8 @@ export function SetChallenge({ set }: { set: ChangeSet }) {
       {challenge?.blast && <BlastView blast={challenge.blast} of={{ kind: 'set', id: set.id }} />}
       {done && challenge!.summary && <p className="debrief-does">{challenge!.summary}</p>}
       {withFindings.map((card) => <ChallengeView key={card.id} card={card} under />)}
+      {/* A card that finished a while ago is held without its findings, which are all settled: its page has them. */}
+      {cards.filter((c) => c.left?.challenge).map((card) => <p key={card.id} className="faint small"><a href={href({ screen: 'work', id: card.id })}>{card.title}</a> has a Challenge with nothing open. Open it to read it.</p>)}
     </section>
   )
 }

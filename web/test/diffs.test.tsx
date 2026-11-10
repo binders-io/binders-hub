@@ -79,4 +79,26 @@ describe('the connection', () => {
     expect(fetched.mock.calls[1][0]).toBe('/api/state?light=1&have=7&replay=1')
     connection.stop()
   })
+
+  it('asks for the state whole and opens the feed again when the hub says its log doesn’t go back that far', async () => {
+    FakeSocket.open = []
+    vi.stubGlobal('WebSocket', FakeSocket)
+    let have = 7
+    const fetched = vi.fn(async (_url: string) => answer({ version: 40, state: { notes: [], cards: [] }, presence: {} }))
+    vi.stubGlobal('fetch', fetched)
+    const snapshots: number[] = []
+    const connection = new HubConnection({ snapshot: (version) => { snapshots.push(version); have = version }, entries: () => {}, status: () => {}, version: () => have, presence: () => {} })
+    await connection.start()
+    await connection.start()
+    const first = FakeSocket.open.at(-1)!
+    const asked = fetched.mock.calls.length
+    snapshots.length = 0
+    first.onmessage?.({ data: JSON.stringify({ type: 'behind', version: 40 }) })
+    await vi.waitFor(() => expect(FakeSocket.open.at(-1)).not.toBe(first))
+    expect(first.readyState).toBe(3)
+    // The state is asked for as a page that isn't following asks: with no "only what I missed".
+    expect(fetched.mock.calls[asked][0]).toBe('/api/state?light=1&have=40')
+    expect(FakeSocket.open.at(-1)!.url.toString()).toContain('since=40&light=1')
+    connection.stop()
+  })
 })

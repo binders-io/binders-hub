@@ -30,6 +30,13 @@ export async function workRoutes(app: FastifyInstance, context: Context) {
     if (!card) return reply.code(404).send({ error: 'No such card.' })
     return { activity: card.activity }
   })
+  // A card as the hub has it, detail and all: a browser's state has a card that finished a while ago without its brief,
+  // plan, debrief, Challenge or activity, and asks for them when the card is opened. Reads, so a reader may ask too.
+  app.get('/api/cards/:id/whole', async (request, reply) => {
+    const card = sp(request).hub.state.cards.find((c) => c.id === param(request, 'id'))
+    if (!card) return reply.code(404).send({ error: 'No such card.' })
+    return { card }
+  })
   // A Challenge's whole blast radius: a browser's state has its counts and not its symbols, and asks for them when they're shown.
   // Reads, so a reader may ask too: the hook lets every GET through.
   app.get('/api/cards/:id/blast', async (request, reply) => {

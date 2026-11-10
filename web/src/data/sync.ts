@@ -1,6 +1,6 @@
 import type { TerminalInfo } from '../../../shared/terminal.ts'
 import { applyChange as apply, type Change, type Entry, type HubState, type Outgoing } from '../../../shared/state.ts'
-import { forWire, type Activity, type Presence } from '../../../shared/work.ts'
+import { forWire, isOld, leftCard, type Activity, type Card, type Presence } from '../../../shared/work.ts'
 import { lightNote, type Note } from '../../../shared/notes.ts'
 import { space, spaceHeaders } from './space'
 
@@ -21,12 +21,14 @@ export interface Sync {
 }
 
 // Bumped when what's kept changes shape, so an older browser cache is left behind, not read wrong. Each Binder's own.
-export const keys = { cache: `binders-hub-cache-v5:${space}`, outbox: `binders-hub-outbox-v3:${space}`, client: 'binders-hub-client' }
+export const keys = { cache: `binders-hub-cache-v6:${space}`, outbox: `binders-hub-outbox-v3:${space}`, client: 'binders-hub-client' }
 const cachePrefix = 'binders-hub-cache-'
-/** Each Binder's cache from before notes' texts were left out of it (v4) and before diffs' lines were (v3): all in the way of what replaces them. */
-const oldCaches = [`${cachePrefix}v3:`, `${cachePrefix}v4:`]
+/** Each Binder's cache from before old cards' detail was left out of it (v5), notes' texts were (v4) and diffs' lines were (v3): all in the way of what replaces them. */
+const oldCaches = [`${cachePrefix}v3:`, `${cachePrefix}v4:`, `${cachePrefix}v5:`]
 /** How many notes keep their text in the copy kept for next time: the ones opened last. */
 export const keptTexts = 20
+/** How many old cards keep their detail in the copy kept for next time: the ones opened last. */
+export const keptCards = 20
 
 function read<T>(key: string): T | undefined {
   try {
@@ -95,15 +97,20 @@ export const rememberOutbox = (sync: Sync) => write(outboxKey, sync.pending)
 /**
  * The hub's state, to start from next time: all of it, so it's written now and then. The hub has it if this is behind.
  * The texts of the notes in `keep` (the last ones opened, at most 20) go with it, and of those with changes waiting, and
- * every other note is written without its text, as the hub sends it: what's held in memory is as it was. Every Binder at this address shares the browser's room
- * for it. When there's none left, the one you're in gets it.
+ * every other note is written without its text, as the hub sends it: what's held in memory is as it was. The same goes for
+ * an old card's detail: the cards in `keepCards` (the last ones opened, at most 20) and those with changes waiting keep
+ * it, and every other old card is written as the hub sends it, without. Every Binder at this address shares the browser's
+ * room for it. When there's none left, the one you're in gets it.
  */
-export function rememberCache(sync: Sync, keep: readonly string[] = []) {
+export function rememberCache(sync: Sync, keep: readonly string[] = [], keepCards: readonly string[] = [], now = Date.now()) {
   try {
     // A note with changes waiting keeps its text as well: offline, it's the only place its words can be read.
     const kept = new Set([...keep.slice(0, keptTexts), ...sync.pending.flatMap(({ change }) => noteOf(change) ?? [])])
     const notes = sync.confirmed.notes.map((n) => (n.left || kept.has(n.id) ? n : lightNote(n)))
-    const confirmed = notes.some((n, index) => n !== sync.confirmed.notes[index]) ? { ...sync.confirmed, notes } : sync.confirmed
+    // A card with changes waiting keeps its detail too: offline, it's the only place its words can be read.
+    const cardsKept = new Set([...keepCards.slice(0, keptCards), ...sync.pending.flatMap(({ change }) => cardOf(change) ?? [])])
+    const cards = sync.confirmed.cards.map((c) => (c.left || cardsKept.has(c.id) || !isOld(c, now) ? c : leftCard(c)))
+    const confirmed = notes.some((n, index) => n !== sync.confirmed.notes[index]) || cards.some((c, index) => c !== sync.confirmed.cards[index]) ? { ...sync.confirmed, notes, cards } : sync.confirmed
     const text = JSON.stringify({ version: sync.version, confirmed })
     try {
       window.localStorage.setItem(keys.cache, text)
@@ -116,12 +123,13 @@ export function rememberCache(sync: Sync, keep: readonly string[] = []) {
   }
 }
 
-export function remember(sync: Sync, keep: readonly string[] = []) {
-  rememberCache(sync, keep)
+export function remember(sync: Sync, keep: readonly string[] = [], keepCards: readonly string[] = []) {
+  rememberCache(sync, keep, keepCards)
   rememberOutbox(sync)
 }
 
 const noteOf = (change: Change) => (change.type === 'note.put' ? change.note.id : 'id' in change && change.type.startsWith('note.') ? change.id : undefined)
+const cardOf = (change: Change) => (change.type === 'card.put' ? change.card.id : 'id' in change && change.type.startsWith('card.') ? change.id : undefined)
 
 /** A note with its marks, the same object each time for the same note and marks: this runs on every change. */
 const marked = new WeakMap<Note, { saving: boolean; committing: boolean; note: Note }>()
@@ -230,11 +238,47 @@ export function hold(sync: Sync, noteId: string, text: string, editedAt: string)
 }
 
 /**
+ * A card's detail, as the hub sent it (the card as the hub has it), taken into this tab: the card stops being one without
+ * its detail. Only when it's the card as of now (the hub's `updatedAt` is the confirmed card's), as the card may have
+ * changed since it was asked for, and only for a card that doesn't have its detail yet. Anything else gives the same
+ * `sync` back.
+ */
+export function holdCard(sync: Sync, card: Card): Sync {
+  if (card.left) return sync
+  const index = sync.confirmed.cards.findIndex((c) => c.id === card.id)
+  const held = sync.confirmed.cards[index]
+  if (!held?.left || held.updatedAt !== card.updatedAt) return sync
+  const cards = sync.confirmed.cards.slice()
+  cards[index] = card
+  return { ...sync, confirmed: { ...sync.confirmed, cards } }
+}
+
+/** A card the hub sends without its detail, with the detail this tab holds of the same version of it: all else is the hub's. */
+function withDetail(sent: Card, had: Card): Card {
+  const { left: _left, ...rest } = sent
+  const { plan, worktree, debrief, challenge, permission } = had
+  return { ...rest, brief: had.brief, doneWhen: had.doneWhen, activity: had.activity, activityMore: had.activityMore, plan, worktree, debrief, challenge, permission }
+}
+
+/**
  * Everything the hub has, as of a version: what you were waiting on stays on top. A note this tab holds the text of keeps
  * it when the hub's copy is the same version of it (the same `editedAt`), as is one this tab made and the hub hasn't
- * confirmed yet; any other comes without its text, to be asked for when it's opened.
+ * confirmed yet; any other comes without its text, to be asked for when it's opened. A card this tab holds the detail of
+ * keeps it when the hub's copy is the same version of it (the same `updatedAt`); any other comes without it.
  */
 export function snapshot(sync: Sync, version: number, state: HubState): Sync {
+  if (state.cards.some((c) => c.left)) {
+    const before = new Map(sync.confirmed.cards.map((c) => [c.id, c]))
+    let changed = false
+    const cards = state.cards.map((c) => {
+      if (!c.left) return c
+      const had = before.get(c.id)
+      if (!had || had.left || had.updatedAt !== c.updatedAt) return c
+      changed = true
+      return withDetail(c, had)
+    })
+    if (changed) state = { ...state, cards }
+  }
   if (!state.notes.some((n) => n.left)) return { ...sync, confirmed: state, version }
   const before = new Map(sync.confirmed.notes.map((n) => [n.id, n]))
   const made = new Map<string, Note>()
@@ -324,6 +368,16 @@ export class HubConnection {
     }
     socket.onmessage = (event) => {
       const message = JSON.parse(String(event.data)) as { type: string; entries?: Entry[]; presence?: Record<string, Presence>; agentId?: string; online?: boolean; sessions?: TerminalInfo[] }
+      // The hub's log doesn't go back to where this page is: the state is asked for whole, and the feed opened again from it.
+      if (message.type === 'behind') {
+        if (this.socket === socket) {
+          this.socket = undefined
+          this.following = false
+          socket.close()
+          void this.start()
+        }
+        return
+      }
       if (message.type === 'terminals' && message.agentId) this.onTerminals?.(message.agentId, { online: !!message.online, sessions: message.sessions ?? [] })
       if (message.type === 'entries' && message.entries) this.onEntries(message.entries)
       if (message.type === 'presence' && message.presence) this.onPresence(message.presence)

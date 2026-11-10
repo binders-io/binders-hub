@@ -3,13 +3,14 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { emptyState, type Change, type HubState } from '../../../shared/state.ts'
 import { titleOf } from '../../../shared/notes.ts'
 import type { Activity, Agent, Card, Environment, Me, Note, Provider } from './model'
-import { handMove, type Presence, type RunnerSettings } from '../../../shared/work.ts'
+import { handMove, isOld, type Presence, type RunnerSettings } from '../../../shared/work.ts'
 import type { BlastRadius, BlastSymbol, TestOutcome } from '../../../shared/changeSet.ts'
 import { call } from './api'
 import { askedReasoning } from '../components/Reasoning'
 import { attempt, failure, toast } from '../components/Toast'
-import { clientId, HubConnection, hold, keptTexts, queue, receive, rememberCache, rememberOutbox, settled, shown, snapshot, startingSync, withHistory, type AgentTerminals, type Connection, type Sync } from './sync'
+import { clientId, HubConnection, hold, holdCard as takeCard, keptCards, keptTexts, queue, receive, rememberCache, rememberOutbox, settled, shown, snapshot, startingSync, withHistory, type AgentTerminals, type Connection, type Sync } from './sync'
 import { isEmpty, textOf } from './noteText'
+import { guardCard } from './cardDetail'
 import { LiveNotes, type LiveNote, type Waiting } from './liveNote'
 import { spaceHeaders } from './space'
 
@@ -133,6 +134,15 @@ export interface Actions {
   noteOpened: (noteId: string) => void
   /** A note's text from the hub, with its `editedAt`: one request at a time for each note, shared by whoever asks while it's out. */
   askForText: (noteId: string) => Promise<{ text: string; editedAt: string }>
+  /**
+   * A finished card's detail, as the hub sent it (the card as the hub has it, whole), taken in here and never sent to the
+   * hub. False when it wasn't taken: the card changed meanwhile (the feed is behind, or ahead), or it already has its detail.
+   */
+  holdCard: (card: Card) => boolean
+  /** A card was opened: if it's an old one, its detail is kept with the copy of the state this browser holds for next time (the last 20 are). */
+  cardOpened: (cardId: string) => void
+  /** A card, whole, from the hub: one request at a time for each card, shared by whoever asks while it's out. */
+  askForCard: (cardId: string) => Promise<Card>
   addBinder: (name: string, repo?: string) => string
   updateBinder: (id: string, fields: { guideNoteId?: string; name?: string; repo?: string; repos?: string[]; issues?: boolean; notes?: boolean; notesBranch?: string; reviewComments?: boolean; copies?: boolean }) => void
   deleteBinder: (id: string) => Promise<void>
@@ -209,14 +219,16 @@ export interface Store extends Actions {
   connection: Connection
 }
 
-/** The notes opened here, the last first: the ones whose texts the browser's copy of the state keeps. */
+/** The notes (or old cards) opened here, the last first: the ones whose texts (or detail) the browser's copy of the state keeps. */
 class Opened {
   ids: string[]
-  constructor(ids: string[]) {
-    this.ids = ids.slice(0, keptTexts)
+  private most: number
+  constructor(ids: string[], most = keptTexts) {
+    this.most = most
+    this.ids = ids.slice(0, most)
   }
-  open(noteId: string) {
-    this.ids = [noteId, ...this.ids.filter((id) => id !== noteId)].slice(0, keptTexts)
+  open(id: string) {
+    this.ids = [id, ...this.ids.filter((was) => was !== id)].slice(0, this.most)
   }
 }
 
@@ -258,6 +270,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // The notes whose texts are kept in the browser's copy: the last opened first, and to start with, those the copy had.
   const [asking] = useState(() => new Map<string, { at: number; answer: Promise<{ text: string; editedAt: string }> }>())
   const [recent] = useState(() => new Opened(held.get().sync.confirmed.notes.filter((n) => !n.left).map((n) => n.id)))
+  // The same for old cards, whose detail the copy keeps for the last ones opened: to start with, those it had.
+  const [askingCards] = useState(() => new Map<string, { at: number; answer: Promise<Card> }>())
+  const [recentCards] = useState(() => {
+    const now = Date.now()
+    return new Opened(held.get().sync.confirmed.cards.filter((c) => !c.left && isOld(c, now)).map((c) => c.id), keptCards)
+  })
   const [lives] = useState(() => new LiveNotes({
     fetchDoc: async (noteId) => {
       const response = await fetch(`/api/notes/${encodeURIComponent(noteId)}/doc`, { credentials: 'same-origin', headers: spaceHeaders })
@@ -316,9 +334,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     flushTimer.current = window.setTimeout(() => void flush(), 250)
   }, [flush])
 
-  /** A change: shown at once, kept in the outbox, sent to the hub. */
+  /**
+   * A change: shown at once, kept in the outbox, sent to the hub. A card this tab doesn't have the detail of (it has
+   * `left`) never sends its brief or done-when, whoever asks: what's here of them is empty, and the hub would take that as
+   * the card's own.
+   */
   const change = useCallback((next: Change) => {
-    held.step((s) => withShown({ ...s, sync: queue(s.sync, next, sent.current) }))
+    const card = next.type === 'card.put' ? next.card.id : next.type === 'card.update' ? next.id : undefined
+    const sendable = card ? guardCard(held.get().cards.find((c) => c.id === card), next) : next
+    if (!sendable) return
+    held.step((s) => withShown({ ...s, sync: queue(s.sync, sendable, sent.current) }))
     soon()
   }, [held, soon])
 
@@ -378,7 +403,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const keep = () => {
       window.clearTimeout(timer)
       timer = undefined
-      rememberCache(held.get().sync, recent.ids)
+      rememberCache(held.get().sync, recent.ids, recentCards.ids)
     }
     const keepOutbox = () => {
       if (!outboxDue) return
@@ -405,7 +430,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('pagehide', leave)
       leave()
     }
-  }, [held, recent])
+  }, [held, recent, recentCards])
 
   const actions = useMemo<Actions>(() => {
     const now = held.get
@@ -498,6 +523,38 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             if (asking.get(noteId)?.answer === answer) asking.delete(noteId)
           })
         asking.set(noteId, { at: Date.now(), answer })
+        return answer
+      },
+      holdCard: (card) => {
+        let took = false
+        held.step((s) => {
+          const next = takeCard(s.sync, card)
+          if (next === s.sync) return s
+          took = true
+          return withShown({ ...s, sync: next })
+        })
+        return took
+      },
+      cardOpened: (cardId) => {
+        // Only an old card's detail is kept for next time: one that finished lately is sent whole anyway.
+        const card = now().cards.find((c) => c.id === cardId)
+        if (card && (card.left || isOld(card, Date.now()))) recentCards.open(cardId)
+      },
+      askForCard: (cardId) => {
+        // A request that has hung is not waited on for ever: after a while the next one is a new one.
+        const out = askingCards.get(cardId)
+        if (out && Date.now() - out.at < askedForMs) return out.answer
+        const answer = call<{ card?: Partial<Card> | null }>('GET', `/api/cards/${encodeURIComponent(cardId)}/whole`)
+          .then((body) => {
+            // An answer that isn't this card, with its words and when it was last changed, is not taken for an empty one.
+            const card = body?.card
+            if (!card || card.id !== cardId || card.left || typeof card.updatedAt !== 'string' || typeof card.brief !== 'string' || typeof card.doneWhen !== 'string' || !Array.isArray(card.activity)) throw new Error('The hub answered without the whole card.')
+            return card as Card
+          })
+          .finally(() => {
+            if (askingCards.get(cardId)?.answer === answer) askingCards.delete(cardId)
+          })
+        askingCards.set(cardId, { at: Date.now(), answer })
         return answer
       },
       addBinder: (name, repo) => {
@@ -625,7 +682,38 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (await loadMe()) await hub.current?.start()
       },
     }
-  }, [held, change, flush, loadMe, recent, asking])
+  }, [held, change, flush, loadMe, recent, asking, recentCards, askingCards])
+
+  // A card held without its detail that isn't Done any more (it was moved back, or an agent took it up) is back on the
+  // board and wanted whole wherever it's shown: asked for here, once for each card, and not again for a version of it
+  // that gave up, until the hub is back or the card changes.
+  useEffect(() => {
+    const running = new Map<string, () => void>()
+    const gaveUp = new Map<string, string>()
+    let was: Connection | undefined
+    const scan = () => {
+      const { cards, sync } = held.get()
+      if (sync.connection !== was) {
+        if (sync.connection === 'live') gaveUp.clear()
+        was = sync.connection
+      }
+      if (sync.connection === 'offline' || sync.connection === 'signed-out') return
+      for (const card of cards) {
+        if (!card.left || card.stage === 'live' || running.has(card.id) || gaveUp.get(card.id) === card.updatedAt) continue
+        const id = card.id
+        running.set(id, loadWhole(actions, id, (outcome) => {
+          running.delete(id)
+          if (outcome === 'failed') gaveUp.set(id, held.get().cards.find((c) => c.id === id)?.updatedAt ?? '')
+        }))
+      }
+    }
+    const stop = held.subscribe(scan)
+    scan()
+    return () => {
+      stop()
+      for (const cancel of running.values()) cancel()
+    }
+  }, [held, actions])
 
   return (
     <LiveContext.Provider value={lives}>
@@ -708,6 +796,77 @@ export function useNoteText(noteId: string) {
   }, [actions, noteId, light, offline, round])
   const again = useCallback(() => setTries((n) => n + 1), [])
   return { text: note ? textOf(note) : undefined, failed: light && gaveUp === round, again }
+}
+
+/** How many times a card is asked for whole, and how long between, before it's given up on. */
+const cardTries = 5
+const cardRetryMs = 400
+
+/**
+ * Asks for a card whole until it's held here: again after a moment when the hub's card isn't the one this tab has (it
+ * changed meanwhile, or the live feed hasn't brought the change yet), up to five times. `done` says how it ended, unless
+ * it was cancelled; the hub saying there's no such card, or that it isn't ours to read, ends it at once. Gives the way to cancel.
+ */
+function loadWhole(actions: Pick<Actions, 'askForCard' | 'holdCard' | 'current'>, cardId: string, done: (outcome: 'held' | 'failed') => void) {
+  let gone = false
+  let timer: number | undefined
+  const run = (attempt: number) => {
+    actions.askForCard(cardId).then(
+      (whole) => {
+        if (gone) return
+        // Taken, or it has its detail by now (another screen asked too).
+        if (actions.holdCard(whole) || !actions.current().cards.find((c) => c.id === cardId)?.left) return done('held')
+        retry(attempt)
+      },
+      (error: { status?: number }) => {
+        if (gone) return
+        if (error?.status === 404 || error?.status === 401 || error?.status === 403) done('failed')
+        else retry(attempt)
+      },
+    )
+  }
+  const retry = (attempt: number) => {
+    if (attempt >= cardTries) done('failed')
+    else timer = window.setTimeout(() => run(attempt + 1), cardRetryMs)
+  }
+  run(1)
+  return () => {
+    gone = true
+    window.clearTimeout(timer)
+  }
+}
+
+/**
+ * A card, whole, for a screen that reads its detail. The state a browser holds has a card that finished a while ago
+ * without its detail and says so (`left`); one that's opened is asked for from the hub and taken into the state, where
+ * the card then stays whole. `card` is undefined until it's here, and never one with an empty brief standing in for it.
+ * The hub may answer with a card that's not the one the state has (it changed meanwhile, or the live feed hasn't brought
+ * the change yet): it's asked for again shortly, up to five times, and then `failed` is true until `again`, or until the
+ * card here changes. Nothing is asked while the hub can't be reached, or for a card that has its detail.
+ */
+export function useCardWhole(cardId: string) {
+  const actions = useActions()
+  const card = useHub((state) => state.cards.find((c) => c.id === cardId))
+  const offline = useHub((state) => state.sync.connection === 'offline')
+  const light = !!card?.left
+  // Where it gave up: the card, and which round of asking. A try again starts another, and so does the hub coming back or
+  // the card changing here.
+  const [gaveUp, setGaveUp] = useState<string>()
+  const [tries, setTries] = useState(0)
+  const round = `${cardId}:${tries}:${offline}:${light ? card?.updatedAt ?? '' : ''}`
+  // Opened once the card is known: a page that's first drawn before the state has come has no card to say it's old yet.
+  const known = !!card
+  useEffect(() => {
+    if (known) actions.cardOpened(cardId)
+  }, [actions, cardId, known])
+  useEffect(() => {
+    if (!light || offline) return
+    return loadWhole(actions, cardId, (outcome) => {
+      if (outcome === 'failed') setGaveUp(round)
+    })
+  }, [actions, cardId, light, offline, round])
+  const again = useCallback(() => setTries((n) => n + 1), [])
+  return { card: card && !card.left ? card : undefined, failed: light && gaveUp === round, again }
 }
 
 /** No notes: what a search that hasn't answered gives, the same each time. */

@@ -1,11 +1,12 @@
 import type { Change, HubState } from './state.ts'
 import type { BlastRadius, Challenge } from './changeSet.ts'
 import { lightNote } from './notes.ts'
-import type { Card, ChangeSet, FileDiff, PullRequest } from './work.ts'
+import { isOld, leftCard, type Card, type ChangeSet, type FileDiff, type PullRequest } from './work.ts'
 
-// What a browser holds of the state: all of it but each note's text, the lines of its diffs, the older lines of each
-// card's activity and the symbols of each Challenge's blast radius, which are most of its weight and which a screen asks
-// for when they're opened. A note keeps how it starts, its length and what it links to (shared/notes.ts), each file keeps
+// What a browser holds of the state: all of it but each note's text, the detail of each card that finished a while ago,
+// the lines of its diffs, the older lines of each card's activity and the symbols of each Challenge's blast radius, which
+// are most of its weight and which a screen asks for when they're opened. A finished card keeps what a list shows of it
+// (shared/work.ts). A note keeps how it starts, its length and what it links to (shared/notes.ts), each file keeps
 // its name and counts, so lists and totals still add up, a card says how many of its lines were left out, and a blast
 // keeps its counts and says how many symbols it has. A note's changes on the live feed are sent whole: a browser that has
 // the note's text takes the new one, and one that doesn't keeps what stands in for it. The Binder's history and its trash
@@ -70,7 +71,7 @@ export function withoutKept<S extends HubState>(state: S): S {
 }
 
 /** The state for a browser. `now` is the clock, for tests. */
-export const lightState = <S extends HubState>(state: S, now = Date.now()): S => ({ ...withoutKept(state), notes: state.notes.map(lightNote), pulls: state.pulls.map(lightPull), changeSets: state.changeSets.map(lightSet), cards: state.cards.map((card) => lightCard(card, now)) })
+export const lightState = <S extends HubState>(state: S, now = Date.now()): S => ({ ...withoutKept(state), notes: state.notes.map(lightNote), pulls: state.pulls.map(lightPull), changeSets: state.changeSets.map(lightSet), cards: state.cards.map((card) => (isOld(card, now) ? leftCard(lightCard(card, now)) : lightCard(card, now))) })
 
 /** A change as the live feed sends it to a browser holding the light state. */
 export function lightChange(change: Change, now = Date.now()): Change {

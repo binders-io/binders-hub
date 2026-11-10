@@ -157,7 +157,8 @@ describe('the palette', () => {
     fireEvent.keyDown(box, { key: 'Enter' })
     const heading = await screen.findByRole('heading', { name: 'what was decided?' })
     const page = heading.closest('.ask-result') as HTMLElement
-    expect(page.querySelector('.ask-answer strong')?.textContent).toBe('decided')
+    // The question shows at once and its answer when the hub has given it.
+    await waitFor(() => expect(page.querySelector('.ask-answer strong')?.textContent).toBe('decided'))
     expect(page.querySelector('.ask-answer')?.textContent).not.toContain('**')
     expect(within(page).getAllByRole('button', { name: /^Source / }).map((b) => b.textContent)).toEqual(['1', '2'])
     expect(page.querySelectorAll('.ask-sources > li').length).toBe(1)

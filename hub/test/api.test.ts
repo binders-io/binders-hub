@@ -6,10 +6,10 @@ import type { AddressInfo } from 'node:net'
 import WebSocket from 'ws'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import type { Entry } from '../../shared/state.ts'
+import type { Entry, Change } from '../../shared/state.ts'
 import { cardChangeSet } from '../../shared/changeSet.ts'
 import { changesTo, load, textOf } from '../../shared/noteDoc.ts'
-import { defaultRunner } from '../../shared/work.ts'
+import { defaultRunner, leftCard } from '../../shared/work.ts'
 import { Actions } from '../src/actions.ts'
 import { Auth } from '../src/auth.ts'
 import { GitHubConnection } from '../src/githubConnection.ts'
@@ -741,6 +741,93 @@ describe('the live feed', () => {
     assert.equal(code, 401)
     await close()
   })
+  /** A socket on the live feed from a version, with everything it's sent. */
+  async function following(url: string, cookie: string, since: number) {
+    const received: Entry[] = []
+    const told: { type: string; version?: number }[] = []
+    const socket = new WebSocket(`${url.replace('http', 'ws')}/api/live?since=${since}`, { headers: { cookie } })
+    socket.on('message', (data) => {
+      const message = JSON.parse(String(data)) as { type: string; entries?: Entry[]; version?: number }
+      if (message.type === 'entries') received.push(...message.entries!)
+      else if (message.type !== 'presence' && message.type !== 'terminals') told.push(message)
+    })
+    await new Promise((done) => socket.once('open', done))
+    return { received, told, socket }
+  }
+  const versions = (entries: Entry[]) => entries.map((e) => e.version)
+  const run = (from: number, to: number) => Array.from({ length: to - from }, (_, n) => from + 1 + n)
+  const line = (n: number): Change => ({ type: 'card.activity', id: 'c1', activity: { at: 'now', by: 'you', kind: 'comment', text: `Line ${n}` } })
+
+  it('brings a client that’s thousands of changes behind every one of them, in order', async () => {
+    const { url, hub, close } = await setUp()
+    const cookie = await signIn(url)
+    const from = hub.version
+    for (let n = 0; n < 4500; n++) await hub.record({ kind: 'hub' }, line(n))
+    const { received, told, socket } = await following(url, cookie, from)
+    await until(() => received.length === 4500)
+    assert.deepEqual(versions(received), run(from, hub.version), 'none left out, none twice, none out of turn')
+    assert.deepEqual(told, [])
+    socket.close()
+    await close()
+  })
+
+  it('holds what happens while a client is catching up, so nothing goes ahead of what came before it', async () => {
+    const { url, hub, close } = await setUp()
+    const cookie = await signIn(url)
+    const from = hub.version
+    for (let n = 0; n < 5; n++) await hub.record({ kind: 'hub' }, line(n))
+    // The log takes a moment to read back, and changes land meanwhile.
+    const read = hub.read.bind(hub)
+    let reads = 0
+    hub.read = async (after, limit) => {
+      const found = await read(after, limit)
+      if (reads++ < 2) {
+        await hub.record({ kind: 'hub' }, line(100 + reads))
+        await new Promise((done) => setTimeout(done, 60))
+      }
+      return found
+    }
+    const { received, socket } = await following(url, cookie, from)
+    await until(() => received.length === hub.version - from)
+    await hub.record({ kind: 'hub' }, line(200))
+    await until(() => received.length === hub.version - from)
+    assert.deepEqual(versions(received), run(from, hub.version))
+    socket.close()
+    await close()
+  })
+
+  it('tells a client the log doesn’t go back to, or one ahead of it, that it’s behind, and sends what happens from now', async () => {
+    const { url, hub, close } = await setUp()
+    const cookie = await signIn(url)
+    const from = hub.version
+    for (let n = 0; n < 10; n++) await hub.record({ kind: 'hub' }, line(n))
+    // The log was cut short of where this client is: the change after its own is gone.
+    await hub.log.trim?.(from + 5)
+    const behind = await following(url, cookie, from)
+    await until(() => behind.told.length === 1)
+    assert.deepEqual(behind.told, [{ type: 'behind', version: hub.version }])
+    assert.deepEqual(behind.received, [], 'nothing from the middle of what it missed')
+    await hub.record({ kind: 'hub' }, line(50))
+    await until(() => behind.received.length === 1)
+    assert.deepEqual(versions(behind.received), [hub.version])
+    behind.socket.close()
+    // One that says it's further on than the hub is: its version isn't of this log.
+    const ahead = await following(url, cookie, hub.version + 100)
+    await until(() => ahead.told.length === 1)
+    assert.deepEqual(ahead.told, [{ type: 'behind', version: hub.version }])
+    await hub.record({ kind: 'hub' }, line(51))
+    await until(() => ahead.received.length === 1)
+    assert.deepEqual(versions(ahead.received), [hub.version])
+    ahead.socket.close()
+    // One that's where the hub is gets neither: there's nothing to catch up on.
+    const here = await following(url, cookie, hub.version)
+    await hub.record({ kind: 'hub' }, line(52))
+    await until(() => here.received.length === 1)
+    assert.deepEqual(here.told, [])
+    here.socket.close()
+    await close()
+  })
+
   it('gives a note’s Automerge document to edit from, and sends the edits on with the text merged', async () => {
     const { url, hub, close } = await setUp()
     const cookie = await signIn(url)
@@ -2405,6 +2492,106 @@ describe('a note’s text, asked for when it’s opened', () => {
     await until(() => received.length === 1)
     const got = received[0].change
     assert.equal(got.type === 'note.put' && got.note.text, '# Target\n\nLive words.\n')
+    socket.close()
+    await close()
+  })
+})
+
+describe('a finished card’s detail, asked for when it’s opened', () => {
+  const day = 86_400_000
+  const ago = (days: number) => new Date(Date.now() - days * day).toISOString()
+  const line = (n: number) => ({ at: ago(30 - n / 10), by: 'builder', kind: 'step' as const, tool: 'Bash', text: `step ${n}`, result: 'ok' })
+  const finished = (id: string, extra: Record<string, unknown> = {}) => ({
+    id, binderId: 'b1', title: `Card ${id}`, brief: `Brief of ${id}.`, doneWhen: 'It works.', size: 'M' as const, stage: 'live' as const, createdAt: ago(40), createdBy: 'you', updatedAt: ago(20), waitsFor: [], activity: Array.from({ length: 30 }, (_, n) => line(n)),
+    debrief: { state: 'done' as const, askedBy: 'you', askedAt: ago(21), agentId: 'builder' }, ...extra,
+  })
+  const withCards = async () => {
+    const set = await setUp()
+    await set.hub.record({ kind: 'hub' }, { type: 'card.put', card: finished('old') })
+    await set.hub.record({ kind: 'hub' }, { type: 'card.put', card: finished('yesterday', { updatedAt: ago(1) }) })
+    return { ...set, as: api(set.url, await signIn(set.url)) }
+  }
+
+  it('answers a card as the hub has it, detail and every line of its activity', async () => {
+    const { hub, as, close } = await withCards()
+    const got = await as('GET', '/api/cards/old/whole')
+    assert.equal(got.status, 200)
+    assert.deepEqual(Object.keys(got.body), ['card'])
+    assert.deepEqual(got.body.card, JSON.parse(JSON.stringify(hub.state.cards.find((c) => c.id === 'old'))))
+    assert.equal(got.body.card.brief, 'Brief of old.')
+    assert.equal(got.body.card.activity.length, 30)
+    assert.equal(got.body.card.left, undefined)
+    assert.equal(got.body.card.debrief.state, 'done')
+    await close()
+  })
+
+  it('answers 404 for a card that isn’t there', async () => {
+    const { as, close } = await withCards()
+    const missing = await as('GET', '/api/cards/nope/whole')
+    assert.equal(missing.status, 404)
+    assert.deepEqual(missing.body, { error: 'No such card.' })
+    await close()
+  })
+
+  it('has /api/state give every card whole, and /api/state?light=1 give the old one without its detail', async () => {
+    const { as, close } = await withCards()
+    const whole = (await as('GET', '/api/state')).body.state.cards as { id: string; brief: string; activity: unknown[]; left?: unknown; debrief?: unknown }[]
+    for (const id of ['old', 'yesterday']) {
+      const c = whole.find((x) => x.id === id)!
+      assert.equal(c.brief, `Brief of ${id}.`, id)
+      assert.equal(c.activity.length, 30, id)
+      assert.equal(c.left, undefined, id)
+      assert.ok(c.debrief, id)
+    }
+    const light = (await as('GET', '/api/state?light=1')).body.state.cards as typeof whole
+    const old = light.find((x) => x.id === 'old')!
+    assert.equal(old.brief, '')
+    assert.deepEqual(old.activity, [])
+    assert.deepEqual(old.left, { debrief: 'done' })
+    assert.equal(old.debrief, undefined)
+    const recent = light.find((x) => x.id === 'yesterday')!
+    assert.equal(recent.brief, 'Brief of yesterday.')
+    assert.equal(recent.left, undefined)
+    assert.ok(recent.debrief)
+    await close()
+  })
+
+  it('refuses a card put from a browser that holds it without its detail, and the Binder keeps the card', async () => {
+    const { hub, url, close } = await withCards()
+    const you = api(url, await signIn(url))
+    const before = hub.version
+    const shell = leftCard(finished('old', { title: 'Overwritten' }))
+    const refused = await you('POST', '/api/changes', { client: 'tab-1234', changes: [{ id: 'light', change: { type: 'card.put', card: shell } }] })
+    assert.equal(refused.status, 422)
+    assert.equal(refused.body.error, 'This card isn’t loaded in this browser, so it can’t be saved from it.')
+    assert.equal(hub.version, before, 'nothing went in the log')
+    const kept = hub.state.cards.find((c) => c.id === 'old')!
+    assert.equal(kept.title, 'Card old')
+    assert.equal(kept.brief, 'Brief of old.')
+    assert.equal(kept.activity.length, 30)
+    // A whole card goes in as before.
+    const fine = await you('POST', '/api/changes', { client: 'tab-1234', changes: [{ id: 'whole', change: { type: 'card.put', card: finished('old', { title: 'Renamed' }) } }] })
+    assert.equal(fine.status, 200)
+    assert.equal(hub.state.cards.find((c) => c.id === 'old')?.title, 'Renamed')
+    assert.equal(hub.state.cards.find((c) => c.id === 'old')?.left, undefined)
+    await close()
+  })
+
+  it('sends a card’s change whole on the live feed to a browser holding the light state', async () => {
+    const { hub, url, close } = await withCards()
+    const cookie = await signIn(url)
+    const received: Entry[] = []
+    const socket = new WebSocket(`${url.replace('http', 'ws')}/api/live?since=${hub.version}&light=1`, { headers: { cookie } })
+    socket.on('message', (data) => {
+      const message = JSON.parse(String(data)) as { type: string; entries?: Entry[] }
+      if (message.type === 'entries') received.push(...message.entries!)
+    })
+    await new Promise((done) => socket.once('open', done))
+    await hub.record({ kind: 'hub' }, { type: 'card.put', card: finished('old', { brief: 'Changed.' }) })
+    await until(() => received.length === 1)
+    const got = received[0].change
+    assert.equal(got.type === 'card.put' && got.card.brief, 'Changed.')
+    assert.equal(got.type === 'card.put' && got.card.left, undefined)
     socket.close()
     await close()
   })

@@ -189,6 +189,12 @@ export interface Card {
   activity: Activity[]
   /** In a browser's light state: how many older lines of its activity were left out, which the card's page asks for when it opens. */
   activityMore?: number
+  /**
+   * On a browser only: this card finished a while ago and its detail isn't here (its brief and done-when are empty, and it
+   * has no plan, debrief, Challenge or activity), until the card is opened. This says how its debrief and Challenge stood.
+   * The hub never keeps one, and refuses a card sent with one.
+   */
+  left?: CardLeft
   cost?: number
   /** Tokens its runs used, all told. */
   tokens?: number
@@ -635,7 +641,74 @@ export const stoppedQuestion = (why: string) => {
 
 const withActivity = (card: Card, activity: Activity): Card => ({ ...card, activity: [...card.activity, activity].slice(-activityKept), updatedAt: activity.at })
 
+/** What stands in for a finished card's detail on a browser that hasn't opened it: how its debrief and Challenge stood. */
+export interface CardLeft {
+  debrief?: Debrief['state']
+  challenge?: Challenge['state']
+}
+
+/** How long after it finished a card's detail stops being sent with a browser's first load. */
+export const oldAfterMs = 14 * 86_400_000
+
+const underWay = (state: 'asked' | 'writing' | 'reviewing' | 'done' | 'failed' | undefined) => state === 'asked' || state === 'writing' || state === 'reviewing'
+
+/**
+ * A card whose detail a list no longer needs: it's live, it was last changed more than two weeks ago, and nothing in it
+ * waits on a person or is under way (no question, no permission, no finding still open, no debrief or Challenge being
+ * written). A date that isn't one, as in sample data, is never old.
+ */
+export const isOld = (card: Card, now: number) =>
+  card.stage === 'live' && now - Date.parse(card.updatedAt) > oldAfterMs && !card.needsYou && !card.permission &&
+  !card.challenge?.findings?.some((finding) => !finding.outcome) && !underWay(card.debrief?.state) && !underWay(card.challenge?.state)
+
+/** A card as a browser holds it before it's opened: what a list shows of it, and what stands in for the rest. */
+export function leftCard(card: Card): Card {
+  if (card.left) return card
+  const { plan: _plan, worktree: _worktree, debrief, challenge, permission: _permission, ...rest } = card
+  return {
+    ...rest,
+    brief: '',
+    doneWhen: '',
+    activity: [],
+    activityMore: (card.activityMore ?? 0) + card.activity.length,
+    left: { ...(debrief ? { debrief: debrief.state } : {}), ...(challenge ? { challenge: challenge.state } : {}) },
+  }
+}
+
+/**
+ * A card a browser holds without its detail, after a change to it: still without, what stands in following the change.
+ * A card written whole says how its debrief and Challenge stand by itself; a change to some of it leaves the rest of what
+ * stands in as it was, and takes away what the change took away.
+ */
+function keptLeft(was: Card, now: Card, change: WorkChange): Card {
+  const light = leftCard({ ...now, left: undefined })
+  if (change.type === 'card.put') return light
+  const left = { ...was.left, ...light.left }
+  const said: object = change.type === 'card.update' ? change.fields : {}
+  if ('debrief' in said && !now.debrief) delete left.debrief
+  if ('challenge' in said && !now.challenge) delete left.challenge
+  return { ...light, left }
+}
+
+/**
+ * A change applied. On a browser, a card held without its detail stays that way whatever the change brings (a brief, a
+ * debrief, a line of activity): its detail is asked for when the card is opened. The hub's cards are never held so.
+ */
 export function applyWork<S extends WorkState>(state: S, change: WorkChange): S {
+  const next = applyWhole(state, change)
+  if (next.cards === state.cards) return next
+  let before: Map<string, Card> | undefined
+  let cards: Card[] | undefined
+  next.cards.forEach((card, at) => {
+    const was = state.cards[at]?.id === card.id ? state.cards[at] : (before ??= new Map(state.cards.map((c) => [c.id, c]))).get(card.id)
+    if (!was?.left || was === card) return
+    cards ??= next.cards.slice()
+    cards[at] = keptLeft(was, card, change)
+  })
+  return cards ? { ...next, cards } : next
+}
+
+function applyWhole<S extends WorkState>(state: S, change: WorkChange): S {
   switch (change.type) {
     case 'agent.put':
       return { ...state, agents: upsert(state.agents, change.agent) }

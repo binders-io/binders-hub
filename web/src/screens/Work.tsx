@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEven
 import { motion } from 'motion/react'
 import { ArrowLeft, ArrowUpRight, Check, ChevronDown, CornerUpLeft, FilePen, FileSearch, FileText, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, Globe, Link2, ListChecks, MessageCircleQuestion, OctagonAlert, Quote, ShieldQuestionMark, Rocket, Send, ShieldCheck, Sparkles, Square, SquareTerminal, Trash2, Workflow } from 'lucide-react'
 import { stages, type Card, type Environment, type HubState, type PullRequest } from '../data/model'
-import { nameFor, useCardHistory, useStore } from '../data/store'
+import { nameFor, useCardHistory, useCardWhole, useHub, useStore } from '../data/store'
 import { CheckGlyph, Progress, RepoTag, Who, ago, askedWords, checksSummary, foldRepeats, leaveCard, onTouch, stageTone, stoppedBlock, stoppedWords, usePhone } from '../components/bits'
 import { PullDiffs } from '../components/Diffs'
 import { Terminal } from '../components/Terminal'
@@ -14,6 +14,8 @@ import { attempt, toast } from '../components/Toast'
 import { ConfirmButton } from '../components/ConfirmButton'
 import { copyCardLink, moveAsk, movesOf, stopHolding } from '../components/CardMenu'
 import { EditableText } from '../components/EditableText'
+import { CardLoading } from '../components/CardLoading'
+import { briefOf, doneWhenOf } from '../data/cardDetail'
 import { go, href } from '../route'
 import { useUI } from '../ui'
 import { mayTake, meantForNow, repoEnvironments } from '../../../shared/work.ts'
@@ -77,8 +79,12 @@ export function Work({ id }: { id: string }) {
   // A reader sees the whole card, and moves, answers, edits and deletes none of it: those controls aren't drawn.
   const may = useMayChangeBinder()
   const card = state.cards.find((c) => c.id === id)
+  // A card that finished a while ago is held without its detail, which is asked for when it opens: until it's here the
+  // page has its title, stage and links, and nothing of its words to read or change.
+  const { card: whole, failed: wholeFailed, again: loadWhole } = useCardWhole(id)
+  const offline = useHub((state) => state.sync.connection === 'offline')
   // Its whole activity: the state has the recent lines, and the rest are asked for when the card opens.
-  const { activity, failed: historyFailed, again: loadHistory } = useCardHistory(card)
+  const { activity, failed: historyFailed, again: loadHistory } = useCardHistory(whole)
   const { binder: inBinder, setBinder } = useUI()
   useEffect(() => {
     if (card && inBinder !== 'all' && card.binderId !== inBinder) setBinder(card.binderId)
@@ -119,6 +125,48 @@ export function Work({ id }: { id: string }) {
   const siblings = set ? set.prIds.map((p) => state.pulls.find((x) => x.id === p)).filter((p): p is PullRequest => !!p) : []
   const note = state.notes.find((n) => n.id === card.noteId)
   const binder = state.binders.find((b) => b.id === card.binderId)
+  const tags = (
+    <div className="work-tags">
+      {card.jira && (/^https:\/\//.test(card.jira.url) ? <a className="mono faint" href={card.jira.url} target="_blank" rel="noreferrer" title="Its Jira issue">{card.jira.key} <ArrowUpRight size={11} /></a> : <span className="mono faint">{card.jira.key}</span>)}
+      {card.issue && (card.issue.url ? <a className="mono faint" href={card.issue.url} target="_blank" rel="noreferrer" title={`Its issue, in ${card.issue.repo}`}>#{card.issue.number} {card.issue.repo.split('/')[1]} <ArrowUpRight size={11} /></a> : <span className="mono faint">#{card.issue.number} {card.issue.repo.split('/')[1]}</span>)}
+      <span className="faint">{binder?.name}</span>
+      {pull ? <RepoTag repo={pull.repo} title={`Its pull request is in ${pull.repo}`} /> : !card.issue && binder?.repo && <RepoTag repo={binder.repo} />}
+      <span className={`stage-pill ${stageTone[card.stage]}`}><i />{stages.find((s) => s.id === card.stage)?.title}</span>
+      <span className="size-tag">{card.size}</span>
+      {card.agentId && (state.terminals?.[card.agentId]?.sessions ?? []).filter((s) => s.card === card.id).map((s) => (
+        <a key={s.sid} className="faint" href={href({ screen: 'terminal', id: card.agentId!, sid: s.sid })} title={s.dir}>{s.run ? 'Watch or take over its terminal' : `Its terminal: ${s.name ?? s.tool}`}</a>
+      ))}
+      {(() => {
+        const parts = state.cards.filter((c) => c.parent === card.id)
+        const parent = card.parent ? state.cards.find((c) => c.id === card.parent) : undefined
+        return (
+          <>
+            {parts.length > 0 && (
+              <span className="faint" title={parts.map((p) => `${p.title} — ${p.stage}`).join('\n')}>
+                Swarm of {parts.length} part{parts.length === 1 ? '' : 's'}
+              </span>
+            )}
+            {parent && <span className="faint">Part of <a href={href({ screen: 'work', id: parent.id })}>{parent.title}</a></span>}
+          </>
+        )
+      })()}
+    </div>
+  )
+  // Its detail isn't here: nothing below is shown or can be changed until it is, so an empty brief is never taken for the card's own.
+  if (card.left) {
+    return (
+      <div className="work">
+        <header className="work-head">
+          <button className="icon-button" onClick={leaveCard} aria-label="Back"><ArrowLeft size={17} /></button>
+          <div className="work-title">
+            {tags}
+            <h1>{card.title}</h1>
+          </div>
+        </header>
+        <CardLoading failed={wholeFailed} offline={offline} again={loadWhole} />
+      </div>
+    )
+  }
   const current = steps.find((s) => s.state === 'now')
   const working = card.stage === 'working'
   const tasks = activity.filter((a) => a.kind === 'step')
@@ -132,7 +180,10 @@ export function Work({ id }: { id: string }) {
   const moveTo = (stage: Card['stage']) => store.moveCard(card.id, stage)
   // Its words are the person's to fix until an agent has them: while it's proposed or ready, or blocked with nobody on it.
   const canEdit = card.stage === 'proposed' || card.stage === 'ready' || (card.stage === 'blocked' && !card.agentId)
-  const editable = canEdit && may
+  // Its words, once they're here: a card whose detail isn't is never shown as having none, or editable.
+  const brief = briefOf(card)
+  const doneWhen = doneWhenOf(card)
+  const editable = canEdit && may && brief !== undefined && doneWhen !== undefined
   const wordsFixed = card.stage === 'review' ? 'It’s in review, so its words stay as they are.' : card.stage === 'live' ? 'It’s done, so its words stay as they are.' : `${holder?.name ?? 'An agent'} is working on it, so its words stay as they are.`
   const change = (fields: Partial<Card>, said: string) => store.updateCard(card.id, fields, said)
   const sizeNames: Record<Card['size'], string> = { S: 'Small', M: 'Medium', L: 'Large' }
@@ -176,31 +227,7 @@ export function Work({ id }: { id: string }) {
       <header className="work-head">
         <button className="icon-button" onClick={leaveCard} aria-label="Back"><ArrowLeft size={17} /></button>
         <div className="work-title">
-          <div className="work-tags">
-            {card.jira && (/^https:\/\//.test(card.jira.url) ? <a className="mono faint" href={card.jira.url} target="_blank" rel="noreferrer" title="Its Jira issue">{card.jira.key} <ArrowUpRight size={11} /></a> : <span className="mono faint">{card.jira.key}</span>)}
-            {card.issue && (card.issue.url ? <a className="mono faint" href={card.issue.url} target="_blank" rel="noreferrer" title={`Its issue, in ${card.issue.repo}`}>#{card.issue.number} {card.issue.repo.split('/')[1]} <ArrowUpRight size={11} /></a> : <span className="mono faint">#{card.issue.number} {card.issue.repo.split('/')[1]}</span>)}
-            <span className="faint">{binder?.name}</span>
-            {pull ? <RepoTag repo={pull.repo} title={`Its pull request is in ${pull.repo}`} /> : !card.issue && binder?.repo && <RepoTag repo={binder.repo} />}
-            <span className={`stage-pill ${stageTone[card.stage]}`}><i />{stages.find((s) => s.id === card.stage)?.title}</span>
-            <span className="size-tag">{card.size}</span>
-            {card.agentId && (state.terminals?.[card.agentId]?.sessions ?? []).filter((s) => s.card === card.id).map((s) => (
-              <a key={s.sid} className="faint" href={href({ screen: 'terminal', id: card.agentId!, sid: s.sid })} title={s.dir}>{s.run ? 'Watch or take over its terminal' : `Its terminal: ${s.name ?? s.tool}`}</a>
-            ))}
-            {(() => {
-              const parts = state.cards.filter((c) => c.parent === card.id)
-              const parent = card.parent ? state.cards.find((c) => c.id === card.parent) : undefined
-              return (
-                <>
-                  {parts.length > 0 && (
-                    <span className="faint" title={parts.map((p) => `${p.title} — ${p.stage}`).join('\n')}>
-                      Swarm of {parts.length} part{parts.length === 1 ? '' : 's'}
-                    </span>
-                  )}
-                  {parent && <span className="faint">Part of <a href={href({ screen: 'work', id: parent.id })}>{parent.title}</a></span>}
-                </>
-              )
-            })()}
-          </div>
+          {tags}
           <h1>{editable ? <EditableText label="Title" value={card.title} required onSave={(title) => change({ title }, 'Changed the title')} /> : card.title}</h1>
         </div>
         {/* Once there's a debrief, its own section has the button. */}
@@ -352,11 +379,11 @@ export function Work({ id }: { id: string }) {
         <aside className="work-side">
           <section className="side-card brief-card">
             <h3>Brief</h3>
-            {editable ? <EditableText label="Brief" value={card.brief} multiline placeholder="No brief. Add one." onSave={(brief) => change({ brief }, 'Changed the brief')} /> : <p className="brief-text">{card.brief || 'No brief.'}</p>}
+            {brief === undefined ? null : editable ? <EditableText label="Brief" value={brief} multiline placeholder="No brief. Add one." onSave={(next) => change({ brief: next }, 'Changed the brief')} /> : <p className="brief-text">{brief || 'No brief.'}</p>}
             {editable ? (
               <>
                 <h3>Done when</h3>
-                <EditableText label="Done when" value={card.doneWhen} placeholder="Add how you’ll know it’s finished" onSave={(doneWhen) => change({ doneWhen }, 'Changed the done-when')} />
+                <EditableText label="Done when" value={doneWhen} placeholder="Add how you’ll know it’s finished" onSave={(next) => change({ doneWhen: next }, 'Changed the done-when')} />
                 <h3>Size</h3>
                 <select className="edit-select" aria-label="Size" value={card.size} onChange={(event) => change({ size: event.target.value as Card['size'] }, `Changed the size to ${sizeNames[event.target.value as Card['size']].toLowerCase()}`)}>
                   {(['S', 'M', 'L'] as const).map((size) => <option key={size} value={size}>{sizeNames[size]}</option>)}
@@ -364,7 +391,7 @@ export function Work({ id }: { id: string }) {
               </>
             ) : (
               <>
-                {card.doneWhen && <><h3>Done when</h3><p className="brief-text">{card.doneWhen}</p></>}
+                {doneWhen && <><h3>Done when</h3><p className="brief-text">{doneWhen}</p></>}
                 {!canEdit && <p className="faint small">{wordsFixed}</p>}
               </>
             )}
