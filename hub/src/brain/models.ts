@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod'
+import { takeView, takeViewFromParts } from './viewBlock.ts'
 
 // The models the hub calls itself, for what it does without an agent: summing up a dictation, conversation or meeting a
 // phone or Mac sent it, and answering a question from the notes and cards it found for it. Claude through Anthropic's
@@ -25,6 +26,8 @@ export interface AnswerPart {
 export interface Answer {
   parts: AnswerPart[]
   text: string
+  /** The view block it ended with, as written (view.ts): not yet checked, and never shown as it is. */
+  view?: string
   /** Which model answered, when it wasn't the one asked (a fallback). */
   model?: string
 }
@@ -250,8 +253,9 @@ export class ClaudeModel implements BrainModel {
       if (last && !sources.size && !last.sources.length) last.text += block.text
       else parts.push({ text: block.text, sources: [...sources].sort((a, b) => a - b) })
     }
-    const text = parts.map((p) => p.text).join('').trim()
-    return { parts: parts.filter((p) => p.text.trim()), text, ...(response.model !== this.model ? { model: response.model } : {}) }
+    const shown = takeViewFromParts(parts)
+    const text = shown.parts.map((p) => p.text).join('').trim()
+    return { parts: shown.parts.filter((p) => p.text.trim()), text, ...(shown.raw ? { view: shown.raw } : {}), ...(response.model !== this.model ? { model: response.model } : {}) }
   }
 
   async talk(turns: Turn[], passages: Passage[], more?: string): Promise<string> {
@@ -450,8 +454,10 @@ export class OpenAICompatibleModel implements BrainModel {
   async answer(question: string, passages: Passage[], more?: string): Promise<Answer> {
     const numbered = passages.map((p, i) => `[${i + 1}] ${p.title}${p.context ? ` (${p.context})` : ''}\n${p.text}`).join('\n\n')
     const cite = 'Cite the documents you use with their numbers in square brackets, like [2], right after what they support.'
-    const words = await this.chat(`${answerRules}\n${cite}${more ? `\n${more}` : ''}`, `<documents>\n${numbered}\n</documents>\n\n${question}`, false)
-    if (!words) throw new BrainUnavailable('The model gave no answer.')
+    const all = await this.chat(`${answerRules}\n${cite}${more ? `\n${more}` : ''}`, `<documents>\n${numbered}\n</documents>\n\n${question}`, false)
+    if (!all) throw new BrainUnavailable('The model gave no answer.')
+    // Its view comes out first: the numbers in one read as citations.
+    const { words, raw } = takeView(all)
     const parts = words.split(/\n{2,}/).map((paragraph) => {
       const sources = new Set<number>()
       const text = paragraph.replace(/\s?\[(\d+(?:\s*,\s*\d+)*)\]/g, (_, list: string) => {
@@ -462,7 +468,7 @@ export class OpenAICompatibleModel implements BrainModel {
     }).filter((p) => p.text.trim())
     // Paragraphs keep the blank line between them, as the model wrote it.
     parts.forEach((p, i) => { if (i < parts.length - 1) p.text += '\n\n' })
-    return { parts, text: parts.map((p) => p.text).join('').trim() }
+    return { parts, text: parts.map((p) => p.text).join('').trim(), ...(raw ? { view: raw } : {}) }
   }
 }
 

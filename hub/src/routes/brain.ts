@@ -5,11 +5,12 @@ import { captureHome } from '../appLink.ts'
 import { log } from '../logger.ts'
 import { bodies } from '../schemas.ts'
 import { personalId, readerWords } from '../spaces.ts'
-import { ask, search, type AskPlace } from '../brain/brain.ts'
+import { ask, search, type AskPlace, type AskResult } from '../brain/brain.ts'
 import { carryOut, takeProposal } from '../brain/board.ts'
 import type { BrainSettings } from '../brain/settings.ts'
 import { candidates, isGateway, jobs, offers } from '../brain/autoPick.ts'
 import { runnerVersion } from '../../../shared/agents.ts'
+import { viewBinders } from '../../../shared/view.ts'
 import { chosenHome, type Capture } from '../brain/captures.ts'
 import type { Context } from './context.ts'
 
@@ -150,7 +151,7 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
   app.post('/api/brain/ask', askLimit, act(async (request) => {
     if (!brainSettings) throw new Refused('This hub has no brain.')
     const body = bodyOf<{ question: string; everywhere?: boolean; turns?: z.infer<typeof said> }>(asking, request)
-    const result = await ask(brainSettings, await placesFor(request, body.everywhere), body.question, { person: login(request), may: true, turns: body.turns })
+    const result = await ask(brainSettings, await placesFor(request, body.everywhere), body.question, { person: login(request), may: true, turns: body.turns, views: true })
     // Ask's own page sends the conversation so far, even when it's empty: what it asks is kept for the person, to open
     // again on any device. An offer to do something isn't, as it can't be taken up later. Another client asking alone
     // adds nothing to it.
@@ -170,7 +171,13 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
     const who = login(request)
     const mine = new Set([sp(request).id, ...spaces.forPerson(who, false).map((s) => s.info.id)])
     const turns = (await sp(request).brain?.thread(who)) ?? []
-    return { turns: turns.filter((t) => t.result.sources.every((s) => mine.has(s.binder))) }
+    // A view's Things name what's in a Binder too: one from a Binder they've left is shown without it.
+    const seen = (result: AskResult): AskResult => {
+      if (!result.view || viewBinders(result.view).every((binder) => mine.has(binder))) return result
+      const { view: _left, ...rest } = result
+      return rest
+    }
+    return { turns: turns.filter((t) => t.result.sources.every((s) => mine.has(s.binder))).map((t) => ({ ...t, result: seen(t.result) })) }
   }))
   app.delete('/api/brain/conversation', act(async (request) => {
     await sp(request).brain?.forgetThread(login(request))

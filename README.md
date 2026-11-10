@@ -11,7 +11,7 @@ work: cards are issues in each binder's repo, and notes are Markdown in a Git re
   GitHub; notes committed to Git; a live feed over WebSocket; and the MCP server agents connect to.
 - `web/`: the web app. Home (what the agents are doing, and what waits on you), the Board, Notes (a Markdown editor
   with live preview, [[links]], tables and Mermaid, and Distill), each card full screen, Change sets, Delivery, Agents,
-  Ask and Settings. It works on a phone too.
+  the Brain and Settings. It works on a phone too.
 - `runner/`: keeps an agent taking cards on the machine where the code is (see below).
 - `shared/`: what they all use: the model, the changes, and the code that applies them.
 - `demo/`: a throwaway hub of invented data, and the site's screenshots taken from it (see its README).
@@ -532,14 +532,14 @@ by what they mean as well as by their words.
     128 GB Spark), `embeddinggemma`, `lfm3-audio:2b` for writing down and reading out, and `phonon:en` for a Mac's
     voice. On a Mac with mlx-audio, audio comes from Hugging Face instead: Parakeet v3 and Kokoro. Progress shows as it goes, and the job uses the model once it's there. The daemon only ever pulls a
     model's name through Ollama's own API. A transcript with no times never replaces the iPhone's timed one.
-- **Ask.** The **Ask** screen, `POST /api/brain/ask` and the MCP tool `ask` answer a question from the notes and cards of
+- **The Brain.** The **Brain** screen, `POST /api/brain/ask` and the MCP tool `ask` answer a question from the notes and cards of
   a binder, or every binder you're in, numbering the ones the answer rests on. Without a model, they give the passages
-  that match best. Ask follows a conversation: a question is answered knowing what came before it, and the hub keeps a
-  person's conversation (their last 20 questions), so it's there on opening Ask again or on another device, until they
+  that match best. The Brain follows a conversation: a question is answered knowing what came before it, and the hub keeps a
+  person's conversation (their last 20 questions), so it's there on opening the Brain again or on another device, until they
   start a new one.
 - **A note's Chat.** When no agent is listening, a note's Chat answers from the hub's own model, with the note in front
   of it and the rest of the binder to draw on. It reads the note and can't change it, and says an agent can.
-- **Search.** ⌘K finds notes and cards by title at once, and passages by their words and what they mean when typing pauses (`POST /api/brain/search`). Its Ask row takes what you typed to the Ask screen for a cited answer, and comes first when it reads as a question.
+- **Search.** ⌘K finds notes and cards by title at once, and passages by their words and what they mean when typing pauses (`POST /api/brain/search`). Its "Ask the Brain" row takes what you typed to the Brain for a cited answer, and comes first when it reads as a question.
 - **Embeddings.** Notes and cards are cut into passages, and each goes to the embeddings model once its edits pause. Redis holds a working copy. The vectors are also written to the hub's disk, one file per note or card (a hash of each passage and its vector, none of its words), and pushed to the `binders-embeddings` branch of the binder's repo, which keeps no history. A binder with no repo, or with saving notes to it turned off, keeps them on the disk alone. A hub with an empty Redis takes vectors from these files before asking the model, and one with an empty disk fetches them back from the repo.
 - **Each binder's own.** A binder's index is kept in its own store, and a question reaches only the binders you're in.
   A personal binder's passages never go to the embeddings server. What a conversation or meeting turns into waits for

@@ -13,7 +13,7 @@ import { useMayChangeBinder } from './screens/settings/access'
 import { Toast } from './components/Toast'
 import { SideAgents } from './components/SideAgents'
 import { openRow, useNotifications, useWaiting, waitingFor } from './data/notify'
-import { Account, AgentTerminal, Agents, Ask, ChangeSets, Delivery, Flow, Home, Notes, prefetchScreens, Settings, Work } from './lazyScreens'
+import { Account, AgentTerminal, Agents, BrainScreen, ChangeSets, Delivery, Flow, Home, Notes, prefetchScreens, Settings, Work } from './lazyScreens'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { UIContext, type UI } from './ui'
 import { SignIn } from './screens/SignIn'
@@ -40,7 +40,7 @@ function useBinder(ids: string[]) {
 // In the order the work runs: a question, a note, the board, what the board made, where it went. The number keys follow.
 const nav: { route: Route; label: string; icon: typeof Workflow; key: string }[] = [
   { route: { screen: 'home' }, label: 'Home', icon: LayoutDashboard, key: '1' },
-  { route: { screen: 'ask' }, label: 'Ask', icon: Brain, key: '2' },
+  { route: { screen: 'brain' }, label: 'Brain', icon: Brain, key: '2' },
   { route: { screen: 'notes', id: '' }, label: 'Notes', icon: FileText, key: '3' },
   { route: { screen: 'flow' }, label: 'Board', icon: Workflow, key: '4' },
   { route: { screen: 'changes', id: '' }, label: 'Change sets', icon: GitPullRequestArrow, key: '5' },
@@ -49,10 +49,10 @@ const nav: { route: Route; label: string; icon: typeof Workflow; key: string }[]
   { route: { screen: 'settings' }, label: 'Settings', icon: SettingsIcon, key: '8' },
 ]
 
-/** A phone's tab bar: the screens used most, by a short name. The rest, Ask among them, are in the menu. */
+/** A phone's tab bar: the screens used most, by a short name. The rest, the Brain among them, are in the menu. */
 const tabs: { screen: Route['screen']; label: string }[] = [{ screen: 'home', label: 'Home' }, { screen: 'notes', label: 'Notes' }, { screen: 'flow', label: 'Board' }, { screen: 'changes', label: 'Changes' }, { screen: 'agents', label: 'Agents' }]
 
-const titles: Record<Route['screen'], string> = { home: 'Home', flow: 'Board', notes: 'Notes', changes: 'Change sets', delivery: 'Delivery', work: 'Card', agents: 'Agents', terminal: 'Terminal', settings: 'Settings', account: 'Your account', ask: 'Ask' }
+const titles: Record<Route['screen'], string> = { home: 'Home', flow: 'Board', notes: 'Notes', changes: 'Change sets', delivery: 'Delivery', work: 'Card', agents: 'Agents', terminal: 'Terminal', settings: 'Settings', account: 'Your account', brain: 'Brain' }
 
 type Theme = 'system' | 'light' | 'dark'
 
@@ -152,7 +152,7 @@ export default function App() {
   const [binder, setBinder] = useBinder(useMemo(() => binders.map((b) => b.id), [binders]))
   const [splitting, setSplitting] = useState<string>()
   const [claudeCode, setClaudeCode] = useState(false)
-  // What ⌘K asked, for Ask to answer: not in the address, so a question stays out of the browser's history.
+  // What ⌘K asked, for the Brain to answer: not in the address, so a question stays out of the browser's history.
   const [asked, setAsked] = useState<{ question: string; at: number }>()
   // An agent going quiet changes the count with nothing else changing.
   useClock()
@@ -160,7 +160,7 @@ export default function App() {
   const agents = useMemo(() => allAgents.filter((a) => !a.revoked), [allAgents])
 
   // A card opens full screen, with its whole way from the note to production.
-  const ui = useMemo<UI>(() => ({ openItem: (id: string) => go({ screen: 'work', id }), openPalette: () => setPalette(true), binder, setBinder, splitCard: (id: string) => setSplitting(id), connectClaudeCode: () => setClaudeCode(true), askQuestion: (question: string) => { setAsked({ question, at: Date.now() }); go({ screen: 'ask' }) } }), [binder, setBinder])
+  const ui = useMemo<UI>(() => ({ openItem: (id: string) => go({ screen: 'work', id }), openPalette: () => setPalette(true), binder, setBinder, splitCard: (id: string) => setSplitting(id), connectClaudeCode: () => setClaudeCode(true), askQuestion: (question: string) => { setAsked({ question, at: Date.now() }); go({ screen: 'brain' }) } }), [binder, setBinder])
 
   // A new note in the binder you're looking at, opened.
   const mayChange = useMayChangeBinder()
@@ -305,7 +305,7 @@ export default function App() {
                 {route.screen === 'terminal' && <AgentTerminal key={route.id} id={route.id} sid={route.sid} />}
                 {route.screen === 'settings' && <Settings />}
                 {route.screen === 'account' && <Account />}
-                {route.screen === 'ask' && <Ask asked={asked} />}
+                {route.screen === 'brain' && <BrainScreen asked={asked} />}
               </Suspense>
             </ErrorBoundary>
           </div>

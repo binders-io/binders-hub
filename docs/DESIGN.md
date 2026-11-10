@@ -531,12 +531,26 @@ whether to do something on the board.
     its pictures, in the folder that binder keeps conversations in when it has one. Each says where the other is; the
     original is left as it is when it's locked against the person sending it. A folder of captures lists the newest
     first.
-- **Ask follows a conversation** (`hub/src/brain/brain.ts`). A question is answered knowing what came before it: the page
+- **The Brain follows a conversation** (`hub/src/brain/brain.ts`). A question is answered knowing what came before it: the page
   sends the last six questions and answers, each cut short, as context and never as instructions. The hub keeps a
-  person's conversation on Ask for them, in the binder's store under their own name and given to no one else: the last 20
+  person's conversation on the Brain for them, in the binder's store under their own name and given to no one else: the last 20
   questions with their answers, until 30 days after the last (`GET` and `DELETE /api/brain/conversation`). It's there on
-  opening Ask again or on another device, until they start a new one. An offer to do something isn't kept, as it can't be
+  opening the Brain again or on another device, until they start a new one. An offer to do something isn't kept, as it can't be
   taken up later, and a turn that drew on a binder the person has since left isn't shown.
+- **The Brain shows, and draws** (`shared/view.ts`, `hub/src/brain/view.ts`, `web/src/brain/view`). An answer on the
+  Brain's page can carry a view beside its words: groups, text, a callout, a stat, facts, a list, steps, a table, a chart,
+  a Mermaid drawing, a Thing (a card, change set, environment or agent, shown live), and questions to ask next. It's
+  drawn with [json-render](https://github.com/vercel-labs/json-render): the model writes the view as JSON, in a block at
+  the end of its answer, and only the parts on the hub's one list are drawn. The hub takes the block out of the words,
+  fills each Thing in from its own state (a model names a card by its mark and an agent by its name, and can't make one
+  up), and keeps only what the list allows, before any browser sees it; the page checks it again. A view has no script,
+  no markup and nothing a press sets off beyond asking another question, so anything that changes something still goes
+  through the hub's own offer, in its own words. The hub tells the model never to add made-up or sample data. A view
+  that doesn't read is left out and the words stand alone, so a small model loses nothing. Under an answer, the sources
+  it cites are listed, and what was found and not used folds away.
+- **The Brain's page** has the conversation in the middle, with the box at the bottom, and a rail beside it, "Now": what
+  needs you (the same list as Home's) and each agent with what it's doing. On a narrow screen the two are a switch. An
+  old address ending in `/ask` still opens it.
 - **A note's Chat** answers from the hub's own model when no agent is listening, or when it's picked, with the note in
   front of it in full and the rest of the binder to draw on (`POST /api/notes/:id/ask`). It reads and can't change the
   note, and says that an agent can.
@@ -546,7 +560,7 @@ whether to do something on the board.
   with no extra round trip while someone waits to hear it. What the model can have done is one plain line (`DO stop c1`),
   which only proposes: everything a model reads was written by anyone in a binder, so the hub works out what the line would
   mean, says so in its own words, and does it only on the person's answer, read by the hub from what they said, or a button
-  on Ask. What merges, deploys or lets an agent use a tool takes that word itself ("approve"), and anything else they say
+  on the Brain. What merges, deploys or lets an agent use a tool takes that word itself ("approve"), and anything else they say
   drops it. It's checked again when it's carried out. A release is a change set, so "put release 18 into motion" approves
   #18. Stopping a card puts it in Proposed: its runner ends the run, and Ready would have an agent take it straight back.
 - **Settings** (`hub/src/brain/settings.ts`). The hub's, an admin's, with the keys sealed; environment variables fix

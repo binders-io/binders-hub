@@ -2032,16 +2032,74 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
 .jira-features em { display: block; font-style: normal; font-size: 12.5px; }
 .jira-import-take { display: flex; gap: 8px; align-items: center; }
 
-/* Ask: a question answered from the binders, the notes and cards it rests on numbered beside it */
-/* Its own scrolling, as every screen has: the screen around it doesn't. The question stays in reach as the answer runs on. */
-.ask { height: 100%; overflow-y: auto; padding: 24px clamp(16px, 3vw, 40px) 0; }
-.ask-column { display: flex; flex-direction: column; gap: 20px; width: min(720px, 100%); margin-inline: auto; }
-.ask.empty { display: grid; align-content: center; padding-block: 0 16vh; }
+/* The Brain: a question answered from the binders, the notes and cards it rests on numbered beside it, and a rail beside it with what needs you and what the agents are doing */
+/* Two columns that fill the height the screen gives: the conversation scrolls, its box stays under it, and the rail has its own scroll. */
+.ask-read { margin-top: 2px; }
+.ask-read > summary { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 2px; cursor: pointer; color: var(--muted); font: 600 12.5px/1 var(--body); list-style: none; border-radius: 6px; }
+.ask-read > summary::-webkit-details-marker { display: none; }
+.ask-read > summary::before { content: '›'; display: inline-block; font-size: 15px; line-height: 1; transition: transform 0.15s ease; }
+.ask-read[open] > summary::before { transform: rotate(90deg); }
+.ask-read > summary:hover { color: var(--text); }
+.ask-read > summary:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.ask-read > summary .num { padding: 2px 6px; border-radius: 999px; background: var(--fill-2); font-size: 11px; }
+.ask-read[open] > .ask-sources { margin-top: 8px; }
+@media (prefers-reduced-motion: reduce) { .ask-read > summary::before { transition: none; } }
+.brain { height: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 340px; grid-template-rows: minmax(0, 1fr); }
+.brain [hidden] { display: none !important; }
+.brain-talk { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.brain-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 24px clamp(16px, 3vw, 40px) 8px; }
+.brain-scroll.empty { display: grid; align-content: center; padding-bottom: 6vh; }
+.brain-column { width: min(760px, 100%); margin-inline: auto; }
+.brain-log { display: flex; flex-direction: column; gap: 30px; }
+.brain-log:empty { display: none; }
+.brain-rail { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 22px 16px 32px; border-left: 1px solid var(--line); background: var(--bg-raised); }
+.brain-rail-sections { display: grid; gap: 28px; }
+.brain-rail-section { display: grid; gap: 10px; align-content: start; }
+.brain-rail-section h2 { display: flex; align-items: center; gap: 8px; margin: 0; font: 700 11px/1.2 var(--body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.brain-count.alert { background: var(--amber-wash); color: var(--amber); }
+.brain-rail-none { margin: 0; font-size: 13px; }
+ul.waiting.compact { gap: 5px; }
+ul.waiting.compact button { padding: 8px 10px; }
+ul.waiting.compact em { -webkit-line-clamp: 1; }
+.brain-agents { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; }
+.brain-agents a { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--fill-1); color: var(--text); text-decoration: none; }
+.brain-agents a:hover { border-color: var(--line-strong); }
+.brain-agent-text { display: grid; flex: 1; gap: 2px; min-width: 0; }
+.brain-agent-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.brain-agent-head b { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brain-online { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--faint); }
+.brain-online i { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+.brain-online.on { color: var(--green); }
+.brain-online.on i { background: var(--green); }
+.brain-agent-doing { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Narrow: one column with a switch at the top, and one of the two showing. */
+.brain.narrow { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+.brain.narrow .brain-rail { border-left: 0; padding-inline: clamp(16px, 3vw, 40px); background: var(--bg); }
+.brain-switch { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px; margin: 10px clamp(16px, 3vw, 40px) 0; padding: 3px; border-radius: 11px; background: var(--fill-1); border: 1px solid var(--line); }
+.brain-switch button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; border-radius: 8px; font: 600 13.5px/1 var(--body); color: var(--muted); }
+.brain-switch button:hover { color: var(--text); }
+.brain-switch button[aria-pressed="true"] { background: var(--surface-3); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
+.brain-starters { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 14px; }
+.brain-starter { min-height: 36px; padding: 6px 14px; border-radius: 18px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text-2); font: 600 13.5px/1.25 var(--body); text-align: center; }
+.brain-starter:hover { background: var(--hover); color: var(--text); }
+.brain-compose { flex: none; padding: 8px clamp(16px, 3vw, 40px) 20px; }
+.brain-compose .brain-column { display: grid; gap: 10px; }
+.brain-compose .ask-box { align-items: flex-end; }
+.brain-compose .ask-box:focus-within { box-shadow: 0 0 0 1px var(--text); }
+.ask-box textarea { flex: 1; min-width: 0; max-height: 40vh; padding: 8px 0; border: 0; background: none; color: var(--text); font: 15px/22px var(--body); outline: none; resize: none; overflow-y: auto; }
+.ask-box textarea::placeholder { color: var(--faint); }
+@media (max-width: 900px), (hover: none) {
+  .brain-switch button, .brain-starter { min-height: 44px; }
+  .brain-compose .ask-send { width: 44px; height: 44px; }
+  .brain-compose .ask-scope, .brain-compose .ask-new { min-height: 44px; }
+  .ask-box textarea { font-size: 16px; }
+  ul.waiting.compact button { min-height: 44px; }
+}
+@media (max-width: 600px) { .brain-compose { padding-bottom: 8px; } .brain-starter { flex: 1 1 100%; } }
 .ask-intro { display: grid; gap: 8px; text-align: center; }
 .ask-intro h2 { margin: 0; font: 800 clamp(24px, 3.2vw, 32px)/1.15 var(--display); letter-spacing: -0.015em; text-wrap: balance; }
 .ask-intro p { margin: 0 auto; max-width: 46ch; color: var(--muted); font-size: 14.5px; line-height: 1.5; text-wrap: balance; }
-.ask-form { position: sticky; bottom: 0; z-index: 2; display: grid; gap: 10px; padding-block: 12px 28px; background: var(--bg); }
-.ask.empty .ask-form { position: static; padding-block: 8px 0; justify-items: center; }
+.ask-form { display: grid; gap: 10px; background: var(--bg); }
 .ask-box { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 5px 5px 16px; border-radius: 14px; border: 1px solid var(--line-strong); background: var(--surface); transition: border-color 0.12s; }
 .ask-box:focus-within { border-color: var(--text); }
 .ask-box input { flex: 1; min-width: 0; height: 38px; padding: 0; border: 0; background: none; color: var(--text); font-size: 15px; outline: none; }
@@ -2051,12 +2109,9 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
 .ask-send:disabled { opacity: 0.35; cursor: default; }
 .ask-send:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .ask-scope { justify-self: start; font-size: 13px; color: var(--muted); }
-.ask.empty .ask-scope { justify-self: center; }
 .ask-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px; }
-.ask.empty .ask-foot { justify-content: center; }
 .ask-new { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
 .ask-follows { margin: 0; font-size: 12.5px; line-height: 1.4; }
-.ask.empty .ask-follows { text-align: center; }
 .ask-waiting { display: grid; gap: 10px; padding-block: 4px; }
 .ask-waiting p { margin: 0 0 4px; color: var(--muted); font-size: 14px; }
 .ask-waiting i { display: block; height: 12px; border-radius: 6px; background: var(--fill-2); animation: pulse 1.6s ease-in-out infinite; }
@@ -2065,9 +2120,9 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
 .ask-waiting i:nth-of-type(3) { width: 54%; animation-delay: 0.3s; }
 @media (prefers-reduced-motion: reduce) { .ask-waiting i { animation: none; } }
 .ask-result { display: flex; flex-direction: column; gap: 16px; }
-.ask-result + .ask-result { padding-top: 20px; border-top: 1px solid var(--line); }
 .ask-keep { display: flex; flex-wrap: wrap; gap: 8px; }
-.ask-question { margin: 0; font: 800 clamp(20px, 2.4vw, 25px)/1.25 var(--display); letter-spacing: -0.01em; text-wrap: balance; overflow-wrap: anywhere; }
+/* The person's own words: a short block on the right, with the answer under it at the full width. */
+.ask-question { align-self: flex-end; max-width: min(85%, 560px); margin: 0; padding: 10px 14px; border-radius: var(--r-lg) var(--r-lg) 4px var(--r-lg); background: var(--fill-2); border: 1px solid var(--line); font: 600 15px/1.45 var(--body); color: var(--text); text-wrap: pretty; overflow-wrap: anywhere; }
 .ask-answer { font-size: 15.5px; line-height: 1.65; color: var(--text-2); }
 .ask-cite { display: inline-grid; place-items: center; min-width: 18px; height: 18px; margin: 0 1px 0 3px; padding: 0 5px; border-radius: 6px; background: var(--fill-2); border: 1px solid var(--line-strong); font: 700 11px/1 var(--body); font-variant-numeric: tabular-nums; color: var(--text); vertical-align: 1.5px; transition: background 0.12s; }
 .ask-cite:hover, .ask-cite:focus-visible { background: var(--hover); }

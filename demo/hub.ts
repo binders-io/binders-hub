@@ -12,11 +12,15 @@ import { MemoryLog } from '../hub/src/log.ts'
 import { Sealer } from '../hub/src/secrets.ts'
 import { buildServer } from '../hub/src/server.ts'
 import { Spaces, type Space, type SpaceInfo } from '../hub/src/spaces.ts'
+import { SpaceBrain } from '../hub/src/brain/brain.ts'
+import { BrainSettingsStore } from '../hub/src/brain/settings.ts'
+import { demoBrain } from './brain.ts'
 import { demoBinder, demoChanges, demoAgents, demoPeople } from './data.ts'
 
 // A hub to look at, and nothing else: everything it holds is invented (data.ts) and lives in this process. It reads no
 // settings from the environment, so it can't open a real hub's Redis, notes or keys, it listens on this machine only,
-// and its GitHub is a port nothing answers on, so no change it records can reach a repo.
+// and its GitHub is a port nothing answers on, so no change it records can reach a repo. Its Brain is a few answers
+// written down (brain.ts), not a model: nothing it's asked leaves this process.
 
 const nowhere = 'http://127.0.0.1:9'
 
@@ -33,6 +37,9 @@ export async function startDemoHub(port: number, webDir = resolve(import.meta.di
   const kv = new MemoryKV()
   const endpoints = { webUrl: nowhere, apiUrl: nowhere }
   const url = `http://127.0.0.1:${port}`
+  // No model is read from the environment: the Brain here is the stand-in, and nothing else.
+  const brains = await new BrainSettingsStore(new MemoryKV(), sealer, {}).load()
+  brains.useForTests(demoBrain)
 
   const start = async (id: string, info: SpaceInfo): Promise<Space> => {
     const github = new NoGitHub(new MemoryKV(), sealer, endpoints, {}, id)
@@ -42,13 +49,15 @@ export async function startDemoHub(port: number, webDir = resolve(import.meta.di
     // Who may change a locked note, as the hub proper says it: the Binder's owners and admins, and the hub's while it has no owner.
     hub.lockManager = (login) => spaces.mayManage(id, login, spaces.hubAdmin(login))
     const actions = new Actions(hub, github)
-    return { id, hub, actions, github, webhooks: undefined as never, filesDir: join(files, id) }
+    const brain = new SpaceBrain({ id, hub, kv: new MemoryKV(), settings: brains, embeds: false })
+    brain.start()
+    return { id, hub, actions, github, webhooks: undefined as never, filesDir: join(files, id), brain }
   }
 
   const spaces = new Spaces(kv, start)
   await spaces.load({ id: demoBinder.space, name: demoBinder.name, members: demoPeople.map((login, i) => ({ login, role: i ? 'member' : 'owner' })) })
   const auth = new Auth(kv, sealer, { github: () => undefined, allowed: () => ({ users: demoPeople, orgs: [] }), devLogin: () => true, oauth: () => undefined, endpoints })
-  const app = await buildServer(spaces, { auth }, { publicUrl: url, webDir })
+  const app = await buildServer(spaces, { auth, brain: brains }, { publicUrl: url, webDir })
   await app.listen({ port, host: '127.0.0.1' })
 
   // The agents show as listening, as they would with their runners on, for as long as this runs.

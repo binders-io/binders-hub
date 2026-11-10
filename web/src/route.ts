@@ -12,8 +12,8 @@ export type Route =
   | { screen: 'terminal'; id: string; sid?: string }
   /** A section of Settings, each with an address of its own; none is the one this browser last had open. */
   | { screen: 'settings'; id?: string }
-  /** A question answered from the binders' notes and cards. */
-  | { screen: 'ask' }
+  /** The Brain: questions answered from the binders' notes and cards, and what needs you and the agents beside them. */
+  | { screen: 'brain' }
   /** You: who you're signed in as, your GitHub and your apps, the same in every binder. */
   | { screen: 'account' }
 
@@ -23,7 +23,9 @@ export function parse(hash: string): Route {
   if (screen === 'notes') return { screen, id: id ?? '' }
   if (screen === 'changes') return { screen, id: id ?? '' }
   if (screen === 'settings') return { screen, id: id ?? '' }
-  if (screen === 'agents' || screen === 'account' || screen === 'ask') return { screen }
+  if (screen === 'agents' || screen === 'account') return { screen }
+  // The page was called Ask before it was the Brain: an address that ends in /ask still opens it.
+  if (screen === 'brain' || screen === 'ask') return { screen: 'brain' }
   if (screen === 'delivery') return { screen }
   if (screen === 'work' && id) return { screen, id }
   if (screen === 'flow') return { screen }

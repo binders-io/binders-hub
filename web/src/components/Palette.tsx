@@ -51,7 +51,7 @@ const doing: Record<WaitKind, { verb: string; icon: typeof Search }> = {
 
 /**
  * ⌘K: every screen, note, change set, pull request and card, the actions that matter right now, and the passages that match by their
- * words and what they mean. Its Ask row takes what you typed to Ask for a cited answer.
+ * words and what they mean. Its "Ask the Brain" row takes what you typed to the Brain for a cited answer.
  */
 export function Palette({ onClose }: { onClose: () => void }) {
   const store = useStore()
@@ -77,7 +77,7 @@ export function Palette({ onClose }: { onClose: () => void }) {
     if (connectClaudeCode) list.push({ id: 'claude-code', label: 'Add the hub to Claude Code', group: 'Actions', icon: SquareTerminal, hint: 'MCP', run: connectClaudeCode })
     list.push(
       { id: 'home', label: 'Home', group: 'Go to', icon: LayoutDashboard, hint: '1', run: () => go({ screen: 'home' }) },
-      { id: 'ask-screen', label: 'Ask', group: 'Go to', icon: Brain, hint: '2', run: () => go({ screen: 'ask' }) },
+      { id: 'brain-screen', label: 'Brain', group: 'Go to', icon: Brain, hint: '2', run: () => go({ screen: 'brain' }) },
       { id: 'notes', label: 'Notes', group: 'Go to', icon: FileText, hint: '3', run: () => go({ screen: 'notes', id: '' }) },
       { id: 'flow', label: 'Board', group: 'Go to', icon: Workflow, hint: '4', run: () => go({ screen: 'flow' }) },
       { id: 'changes', label: 'Change sets', group: 'Go to', icon: GitPullRequestArrow, hint: '5', run: () => go({ screen: 'changes', id: '' }) },
@@ -122,7 +122,7 @@ export function Palette({ onClose }: { onClose: () => void }) {
     const matching = commands.filter((c) => words.every((w) => `${c.label} ${c.hint ?? ''} ${c.group} ${c.detail ?? ''}`.toLowerCase().includes(w)))
     if (!asked) return matching.filter((c) => !numbered.includes(c.group)).slice(0, 12)
     const titles = matching.slice(0, 8)
-    const askRow: Command[] = askQuestion ? [{ id: 'ask', label: `Ask: ${asked}`, group: 'Ask', icon: Brain, run: () => askQuestion(asked) }] : []
+    const askRow: Command[] = askQuestion ? [{ id: 'ask', label: `Ask the Brain: ${asked}`, group: 'Brain', icon: Brain, run: () => askQuestion(asked) }] : []
     // A passage of something already listed by its title adds nothing but noise.
     const listed = new Set(titles.map((c) => c.id))
     const seen = new Set<string>()

@@ -8,7 +8,7 @@ import { Palette } from '../src/components/Palette'
 import { UIContext } from '../src/ui'
 
 // How a person finds their way: the sidebar and the phone's tab bar in the order the work runs, the number keys that
-// follow it, Ask having a place, the binder's name on a phone, Add to Claude Code where it's used, and ⌘K's lists.
+// follow it, the Brain having a place, the binder's name on a phone, Add to Claude Code where it's used, and ⌘K's lists.
 
 const asPhone = () => vi.stubGlobal('matchMedia', (query: string) => ({ matches: query === phoneQuery, media: query, addEventListener() {}, removeEventListener() {} }))
 const spaces = { ...me, space: 'acme', spaces: [{ id: 'acme', name: 'Acme' }] }
@@ -31,11 +31,11 @@ afterEach(() => {
 })
 
 describe('the sidebar', () => {
-  it('follows the work: the board is called Board, and Ask has its place', async () => {
+  it('follows the work: the board is called Board, and the Brain has its place', async () => {
     await open('#/home')
-    expect(sidebar().getAllByRole('link').map(nameOf)).toEqual(['Home', 'Ask', 'Notes', 'Board', 'Change sets', 'Delivery', 'Agents', 'Settings'])
+    expect(sidebar().getAllByRole('link').map(nameOf)).toEqual(['Home', 'Brain', 'Notes', 'Board', 'Change sets', 'Delivery', 'Agents', 'Settings'])
     expect(sidebar().getByRole('link', { name: /^Board/ }).getAttribute('href')).toBe('#/flow')
-    expect(sidebar().getByRole('link', { name: /^Ask/ }).getAttribute('href')).toBe('#/ask')
+    expect(sidebar().getByRole('link', { name: /^Brain/ }).getAttribute('href')).toBe('#/brain')
     expect(sidebar().queryByRole('link', { name: /^Work/ })).toBeNull()
   })
 
@@ -46,7 +46,7 @@ describe('the sidebar', () => {
       fireEvent.keyDown(window, { key })
       hashes.push(window.location.hash)
     }
-    expect(hashes).toEqual(['#/home', '#/ask', '#/notes', '#/flow', '#/changes', '#/delivery', '#/agents', '#/settings'])
+    expect(hashes).toEqual(['#/home', '#/brain', '#/notes', '#/flow', '#/changes', '#/delivery', '#/agents', '#/settings'])
   })
 
   it('shows each screen’s key beside its name, and marks the one you’re on', async () => {
@@ -54,10 +54,10 @@ describe('the sidebar', () => {
     const board = sidebar().getByRole('link', { name: /^Board/ })
     expect(board.getAttribute('aria-current')).toBe('page')
     expect(board.querySelector('kbd')?.textContent).toBe('4')
-    expect(sidebar().getByRole('link', { name: /^Ask/ }).getAttribute('aria-current')).toBeNull()
+    expect(sidebar().getByRole('link', { name: /^Brain/ }).getAttribute('aria-current')).toBeNull()
     cleanup()
-    await open('#/ask')
-    expect(sidebar().getByRole('link', { name: /^Ask/ }).getAttribute('aria-current')).toBe('page')
+    await open('#/brain')
+    expect(sidebar().getByRole('link', { name: /^Brain/ }).getAttribute('aria-current')).toBe('page')
   })
 })
 
@@ -81,10 +81,10 @@ describe('on a phone', () => {
     const bar = within(screen.getByRole('navigation', { name: 'Main screens' }))
     expect(bar.getAllByRole('link').map(nameOf)).toEqual(['Home', 'Notes', 'Board', 'Changes', 'Agents'])
     expect(bar.getByRole('link', { name: /^Board/ }).getAttribute('aria-current')).toBe('page')
-    expect(bar.queryByRole('link', { name: /^Ask/ })).toBeNull()
+    expect(bar.queryByRole('link', { name: /^Brain/ })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Menu' }))
     const menu = within(await screen.findByRole('dialog', { name: 'Menu' }))
-    expect(menu.getByRole('link', { name: /^Ask/ }).getAttribute('href')).toBe('#/ask')
+    expect(menu.getByRole('link', { name: /^Brain/ }).getAttribute('href')).toBe('#/brain')
   })
 
   it('says which binder you’re in beside the screen’s name, and opens the menu when it’s pressed', async () => {
@@ -134,10 +134,10 @@ describe('⌘K', () => {
   const ui = (binder: string) => ({ openItem: () => {}, openPalette: () => {}, binder, setBinder: () => {} })
   const sent = () => vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/changes').flatMap(([, init]) => (JSON.parse(String(init?.body)) as { changes: { change: { type: string; note?: { binderId: string; id: string } } }[] }).changes.map((c) => c.change))
 
-  it('goes to the screens in the sidebar’s order, Board and Ask among them', async () => {
+  it('goes to the screens in the sidebar’s order, Board and the Brain among them', async () => {
     await mount(<UIContext.Provider value={ui('b1')}><Palette onClose={() => {}} /></UIContext.Provider>)
     const go = within(screen.getByRole('group', { name: 'Go to' }))
-    expect(go.getAllByRole('option').map((o) => o.querySelector('span')!.textContent)).toEqual(['Home', 'Ask', 'Notes', 'Board', 'Change sets', 'Delivery', 'Agents', 'Settings', 'Your account'])
+    expect(go.getAllByRole('option').map((o) => o.querySelector('span')!.textContent)).toEqual(['Home', 'Brain', 'Notes', 'Board', 'Change sets', 'Delivery', 'Agents', 'Settings', 'Your account'])
     fireEvent.click(go.getByRole('option', { name: /^Board/ }))
     expect(window.location.hash).toBe('#/flow')
   })

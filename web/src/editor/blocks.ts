@@ -102,7 +102,7 @@ function palette() {
   return { bg: pick('--surface', '#ffffff'), text: pick('--text', '#0a0a0a'), muted: pick('--muted', '#525252'), fill: pick('--surface-3', '#f0f0f0') }
 }
 
-async function draw(source: string) {
+export async function draw(source: string) {
   const colors = palette()
   const key = drawingKey(colors, source)
   const known = cache.get(key)

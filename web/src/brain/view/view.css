@@ -1,0 +1,152 @@
+/* A view: what the Brain shows beside its words. Quiet and dense, since it sits inside a conversation. Colours, radii and
+   type come from the app's own tokens (index.css), so both themes work. The chart colours below are the exception: they
+   are a set chosen to stay apart from each other, and to hold their contrast on the page, in each theme. */
+
+.brain-view {
+  /* Dark first, as the app is; the two light blocks match, as index.css does. */
+  --view-s1: #3987e5; --view-s2: #d95926; --view-s3: #199e70; --view-s4: #c98500;
+  --view-s5: #d55181; --view-s6: #008300; --view-s7: #9085e9; --view-s8: #e66767;
+  --view-other: #888888;
+  --view-ink: var(--text-2);
+  display: block; min-width: 0; max-width: 100%; margin-block: 4px; color: var(--view-ink); font-size: 14px; line-height: 1.55;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .brain-view {
+    --view-s1: #2a78d6; --view-s2: #eb6834; --view-s3: #1baf7a; --view-s4: #eda100;
+    --view-s5: #e87ba4; --view-s6: #008300; --view-s7: #6250d6; --view-s8: #e34948;
+    --view-other: #8a93a6;
+  }
+}
+:root[data-theme="light"] .brain-view {
+  --view-s1: #2a78d6; --view-s2: #eb6834; --view-s3: #1baf7a; --view-s4: #eda100;
+  --view-s5: #e87ba4; --view-s6: #008300; --view-s7: #6250d6; --view-s8: #e34948;
+  --view-other: #8a93a6;
+}
+
+/* Said to a screen reader only: the tone of a callout, a table of a chart's numbers. */
+.brain-view .view-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+
+/* Layout */
+.view-stack { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.view-row { display: flex; flex-wrap: wrap; gap: 10px; min-width: 0; }
+.view-row > * { flex: 1 1 150px; min-width: 0; }
+.view-section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.view-section-title { margin: 4px 0 0; font: 700 11px/1.3 var(--body); letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); overflow-wrap: anywhere; }
+@media (max-width: 900px) {
+  .view-row { flex-direction: column; flex-wrap: nowrap; }
+  .view-row > * { flex: none; }
+}
+
+/* Words */
+.view-text { margin: 0; white-space: pre-line; overflow-wrap: anywhere; color: var(--view-ink); }
+.brain-view code { padding: 1px 5px; border-radius: 5px; background: var(--fill-2); font: 12.5px/1.4 var(--mono); color: var(--text); overflow-wrap: anywhere; }
+.brain-view strong { font-weight: 800; color: var(--text); }
+
+.view-list { display: grid; gap: 4px; margin: 0; padding-left: 22px; overflow-wrap: anywhere; }
+.view-list li::marker { color: var(--faint); }
+
+.view-facts { display: grid; margin: 0; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); overflow: hidden; }
+.view-facts > div { display: grid; grid-template-columns: minmax(90px, 32%) 1fr; gap: 4px 14px; padding: 9px 14px; border-top: 1px solid var(--line); }
+.view-facts > div:first-child { border-top: 0; }
+.view-facts dt { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.view-facts dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+@media (max-width: 600px) { .view-facts > div { grid-template-columns: 1fr; gap: 1px; } }
+
+/* Tone: an icon beside the words as well as a colour, never the colour alone. */
+.view-callout { --tone: var(--muted); --wash: var(--fill-1); display: flex; gap: 10px; align-items: flex-start; padding: 10px 14px; border: 1px solid color-mix(in srgb, var(--tone) 40%, transparent); border-radius: var(--r); background: var(--wash); }
+.view-callout.good { --tone: var(--green); --wash: var(--green-wash); }
+.view-callout.warn { --tone: var(--amber); --wash: var(--amber-wash); }
+.view-callout.bad { --tone: var(--red); --wash: var(--red-wash); }
+.view-callout .view-tone-icon { flex: none; margin-top: 3px; color: var(--tone); }
+.view-callout-words { display: grid; gap: 2px; min-width: 0; }
+.view-callout-title { color: var(--text); font-size: 14px; overflow-wrap: anywhere; }
+.view-callout p { margin: 0; white-space: pre-line; overflow-wrap: anywhere; color: var(--view-ink); }
+
+.view-stat { --tone: var(--muted); display: flex; flex-direction: column; gap: 2px; padding: 11px 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); }
+.view-stat.good { --tone: var(--green); } .view-stat.warn { --tone: var(--amber); } .view-stat.bad { --tone: var(--red); }
+.view-stat-label { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
+.view-stat .view-tone-icon { color: var(--tone); }
+.view-stat-value { font: 800 26px/1.15 var(--display); letter-spacing: -0.01em; color: var(--text); overflow-wrap: anywhere; }
+.view-stat.good .view-stat-value, .view-stat.warn .view-stat-value, .view-stat.bad .view-stat-value { color: var(--tone); }
+.view-stat-detail { color: var(--faint); font-size: 12.5px; overflow-wrap: anywhere; }
+
+/* Steps: done, now and next each have their own picture and their own word. */
+.view-steps { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.view-steps li { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; }
+.view-step-icon { flex: none; margin-top: 3px; color: var(--faint); }
+.view-steps li.done .view-step-icon { color: var(--green); }
+.view-steps li.now .view-step-icon { color: var(--blue); }
+.view-step-words { display: grid; gap: 1px; min-width: 0; }
+.view-step-title { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+.view-steps li.next .view-step-title { color: var(--muted); font-weight: 500; }
+.view-step-state { margin-left: 8px; padding: 0 7px; border-radius: 10px; background: var(--fill-2); color: var(--muted); font: 700 11px/18px var(--body); letter-spacing: 0.02em; vertical-align: 1px; }
+.view-step-state:empty { display: none; }
+.view-step-detail { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+
+/* Table: scrolls inside its own box, so the page never does. */
+.view-table-wrap { max-width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); }
+.view-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.view-table th, .view-table td { padding: 8px 12px; text-align: left; vertical-align: top; border-top: 1px solid var(--line); min-width: 80px; max-width: 320px; overflow-wrap: anywhere; }
+.view-table thead th { border-top: 0; background: var(--fill-1); color: var(--muted); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.view-table td { color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* Chart */
+.view-chart { margin: 0; display: grid; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); min-width: 0; }
+.view-chart figcaption { font: 700 13px/1.3 var(--body); color: var(--text); overflow-wrap: anywhere; }
+.view-chart-plot { min-width: 0; }
+.view-svg { display: block; max-width: 100%; overflow: visible; }
+.view-svg text { font: 500 11.5px var(--body); fill: var(--muted); }
+.view-svg text.value { fill: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+.view-svg .grid { stroke: var(--line); stroke-width: 1; }
+.view-svg .zero { stroke: var(--line-strong); stroke-width: 1; }
+.view-svg .line { fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.view-svg .view-dot { fill: currentColor; stroke: var(--surface); stroke-width: 2; }
+.view-svg .slice { stroke: var(--surface); stroke-width: 2; stroke-linejoin: round; }
+.view-svg .ring { fill: none; }
+.view-svg .centre text { fill: var(--muted); }
+.view-svg .centre text.value { fill: var(--text); }
+.view-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; padding: 0; list-style: none; font-size: 12.5px; color: var(--muted); }
+.view-legend li { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.view-legend i { flex: none; width: 10px; height: 10px; border-radius: 3px; }
+.view-legend-name { color: var(--text-2); overflow-wrap: anywhere; }
+.view-donut { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 22px; }
+.view-legend.share { flex: 1 1 200px; flex-direction: column; flex-wrap: nowrap; gap: 5px; min-width: 0; }
+.view-legend.share li { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto 38px; gap: 8px; align-items: baseline; }
+.view-legend.share i { align-self: center; }
+.view-legend-value { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.view-legend-share { color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
+.view-chart-none { margin: 0; color: var(--muted); font-size: 13px; }
+
+/* Diagram */
+.view-diagram { margin: 0; display: grid; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); min-width: 0; }
+.view-diagram figcaption { font: 700 13px/1.3 var(--body); color: var(--text); overflow-wrap: anywhere; }
+.view-diagram-body { position: relative; min-width: 0; }
+.view-diagram-box { min-height: 160px; min-width: 0; max-width: 100%; overflow-x: auto; }
+.view-diagram-box.drawn { min-height: 0; }
+.view-diagram-box svg { display: block; margin-inline: auto; max-width: 100%; height: auto; }
+.view-diagram-wait { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; color: var(--faint); font-size: 13px; animation: view-wait 1.6s ease-in-out infinite; }
+@keyframes view-wait { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+.view-diagram-why { margin: 0; color: var(--muted); font-size: 13px; }
+.view-diagram pre { margin: 0; max-height: 260px; overflow: auto; padding: 10px 12px; border-radius: var(--r-sm); background: var(--fill-2); color: var(--text); font: 12.5px/1.5 var(--mono); white-space: pre; }
+
+/* A thing from the board: a row that opens it. */
+.view-thing { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); color: var(--text); text-decoration: none; transition: background 0.12s, border-color 0.12s; }
+.view-thing:hover { background: var(--hover); border-color: var(--line-strong); }
+.view-thing > svg { flex: none; color: var(--muted); }
+.view-thing-words { display: grid; gap: 1px; flex: 1; min-width: 0; }
+.view-thing-title { font-weight: 700; font-size: 14px; overflow-wrap: anywhere; }
+.view-thing-detail { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+
+/* What to ask next */
+.view-suggest { display: flex; flex-wrap: wrap; gap: 8px; }
+.view-chip { min-height: 34px; padding: 6px 14px; border: 1px solid var(--line-strong); border-radius: 20px; background: var(--surface); color: var(--text); font-size: 13.5px; line-height: 1.35; text-align: left; overflow-wrap: anywhere; transition: background 0.12s, border-color 0.12s; }
+.view-chip:hover { background: var(--hover); border-color: var(--text); }
+@media (max-width: 900px) { .view-chip { min-height: 40px; } }
+
+/* Everything that can be pressed or scrolled by keyboard shows where it is. */
+.view-chip:focus-visible, .view-thing:focus-visible, .view-table-wrap:focus-visible, .view-diagram-box:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .view-diagram-wait { animation: none; }
+  .view-chip, .view-thing { transition: none; }
+}

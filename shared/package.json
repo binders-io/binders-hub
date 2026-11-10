@@ -4,6 +4,7 @@
   "license": "AGPL-3.0-only",
   "type": "module",
   "dependencies": {
-    "@automerge/automerge": "^3.5.0"
+    "@automerge/automerge": "^3.5.0",
+    "zod": "^4.6.7"
   }
 }

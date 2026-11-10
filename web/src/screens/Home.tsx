@@ -1,19 +1,18 @@
-import { useMemo, useRef, useState, type FormEvent, type Ref } from 'react'
+import { useMemo, useRef, useState, type FormEvent } from 'react'
 import { motion } from 'motion/react'
-import { ArrowUp, ArrowUpRight, Brain, ChevronRight, CircleAlert, CircleCheck, FileText, GitPullRequest, Hand, Inbox, KeyRound, MessageCircleQuestion, Play, Rocket, SearchCheck, Sparkles, type LucideIcon } from 'lucide-react'
+import { ArrowUp, ArrowUpRight, Brain, CircleCheck, Hand, Inbox, Play, type LucideIcon } from 'lucide-react'
 import type { Agent, Card } from '../data/model'
 import { isListening, isOnline, nameFor, sameList, useHub, usePresence } from '../data/store'
 import { heard } from '../data/sync'
-import { openRow, useWaiting } from '../data/notify'
+import { useWaiting } from '../data/notify'
 import { sessionLines } from '../data/session'
 import { AgentAvatar, Progress, Who, ago, usePhone } from '../components/bits'
-import { BinderTag } from '../components/BinderTag'
-import { NotifySwitch } from '../components/NotifySwitch'
+import { WaitingList } from '../components/Waiting'
+import { whatWaits } from '../components/waitingWords'
 import { Terminal } from '../components/Terminal'
 import { AgentActivity } from '../components/AgentActivity'
 import { toolInfo } from '../../../shared/agents.ts'
 import { asksOf } from '../../../shared/work.ts'
-import type { WaitKind, Waiting } from '../../../shared/waiting.ts'
 import { useUI } from '../ui'
 import { runnerState } from '../components/runnerState'
 import { go, href } from '../route'
@@ -107,7 +106,7 @@ export function Home() {
   )
 }
 
-/** One line to ask the binders something: the question goes to Ask, which answers it. */
+/** One line to ask the binders something: the question goes to the Brain, which answers it. */
 function AskLine({ ask }: { ask: (question: string) => void }) {
   const [question, setQuestion] = useState('')
   const submit = (event: FormEvent) => {
@@ -197,96 +196,5 @@ function AgentTile({ agent, cards, onOpen }: { agent: Agent; cards: Card[]; onOp
         {online && <span className={runner.old ? 'runner-old' : 'faint'}>{runner.text}{runner.old && <> <a href={href({ screen: 'agents' })}>How</a></>}</span>}
       </footer>
     </motion.article>
-  )
-}
-
-const kindIcon: Record<WaitKind, LucideIcon> = { question: MessageCircleQuestion, stopped: CircleAlert, permission: KeyRound, changeSet: GitPullRequest, proposals: Sparkles, noteChange: FileText, findings: SearchCheck, promotion: Rocket }
-
-/**
- * What the rows are, in a line for the count: "2 questions · 1 to approve". The count is of rows, so each part counts
- * rows too and they add up to it. A row that stands for several things (a note's proposed cards, a card's findings)
- * counts as one and says how many it holds.
- */
-function whatWaits(rows: Waiting[]) {
-  const of = (...kinds: WaitKind[]) => rows.filter((r) => kinds.includes(r.kind))
-  const holds = (list: Waiting[]) => list.reduce((n, r) => n + r.count, 0)
-  const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
-  // "1 note with 9 proposed" when a row holds more than one thing, else just "1 proposed".
-  const many = (list: Waiting[], what: string, within: string) => (holds(list) === list.length ? `${list.length} ${what}` : `${plural(list.length, within)} with ${holds(list)} ${what}`)
-  const counts: [Waiting[], (list: Waiting[]) => string][] = [
-    [of('question'), (l) => plural(l.length, 'question')],
-    [of('stopped'), (l) => plural(l.length, 'stopped card')],
-    [of('permission'), (l) => plural(l.length, 'permission')],
-    [of('changeSet'), (l) => `${l.length} to approve`],
-    [of('proposals'), (l) => many(l, 'proposed', 'note')],
-    [of('noteChange'), (l) => plural(l.length, 'note change')],
-    [of('findings'), (l) => many(l, 'to look at', 'card')],
-    [of('promotion'), (l) => `${l.length} to promote`],
-  ]
-  return counts.filter(([list]) => list.length > 0).map(([list, say]) => say(list)).join(' · ')
-}
-
-/** How long a row has waited, in words; nothing when it has no date. */
-const waited = (iso: string) => {
-  if (Number.isNaN(Date.parse(iso))) return ''
-  const t = ago(iso)
-  return t === 'now' ? 'just now' : /^\d+[smh]$/.test(t) ? `${t} ago` : `since ${t}`
-}
-
-/**
- * What waits on you, in groups: yours first, then what anyone here can deal with, and what's on others folded away. On a
- * phone it opens Home, as it's what people come back for.
- */
-function WaitingList({ rows, showBinder, loaded, ref }: { rows: Waiting[]; showBinder: boolean; loaded: boolean; ref: Ref<HTMLElement> }) {
-  const binders = useHub((state) => state.binders, sameList)
-  const mine = rows.filter((r) => r.for === 'you')
-  const anyone = rows.filter((r) => r.for === 'anyone')
-  const others = rows.filter((r) => r.for === 'others')
-  return (
-    <section className="home-waiting" ref={ref} tabIndex={-1} aria-labelledby="waiting-heading">
-      <div className="waiting-head">
-        <h2 id="waiting-heading">Waiting on you</h2>
-        <NotifySwitch id="notify-home" />
-      </div>
-      {!mine.length && !anyone.length && <p className="faint waiting-none">{loaded ? 'Nothing is waiting on you.' : 'Loading…'}</p>}
-      {mine.length > 0 && <WaitingGroup title="For you" rows={mine} binders={showBinder && binders.length > 1 ? binders : []} />}
-      {anyone.length > 0 && <WaitingGroup title="For anyone here" rows={anyone} binders={showBinder && binders.length > 1 ? binders : []} />}
-      {others.length > 0 && (
-        <details className="waiting-others">
-          <summary><ChevronRight size={13} aria-hidden /> Waiting on others <span className="count">{others.length}</span></summary>
-          <WaitingRows rows={others} binders={showBinder && binders.length > 1 ? binders : []} />
-        </details>
-      )}
-    </section>
-  )
-}
-
-function WaitingGroup({ title, rows, binders }: { title: string; rows: Waiting[]; binders: { id: string; name: string }[] }) {
-  return (
-    <div className="waiting-group">
-      <h3>{title}</h3>
-      <WaitingRows rows={rows} binders={binders} />
-    </div>
-  )
-}
-
-/** The rows; with `binders`, each says which binder it's in. */
-function WaitingRows({ rows, binders }: { rows: Waiting[]; binders: { id: string; name: string }[] }) {
-  return (
-    <ul className="waiting">
-      {rows.map((row) => {
-        const Icon = kindIcon[row.kind]
-        const binder = binders.find((b) => b.id === row.binderId)
-        const when = waited(row.since)
-        return (
-          <li key={row.id}>
-            <button type="button" onClick={() => openRow(row)}>
-              <Icon size={14} className={row.for === 'others' ? 'faint' : 'amber'} aria-hidden />
-              <span><b>{row.title}</b><em>{row.detail}</em>{(binder || when) && <small>{binder && <BinderTag name={binder.name} />}{when}</small>}</span>
-            </button>
-          </li>
-        )
-      })}
-    </ul>
   )
 }

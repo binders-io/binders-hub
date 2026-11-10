@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { Entry } from '../../../shared/state.ts'
-import type { Card, Stage } from '../../../shared/work.ts'
+import type { Card } from '../../../shared/work.ts'
 import { lockStops, type Folder, type Note } from '../../../shared/notes.ts'
 import { Refused, type Hub } from '../hub.ts'
 import type { KV } from '../kv.ts'
@@ -9,15 +9,15 @@ import { log } from '../logger.ts'
 import { BrainIndex, type Hit, type IndexSource, type SourceKind } from './index.ts'
 import { captureNote, firstWords, hasSummary, transcriptOf, withSummary, withTranscript, worthSumming, type Capture } from './captures.ts'
 import { conversation, type Summary, type Turn } from './models.ts'
-import { askPerson, boardFor, boardRules, doRules, heardAnswer, isAsking, onlyTellRules, propose, proposalView, readDo, spoken, withoutMarks, type Asked, type Board, type Proposal, type WorkPlace } from './board.ts'
+import { askPerson, boardFor, boardRules, doRules, heardAnswer, isAsking, onlyTellRules, propose, proposalView, readDo, spoken, stageNames, withoutMarks, type Asked, type Board, type Proposal, type WorkPlace } from './board.ts'
 import type { BrainSettingsStore } from './settings.ts'
 import type { VectorFiles } from './vectorFiles.ts'
+import { viewFrom, viewRules } from './view.ts'
+import type { View } from '../../../shared/view.ts'
 
 // A Binder's brain: the index of its notes and cards, kept up as they change, what's captured on a phone or Mac put in
 // as notes and summed up, and questions answered from it all. The index is the Binder's own, in its own store; a
 // question asked across several Binders asks each, and only those the person is in.
-
-const stageNames: Record<Stage, string> = { proposed: 'Proposed', ready: 'Ready', working: 'In progress', blocked: 'Blocked', review: 'In review', live: 'Done' }
 
 /** Where each kind of capture goes, when the sender doesn't say: the folders the Mac's Send to Hub uses. */
 export const captureFolders: Record<Capture['kind'], string> = { dictation: 'Dictations', conversation: 'Captures', meeting: 'Meetings', note: 'Inbox' }
@@ -577,6 +577,8 @@ export interface AskResult {
   problem?: string
   /** Something it would do, asked for in the question, for the person to answer with a button. */
   proposal?: ReturnType<typeof proposalView>
+  /** What it shows beside its words (shared/view.ts): checked by the hub, its Things filled in from the hub's own state. */
+  view?: View
 }
 
 /** One question to Ask and what came of it, as the hub keeps it for the person who asked. */
@@ -725,9 +727,10 @@ function searchFor(before: Turn[], question: string) {
 /**
  * `person`: who's asking, so it goes by how their work stands too. `may`: they can answer it here, so a question can
  * come to something it would do, which waits for their answer. `turns`: what was asked and answered before, for a
- * follow-up. `about`: a note the question is about, which the model has in full before anything found.
+ * follow-up. `about`: a note the question is about, which the model has in full before anything found. `views`: where
+ * it's asked can draw a view, so the model may end its answer with one.
  */
-export async function ask(settings: BrainSettingsStore, places: AskPlace[], question: string, options: { most?: number; onSources?: (sources: AskSource[]) => void; person?: string; may?: boolean; turns?: unknown; about?: { place: string; note: string } } = {}): Promise<AskResult> {
+export async function ask(settings: BrainSettingsStore, places: AskPlace[], question: string, options: { most?: number; onSources?: (sources: AskSource[]) => void; person?: string; may?: boolean; turns?: unknown; about?: { place: string; note: string }; views?: boolean } = {}): Promise<AskResult> {
   const asked = question.trim().slice(0, 2000)
   if (!asked) throw new Refused('Ask a question.')
   const before = earlier(options.turns)
@@ -745,7 +748,7 @@ export async function ask(settings: BrainSettingsStore, places: AskPlace[], ques
   if (!model || (!sources.length && !board)) return { sources, searchedBy, ...(model ? { model: model.label } : {}) }
   try {
     const may = !!options.may && !isAsking(asked) && mayDo(places)
-    const rules = [board ? `${boardRules}\n${may ? doRules : onlyTellRules}` : '', about ? noteRules : '', before.length ? conversationRules(before) : ''].filter(Boolean).join('\n') || undefined
+    const rules = [board ? `${boardRules}\n${may ? doRules : onlyTellRules}` : '', about ? noteRules : '', options.views ? viewRules : '', before.length ? conversationRules(before) : ''].filter(Boolean).join('\n') || undefined
     const answer = await model.answer(asked, board ? [...passages, board.passage] : passages, rules)
     const said = (words: string, proposal?: Proposal) => ({ answer: { text: words, parts: [{ text: words, sources: [] }] }, sources, model: answer.model ?? model.label, searchedBy, ...(proposal ? { proposal: proposalView(proposal) } : {}) })
     // The board isn't a source to show: it's only what's so now. A line a model gave is taken out of what's shown.
@@ -763,9 +766,11 @@ export async function ask(settings: BrainSettingsStore, places: AskPlace[], ques
         return 'proposal' in came ? said(came.proposal.what, came.proposal) : said(came.refused)
       }
       // Asked about it, or asked where they can't answer: it's words or nothing, and nothing is done.
-      if (!parts.length) return said(options.may && onlyReads(places) ? readerWords : options.may ? 'That’s a question, so I’ve changed nothing. Tell me to do it, and I’ll check with you first.' : 'You can’t do that from here. Talk can, on the iPhone, and so can Ask on the hub.')
+      if (!parts.length) return said(options.may && onlyReads(places) ? readerWords : options.may ? 'That’s a question, so I’ve changed nothing. Tell me to do it, and I’ll check with you first.' : 'You can’t do that from here. Talk can, on the iPhone, and so can the Brain on the hub.')
     }
-    return { answer: { text: parts.map((p) => p.text).join('').trim(), parts }, sources, model: answer.model ?? model.label, searchedBy }
+    // What it shows: only where it was asked for, and only what reads as a view once the hub has filled in its Things.
+    const view = options.views && answer.view ? viewFrom(answer.view, board, places.flatMap((p) => (p.work ? [p.work] : []))) : undefined
+    return { answer: { text: parts.map((p) => p.text).join('').trim(), parts }, sources, model: answer.model ?? model.label, searchedBy, ...(view ? { view } : {}) }
   } catch (err) {
     return { sources, model: model.label, searchedBy, problem: err instanceof Error ? err.message : String(err) }
   }

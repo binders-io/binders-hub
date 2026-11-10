@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { asksOf, environmentBefore, promotion, repoEnvironments, type Agent, type Card, type Presence } from '../../../shared/work.ts'
+import { asksOf, environmentBefore, promotion, repoEnvironments, type Agent, type Card, type Presence, type Stage } from '../../../shared/work.ts'
 import { forAttention, waitingOn, type Waiting } from '../../../shared/waiting.ts'
 import type { Actions } from '../actions.ts'
 import { Refused, type Hub } from '../hub.ts'
@@ -35,6 +35,9 @@ interface Target {
   kind: Kind
   id: string
 }
+
+/** Each stage as people read it. */
+export const stageNames: Record<Stage, string> = { proposed: 'Proposed', ready: 'Ready', working: 'In progress', blocked: 'Blocked', review: 'In review', live: 'Done' }
 
 /** How the work stands now, for the model, with what its marks stand for. Made for one reply: marks mean nothing after it. */
 export interface Board {
