@@ -27,9 +27,18 @@ export class Desk {
   /** `gone`: whoever asked has stopped waiting, as a tool does when it kills its hook. */
   private handle: (run: DeskRun, verb: string, args: Record<string, unknown>, gone: AbortSignal) => Promise<{ result?: unknown; waiting?: number }>
 
-  constructor(path: string, handle: Desk['handle']) {
+  /** When it began listening. */
+  private since = 0
+  /**
+   * How long after it starts a run it doesn't know is waited for before it's told so: a runner that has just started is
+   * still taking over the runs the one before it left, and an agent that asks in that moment is one of them.
+   */
+  private takeoverMs: number
+
+  constructor(path: string, handle: Desk['handle'], takeoverMs = 20_000) {
     this.path = deskAddress(path)
     this.handle = handle
+    this.takeoverMs = takeoverMs
   }
 
   add(secret: string, run: DeskRun) {
@@ -57,6 +66,7 @@ export class Desk {
     })
     if (file) await chmod(this.path, 0o600)
     this.server = server
+    this.since = Date.now()
   }
 
   close() {
@@ -83,7 +93,12 @@ export class Desk {
   private async answer(line: string, gone: AbortSignal): Promise<DeskAnswer> {
     try {
       const { run: secret, verb, args } = JSON.parse(line) as { run?: string; verb?: string; args?: Record<string, unknown> }
-      const run = secret ? this.runs.get(secret) : undefined
+      let run = secret ? this.runs.get(secret) : undefined
+      // Not known yet, by a runner that has just started: it's looked for again while the runs left to it are taken over.
+      while (!run && secret && !gone.aborted && Date.now() - this.since < this.takeoverMs) {
+        await new Promise((done) => setTimeout(done, 100))
+        run = this.runs.get(secret)
+      }
       if (!run) return { ok: false, error: 'This isn’t a run its runner knows.' }
       return { ok: true, ...(await this.handle(run, String(verb), args ?? {}, gone)) }
     } catch (error) {

@@ -1860,7 +1860,7 @@ say({ type: 'result', total_cost_usd: 0.1, duration_ms: 1000, result: 'Done.' })
     const { Desk, agentCommand } = await import('../src/desk.ts')
     const home = await mkdtemp(join(tmpdir(), 'bd-'))
     const asked: unknown[] = []
-    const desk = new Desk(join(home, 'desk'), async (run, verb) => { asked.push([run.card, verb]); return { result: 'yes' } })
+    const desk = new Desk(join(home, 'desk'), async (run, verb) => { asked.push([run.card, verb]); return { result: 'yes' } }, 0)
     await desk.listen()
     desk.add('right', { card: 'card-mine', dir: home })
     const said: string[] = []
@@ -1871,6 +1871,33 @@ say({ type: 'result', total_cost_usd: 0.1, duration_ms: 1000, result: 'Done.' })
     assert.equal(await agentCommand(['card'], env('right'), (l) => said.push(l), (l) => errors.push(l)), 0)
     assert.deepEqual(asked, [['card-mine', 'card']])
     assert.equal(await agentCommand(['card'], {}, (l) => said.push(l), (l) => errors.push(l)), 1)
+    desk.close()
+  })
+
+  it('answers a run it takes over a moment after it starts, and tells one it never takes over that it isn’t its own', async () => {
+    const { Desk, agentCommand } = await import('../src/desk.ts')
+    const home = await mkdtemp(join(tmpdir(), 'bd-'))
+    const asked: unknown[] = []
+    const desk = new Desk(join(home, 'desk'), async (run, verb) => { asked.push([run.card, verb]); return { result: 'yes' } }, 1500)
+    await desk.listen()
+    const env = (run: string) => ({ BINDERS_DESK: join(home, 'desk'), BINDERS_RUN: run })
+    const errors: string[] = []
+    // The runner has just started and hasn't taken this run over yet: the agent asks, and is answered once it has.
+    const early = agentCommand(['card'], env('left-behind'), () => {}, (l) => errors.push(l))
+    await new Promise((done) => setTimeout(done, 300))
+    desk.add('left-behind', { card: 'card-held', dir: home })
+    assert.equal(await early, 0)
+    assert.deepEqual(asked, [['card-held', 'card']])
+    assert.equal(errors.length, 0)
+    // One it never takes over is told so once it has had the time to.
+    const began = Date.now()
+    assert.equal(await agentCommand(['card'], env('nobody’s'), () => {}, (l) => errors.push(l)), 1)
+    assert.match(errors[0], /isn’t a run/)
+    assert.ok(Date.now() - began < 5000)
+    // And at once after that: it isn't made to wait again.
+    const later = Date.now()
+    assert.equal(await agentCommand(['card'], env('nobody’s'), () => {}, (l) => errors.push(l)), 1)
+    assert.ok(Date.now() - later < 1000)
     desk.close()
   })
 

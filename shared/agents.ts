@@ -49,7 +49,7 @@ export const findable = tools.filter((t) => t.command)
 export const preferred = (installed: readonly string[]) => findable.find((t) => installed.includes(t.id))
 
 /** The runner the hub hands out; one older than this lacks things the app offers (several cards at once, chats). */
-export const runnerVersion = '0.17.0'
+export const runnerVersion = '0.17.1'
 
 /** The first runner that restarts when asked from the Agents page. */
 export const restartSince = '0.8.1'
