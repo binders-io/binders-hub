@@ -315,6 +315,8 @@ const notAPersonsRequest = [
   'POST /webhooks/in/:space/:listener',
   // The hook lets these through unsigned: a machine’s own token or a line made earlier is the proof.
   'POST /api/machines/join', 'POST /api/brain/machines/join',
+  // An agent's own token asks for a step of its model: no person is signed in.
+  'POST /api/agent/step',
 ]
 /** Leaving is the one address with a person in it: taking yourself out is allowed, taking another isn’t. */
 const leaving = 'DELETE /api/spaces/:id/members/:login'

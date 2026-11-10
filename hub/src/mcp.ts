@@ -16,7 +16,7 @@ import { askOfAgent, commentAskOfAgent, type JiraConnection } from './jira.ts'
 // The hub's MCP server: how an agent registered here finds work, takes it, says what it's doing, asks, and hands it
 // back with its pull request. One server per request (the transport is stateless), bound to the agent its token names.
 
-const instructions = `Binders is where this team's work lives: notes in binders, and cards on each binder's board that
+export const instructions = `Binders is where this team's work lives: notes in binders, and cards on each binder's board that
 come from them. You are one of the team's agents. Before working in a binder, read get_binder_context: its guide, its
 rules and where to look. Its notes are the team's knowledge base, and you help keep them: edit what you learn into them,
 and where a note is locked, propose_note_change.

@@ -489,6 +489,9 @@ export abstract class CardService extends ActionsBase {
       toolModels: existing?.toolModels,
       runnerSeen: existing?.runnerSeen,
       restartAsked: existing?.restartAsked,
+      // Its model, when the hub reaches one for it: set by its own routes (which name it, or name none to take it away),
+      // and kept through any other edit.
+      endpoint: 'endpoint' in fields ? fields.endpoint : existing?.endpoint,
     }
     // Limited to repos among its binders' own, when they name theirs: only checked when its repos or binders change.
     const reposChanged = (a: string[], b: string[] = []) => a.length !== b.length || a.some((r, i) => r.toLowerCase() !== b[i]?.toLowerCase())
@@ -504,6 +507,7 @@ export abstract class CardService extends ActionsBase {
       else delete agent.runner.commitAs
     }
     if (!agent.restartAsked) delete agent.restartAsked
+    if (!agent.endpoint) delete agent.endpoint
     if (!agent.toolModels) delete agent.toolModels
     if (!agent.runnerSeen) delete agent.runnerSeen
     if (!agent.models) delete agent.models

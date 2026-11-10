@@ -17,6 +17,7 @@ import { BrainSettingsStore } from '../hub/src/brain/settings.ts'
 import { demoBrain } from './brain.ts'
 import { Inbox } from '../hub/src/listen/inbox.ts'
 import { FirstAnswers } from '../hub/src/brain/first.ts'
+import { EndpointAgents } from '../hub/src/agent/endpoint.ts'
 import { demoBinder, demoChanges, demoAgents, demoPeople } from './data.ts'
 
 // A hub to look at, and nothing else: everything it holds is invented (data.ts) and lives in this process. It reads no
@@ -69,7 +70,9 @@ export async function startDemoHub(port: number, webDir = resolve(import.meta.di
     const inbox = new Inbox({ hub, kv: new MemoryKV(), sealer, member: (login) => demoPeople.includes(login) })
     // What the Brain makes of the cards waiting on someone: drafted by the stand-in, as everything it says is.
     const first = new FirstAnswers({ hub, settings: brains, kv: new MemoryKV(), place: () => ({ id, name: info.name, brain, url: () => '' }) })
-    return { id, hub, actions, github, webhooks: undefined as never, filesDir: join(files, id), brain, inbox, first }
+    // A model can be added as an agent here, and tried against the stand-in. None is started: nothing here does an agent's work.
+    const modelAgents = new EndpointAgents({ hub, actions, kv: new MemoryKV(), sealer, brain: brains })
+    return { id, hub, actions, github, webhooks: undefined as never, filesDir: join(files, id), brain, inbox, first, endpoints: modelAgents }
   }
 
   const spaces = new Spaces(kv, start)

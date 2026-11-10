@@ -33,6 +33,7 @@ import type { Binder } from '../../shared/notes.ts'
 import { Inbox } from './listen/inbox.ts'
 import { FeedReader } from './listen/reader.ts'
 import { FirstAnswers } from './brain/first.ts'
+import { EndpointAgents } from './agent/endpoint.ts'
 
 // Everything comes from the environment (see README.md). GitHub is best set up from Settings, which makes a GitHub App
 // and keeps its keys here; the GITHUB_* variables set it up by hand instead, and win where both are set.
@@ -295,14 +296,18 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   webhooks.inbox = inbox
   scheduler.feeds = feeds
   scheduler.start()
+  // Agents that are a model at an address, with no machine: the hub runs them, each as an agent like any other.
+  const modelAgents = new EndpointAgents({ hub, actions, kv: ownKv, sealer, brain: brainSettings, jira })
+  modelAgents.start()
   const running: Space = {
-    id, hub, actions, webhooks, github, notes, poller, issues, jira, jiraIssues, tell, filesDir: join(notesDir, 'files'), brain, copies, inbox, feeds, first: firstAnswers,
+    id, hub, actions, webhooks, github, notes, poller, issues, jira, jiraIssues, tell, filesDir: join(notesDir, 'files'), brain, copies, inbox, feeds, first: firstAnswers, endpoints: modelAgents,
     stop: async () => {
       // First: the rest of stopping can take longer than a server gives it.
       await stateFile?.save().catch(() => undefined)
       scheduler.stop()
       await copies.stop()
       tell.stop()
+      void modelAgents.stop()
       firstAnswers.stop()
       brain.stop()
       poller.stop()

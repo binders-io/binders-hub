@@ -12,6 +12,7 @@ import { whatWaits } from '../components/waitingWords'
 import { Terminal } from '../components/Terminal'
 import { AgentActivity } from '../components/AgentActivity'
 import { toolInfo } from '../../../shared/agents.ts'
+import { isModelAgent, modelReady, modelWords } from '../components/modelAgent'
 import { asksOf } from '../../../shared/work.ts'
 import { useUI } from '../ui'
 import { runnerState } from '../components/runnerState'
@@ -45,7 +46,7 @@ export function Home() {
   const ready = cards.filter((c) => c.stage === 'ready')
   const doneToday = cards.filter((c) => (c.stage === 'live' || c.stage === 'review') && isToday(c.updatedAt))
   // Busiest first: working, then listening, then the rest.
-  const order = (a: Agent) => (cards.some((c) => c.agentId === a.id && (c.stage === 'working' || (c.stage === 'blocked' && asksOf(c)))) ? 0 : isListening(a) ? 1 : isOnline(a) ? 2 : 3)
+  const order = (a: Agent) => (cards.some((c) => c.agentId === a.id && (c.stage === 'working' || (c.stage === 'blocked' && asksOf(c)))) ? 0 : isListening(a) ? 1 : isOnline(a) || (isModelAgent(a) && modelReady(a)) ? 2 : 3)
   const sorted = [...agents].sort((a, b) => order(a) - order(b) || a.name.localeCompare(b.name))
   const feed = useMemo(() => cards
     .flatMap((card) => card.activity.filter((a) => a.kind !== 'step' && a.kind !== 'said' && a.kind !== 'ran').map((a) => ({ ...a, card })))
@@ -154,9 +155,11 @@ function AgentTile({ agent, cards, onOpen }: { agent: Agent; cards: Card[]; onOp
   const busy = holding.filter((c) => c.stage === 'working')
   const meant = cards.filter((c) => c.meantFor === agent.id && c.stage === 'ready')
   const done = cards.filter((c) => c.agentId === agent.id && c.stage !== 'working' && isToday(c.updatedAt)).length
-  const listening = isListening(agent)
-  const online = isOnline(agent)
-  const status = asking.length ? 'Waiting on you' : busy.length ? `Working on ${busy.length}` : listening ? 'Listening for work' : online ? 'Online' : agent.lastSeen ? `Seen ${ago(agent.lastSeen)} ago` : 'Not running'
+  // One the hub runs as a model at an address has no runner: it's ready, or its last try says what's wrong.
+  const hosted = isModelAgent(agent)
+  const listening = hosted ? false : isListening(agent)
+  const online = hosted ? modelReady(agent) : isOnline(agent)
+  const status = asking.length ? 'Waiting on you' : busy.length ? `Working on ${busy.length}` : hosted ? (online ? 'Ready' : 'Needs attention') : listening ? 'Listening for work' : online ? 'Online' : agent.lastSeen ? `Seen ${ago(agent.lastSeen)} ago` : 'Not running'
   // Its latest card's session, newest lines.
   const latest = [...holding].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]
   const lines = latest ? sessionLines(latest.activity).slice(-14) : []
@@ -168,7 +171,7 @@ function AgentTile({ agent, cards, onOpen }: { agent: Agent; cards: Card[]; onOp
         <AgentAvatar agent={agent} size={34} live={busy.length > 0} />
         <div>
           <h3>{agent.name}</h3>
-          <span className="faint">{tool.name}{agent.runsOn ? ` · ${agent.runsOn}` : ''}</span>
+          <span className="faint">{isModelAgent(agent) ? `Runs on this hub · ${modelWords(agent.endpoint)}` : <>{tool.name}{agent.runsOn ? ` · ${agent.runsOn}` : ''}</>}</span>
         </div>
         <span className={`agent-status${asking.length ? ' asks' : busy.length ? ' working' : listening ? ' listening' : ''}`}><i />{status}</span>
       </header>
@@ -186,14 +189,15 @@ function AgentTile({ agent, cards, onOpen }: { agent: Agent; cards: Card[]; onOp
         </ul>
       ) : (
         <p className="tile-idle">
-          {meant.length ? `${meant.length} card${meant.length === 1 ? '' : 's'} meant for it, waiting for its runner.` : listening ? 'It takes the next card it can do as soon as one is ready.' : online ? 'Online, but its runner isn’t running.' : 'Its runner isn’t running.'}
-          {!listening && <a href={href({ screen: 'agents' })}><Play size={11} /> Start the runner</a>}
+          {hosted ? (agent.endpoint?.ready && !agent.endpoint.ready.ok ? agent.endpoint.ready.why || 'It didn’t answer as it needs to.' : meant.length ? `${meant.length} card${meant.length === 1 ? '' : 's'} meant for it.` : 'Nothing for it right now.') : meant.length ? `${meant.length} card${meant.length === 1 ? '' : 's'} meant for it, waiting for its runner.` : listening ? 'It takes the next card it can do as soon as one is ready.' : online ? 'Online, but its runner isn’t running.' : 'Its runner isn’t running.'}
+          {!listening && !hosted && <a href={href({ screen: 'agents' })}><Play size={11} /> Start the runner</a>}
+          {hosted && !online && <a href={href({ screen: 'agents' })}>Put it right</a>}
         </p>
       )}
       {latest && lines.length > 0 && <div className="tile-terminal"><Terminal lines={lines} working={!asksOf(latest)} doing={latest.doing} /></div>}
       <footer className="num">
         <span className="faint">{done} done today</span>
-        {online && <span className={runner.old ? 'runner-old' : 'faint'}>{runner.text}{runner.old && <> <a href={href({ screen: 'agents' })}>How</a></>}</span>}
+        {online && !hosted && <span className={runner.old ? 'runner-old' : 'faint'}>{runner.text}{runner.old && <> <a href={href({ screen: 'agents' })}>How</a></>}</span>}
       </footer>
     </motion.article>
   )

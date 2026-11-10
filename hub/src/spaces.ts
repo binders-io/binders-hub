@@ -14,6 +14,7 @@ import type { Webhooks } from './webhooks.ts'
 import type { Inbox } from './listen/inbox.ts'
 import type { FeedReader } from './listen/reader.ts'
 import type { FirstAnswers } from './brain/first.ts'
+import type { EndpointAgents } from './agent/endpoint.ts'
 
 // One hub, several Binders: each its own team, with its own change log, projects, notes, cards and agents, and its own
 // members, and its own GitHub: its app, installations and webhook, and each member's sign-in to it. In the code a
@@ -84,6 +85,8 @@ export interface Space {
   feeds?: FeedReader
   /** What its Brain makes of the cards waiting on a person: drafts of answers, and cards that wait for the same thing. */
   first?: FirstAnswers
+  /** Its agents that are models with no machine: run here, by the hub. */
+  endpoints?: EndpointAgents
   stop?: () => Promise<void>
 }
 

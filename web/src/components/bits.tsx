@@ -43,7 +43,7 @@ export function AgentAvatar({ agent, size = 26, live = false }: { agent?: Agent;
   if (!agent) return null
   return (
     <span className={`avatar agent${live ? ' live' : ''}`} style={{ width: size, height: size, background: tints[agent.provider], borderRadius: size * 0.3 }} title={`${agent.name}${agent.repos.length ? ` · ${agent.repos.join(', ')}` : ''}`}>
-      {agent.provider === 'other' && agent.runner?.tool !== 'custom'
+      {agent.provider === 'other' && agent.runner?.tool !== 'custom' && agent.runner?.tool !== 'binders'
         ? <b style={{ fontSize: size * 0.45 }}>{agent.name.charAt(0).toUpperCase()}</b>
         : <span className="avatar-mark"><ToolIcon tool={agent.runner?.tool ?? (agent.provider === 'openai' ? 'codex' : agent.provider === 'other' ? 'custom' : agent.provider)} size={Math.round(size * 0.56)} /></span>}
     </span>

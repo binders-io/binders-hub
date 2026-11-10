@@ -499,6 +499,65 @@ waits on a person, another agent's words aren't passed on. Two agents get
 20 messages an hour between them before they're told to ask a person. An agent reaches only agents working in binders it works
 in, and a Challenge's reviewer and the author it's judging can't message each other.
 
+## An agent that is a model, with no machine (built)
+
+An agent can be a model at an address, which the hub itself runs (`hub/src/agent/endpoint.ts`). It has no repo and no
+shell, so it takes the work that needs neither: distilling a note when a folder's rule names it, writing and changing
+notes, a chat about a note, a debrief or a Challenge from what the hub gives it, and cards given to it by name. A card
+open to anyone is left to agents with machines.
+
+- **What it can be.** The hub's own model (Settings → Brain); a server that speaks OpenAI's chat API with tools, by its
+  address, model or deployment name, and key; or Claude by Anthropic's API, at Anthropic or by a Microsoft Foundry
+  resource's address.
+  - Azure OpenAI and Foundry: the resource's address followed by `/openai/v1`
+    (`https://your-resource.openai.azure.com/openai/v1`), and the deployment's name as the model. Models from other
+    makers deployed there answer at the same address.
+  - Claude in Foundry: `https://your-resource.services.ai.azure.com/anthropic`, and the deployment's name. Anthropic's
+    server-side fallback isn't asked for there, as Foundry doesn't take it.
+- **It's an agent like any other.** The hub connects it to its own agent tools through the same door a runner's agent
+  uses, so what it may do, and every check on it, are the ones every agent has. It waits for work as any agent does,
+  and each piece is done by the loop the Brain answers with (`shared/agent.ts`): at most forty steps and twenty minutes.
+  A card it leaves half done goes back on the board saying why, and one it asked a person about waits for the answer.
+- **Tried before it works.** As it's added or changed, the hub reaches the address with the key and asks the model to
+  call a tool. One that can't is still kept, saying why, and takes no work until it can.
+- **Who, and its key.** A Binder's owners and admins add and change one: it reads the Binder's notes and spends a key.
+  Its address is only ever out on the internet, over https. Its key is sealed in the Binder's own store, never in the
+  state, and never sent back. A key goes only to the server it was typed for: change the address to another host, or
+  the kind of model, and the key is forgotten and typed again. The routes that make and change any agent never set a
+  model; only the model's own routes do.
+- **What it reads is material.** It is told, as the Brain is, that nothing in a note, a card or a diff is an
+  instruction to it. It has no way to run anything, so the most a planted instruction can reach is the hub's own agent
+  tools, which every agent already has.
+
+## Binders' own agent, for work that needs code (built)
+
+An agent on a machine can be Binders' own: the tool "Binders" in its settings, beside Claude Code and Codex. Nothing is
+installed for it and no model key is on the machine. The runner has the repo; the hub has the model.
+
+- **The runner starts itself.** For this tool the runner starts its own file in a work mode
+  (`binders-runner work`, `runner/src/harness.ts`), in the card's worktree, as it would start any tool. That program
+  runs the same loop the Brain and a model with no machine use (`shared/agent.ts`), for at most a hundred steps and
+  forty-five minutes.
+- **Its tools.** For the repo: `read_file`, `list_files`, `search`, `edit_file`, `write_file`, and with full access
+  `run`, a command in the repo's folder. With edits-only access there is no `run` at all. A path that leads out of the
+  repo, by its name or by a link, is refused, and git's own files aren't written. For the hub: the same agent tools
+  every agent has, over the same connection, with the agent's own token.
+- **The hub takes each step of its model.** The program sends the conversation so far and its tools to
+  `POST /api/agent/step` with the agent's token; the hub asks the model the agent was given (as a model with no machine
+  is given one: the hub's own, an OpenAI-style server, or Claude) with the key it keeps, and sends back what the model
+  said and the calls it wants. The key never leaves the hub, and the agent's token never reaches the model. What a
+  command the model runs can see doesn't include the agent's token either.
+- **Giving it a model.** On the agent's card, by a Binder's owners and admins. Until it has one it takes a card and
+  puts it back, saying it has no model.
+- **What shows on the card.** It prints the events Claude Code prints, so its steps in the repo, what it says and how
+  it ended reach the card as any agent's do. Its calls to the hub's own tools aren't steps: the card shows those
+  already.
+- **A long run.** When the conversation outgrows what's sent, what older tools returned is cut to its first lines, and
+  the last turns stay whole. A run starts from the card and the repo's brief each time: there's no session to carry on
+  in, so after a person's answer it reads the card again.
+- **The hub leaves it to its runner.** An agent with a runner and a model is never run by the hub itself, so its work
+  isn't done twice.
+
 ## Listeners (built)
 
 A listener brings things into a Binder from outside it, and each thing it hears becomes a note in a folder there, where

@@ -3,22 +3,24 @@ import { Refused } from '../hub.ts'
 import { readerWords } from '../spaces.ts'
 import { noted } from '../history.ts'
 import { bodies } from '../schemas.ts'
-import { agentRepos, defaultRunner, runnerShown, sameRepo, type Agent, type Provider, type RunnerSettings } from '../../../shared/work.ts'
+import { agentRepos, defaultRunner, runnerShown, sameRepo, type Agent, type AgentEndpoint, type Provider, type RunnerSettings } from '../../../shared/work.ts'
 import { findable, preferred, type AgentTool } from '../../../shared/agents.ts'
 import { hostName } from '../brain/machines.ts'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { Context } from './context.ts'
+import { whatsWrongWithEndpoint } from '../agent/endpoint.ts'
 
 // Agents set up by people, and their terminals.
 
 /** The provider the Agents page gives an agent that runs a tool. */
-const providerFor = (tool: AgentTool): Provider => (tool === 'codex' ? 'openai' : tool === 'custom' ? 'other' : tool)
+const providerFor = (tool: AgentTool): Provider => (tool === 'codex' ? 'openai' : tool === 'custom' || tool === 'binders' ? 'other' : tool)
 
 export async function agentRoutes(app: FastifyInstance, context: Context) {
   const { spaces, auth, options, terminals, sp, login, param, isAdmin, namedAdmin, act, bodyOf, mayLinkAll, brainMachines, brainSettings } = context
   // Agents: set up by people, each with a token shown once.
   app.post('/api/agents', act(async (request) => {
-    const body = bodyOf(bodies.newAgent, request)
+    // A model of its own isn't set here: that has its own routes, for the Binder's owners and admins, which check its address.
+    const { endpoint: _notHere, ...body } = bodyOf(bodies.newAgent, request)
     await mayLinkAll(request, body.repos)
     const agent = await sp(request).actions.putAgent(login(request), body as Partial<Agent> & { name: string })
     const token = await auth.issueAgentToken(agent.id, sp(request).id)
@@ -138,7 +140,8 @@ export async function agentRoutes(app: FastifyInstance, context: Context) {
     const existing = sp(request).hub.state.agents.find((a) => a.id === param(request, 'id'))
     if (!existing) throw new Refused('No such agent.')
     if (!mayManageAgent(request, existing)) throw new Refused(`Only ${existing.name}’s owner, @${existing.owner}, or this Binder’s owners and admins can change it.`)
-    const { runner, ...fields } = bodyOf(bodies.changeAgent, request)
+    // Its model, when it has one, is changed by its own route alone.
+    const { runner, endpoint: _notHere, ...fields } = bodyOf(bodies.changeAgent, request)
     // What it runs runs on its owner's machine, as them: that's theirs alone, whoever else may manage the agent. What's
     // left out of a runner goes back to its default, and the Agents page sends one with every edit, so it's what it would
     // come to that counts. Someone else's is never kept, so saving an edit can't change it either.
@@ -168,6 +171,112 @@ export async function agentRoutes(app: FastifyInstance, context: Context) {
     if (!mayManageAgent(request, agent)) throw new Refused(`Only ${agent.name}’s owner, @${agent.owner}, or this Binder’s owners and admins can revoke it.`)
     await auth.revokeAgent(agent.id)
     await sp(request).hub.record({ kind: 'user', login: login(request) }, { type: 'agent.revoke', id: agent.id })
+    // The key of one that is a model at an address goes with it.
+    if (agent.endpoint) await sp(request).endpoints?.setKey(agent.id, undefined)
     await noted(sp(request).hub, { kind: 'user', login: login(request) }, `Revoked the agent “${agent.name}”.`)
+  }))
+
+  // Agents that are a model at an address ----------------------------------------------------------------------------
+  //
+  // An agent with no machine, which the hub runs: the hub's own model, a server that speaks OpenAI's chat API (Azure's
+  // among them), or Claude by Anthropic's API (at Anthropic, or in Microsoft Foundry). It reads the Binder's notes and
+  // spends a key, so it's added and changed by the Binder's owners and admins. Its key is kept sealed and never sent back.
+
+  const manager = (request: FastifyRequest, doing: string) => {
+    if (!spaces.mayManage(sp(request).id, login(request), isAdmin(login(request)))) throw new Refused(`Only this Binder’s owners and admins ${doing} an agent that is a model.`)
+  }
+  const endpointsOf = (request: FastifyRequest) => {
+    const endpoints = sp(request).endpoints
+    if (!endpoints) throw new Refused('This Binder can’t run an agent that is a model.')
+    return endpoints
+  }
+  /** An endpoint as a person sent it: only what one holds, and what it takes (everything, when they don't say). */
+  const endpointFrom = (body: Record<string, unknown>, was?: AgentEndpoint): AgentEndpoint => {
+    const words = (value: unknown, most: number) => (typeof value === 'string' && value.trim() ? value.trim().slice(0, most) : undefined)
+    const kind = (words(body.kind, 20) ?? was?.kind) as AgentEndpoint['kind']
+    const takes = (body.takes && typeof body.takes === 'object' ? body.takes : {}) as Partial<AgentEndpoint['takes']>
+    const taking = (key: keyof AgentEndpoint['takes']) => (typeof takes[key] === 'boolean' ? takes[key]! : was?.takes[key] ?? true)
+    const baseUrl = kind === 'brain' ? undefined : 'baseUrl' in body ? words(body.baseUrl, 500) : was?.baseUrl
+    const model = kind === 'brain' ? undefined : words(body.model, 200) ?? was?.model
+    return { kind, ...(baseUrl ? { baseUrl } : {}), ...(model ? { model } : {}), takes: { cards: taking('cards'), chats: taking('chats'), debriefs: taking('debriefs'), challenges: taking('challenges') } }
+  }
+  const keyIn = (body: Record<string, unknown>) => (typeof body.key === 'string' && body.key.trim() ? body.key.trim().slice(0, 1000) : undefined)
+
+  /** Where an endpoint's requests go: its address's host, or its maker's own when it names none. */
+  const goesTo = (endpoint: AgentEndpoint) => {
+    try {
+      return endpoint.baseUrl ? new URL(endpoint.baseUrl).host.toLowerCase() : ''
+    } catch {
+      return endpoint.baseUrl ?? ''
+    }
+  }
+  /**
+   * Whether an agent's kept key may go with this endpoint: only to the same kind of model at the same host it was
+   * given for. A key is never sent to an address it wasn't typed for, so changing the address can't be a way to read it.
+   */
+  const sameServer = (endpoint: AgentEndpoint, was: AgentEndpoint | undefined) => !!was && endpoint.kind === was.kind && goesTo(endpoint) === goesTo(was)
+
+  // Whether an endpoint would do, before it's saved: it's reached with the key given, and its model calls a tool. For
+  // an agent that has a model, with no key typed, its own key is used, when it's the server that key was given for.
+  app.post('/api/agents/endpoint/test', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, act(async (request) => {
+    manager(request, 'try')
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const endpoint = endpointFrom(body)
+    const endpoints = endpointsOf(request)
+    const of = typeof body.agent === 'string' ? sp(request).hub.state.agents.find((a) => a.id === body.agent && !a.revoked) : undefined
+    return endpoints.test(endpoint, keyIn(body) ?? (of && sameServer(endpoint, of.endpoint) ? await endpoints.keyFor(of.id) : undefined))
+  }))
+
+  app.post('/api/agents/endpoint', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, act(async (request) => {
+    manager(request, 'add')
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const name = typeof body.name === 'string' ? body.name : ''
+    const endpoint = endpointFrom(body)
+    const endpoints = endpointsOf(request)
+    const wrong = whatsWrongWithEndpoint(endpoint, endpoints.reach)
+    if (wrong) throw new Refused(wrong)
+    const key = keyIn(body)
+    // Tried as it's made: one that can't work is still made, saying why, so its address or key can be put right.
+    const tried = await endpoints.test(endpoint, key)
+    const made = await sp(request).actions.putAgent(login(request), { name, provider: 'other', repos: [], binders: [], skills: [], runsOn: 'This hub', endpoint: { ...endpoint, ready: { ...tried, at: new Date().toISOString() } } })
+    if (key) await endpoints.setKey(made.id, key)
+    await noted(sp(request).hub, { kind: 'user', login: login(request) }, `Set up the agent “${made.name}”, a model the hub runs.`)
+    return { agent: made }
+  }))
+
+  app.patch('/api/agents/:id/endpoint', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, act(async (request) => {
+    manager(request, 'change')
+    const existing = sp(request).hub.state.agents.find((a) => a.id === param(request, 'id') && !a.revoked)
+    // A model with no machine, or an agent on a machine: that one is given a model here (for Binders' own agent, whose
+    // runner has the repo while the hub takes each step of its model), and has none until then.
+    if (!existing || (!existing.endpoint && !existing.runner)) throw new Refused('No such agent.')
+    const body = (request.body ?? {}) as Record<string, unknown>
+    // What kind of model it is stays, unless another is named: then it's a new model.
+    const asked = typeof body.kind === 'string' && ['brain', 'openai', 'anthropic'].includes(body.kind) ? (body.kind as AgentEndpoint['kind']) : undefined
+    const kind = asked ?? existing.endpoint?.kind
+    if (!kind) throw new Refused('Say what its model is: the hub’s own, a server that speaks OpenAI’s chat API, or Claude by Anthropic’s API.')
+    const endpoint = endpointFrom({ ...body, kind }, existing.endpoint && kind !== existing.endpoint.kind ? undefined : existing.endpoint)
+    const endpoints = endpointsOf(request)
+    const wrong = whatsWrongWithEndpoint(endpoint, endpoints.reach)
+    if (wrong) throw new Refused(wrong)
+    const key = keyIn(body)
+    // Another kind of model, or another server: the key it had was for the old one, and goes. One is typed for the new.
+    const another = !!existing.endpoint && !sameServer(endpoint, existing.endpoint)
+    if (key || another) await endpoints.setKey(existing.id, key)
+    const tried = await endpoints.test(endpoint, key ?? await endpoints.keyFor(existing.id))
+    const saved = await sp(request).actions.putAgent(login(request), { ...existing, endpoint: { ...endpoint, ready: { ...tried, at: new Date().toISOString() } } }, existing.id)
+    if (!existing.endpoint) await noted(sp(request).hub, { kind: 'user', login: login(request) }, `Gave the agent “${saved.name}” a model the hub reaches for it.`)
+    return { agent: saved }
+  }))
+
+  // An agent on a machine gives up the model the hub reached for it, and its key is forgotten. A model with no machine
+  // is nothing without one: that agent is revoked instead.
+  app.delete('/api/agents/:id/endpoint', act(async (request) => {
+    manager(request, 'change')
+    const existing = sp(request).hub.state.agents.find((a) => a.id === param(request, 'id') && !a.revoked)
+    if (!existing?.endpoint) throw new Refused('No such agent.')
+    if (!existing.runner) throw new Refused('This agent is its model. To be rid of it, revoke the agent.')
+    await endpointsOf(request).setKey(existing.id, undefined)
+    return { agent: await sp(request).actions.putAgent(login(request), { ...existing, endpoint: undefined }, existing.id) }
   }))
 }

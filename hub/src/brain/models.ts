@@ -223,7 +223,11 @@ export class ClaudeModel implements BrainModel {
   private client: Anthropic
   private model: string
 
-  constructor(options: { model: string; apiKey?: string; baseURL?: string; client?: Anthropic }) {
+  /** Whether to ask for Anthropic's server-side fallback: not where the model is served by someone who doesn't take it (Microsoft Foundry). */
+  private fallbacks: boolean
+
+  constructor(options: { model: string; apiKey?: string; baseURL?: string; client?: Anthropic; fallbacks?: boolean }) {
+    this.fallbacks = options.fallbacks ?? true
     this.model = options.model
     this.label = `${options.model} (Anthropic)`
     // The SDK's own timeouts: a summary of a long meeting streams, and an answer is short.
@@ -231,7 +235,7 @@ export class ClaudeModel implements BrainModel {
   }
 
   private fallback() {
-    return takesFallback.test(this.model) ? { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' as const } : {}
+    return this.fallbacks && takesFallback.test(this.model) ? { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' as const } : {}
   }
 
   async summarize(capture: { kind: CaptureKind; text: string; title?: string; at?: string }): Promise<Summary> {

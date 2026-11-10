@@ -20,6 +20,7 @@ import { stateRoutes } from './routes/state.ts'
 import { tellRoutes } from './routes/tell.ts'
 import { listenRoutes } from './routes/listen.ts'
 import { firstRoutes } from './routes/first.ts'
+import { agentStepRoutes } from './routes/agentStep.ts'
 import { webRoutes } from './routes/web.ts'
 import { workRoutes } from './routes/work.ts'
 import { brainRoutes } from './routes/brain.ts'
@@ -141,7 +142,8 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
     if (!request.url.startsWith('/api/')) return
     // A runner's live link says who it is in its first message: its agent's token. So does a brain machine's, and its
     // who-am-I takes the machine's own token.
-    if (['/api/runner/live', '/api/brain/machine', '/api/brain/machine/me', '/api/brain/machines/join', '/api/machines/join'].includes(request.url.split('?')[0])) return
+    // An agent on a machine asking the hub for a step of its model says who it is with its own token, as its tools do.
+    if (['/api/runner/live', '/api/brain/machine', '/api/brain/machine/me', '/api/brain/machines/join', '/api/machines/join', '/api/agent/step'].includes(request.url.split('?')[0])) return
     // An app's person token. A browser only sends this header when a page sets it, and no other site's page may (no
     // CORS here), so it needs no x-binders header.
     const bearer = /^Bearer\s+(.+)$/i.exec(request.headers.authorization ?? '')?.[1]
@@ -219,6 +221,7 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
   await tellRoutes(app, context)
   await listenRoutes(app, context)
   await firstRoutes(app, context)
+  await agentStepRoutes(app, context)
   await brainRoutes(app, context)
   await appLinkRoutes(app, context)
   await oauthRoutes(app, context)

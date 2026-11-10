@@ -7,6 +7,7 @@ import type { TerminalInfo } from '../../../shared/terminal.ts'
 import { href } from '../route'
 import { useMayChangeBinder } from '../screens/settings/access'
 import { AgentAvatar, stageTone } from './bits'
+import { isModelAgent, modelReady } from './modelAgent'
 
 const closedKey = 'binders-hub-side-agents-closed'
 
@@ -62,7 +63,7 @@ export function SideAgents({ agents }: { agents: Agent[] }) {
       {sorted.map((agent) => {
         const cards = held(agent)
         const mine = may && agent.owner.toLowerCase() === me
-        const terminalTool = (agent.runner?.tool ?? 'claude') !== 'custom'
+        const terminalTool = !isModelAgent(agent) && (agent.runner?.tool ?? 'claude') !== 'custom' && !toolInfo(agent.runner?.tool ?? 'claude').noTerminal
         const open = mine ? terminals[agent.id]?.sessions ?? [] : []
         const asks = cards.filter((c) => c.needsYou).length
         const has = cards.length + open.length > 0
@@ -70,7 +71,7 @@ export function SideAgents({ agents }: { agents: Agent[] }) {
         const busy = cards.filter((c) => c.stage === 'working')
         const status = asks ? `${asks === 1 ? 'A question' : `${asks} questions`} for you`
           : busy.length ? (busy.length === 1 ? (busy[0].doing ?? 'Working') : `Working on ${busy.length}`)
-            : isListening(agent) ? 'Listening for work' : isOnline(agent) ? 'Online' : 'Not running'
+            : isModelAgent(agent) ? (modelReady(agent) ? 'Ready' : 'Needs attention') : isListening(agent) ? 'Listening for work' : isOnline(agent) ? 'Online' : 'Not running'
         return (
           <div key={agent.id} className={`side-agent-group${dropOn === agent.id ? ' drop' : ''}`}
             onDragOver={(e) => { if (may && e.dataTransfer.types.includes('text/binders-card')) { e.preventDefault(); setDropOn(agent.id) } }}
@@ -86,7 +87,7 @@ export function SideAgents({ agents }: { agents: Agent[] }) {
                   <b>{agent.name}</b>
                   <span className={asks ? 'asks' : undefined}>{status}</span>
                 </span>
-                {isOnline(agent) && <i className="online" title="Online" />}
+                {(isModelAgent(agent) ? modelReady(agent) : isOnline(agent)) && <i className="online" title={isModelAgent(agent) ? 'Ready' : 'Online'} />}
               </a>
               {mine && terminalTool && (
                 <a className="side-terminal" href={href({ screen: 'terminal', id: agent.id })} title={`${toolInfo(agent.runner?.tool ?? 'claude').name} in a terminal on its machine`} aria-label={`Open ${agent.name} in a terminal`}>

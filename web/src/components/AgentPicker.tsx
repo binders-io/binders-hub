@@ -3,6 +3,7 @@ import { Check, ChevronDown, Layers } from 'lucide-react'
 import type { Card } from '../data/model'
 import { isListening, useStore } from '../data/store'
 import { AgentAvatar } from './bits'
+import { isModelAgent, modelReady } from './modelAgent'
 import { useMayChangeBinder } from '../screens/settings/access'
 
 /**
@@ -78,7 +79,7 @@ export function AgentPicker({ card, working }: { card: Card; working: boolean })
               <li key={a.id}>
                 <button type="button" role="option" aria-selected={on} onClick={() => give(a.id)}>
                   <AgentAvatar agent={a} size={22} />
-                  <span><b>{a.name}</b><em>{isListening(a) ? 'Listening' : 'Its runner isn’t running'}</em></span>
+                  <span><b>{a.name}</b><em>{isModelAgent(a) ? (modelReady(a) ? 'Runs on this hub' : 'Not ready') : isListening(a) ? 'Listening' : 'Its runner isn’t running'}</em></span>
                   {on && <Check size={14} />}
                 </button>
               </li>

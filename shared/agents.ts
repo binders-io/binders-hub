@@ -2,7 +2,7 @@
 // given, and whether Binders' MCP tools can be handed to them for one run. Without those tools the runner does the
 // bookkeeping itself: it gives the agent the card or the note, and reports back what it printed.
 
-export type AgentTool = 'claude' | 'codex' | 'opencode' | 'dsh' | 'pi' | 'copilot' | 'gemini' | 'cursor' | 'amp' | 'goose' | 'aider' | 'qwen' | 'custom'
+export type AgentTool = 'claude' | 'codex' | 'opencode' | 'dsh' | 'pi' | 'copilot' | 'gemini' | 'cursor' | 'amp' | 'goose' | 'aider' | 'qwen' | 'binders' | 'custom'
 export type Access = 'full' | 'auto' | 'edits'
 
 export interface ToolInfo {
@@ -37,6 +37,9 @@ export const tools: ToolInfo[] = [
   { id: 'goose', name: 'Goose', by: 'Block', command: 'goose', mcp: false, access: ['full'], tried: false },
   { id: 'aider', name: 'Aider', by: 'Aider', command: 'aider', mcp: false, access: ['full', 'edits'], tried: false },
   { id: 'qwen', name: 'Qwen Code', by: 'Alibaba', command: 'qwen', mcp: false, access: ['full', 'edits'], tried: false },
+  // Binders' own: the runner itself does the work in the repo, and the hub takes each step of the agent's model
+  // (runner/src/harness.ts), so there's no command to find on the machine and no model key there.
+  { id: 'binders', name: 'Binders', by: 'Your own model', command: '', mcp: true, access: ['full', 'edits'], tried: true, noTerminal: 'Binders’ own agent has no terminal app to open: it works its cards in the repo, and the hub takes each step of its model.' },
   { id: 'custom', name: 'My own command', by: 'Anything that takes a prompt', command: '', mcp: false, access: ['full'], tried: true },
 ]
 
@@ -49,7 +52,10 @@ export const findable = tools.filter((t) => t.command)
 export const preferred = (installed: readonly string[]) => findable.find((t) => installed.includes(t.id))
 
 /** The runner the hub hands out; one older than this lacks things the app offers (several cards at once, chats). */
-export const runnerVersion = '0.17.1'
+export const runnerVersion = '0.18.0'
+
+/** The first runner with Binders' own agent in it: an older one has no way to start it. */
+export const ownAgentSince = '0.18.0'
 
 /** The first runner that restarts when asked from the Agents page. */
 export const restartSince = '0.8.1'

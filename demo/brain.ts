@@ -183,7 +183,8 @@ export const demoBrain: BrainModel = {
     return { text: said.words, parts: [{ text: said.words, sources: said.cites ?? [] }], ...(said.view ? { view: block(said.view) } : {}) }
   },
   steps: async () => true,
-  step: async ({ turns }) => stepOf(turns),
+  // Asked whether it calls tools (as the hub asks a model before it's an agent), it calls the one it's shown.
+  step: async ({ turns, tools }) => (tools.some((tool) => tool.name === 'ready') ? { text: '', calls: [{ id: 'ready-1', name: 'ready', input: {} }], stop: 'tools' } : stepOf(turns)),
   talk: async (turns, passages) => reply(turns[turns.length - 1]?.text ?? '', passages.find((p) => p.title === boardTitle)?.text ?? '', passages).words,
   sortMoment: async (said) => ({ kind: 'note', title: said.slice(0, 80) }),
 }

@@ -9,6 +9,7 @@ import { linksOf, textOf } from '../data/noteText'
 import { cardPrompt } from '../data/prompts'
 import type { Card, Note } from '../data/model'
 import { ago, usePhone } from '../components/bits'
+import { isModelAgent, modelReady } from '../components/modelAgent'
 import { attempt, toast } from '../components/Toast'
 import { ConfirmButton } from '../components/ConfirmButton'
 import { NoteViews, type NoteView } from '../components/NoteViews'
@@ -581,7 +582,7 @@ function DistillStatus({ card }: { card: Card }) {
   const [copied, setCopied] = useState(false)
   const taken = !!card.agentId
   const agent = agents.find((a) => a.id === (card.agentId ?? card.meantFor))
-  const listening = agent ? isOnline(agent) : agents.some((a) => !a.revoked && isOnline(a))
+  const listening = agent ? (isModelAgent(agent) ? modelReady(agent) : isOnline(agent)) : agents.some((a) => !a.revoked && isOnline(a))
   const name = agent?.name ?? 'an agent'
   const copy = async () => {
     await navigator.clipboard.writeText(cardPrompt(card.id)).catch(() => {})

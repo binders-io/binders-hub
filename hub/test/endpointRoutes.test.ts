@@ -1,0 +1,349 @@
+import { describe, it } from 'node:test'
+import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { Actions } from '../src/actions.ts'
+import { Auth } from '../src/auth.ts'
+import { GitHubConnection } from '../src/githubConnection.ts'
+import { Hub } from '../src/hub.ts'
+import { MemoryKV } from '../src/kv.ts'
+import { MemoryLog } from '../src/log.ts'
+import { Sealer } from '../src/secrets.ts'
+import { buildServer } from '../src/server.ts'
+import { Spaces, type Member, type Space } from '../src/spaces.ts'
+import { Webhooks } from '../src/webhooks.ts'
+import { BrainSettingsStore } from '../src/brain/settings.ts'
+import { EndpointAgents } from '../src/agent/endpoint.ts'
+import { seed } from './helpers.ts'
+
+const people: Member[] = [{ login: 'ana', role: 'owner' }, { login: 'cy', role: 'member' }, { login: 'di', role: 'reader' }]
+
+/** A stand-in for a model server: one that calls the tool it's asked to, or one that only talks. */
+async function modelServer(callsTools: boolean) {
+  const seen: { path: string; auth?: string; body: Record<string, unknown> }[] = []
+  const server = createServer((request, response) => {
+    let raw = ''
+    request.on('data', (chunk) => { raw += chunk })
+    request.on('end', () => {
+      seen.push({ path: request.url ?? '', auth: request.headers.authorization, body: JSON.parse(raw || '{}') as Record<string, unknown> })
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ choices: [callsTools ? { message: { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'ready', arguments: '{}' } }] }, finish_reason: 'tool_calls' } : { message: { content: 'I am ready!' }, finish_reason: 'stop' }] }))
+    })
+  })
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/openai/v1`, seen, close: () => new Promise<void>((done) => server.close(() => done())) }
+}
+
+async function setUp() {
+  const kv = new MemoryKV()
+  const sealer = new Sealer('test-secret')
+  const auth = new Auth(kv, sealer, { github: () => undefined, allowed: () => ({ users: [], orgs: [] }), devLogin: () => true })
+  await kv.set('spaces', JSON.stringify([{ id: 'acme', name: 'Acme', createdAt: '2026-11-01T00:00:00.000Z', createdBy: 'hub', members: people }]))
+  const settings = await new BrainSettingsStore(new MemoryKV(), sealer, {}).load()
+  const made: Record<string, Space & { own: MemoryKV }> = {}
+  const make = async (id: string): Promise<Space> => {
+    const github = new GitHubConnection(new MemoryKV(), sealer, { webUrl: 'http://unused', apiUrl: 'http://unused' }, { webhookSecret: `shh-${id}` }, id)
+    const hub = new Hub(new MemoryLog())
+    await hub.start(seed())
+    const actions = new Actions(hub, github)
+    const own = new MemoryKV()
+    // Not started: these tests are of setting one up, and nothing here should wait for work.
+    const endpoints = new EndpointAgents({ hub, actions, kv: own, sealer, brain: settings, reach: { thisMachineToo: true } })
+    made[id] = { id, hub, actions, github, webhooks: new Webhooks(hub, actions), endpoints, own }
+    return made[id]
+  }
+  const spaces = await new Spaces(kv, make).load({ id: 'acme', name: 'Acme', members: people })
+  const app = await buildServer(spaces, { auth, brain: settings }, { publicUrl: 'http://hub.test', admins: ['root'] })
+  await app.listen({ port: 0, host: '127.0.0.1' })
+  const url = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const as = async (login: string) => {
+    const signedIn = await fetch(`${url}/auth/dev`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-binders': '1' }, body: JSON.stringify({ login }) })
+    const cookie = /binders_session=[^;]+/.exec(signedIn.headers.get('set-cookie') ?? '')![0]
+    return async (method: string, path: string, body?: unknown) => {
+      const response = await fetch(`${url}${path}`, { method, headers: { cookie, 'x-binders': '1', 'x-binders-space': 'acme', ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined })
+      const text = await response.text()
+      return { status: response.status, body: text ? JSON.parse(text) : undefined, raw: text }
+    }
+  }
+  return { as, url, space: () => made.acme, close: () => app.close() }
+}
+
+describe('an agent that is a model, over the hub’s API', () => {
+  it('is added by the Binder’s owners and admins, tried as it’s made, and its key is never sent back', async () => {
+    const set = await setUp()
+    const good = await modelServer(true)
+    try {
+      const [ana, cy, di] = await Promise.all(['ana', 'cy', 'di'].map((login) => set.as(login)))
+      const fields = { name: 'Foundry GPT', kind: 'openai', baseUrl: good.url, model: 'gpt-deploy', key: 'az-key-123' }
+      assert.equal((await cy('POST', '/api/agents/endpoint', fields)).status, 422)
+      assert.equal((await di('POST', '/api/agents/endpoint', fields)).status, 403)
+      assert.equal((await cy('POST', '/api/agents/endpoint/test', fields)).status, 422)
+
+      assert.deepEqual((await ana('POST', '/api/agents/endpoint/test', fields)).body, { ok: true })
+      assert.equal(good.seen[0].auth, 'Bearer az-key-123')
+      assert.equal(good.seen[0].path, '/openai/v1/chat/completions')
+      assert.equal(good.seen[0].body.model, 'gpt-deploy')
+
+      const made = await ana('POST', '/api/agents/endpoint', fields)
+      assert.equal(made.status, 200)
+      const agent = made.body.agent
+      assert.deepEqual({ name: agent.name, owner: agent.owner, runsOn: agent.runsOn, kind: agent.endpoint.kind, model: agent.endpoint.model, takes: agent.endpoint.takes, ok: agent.endpoint.ready.ok }, { name: 'Foundry GPT', owner: 'ana', runsOn: 'This hub', kind: 'openai', model: 'gpt-deploy', takes: { cards: true, chats: true, debriefs: true, challenges: true }, ok: true })
+      assert.ok(!made.raw.includes('az-key-123'), 'the key isn’t in the answer')
+      assert.ok(!JSON.stringify(set.space().hub.state).includes('az-key-123'), 'nor in the state')
+      const kept = await set.space().own.get(`endpoint-key:${agent.id}`)
+      assert.ok(kept && !kept.includes('az-key-123'), 'it’s sealed in the Binder’s own store')
+
+      // What it takes can be changed, and a new key replaces the old; it's tried again each time.
+      const before = good.seen.length
+      const changed = await ana('PATCH', `/api/agents/${agent.id}/endpoint`, { takes: { cards: true, chats: false, debriefs: false, challenges: true }, key: 'az-key-456' })
+      assert.deepEqual(changed.body.agent.endpoint.takes, { cards: true, chats: false, debriefs: false, challenges: true })
+      assert.equal(good.seen.length, before + 1)
+      assert.equal(good.seen.at(-1)!.auth, 'Bearer az-key-456')
+      assert.equal((await cy('PATCH', `/api/agents/${agent.id}/endpoint`, { takes: { chats: true } })).status, 422)
+
+      // Changed with no key given, it's tried with the one that's kept.
+      await ana('PATCH', `/api/agents/${agent.id}/endpoint`, { model: 'gpt-deploy-2' })
+      assert.equal(good.seen.at(-1)!.auth, 'Bearer az-key-456')
+      assert.equal(good.seen.at(-1)!.body.model, 'gpt-deploy-2')
+
+      // Revoked, its key goes too.
+      assert.equal((await ana('DELETE', `/api/agents/${agent.id}`)).status, 200)
+      assert.equal(await set.space().own.get(`endpoint-key:${agent.id}`), undefined)
+    } finally {
+      await good.close()
+      await set.close()
+    }
+  })
+
+  it('is still made when its model can’t do the work, saying why, so it can be put right', async () => {
+    const set = await setUp()
+    const talks = await modelServer(false)
+    try {
+      const ana = await set.as('ana')
+      const tried = (await ana('POST', '/api/agents/endpoint/test', { kind: 'openai', baseUrl: talks.url, model: 'small' })).body
+      assert.equal(tried.ok, false)
+      assert.match(tried.why, /didn’t call the tool it was asked to/)
+      const made = (await ana('POST', '/api/agents/endpoint', { name: 'Small one', kind: 'openai', baseUrl: talks.url, model: 'small' })).body.agent
+      assert.equal(made.endpoint.ready.ok, false)
+      assert.match(made.endpoint.ready.why, /can’t do an agent’s work/)
+
+      const own = (await ana('POST', '/api/agents/endpoint', { name: 'The hub’s own', kind: 'brain' })).body.agent
+      assert.deepEqual({ kind: own.endpoint.kind, ok: own.endpoint.ready.ok }, { kind: 'brain', ok: false })
+      assert.match(own.endpoint.ready.why, /The hub has no model of its own yet/)
+      assert.equal('baseUrl' in own.endpoint, false)
+    } finally {
+      await talks.close()
+      await set.close()
+    }
+  })
+
+  it('refuses an address that isn’t one, a kind it doesn’t know, and a model with no name', async () => {
+    const set = await setUp()
+    try {
+      const ana = await set.as('ana')
+      assert.equal((await ana('POST', '/api/agents/endpoint', { name: 'X', kind: 'openai', baseUrl: 'not an address', model: 'm' })).status, 422)
+      assert.equal((await ana('POST', '/api/agents/endpoint', { name: 'X', kind: 'telnet', baseUrl: 'https://x.example.com/v1', model: 'm' })).status, 422)
+      assert.equal((await ana('POST', '/api/agents/endpoint', { name: 'X', kind: 'openai', baseUrl: 'https://x.example.com/v1' })).status, 422)
+      assert.equal((await ana('POST', '/api/agents/endpoint', { name: '', kind: 'brain' })).status, 422)
+      assert.deepEqual(set.space().hub.state.agents, [])
+    } finally {
+      await set.close()
+    }
+  })
+})
+
+describe('a step of an agent’s model, taken by the hub for an agent on a machine', () => {
+  const step = (url: string, token: string | undefined, body: unknown) => fetch(`${url}/api/agent/step`, { method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) }).then(async (response) => ({ status: response.status, body: await response.json() as Record<string, unknown> }))
+  const asked = { system: 'Work in the repo.', turns: [{ role: 'user', text: 'Fix the header.' }], tools: [{ name: 'ready', description: 'Says the model can call tools.', input: { type: 'object', properties: {} } }] }
+
+  it('takes the agent’s own token, asks its model with the key the hub keeps, and gives back the step', async () => {
+    const set = await setUp()
+    const good = await modelServer(true)
+    try {
+      const ana = await set.as('ana')
+      const made = (await ana('POST', '/api/agents', { name: 'On a machine', provider: 'other', repos: [], binders: [], skills: [] })).body as { agent: { id: string }; token: string }
+      const url = set.url
+      // With no model of its own yet, there's nothing to ask.
+      assert.deepEqual(await step(url, made.token, asked), { status: 502, body: { error: 'This agent has no model of its own. Give it one on the Agents page.' } })
+
+      const agent = set.space().hub.state.agents.find((a) => a.id === made.agent.id)!
+      await set.space().actions.putAgent('ana', { ...agent, endpoint: { kind: 'openai', baseUrl: good.url, model: 'gpt-deploy', takes: { cards: true, chats: true, debriefs: true, challenges: true } } }, agent.id)
+      await set.space().endpoints!.setKey(agent.id, 'az-key-789')
+      const before = good.seen.length
+      const answer = await step(url, made.token, asked)
+      assert.equal(answer.status, 200)
+      assert.deepEqual(answer.body, { text: '', calls: [{ id: 'c1', name: 'ready', input: {} }], stop: 'tools' })
+      assert.ok(!JSON.stringify(answer.body).includes('az-key-789'), 'the key stays on the hub')
+      // The server was asked whether it calls tools, then for the step itself: both with the hub's key.
+      const sent = good.seen.slice(before)
+      assert.ok(sent.length >= 1 && sent.every((s) => s.auth === 'Bearer az-key-789'))
+      assert.deepEqual((sent.at(-1)!.body.messages as { role: string; content: string }[]).map((m) => [m.role, m.content]), [['system', 'Work in the repo.'], ['user', 'Fix the header.']])
+    } finally {
+      await good.close()
+      await set.close()
+    }
+  })
+
+  it('answers no one without an agent’s token, a revoked agent’s, or a step that isn’t one', async () => {
+    const set = await setUp()
+    try {
+      const ana = await set.as('ana')
+      const made = (await ana('POST', '/api/agents', { name: 'On a machine', provider: 'other', repos: [], binders: [], skills: [] })).body as { agent: { id: string }; token: string }
+      assert.equal((await step(set.url, undefined, asked)).status, 401)
+      assert.equal((await step(set.url, 'bnd_not-a-token', asked)).status, 401)
+      assert.equal((await step(set.url, made.token, { ...asked, turns: [] })).status, 400)
+      assert.equal((await step(set.url, made.token, { ...asked, system: 5 })).status, 400)
+      assert.equal((await step(set.url, made.token, { ...asked, tools: [{ name: 'bad name!', description: 'x', input: {} }] })).status, 400)
+      await ana('DELETE', `/api/agents/${made.agent.id}`)
+      assert.equal((await step(set.url, made.token, asked)).status, 401)
+    } finally {
+      await set.close()
+    }
+  })
+})
+
+describe('an agent on a machine, and its model', () => {
+  const machine = { name: 'On a machine', provider: 'other', repos: [], binders: [], skills: [], runner: { tool: 'binders', access: 'full', timeoutMinutes: 60, worktrees: true } }
+
+  it('is never given a model, or another one, through the routes that make and change an agent', async () => {
+    const set = await setUp()
+    try {
+      const cy = await set.as('cy')
+      const sneaky = { kind: 'openai', baseUrl: 'http://169.254.169.254/latest', model: 'm', takes: { cards: true, chats: true, debriefs: true, challenges: true } }
+      const made = (await cy('POST', '/api/agents', { ...machine, endpoint: sneaky })).body as { agent: { id: string; endpoint?: unknown } }
+      assert.equal(made.agent.endpoint, undefined)
+      assert.equal(set.space().hub.state.agents.find((a) => a.id === made.agent.id)!.endpoint, undefined)
+      await cy('PATCH', `/api/agents/${made.agent.id}`, { name: 'On a machine', endpoint: sneaky })
+      assert.equal(set.space().hub.state.agents.find((a) => a.id === made.agent.id)!.endpoint, undefined)
+      // Nor does a member give it one by the model's own route: that's the Binder's owners and admins.
+      const refused = await cy('PATCH', `/api/agents/${made.agent.id}/endpoint`, { kind: 'brain' })
+      assert.equal(refused.status, 422)
+      assert.match(refused.raw, /owners and admins/)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('is given a model by the Binder’s owners and admins, keeps its runner, and its model stays through other edits', async () => {
+    const set = await setUp()
+    const good = await modelServer(true)
+    try {
+      const ana = await set.as('ana')
+      const made = (await ana('POST', '/api/agents', machine)).body as { agent: { id: string }; token: string }
+      const none = await ana('PATCH', `/api/agents/${made.agent.id}/endpoint`, { model: 'gpt-deploy' })
+      assert.equal(none.status, 422)
+      assert.match(none.raw, /Say what its model is/)
+
+      const given = await ana('PATCH', `/api/agents/${made.agent.id}/endpoint`, { kind: 'openai', baseUrl: good.url, model: 'gpt-deploy', key: 'az-key-1' })
+      assert.equal(given.status, 200)
+      const agent = (given.body as { agent: { runner?: { tool: string }; endpoint: { kind: string; model: string; ready: { ok: boolean } } } }).agent
+      assert.equal(agent.runner?.tool, 'binders')
+      assert.deepEqual([agent.endpoint.kind, agent.endpoint.model, agent.endpoint.ready.ok], ['openai', 'gpt-deploy', true])
+      assert.ok(!given.raw.includes('az-key-1'))
+      assert.equal(await set.space().endpoints!.keyFor(made.agent.id), 'az-key-1')
+
+      // Another edit of the agent leaves its model as it is.
+      await ana('PATCH', `/api/agents/${made.agent.id}`, { name: 'Renamed', runner: machine.runner })
+      const after = set.space().hub.state.agents.find((a) => a.id === made.agent.id)!
+      assert.deepEqual([after.name, after.endpoint?.model], ['Renamed', 'gpt-deploy'])
+    } finally {
+      await good.close()
+      await set.close()
+    }
+  })
+
+  it('gets another kind of model with a key of its own, and gives its model up', async () => {
+    const set = await setUp()
+    const good = await modelServer(true)
+    try {
+      const ana = await set.as('ana')
+      const made = (await ana('POST', '/api/agents', machine)).body as { agent: { id: string } }
+      await ana('PATCH', `/api/agents/${made.agent.id}/endpoint`, { kind: 'openai', baseUrl: good.url, model: 'gpt-deploy', key: 'az-key-1' })
+      // The hub's own model in its place: the first model's address, name and key all go.
+      const other = (await ana('PATCH', `/api/agents/${made.agent.id}/endpoint`, { kind: 'brain' })).body as { agent: { endpoint: { kind: string; baseUrl?: string; model?: string } } }
+      assert.deepEqual([other.agent.endpoint.kind, other.agent.endpoint.baseUrl, other.agent.endpoint.model], ['brain', undefined, undefined])
+      assert.equal(await set.space().endpoints!.keyFor(made.agent.id), undefined)
+
+      await ana('PATCH', `/api/agents/${made.agent.id}/endpoint`, { kind: 'openai', baseUrl: good.url, model: 'gpt-deploy', key: 'az-key-2' })
+      const cy = await set.as('cy')
+      assert.equal((await cy('DELETE', `/api/agents/${made.agent.id}/endpoint`)).status, 422)
+      const gone = await ana('DELETE', `/api/agents/${made.agent.id}/endpoint`)
+      assert.equal(gone.status, 200)
+      const after = set.space().hub.state.agents.find((a) => a.id === made.agent.id)!
+      assert.equal(after.endpoint, undefined)
+      assert.equal(after.runner?.tool, 'binders')
+      assert.equal(await set.space().endpoints!.keyFor(made.agent.id), undefined)
+
+      // A model with no machine is nothing without its model: that one is revoked instead.
+      const hosted = (await ana('POST', '/api/agents/endpoint', { name: 'Hosted', kind: 'openai', baseUrl: good.url, model: 'gpt-deploy', key: 'k' })).body as { agent: { id: string } }
+      const kept = await ana('DELETE', `/api/agents/${hosted.agent.id}/endpoint`)
+      assert.equal(kept.status, 422)
+      assert.match(kept.raw, /revoke the agent/)
+    } finally {
+      await good.close()
+      await set.close()
+    }
+  })
+
+  it('asks a model found to call tools only for the steps, not again whether it does, until its key changes', async () => {
+    const set = await setUp()
+    const good = await modelServer(true)
+    try {
+      const ana = await set.as('ana')
+      const made = (await ana('POST', '/api/agents', machine)).body as { agent: { id: string }; token: string }
+      await ana('PATCH', `/api/agents/${made.agent.id}/endpoint`, { kind: 'openai', baseUrl: good.url, model: 'gpt-deploy', key: 'az-key-1' })
+      const step = () => fetch(`${set.url}/api/agent/step`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${made.token}` }, body: JSON.stringify({ system: 'Work.', turns: [{ role: 'user', text: 'Go' }], tools: [{ name: 'read_file', description: 'Reads.', input: { type: 'object', properties: {} } }] }) }).then((r) => r.status)
+      const before = good.seen.length
+      assert.equal(await step(), 200)
+      const first = good.seen.length - before
+      assert.equal(await step(), 200)
+      assert.equal(await step(), 200)
+      assert.equal(good.seen.length - before, first + 2, 'one request for each further step')
+      await ana('PATCH', `/api/agents/${made.agent.id}/endpoint`, { key: 'az-key-2' })
+      const changed = good.seen.length
+      assert.equal(await step(), 200)
+      assert.equal(good.seen.at(-1)!.auth, 'Bearer az-key-2')
+      assert.ok(good.seen.length - changed >= 2, 'asked again whether it calls tools, with the new key')
+    } finally {
+      await good.close()
+      await set.close()
+    }
+  })
+})
+
+describe('a model’s key', () => {
+  it('is never sent to an address it wasn’t typed for: another address needs its key again, to try and to save', async () => {
+    const set = await setUp()
+    const good = await modelServer(true)
+    const elsewhere = await modelServer(true)
+    try {
+      const ana = await set.as('ana')
+      const hosted = (await ana('POST', '/api/agents/endpoint', { name: 'Hosted', kind: 'openai', baseUrl: good.url, model: 'gpt-deploy', key: 'az-key-1' })).body as { agent: { id: string } }
+
+      // Tried again with no key typed, at the server it was given for: its own key is used.
+      const before = good.seen.length
+      assert.deepEqual((await ana('POST', '/api/agents/endpoint/test', { agent: hosted.agent.id, kind: 'openai', baseUrl: good.url, model: 'gpt-deploy' })).body, { ok: true })
+      assert.equal(good.seen[before].auth, 'Bearer az-key-1')
+
+      // Tried at another address: nothing of the key goes there.
+      await ana('POST', '/api/agents/endpoint/test', { agent: hosted.agent.id, kind: 'openai', baseUrl: elsewhere.url, model: 'gpt-deploy' })
+      assert.ok(elsewhere.seen.length >= 1)
+      assert.ok(elsewhere.seen.every((s) => !(s.auth ?? '').includes('az-key-1')))
+
+      // Saved at another address with no key typed: the old key is forgotten, not sent along.
+      await ana('PATCH', `/api/agents/${hosted.agent.id}/endpoint`, { baseUrl: elsewhere.url })
+      assert.ok(elsewhere.seen.every((s) => !(s.auth ?? '').includes('az-key-1')))
+      assert.equal(await set.space().endpoints!.keyFor(hosted.agent.id), undefined)
+
+      // Another deployment at the same server keeps its key.
+      await ana('PATCH', `/api/agents/${hosted.agent.id}/endpoint`, { baseUrl: good.url, key: 'az-key-2' })
+      await ana('PATCH', `/api/agents/${hosted.agent.id}/endpoint`, { model: 'gpt-other' })
+      assert.equal(await set.space().endpoints!.keyFor(hosted.agent.id), 'az-key-2')
+      assert.equal(good.seen.at(-1)!.auth, 'Bearer az-key-2')
+    } finally {
+      await good.close()
+      await elsewhere.close()
+      await set.close()
+    }
+  })
+})

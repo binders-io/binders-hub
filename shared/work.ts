@@ -15,6 +15,23 @@ const current = (stage: string | undefined) => (stage === 'shipping' ? 'live' : 
 
 export type Provider = 'claude' | 'openai' | 'copilot' | 'opencode' | 'dsh' | 'cursor' | 'gemini' | 'pi' | 'amp' | 'goose' | 'aider' | 'qwen' | 'other'
 
+/**
+ * An agent that is a model at an address, run by the hub: no machine, no repo, no shell. Its key is kept sealed in the
+ * Binder's own store, never here.
+ */
+export interface AgentEndpoint {
+  /** brain: the hub's own chat model. openai: a server that speaks OpenAI's chat API (Azure's among them). anthropic: Claude by Anthropic's API, at Anthropic or in Microsoft Foundry. */
+  kind: 'brain' | 'openai' | 'anthropic'
+  /** Where its model is: an OpenAI-style server's address ending in /v1, or a Foundry resource's /anthropic address. None for the hub's own, or for Anthropic itself. */
+  baseUrl?: string
+  /** The model, or the deployment's name. */
+  model?: string
+  /** What it takes: cards given to it by name (Distill among them), chats about a note, debriefs, Challenges. */
+  takes: { cards: boolean; chats: boolean; debriefs: boolean; challenges: boolean }
+  /** Whether its model called a tool when last asked to: one that can't does no work, and says why. */
+  ready?: { ok: boolean; why?: string; at: string }
+}
+
 /** How the Binders runner starts an agent for each card, set on the Agents page. */
 export interface RunnerSettings {
   /** The command line it runs: Claude Code, Codex, or one of your own. */
@@ -102,6 +119,8 @@ export interface Agent {
   revoked?: boolean
   /** How the Binders runner starts it, when it runs under one. */
   runner?: RunnerSettings
+  /** The model it is, when it has no machine and the hub runs it. */
+  endpoint?: AgentEndpoint
   /**
    * A person asked its runners to restart, on the newest runner the hub has: what they're running stops (cards go back
    * on the board), and they start again. A runner acts on one asked after it started.
