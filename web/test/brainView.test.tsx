@@ -287,3 +287,58 @@ describe('A view that cannot be shown', () => {
     expect(page.container.textContent).toBe('Still here')
   })
 })
+
+describe('An offer in a view', () => {
+  const offer = { id: 'offer-1', what: 'Stop 2 cards: “Fix the header”, “Move the database”. They go to Proposed, where nothing picks them up.', button: 'Stop all 2', about: [{ kind: 'card', binder: 'acme', id: 'c-1', title: 'Fix the header', detail: 'In progress · Sonnet' }, { kind: 'card', binder: 'acme', id: 'c-2', title: 'Move the database', detail: 'Blocked · Sonnet' }], more: 3 }
+
+  it('shows what the hub would do, the things it is about, and its button, and says nothing changes until it’s pressed', async () => {
+    const { standInHub, mount, BrainView } = await load()
+    standInHub()
+    await mount(<BrainView view={view(['Offer', offer])} />)
+    const card = screen.getByRole('region', { name: 'Stop all 2' })
+    expect(within(card).getByText(/^Stop 2 cards: “Fix the header”/)).toBeTruthy()
+    expect(within(card).getByRole('link', { name: /Fix the header/ })).toBeTruthy()
+    expect(within(card).getByRole('link', { name: /Move the database/ })).toBeTruthy()
+    expect(within(card).getByText('and 3 more')).toBeTruthy()
+    expect(within(card).getByRole('button', { name: 'Stop all 2' })).toBeTruthy()
+    expect(within(card).getByRole('button', { name: 'Not now' })).toBeTruthy()
+    expect(within(card).getByText('Nothing changes until you press.')).toBeTruthy()
+  })
+
+  it('sends only the offer’s id when its button is pressed, and then says what the hub said in the buttons’ place', async () => {
+    const { standInHub, standInRoute, mount, BrainView } = await load()
+    standInHub()
+    const pressed = standInRoute('POST', '/api/brain/do', () => ({ said: 'Stopped 2 cards. They’re in Proposed.' }))
+    await mount(<BrainView view={view(['Offer', offer])} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Stop all 2' }))
+    expect(await screen.findByText('Stopped 2 cards. They’re in Proposed.')).toBeTruthy()
+    expect(pressed).toEqual([{ id: 'offer-1', go: true }])
+    expect(screen.queryByRole('button', { name: 'Stop all 2' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Not now' })).toBeNull()
+  })
+
+  it('leaves it when Not now is pressed, and says so', async () => {
+    const { standInHub, standInRoute, mount, BrainView } = await load()
+    standInHub()
+    const pressed = standInRoute('POST', '/api/brain/do', () => ({ said: 'All right, I’ve left it.' }))
+    await mount(<BrainView view={view(['Offer', offer])} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Not now' }))
+    expect(await screen.findByText('All right, I’ve left it.')).toBeTruthy()
+    expect(pressed).toEqual([{ id: 'offer-1', go: false }])
+  })
+
+  it('says a heavy one can’t easily be taken back, and draws one with nothing it’s about', async () => {
+    await draw(view(['Offer', { id: 'offer-2', what: 'Approve change set #6. That merges its 14 pull requests as each is ready.', button: 'Approve and merge', heavy: true }]))
+    const card = screen.getByRole('region', { name: 'Approve and merge' })
+    expect(within(card).getByText('This can’t easily be taken back. Nothing changes until you press.')).toBeTruthy()
+    expect(card.querySelector('.view-offer-about')).toBeNull()
+  })
+
+  it('draws nothing for an offer with no id or no button: what a model wrote for one never reaches the page as a button', async () => {
+    const { container } = await draw(view(['Offer', { do: 'stop', refs: ['c1'] }], ['Text', { text: 'Still here.' }]))
+    expect(screen.getByText('Still here.')).toBeTruthy()
+    expect(container.querySelector('.view-offer')).toBeNull()
+    expect(screen.queryByRole('button')).toBeNull()
+  })
+})
+

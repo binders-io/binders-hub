@@ -647,6 +647,13 @@ whether to do something on the board.
   through the hub's own offer, in its own words. The hub tells the model never to add made-up or sample data. A view
   that doesn't read is left out and the words stand alone, so a small model loses nothing. Under an answer, the sources
   it cites are listed, and what was found and not used folds away.
+- **An offer is a button, in the view.** What the Brain offers to do is drawn as an Offer: what it would do, in the
+  hub's words, the things it's about as they stand (live, like any Thing), its button and "Not now". An answer can
+  carry several, each with a button of its own, above anything the model drew, or as the whole view when it drew
+  nothing. A model can also place an Offer in its view by naming the thing to do and the marks; the hub makes the
+  offer or leaves the part out, and its words, button and id are always the hub's. Pressing sends the offer's id and
+  nothing else. An offer is for the one person it was made for, works once, lasts a few minutes, and is left out of
+  the conversation that's kept.
 - **The Brain's page** has the conversation in the middle, with the box at the bottom, and a rail beside it, "Now": what
   needs you (the same list as Home's) and each agent with what it's doing. On a narrow screen the two are a switch. An
   old address ending in `/ask` still opens it.
@@ -685,7 +692,9 @@ whether to do something on the board.
   which only proposes (several cards can be stopped with one line, and it comes to one offer for all of them): everything a
   model reads was written by anyone in a binder, so the hub works out what the line would
   mean, says so in its own words, and does it only on the person's answer, read by the hub from what they said, or a button
-  on the Brain. What merges, deploys or lets an agent use a tool takes that word itself ("approve"), and anything else they say
+  on the Brain. A reply can end with several lines, and each is an offer. A person never sees a line or a mark: a small
+  model that writes its lines inside its sentences, in backticks or in brackets, is read all the same, the line is taken
+  out and the sentence tidied, and a mark left in a sentence gives way to the thing's name. What merges, deploys or lets an agent use a tool takes that word itself ("approve"), and anything else they say
   drops it. It's checked again when it's carried out. A release is a change set, so "put release 18 into motion" approves
   #18. Stopping a card puts it in Proposed: its runner ends the run, and Ready would have an agent take it straight back.
 - **Settings** (`hub/src/brain/settings.ts`). The hub's, an admin's, with the keys sealed; environment variables fix

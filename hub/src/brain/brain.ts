@@ -13,11 +13,11 @@ import { runLoop } from '../../../shared/agent.ts'
 import type { Outcome } from '../../../shared/listen.ts'
 import { brainTools, SourceBook, toolRules, type Looked } from './tools.ts'
 import { takeView } from './viewBlock.ts'
-import { askPerson, boardFor, boardRules, doRules, heardAnswer, isAsking, onlyTellRules, propose, proposalView, readDo, spoken, stageNames, withoutMarks, type Asked, type Board, type Proposal, type WorkPlace } from './board.ts'
+import { askPerson, boardFor, boardRules, doRules, heardAnswer, isAsking, offerPerson, offersIn, onlyTellRules, propose, proposalView, readAll, readDo, spoken, stageNames, withoutMarks, type Asked, type Board, type Proposal, type WorkPlace } from './board.ts'
 import type { BrainSettingsStore } from './settings.ts'
 import type { VectorFiles } from './vectorFiles.ts'
-import { viewFrom, viewRules } from './view.ts'
-import type { View } from '../../../shared/view.ts'
+import { viewFrom, viewRules, withOffers } from './view.ts'
+import { readView, withoutOffers, type View } from '../../../shared/view.ts'
 import { topFolder } from '../listen/inbox.ts'
 
 // A Binder's brain: the index of its notes and cards, kept up as they change, what's captured on a phone or Mac put in
@@ -498,7 +498,15 @@ export class SpaceBrain {
     return this.inLine(login, async () => {
       // Its passages are cut: they're shown again from here, not searched.
       const result: AskResult = { ...turn.result, sources: turn.result.sources.map((s) => ({ ...s, text: s.text.slice(0, 2000) })) }
+      // A button is good for a few minutes: a kept turn keeps what was said, and none of its offers.
       delete result.proposal
+      delete result.proposals
+      const kept = result.view ? readView(result.view) : undefined
+      if (kept) {
+        const left = withoutOffers(kept)
+        if (left) result.view = left
+        else delete result.view
+      }
       const turns = [...(await this.thread(login)), { ...turn, result, at: new Date().toISOString() }].slice(-threadKept)
       await this.kv.set(threadKey(login), JSON.stringify(turns), threadDays * 86_400)
     })
@@ -575,7 +583,10 @@ export interface AskResult {
   /** Why there's no answer, in words, when the model couldn't give one. */
   problem?: string
   /** Something it would do, asked for in the question, for the person to answer with a button. */
+  /** What it offers to do, when it's one thing: kept for an app that shows one offer. */
   proposal?: ReturnType<typeof proposalView>
+  /** Everything it offers to do, each with a button of its own. On a page that draws views they're in the view too. */
+  proposals?: ReturnType<typeof proposalView>[]
   /** What it shows beside its words (shared/view.ts): checked by the hub, its Things filled in from the hub's own state. */
   view?: View
   /** What it went and looked at on the way, when it worked in steps: for the page to say. */
@@ -667,9 +678,7 @@ const onlyReads = (places: AskPlace[]) => places.some((p) => p.work) && !mayDo(p
 /** What a model's line comes to: something to ask the person, or why it can't be. */
 function proposalFrom(wanted: Asked, board: Board, person: string): { proposal: Proposal } | { refused: string } {
   try {
-    const proposal = propose(wanted, board, person)
-    askPerson(proposal)
-    return { proposal }
+    return { proposal: propose(wanted, board, person) }
   } catch (err) {
     if (err instanceof Refused) return { refused: err.message }
     throw err
@@ -757,27 +766,62 @@ export async function ask(settings: BrainSettingsStore, places: AskPlace[], ques
     const answer = stepped?.answer ?? await model.answer(asked, board ? [...passages, board.passage] : passages, rules)
     // What it went and read is a source like what was found for it.
     if (stepped) sources = stepped.sources
-    const said = (words: string, proposal?: Proposal) => ({ answer: { text: words, parts: [{ text: words, sources: [] }] }, sources, model: answer.model ?? model.label, searchedBy, ...(proposal ? { proposal: proposalView(proposal) } : {}) })
-    // The board isn't a source to show: it's only what's so now. A line a model gave is taken out of what's shown.
-    let wanted: Asked | undefined
+    const said = (words: string) => ({ answer: { text: words, parts: [{ text: words, sources: [] }] }, sources, model: answer.model ?? model.label, searchedBy })
+    // The board isn't a source to show: it's only what's so now. Every line a model gave is taken out of what's shown,
+    // wherever it wrote it, and so are the board's marks.
+    const lines: Asked[] = []
     const parts = answer.parts.flatMap((part) => {
-      const read = readDo(part.text)
-      wanted ??= read.asked
-      if (read.asked && !read.words) return []
-      const text = read.asked ? read.words : part.text
+      const read = readAll(part.text)
+      lines.push(...read.lines)
+      if (read.lines.length && !read.words) return []
+      // A part ends where the next begins, often with a blank line: that stays, whatever was taken out of it.
+      const text = read.lines.length ? keepingEnd(part.text, read.words) : part.text
       return [{ text: board ? keepingEnd(text, withoutMarks(text, board)) : text, sources: part.sources.filter((s) => s < sources.length).map((s) => s + 1) }]
     })
-    if (wanted) {
-      if (may && board && options.person) {
-        const came = proposalFrom(wanted, board, options.person)
-        return 'proposal' in came ? said(came.proposal.what, came.proposal) : said(came.refused)
+    // What it offers to do: each line, and each Offer in its view, is made into an offer by the hub or refused in
+    // words. Only where the person told it to do something and can press a button; the same thing is offered once.
+    const mayOffer = may && !!board && !!options.person
+    const made = new Map<string, Proposal>()
+    const refused: string[] = []
+    const offer = (wanted: Asked): Proposal | undefined => {
+      if (!mayOffer || made.size >= 6) return undefined
+      const key = [wanted.verb, wanted.mark, wanted.rest, ...(wanted.also ?? []).flatMap((line) => [line.mark, line.rest])].join(' ').toLowerCase()
+      const came = made.get(key) ?? proposalFrom(wanted, board!, options.person!)
+      if ('refused' in came) {
+        if (!refused.includes(came.refused)) refused.push(came.refused)
+        return undefined
       }
-      // Asked about it, or asked where they can't answer: it's words or nothing, and nothing is done.
-      if (!parts.length) return said(options.may && onlyReads(places) ? readerWords : options.may ? 'That’s a question, so I’ve changed nothing. Tell me to do it, and I’ll check with you first.' : 'You can’t do that from here. Talk can, on the iPhone, and so can the Brain on the hub.')
+      const proposal = 'proposal' in came ? came.proposal : came
+      // Two that come to the same thing (the same cards to stop, said two ways) are one offer.
+      const same = [...made.values()].find((one) => one.what === proposal.what)
+      made.set(key, same ?? proposal)
+      return same ?? proposal
     }
-    // What it shows: only where it was asked for, and only what reads as a view once the hub has filled in its Things.
-    const view = options.views && answer.view ? viewFrom(answer.view, board, places.flatMap((p) => (p.work ? [p.work] : []))) : undefined
-    return { answer: { text: parts.map((p) => p.text).join('').trim(), parts }, sources, model: answer.model ?? model.label, searchedBy, ...(view ? { view } : {}), ...(stepped?.looked.length ? { looked: stepped.looked } : {}) }
+    for (const wanted of offersIn(lines)) offer(wanted)
+    // What it shows: only where it was asked for, and only what reads as a view once the hub has filled in its Things
+    // and made its Offers.
+    const drawn = options.views && answer.view ? viewFrom(answer.view, board, places.flatMap((p) => (p.work ? [p.work] : [])), offer) : undefined
+    const proposals = [...new Set(made.values())]
+    const words = parts.map((p) => p.text).join('').trim()
+    if (lines.length && !mayOffer && !words) {
+      // Asked about it, or asked where they can't answer: it's words or nothing, and nothing is done.
+      return said(options.may && onlyReads(places) ? readerWords : options.may ? 'That’s a question, so I’ve changed nothing. Tell me to do it, and I’ll check with you first.' : 'You can’t do that from here. Talk can, on the iPhone, and so can the Brain on the hub.')
+    }
+    if (proposals.length && board) {
+      offerPerson(proposals)
+      // One offer can be answered in words too ("yes", out loud or typed); several need their buttons.
+      if (proposals.length === 1) askPerson(proposals[0])
+      const view = options.views ? withOffers(drawn, proposals, board) : drawn
+      // With nothing said beside its lines, what's said is what each would do, in the hub's words.
+      const text = words || proposals.map((proposal) => proposal.what).join('\n\n')
+      return { answer: { text, parts: words ? parts : [{ text, sources: [] }] }, sources, model: answer.model ?? model.label, searchedBy, proposal: proposalView(proposals[0]), proposals: proposals.map(proposalView), ...(view ? { view } : {}), ...(stepped?.looked.length ? { looked: stepped.looked } : {}) }
+    }
+    // Every line it gave was refused: why, after anything else it said.
+    if (lines.length && mayOffer && refused.length) {
+      const text = [words, ...refused].filter(Boolean).join('\n\n')
+      return { answer: { text, parts: [...parts, { text: `${words ? '\n\n' : ''}${refused.join('\n\n')}`, sources: [] }] }, sources, model: answer.model ?? model.label, searchedBy, ...(drawn ? { view: drawn } : {}) }
+    }
+    return { answer: { text: words, parts }, sources, model: answer.model ?? model.label, searchedBy, ...(drawn ? { view: drawn } : {}), ...(stepped?.looked.length ? { looked: stepped.looked } : {}) }
   } catch (err) {
     return { sources, model: model.label, searchedBy, problem: err instanceof Error ? err.message : String(err) }
   }
@@ -846,6 +890,8 @@ export async function talk(settings: BrainSettingsStore, places: AskPlace[], tur
   if (!may) return { reply: words || (onlyReads(places) ? readerWords : 'That’s a question, so I’ve changed nothing. Tell me to do it, and I’ll check with you first.'), sources, model: model.label }
   // What's read out is the hub's words for what would happen, whatever else the model said.
   const came = proposalFrom(asked, board, options.person)
+  // Out loud there's one thing to say yes to at a time: this one.
+  if ('proposal' in came) askPerson(came.proposal)
   return { reply: 'proposal' in came ? spoken(came.proposal) : came.refused, sources, model: model.label }
 }
 

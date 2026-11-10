@@ -150,3 +150,18 @@
   .view-diagram-wait { animation: none; }
   .view-chip, .view-thing { transition: none; }
 }
+
+/* An offer: something the hub is ready to do, once its button is pressed. */
+.view-offer { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line-strong); border-radius: var(--r); background: var(--fill-1); min-width: 0; }
+.view-offer-what { margin: 0; overflow-wrap: anywhere; font-weight: 550; }
+.view-offer-about { display: grid; gap: 6px; min-width: 0; }
+.view-offer-more { margin: 0; color: var(--muted); font-size: 13px; }
+.view-offer-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.view-offer-buttons .button { min-height: 36px; }
+.view-offer-note { color: var(--muted); font-size: 12.5px; }
+.view-offer-did { display: flex; align-items: flex-start; gap: 6px; margin: 0; color: var(--muted); }
+.view-offer-did svg { flex: none; margin-top: 3px; }
+@media (max-width: 520px) {
+  .view-offer-buttons .button { flex: 1 1 auto; min-height: 44px; }
+  .view-offer-note { flex-basis: 100%; }
+}

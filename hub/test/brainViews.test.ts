@@ -10,11 +10,11 @@ import { MemoryKV } from '../src/kv.ts'
 import { MemoryLog } from '../src/log.ts'
 import { BrainSettingsStore } from '../src/brain/settings.ts'
 import { ask, SpaceBrain, type AskPlace } from '../src/brain/brain.ts'
-import { boardFor, type WorkPlace } from '../src/brain/board.ts'
+import { boardFor, carryOut, takeProposal, type WorkPlace } from '../src/brain/board.ts'
 import { OpenAICompatibleModel, type BrainModel } from '../src/brain/models.ts'
 import { viewFrom, viewRules } from '../src/brain/view.ts'
 import { takeView, takeViewFromParts } from '../src/brain/viewBlock.ts'
-import { readView, viewBinders, viewMost } from '../../shared/view.ts'
+import { readView, viewBinders, viewMost, viewOffers } from '../../shared/view.ts'
 import type { Change } from '../../shared/state.ts'
 import type { Agent, Card } from '../../shared/work.ts'
 import { seed } from './helpers.ts'
@@ -292,10 +292,138 @@ describe('asking, where a view can be drawn', () => {
       set.say(`DO stop ${set.markOf('Fix the login page')}\n\n${block({ root: 'a', elements: { a: text('Stopped it.') } })}`)
       const result = await ask(set.settings, set.places, 'Stop the login page work', { person: 'you', may: true, views: true })
       assert.ok(result.proposal)
-      assert.equal(result.view, undefined)
+      // The offer is in the view, above what the model drew, and nothing has happened.
+      const view = readView(result.view)!
+      assert.deepEqual(viewOffers(view).map((offer) => [offer.id, offer.button]), [[result.proposal!.id, 'Stop it']])
+      assert.equal(view.elements[view.root].children[0], 'hub-offer-1')
       assert.equal(set.hub.state.cards.find((c) => c.id === 'working')!.stage, 'working')
     } finally {
       set.close()
     }
   })
 })
+
+describe('what the Brain offers to do, as buttons', () => {
+  /** What a small model wrote, the lines inside its sentences: taken from a real answer, with this board's marks. */
+  const inSentences = (set: Awaited<ReturnType<typeof setUp>>) => [
+    'Nothing is lost by stopping. You’d have to tell me which to act on:',
+    '',
+    `Stop the cards in progress: DO stop ${set.markOf('Fix the login page')} ${set.markOf('Move the database')}`,
+    '',
+    `Stop the ready one too: DO stop ${set.markOf('Write the changelog')}`,
+    '',
+    `Change set #18 has no discard. Approve it (DO approve ${set.markOf('The November release')}) to merge, or leave it as is.`,
+  ].join('\n')
+
+  it('makes a button of every line, wherever the model wrote it, and shows no line and no mark', async () => {
+    const set = await setUp()
+    try {
+      set.say(inSentences(set))
+      const result = await ask(set.settings, set.places, 'Get rid of the rebrand work', { person: 'you', may: true, views: true })
+      const said = result.answer!.text
+      assert.doesNotMatch(said, /\bDO\b/, 'no line reaches the person')
+      assert.doesNotMatch(said, /\b[cs]\d+\b/, 'and no mark')
+      assert.match(said, /Stop the cards in progress\.\n\nStop the ready one too\.\n\nChange set #18 has no discard\. Approve it to merge, or leave it as is\./)
+
+      const view = readView(result.view)!
+      const offers = viewOffers(view)
+      assert.deepEqual(offers.map((offer) => offer.button), ['Stop all 2', 'Stop it', 'Approve and merge'])
+      assert.deepEqual(offers.map((offer) => (offer.about ?? []).map((thing) => `${thing.kind}:${thing.title}`)), [['card:Fix the login page', 'card:Move the database'], ['card:Write the changelog'], ['set:Change set #18: The November release']])
+      assert.match(offers[0].what, /^Stop 2 cards: “Fix the login page”, “Move the database”\./)
+      assert.equal(offers[2].heavy, true)
+      assert.deepEqual(result.proposals!.map((p) => p.id), offers.map((offer) => offer.id))
+      // Nothing has happened: each waits for its own button.
+      assert.deepEqual(['working', 'asking', 'waiting'].map((id) => set.hub.state.cards.find((c) => c.id === id)!.stage), ['working', 'working', 'ready'])
+
+      // Each button works by its own id, once, and only for the person it was made for.
+      assert.equal(takeProposal('someone-else', offers[1].id), undefined)
+      const second = takeProposal('you', offers[1].id)!
+      assert.match(await carryOut(second), /^Stopped “Write the changelog”/)
+      assert.equal(set.hub.state.cards.find((c) => c.id === 'waiting')!.stage, 'proposed')
+      assert.equal(takeProposal('you', offers[1].id), undefined, 'pressed once')
+      const first = takeProposal('you', offers[0].id)!
+      assert.equal(await carryOut(first), 'Stopped 2 cards. They’re in Proposed.')
+      assert.equal(set.hub.state.changeSets[0].state, 'review', 'the one not pressed is left alone')
+    } finally {
+      set.close()
+    }
+  })
+
+  it('offers nothing for a question, or to someone who only reads: the lines go, and no button comes', async () => {
+    const set = await setUp()
+    try {
+      set.say(inSentences(set))
+      const asked = await ask(set.settings, set.places, 'What would stopping the rebrand lose?', { person: 'you', may: true, views: true })
+      assert.equal(asked.proposal, undefined)
+      assert.equal(asked.view, undefined)
+      assert.doesNotMatch(asked.answer!.text, /\bDO\b/)
+      const reader = await ask(set.settings, [{ ...set.places[0], work: { ...set.place, readOnly: true } }], 'Get rid of the rebrand work', { person: 'you', may: true, views: true })
+      assert.equal(reader.proposals, undefined)
+      assert.doesNotMatch(reader.answer!.text, /\bDO\b/)
+    } finally {
+      set.close()
+    }
+  })
+
+  it('takes an Offer a model put in its view, makes it the hub’s own, and offers the same thing only once', async () => {
+    const set = await setUp()
+    try {
+      const login = set.markOf('Fix the login page')
+      const drawn = block({ root: 'all', elements: {
+        all: { type: 'Stack', props: {}, children: ['say', 'go', 'made-up'] },
+        say: text('This is what stopping would do.'),
+        go: { type: 'Offer', props: { do: 'stop', refs: [login], what: 'Delete everything', button: 'Yes!!', id: 'my-own-id' } },
+        'made-up': { type: 'Offer', props: { do: 'stop', refs: ['c99'] } },
+      } })
+      set.say(`I can stop it.\nDO stop ${login}\n\n${drawn}`)
+      const result = await ask(set.settings, set.places, 'Stop the login page work', { person: 'you', may: true, views: true })
+      const view = readView(result.view)!
+      const offers = viewOffers(view)
+      assert.equal(offers.length, 1, 'the line and the part ask for the same thing')
+      // Its words, its button and its id are the hub's, whatever the model wrote for them.
+      assert.equal(offers[0].button, 'Stop it')
+      assert.match(offers[0].what, /^Stop “Fix the login page”, which Sonnet is working on\./)
+      assert.equal(offers[0].id, result.proposal!.id)
+      assert.deepEqual(view.elements.all.children, ['say', 'go'], 'one for a thing that isn’t on the board is left out')
+
+      // Where nothing may be offered, a model's Offer part is left out like any other it made up.
+      const asked = await ask(set.settings, set.places, 'What is Sonnet doing?', { person: 'you', may: true, views: true })
+      assert.equal(viewOffers(readView(asked.view)!).length, 0)
+    } finally {
+      set.close()
+    }
+  })
+
+  it('says why, in words, when what a line asks for can’t be done, and keeps what else was said', async () => {
+    const set = await setUp()
+    try {
+      set.say(`Here is what I can do.\nDO approve ${set.markOf('Fix the login page')}`)
+      const result = await ask(set.settings, set.places, 'Approve the login page', { person: 'you', may: true, views: true })
+      assert.equal(result.proposal, undefined)
+      assert.equal(result.answer!.text, 'Here is what I can do.\n\nI couldn’t tell which one you meant.')
+    } finally {
+      set.close()
+    }
+  })
+
+  it('keeps a turn without its offers: a button doesn’t outlive its few minutes', async () => {
+    const set = await setUp()
+    try {
+      set.say(`${inSentences(set)}\n\n${block({ root: 'a', elements: { a: text('How it stands.') } })}`)
+      const result = await ask(set.settings, set.places, 'Get rid of the rebrand work', { person: 'you', may: true, views: true })
+      assert.equal(viewOffers(readView(result.view)!).length, 3)
+      const brain = set.places[0].brain
+      await brain.keepTurn('you', { question: 'Get rid of the rebrand work', everywhere: false, result })
+      const [kept] = await brain.thread('you')
+      assert.equal(kept.result.proposal, undefined)
+      assert.equal(kept.result.proposals, undefined)
+      const view = readView(kept.result.view)!
+      assert.equal(viewOffers(view).length, 0)
+      assert.deepEqual(Object.values(view.elements).filter((e) => e.type === 'Text').map((e) => e.props.text), ['How it stands.'])
+      assert.match(kept.result.answer!.text, /Stop the cards in progress\./, 'what was said is kept')
+    } finally {
+      set.close()
+    }
+  })
+})
+

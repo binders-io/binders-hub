@@ -13,7 +13,7 @@ import { Webhooks } from '../src/webhooks.ts'
 import { IssuesSaver } from '../src/savers/issues.ts'
 import { BrainSettingsStore } from '../src/brain/settings.ts'
 import { ask, askText, SpaceBrain, talk, type AskPlace } from '../src/brain/brain.ts'
-import { answerIn, boardFor, isAsking, propose, readDo, takeProposal, withoutMarks, type WorkPlace } from '../src/brain/board.ts'
+import { answerIn, boardFor, isAsking, offersIn, propose, readAll, readDo, takeProposal, withoutMarks, type WorkPlace } from '../src/brain/board.ts'
 import type { BrainModel } from '../src/brain/models.ts'
 import type { Change } from '../../shared/state.ts'
 import { forAttention, waitingOn } from '../../shared/waiting.ts'
@@ -177,16 +177,59 @@ describe('how the work stands, for the brain', () => {
     assert.deepEqual(readDo('Do stop by the office.\nDO nothing at all'), { words: 'Do stop by the office.\nDO nothing at all', asked: undefined })
   })
 
+  it('reads a line a model put inside a sentence, in backticks or in brackets, and leaves the sentence to read on', () => {
+    // What a small model wrote to a person, word for word but for the marks: every one of these is a button, not words.
+    const reply = [
+      'Nothing is being worked on right now. You’d have to tell me which to act on:',
+      '',
+      'Stop the blocked cards: DO stop c1 c2 c3',
+      '',
+      'Stop the ready one too: add `c4`',
+      '',
+      'Change set #6 has no discard. Approve it (DO approve s6) to merge, or leave it as is.',
+    ].join('\n')
+    const read = readAll(reply)
+    assert.deepEqual(read.lines, [{ verb: 'stop', mark: 'c1', rest: 'c2 c3' }, { verb: 'approve', mark: 's6', rest: '' }])
+    assert.equal(read.words, ['Nothing is being worked on right now. You’d have to tell me which to act on:', '', 'Stop the blocked cards.', '', 'Stop the ready one too: add `c4`', '', 'Change set #6 has no discard. Approve it to merge, or leave it as is.'].join('\n'))
+    assert.ok(!/\bDO\b/.test(read.words), 'no line is left for a person to read')
+
+    assert.deepEqual(readAll('To stop it, use `DO stop c2`.').lines, [{ verb: 'stop', mark: 'c2', rest: '' }])
+    assert.equal(readAll('To stop it, use `DO stop c2`.').words, 'To stop it.')
+    assert.equal(readAll('Hold back what’s ready: add `DO stop c5 c6`').words, 'Hold back what’s ready.')
+    assert.deepEqual(readAll('I can tell it: DO tell c1 use the staging database').lines, [{ verb: 'tell', mark: 'c1', rest: 'use the staging database' }])
+    assert.deepEqual(readAll('- Stop both: DO stop c1, c2 and c3 if you want').lines, [{ verb: 'stop', mark: 'c1', rest: 'c2 c3' }])
+    assert.equal(readAll('- Stop both: DO stop c1, c2 and c3 if you want').words, '- Stop both: if you want.')
+    // A form quoted from its rules names nothing: it's taken out, and offers nothing.
+    assert.deepEqual(readAll('You could say DO stop MARK or (DO approve MARK).'), { words: 'You could.', lines: [] })
+    // In the order written, whichever way each was written.
+    assert.deepEqual(readAll('First (DO approve s6).\nDO stop c1').lines.map((line) => line.verb), ['approve', 'stop'])
+    // Words that aren't its line stay words.
+    assert.deepEqual(readAll('We DO need to stop by. Do approve of it.'), { words: 'We DO need to stop by. Do approve of it.', lines: [] })
+  })
+
+  it('makes a button of each thing a reply offers: cards named a line each are one, and a line naming several is its own', () => {
+    const stop = (mark: string, rest = '') => ({ verb: 'stop' as const, mark, rest })
+    assert.deepEqual(offersIn([stop('c1'), stop('c2'), stop('c3')]), [{ ...stop('c1'), also: [stop('c2'), stop('c3')] }])
+    assert.deepEqual(offersIn([stop('c1', 'c2 c3'), stop('c4')]), [stop('c1', 'c2 c3'), stop('c4')])
+    const approve = { verb: 'approve' as const, mark: 's6', rest: '' }
+    assert.deepEqual(offersIn([stop('c1', 'c2'), approve, approve, stop('c1', 'c2')]), [stop('c1', 'c2'), approve])
+    assert.equal(offersIn(Array.from({ length: 9 }, (_x, i) => ({ verb: 'tell' as const, mark: `c${i}`, rest: 'hello' }))).length, 6)
+  })
+
   it('takes the board’s marks out of what’s said, and leaves other words alone', async () => {
     const set = await setUp()
     try {
       const board = boardFor([set.place], 'you')
       assert.ok(board.targets.has('c1') && board.targets.has('c2') && board.targets.has('s18'))
       assert.equal(withoutMarks('Sonnet is waiting on you (six cards, c1–c2).', board), 'Sonnet is waiting on you (six cards).')
-      assert.equal(withoutMarks('Change set #18 [s18] is in review, and [c1] is ready.', board), 'Change set #18 is in review, and is ready.')
+      // A mark beside the name it stands for just goes; one on its own gives way to the thing's name.
+      assert.equal(withoutMarks('Change set #18 [s18] is in review, and [c1] is ready.', board), 'Change set #18 is in review, and “Move the database” is ready.')
+      assert.equal(withoutMarks('Stop the ready one too: add `c1`.', board), 'Stop the ready one too: add “Move the database”.')
+      assert.equal(withoutMarks('[c1] “Move the database” is waiting.', board), '“Move the database” is waiting.')
+      assert.equal(withoutMarks('Approve s18 when you’re ready.', board), 'Approve change set #18 when you’re ready.')
       assert.equal(withoutMarks('Files are in S3, on v2, and x9 is not a thing here.', board), 'Files are in S3, on v2, and x9 is not a thing here.')
       set.say('Sonnet has c1 and [c2].')
-      assert.equal((await talk(set.settings, set.places, [{ role: 'user', text: 'What is Sonnet on?' }], { person: 'you' })).reply, 'Sonnet has and.')
+      assert.equal((await talk(set.settings, set.places, [{ role: 'user', text: 'What is Sonnet on?' }], { person: 'you' })).reply, 'Sonnet has “Move the database” and “Clear the cache”.')
     } finally {
       await set.close()
     }

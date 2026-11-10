@@ -57,6 +57,17 @@ function ofTheBoard(question: string, board: string): { words: string; view?: un
     return card ? { words: `DO stop ${card.mark}` } : { words: 'I couldn’t tell which card you meant. Say a few words of its title.' }
   }
 
+  // "Get rid of the work", "clear the board": more than one thing could be meant. Written the way a small model does
+  // it, with its lines inside its sentences, as that is what the hub has to make buttons of.
+  if (/^(?:please )?(get rid of|wind down|clear|drop|discard|cancel)\b/.test(asked)) {
+    const lines = [
+      working.length ? `Stop what’s being worked on: DO stop ${working.map((c) => c.mark).join(' ')}` : '',
+      ready.length ? `Hold back what’s ready, so no agent picks it up: add \`DO stop ${ready.map((c) => c.mark).join(' ')}\`` : '',
+      sets.length ? `A change set can’t be discarded from here. Approve it (DO approve ${sets[0].mark}) to merge, or leave it as it is.` : '',
+    ].filter(Boolean)
+    return { words: lines.length ? ['I can’t delete anything. This is what can be done:', ...lines].join('\n\n') : 'There’s nothing on the board to stop.' }
+  }
+
   if (/need|waiting on me|wait/.test(asked)) {
     if (!waiting.length) return { words: 'Nothing is waiting on you.', view: stack({ none: { type: 'Callout', props: { tone: 'good', title: 'All clear', text: 'No agent is asking you anything, and nothing is held for you.' } }, next: next(['What are my agents working on?', 'What’s in review?']) }, ['none', 'next']) }
     const elements: Elements = { next: next(['What are my agents working on?']) }

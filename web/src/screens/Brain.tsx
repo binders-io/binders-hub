@@ -16,6 +16,7 @@ import { useNeedsYou } from '../brain/rail/useNeedsYou'
 import { space } from '../data/space'
 import { go } from '../route'
 import { useUI } from '../ui'
+import { readView, viewOffers } from '../../../shared/view.ts'
 
 // The Brain: where the hub's questions and its doings meet. Ask it about this binder's notes and cards, or every
 // binder you're in, and it answers with the notes and cards the answer rests on numbered under it, and from how the work
@@ -243,15 +244,22 @@ function Answer({ turn, onNote, onCard, onAsk, mayKeep }: { turn: Turn; onNote: 
     </ol>
   )
 
+  // What it offers to do is in its view, each offer a button with the things it's about: then the words are shown too,
+  // and the view under them. A hub that gave one offer and no view of it is shown the old way, the offer alone.
+  const offersDrawn = useMemo(() => {
+    const read = result.view != null ? readView(result.view) : undefined
+    return !!read && viewOffers(read).length > 0
+  }, [result])
+  const offerAlone = !!result.proposal && !offersDrawn
   // Its view, if the hub gave it one, drawn under the words. Asking from it sends that question as the next one.
   const drawn = result.view != null ? <Suspense fallback={null}><BrainView view={result.view} onAsk={onAsk} /></Suspense> : null
 
   return (
     <section id={`ask-turn-${turn.id}`} className="ask-result">
       <h2 className="ask-question">{turn.question}</h2>
-      {result.proposal ? (
+      {offerAlone ? (
         <>
-          <Proposed key={result.proposal.id} proposal={result.proposal} />
+          <Proposed key={result.proposal!.id} proposal={result.proposal!} />
           {drawn}
         </>
       ) : result.answer ? (
@@ -274,7 +282,7 @@ function Answer({ turn, onNote, onCard, onAsk, mayKeep }: { turn: Turn; onNote: 
           {!result.sources.length ? 'Nothing in your binders matches that.' : result.problem ? `No answer: ${result.problem} The passages that match best are below.` : <>The hub has no model to answer with yet, so here are the passages that match best. An admin can set one up in <SettingsLink section="brain" />.</>}
         </p>
       )}
-      {!result.proposal && !!result.looked?.length && (
+      {!offerAlone && !!result.looked?.length && (
         <details className="ask-read ask-looked">
           <summary>Looked at <span className="num">{result.looked.length}</span></summary>
           <ul>
@@ -282,13 +290,13 @@ function Answer({ turn, onNote, onCard, onAsk, mayKeep }: { turn: Turn; onNote: 
           </ul>
         </details>
       )}
-      {!result.proposal && used.length > 0 && (
+      {!offerAlone && used.length > 0 && (
         <>
           <h3 className="ask-sources-title">Sources</h3>
           {list(used)}
         </>
       )}
-      {!result.proposal && unused.length > 0 && (
+      {!offerAlone && unused.length > 0 && (
         <details className="ask-read">
           <summary>Also read <span className="num">{unused.length}</span></summary>
           {list(unused)}

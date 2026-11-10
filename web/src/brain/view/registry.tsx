@@ -5,6 +5,7 @@ import { Chart } from './Chart'
 import { Diagram } from './Diagram'
 import { inline } from './inline'
 import { Group, Suggestions, ToneMark } from './parts'
+import { Offer } from './Offer'
 import { Thing } from './Thing'
 
 // One React component for each part a view may be made of. Every string in a view was written by a model, so each is
@@ -93,6 +94,7 @@ export const { registry } = defineRegistry(catalog, {
     Chart: ({ props }) => <Chart {...props} />,
     Diagram: ({ props }) => <Diagram title={props.title} code={props.code} />,
     Thing: ({ props }) => <Thing {...props} />,
+    Offer: ({ props }) => <Offer {...props} />,
     Suggest: ({ props }) => <Suggestions questions={props.questions} />,
   },
   // The handler that does the asking is the page's own, given to the provider in BrainView, as only it has onAsk.
