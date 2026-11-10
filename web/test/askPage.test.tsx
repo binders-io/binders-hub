@@ -4,23 +4,38 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { phoneQuery } from '../src/components/bits'
 import type { UI } from '../src/ui'
 
-// Ask keeps what was asked and answered in this visit, and an answer can become a note or a card. Home has a line that
-// takes a question there. What's kept lives in the module, so each test loads a fresh one: a reload, in effect.
+// Ask keeps what was asked and answered, and each question goes with the ones before it. The hub keeps the conversation,
+// so a reload or another device finds it. An answer can become a note or a card. Home has a line that takes a question
+// there. What the page holds lives in the module, so each test loads a fresh one: a reload, in effect.
 
 const source = (n: number, over: object = {}) => ({ n, binder: 'b2', binderName: 'Other', kind: 'note', id: `n${n}`, title: `Note ${n}`, text: `Passage ${n}.`, url: `#/notes/n${n}`, ...over })
 const ui = (over: Partial<UI> = {}): UI => ({ openItem: () => {}, openPalette: () => {}, binder: 'b2', setBinder: () => {}, ...over })
 
-/** The app's pieces, loaded fresh, against a hub with two binders that answers each question with a line of its own. */
-async function load(answer: (question: string) => unknown = (question) => ({ answer: { text: '', parts: [{ text: `The answer to ${question}`, sources: [1, 2] }] }, sources: [source(1), source(2, { kind: 'card', id: 'c1', title: 'Fix [it]', url: '#/work/c1' }), source(3, { binder: 'b1', binderName: 'Binder', title: 'Far away', url: 'https://hub.test/b1/#/notes/n3' })], searchedBy: 'words and meaning', model: 'stand-in' })) {
+/** What the hub keeps of one turn, as it gives it back. */
+interface Kept { question: string; result: unknown; everywhere: boolean }
+
+/**
+ * The app's pieces, loaded fresh, against a hub with two binders that answers each question with a line of its own and
+ * keeps the conversation as the real one does: what's asked with the earlier turns is kept, and read and cleared.
+ * `kept` is the hub's, which a test may bring from before a reload.
+ */
+async function load(answer: (question: string) => unknown = (question) => ({ answer: { text: '', parts: [{ text: `The answer to ${question}`, sources: [1, 2] }] }, sources: [source(1), source(2, { kind: 'card', id: 'c1', title: 'Fix [it]', url: '#/work/c1' }), source(3, { binder: 'b1', binderName: 'Binder', title: 'Far away', url: 'https://hub.test/b1/#/notes/n3' })], searchedBy: 'words and meaning', model: 'stand-in' }), kept: Kept[] = []) {
   vi.resetModules()
   const harness = await import('./harness')
   const { Ask } = await import('../src/screens/Ask')
   const { UIContext } = await import('../src/ui')
   const { standInRoute } = harness
   harness.standInHub(() => harness.hubState({ binders: [{ id: 'b1', name: 'Binder' }, { id: 'b2', name: 'Other' }] }))
-  const asked = standInRoute('POST', '/api/brain/ask', (body) => answer((body as { question: string }).question)) as { question: string; everywhere: boolean }[]
+  standInRoute('GET', '/api/brain/conversation', () => ({ turns: kept }))
+  standInRoute('DELETE', '/api/brain/conversation', () => { kept.length = 0; return {} })
+  const asked = standInRoute('POST', '/api/brain/ask', (body) => {
+    const { question, everywhere, turns } = body as { question: string; everywhere: boolean; turns?: unknown[] }
+    const result = answer(question)
+    if (turns) kept.push({ question, result, everywhere })
+    return result
+  }) as { question: string; everywhere: boolean; turns: { role: string; text: string }[] }[]
   const mountAsk = (provide: UI = ui(), props: { asked?: { question: string; at: number } } = {}) => harness.mount(<UIContext.Provider value={provide}><Ask {...props} /></UIContext.Provider>)
-  return { ...harness, Ask, UIContext, asked, mountAsk }
+  return { ...harness, Ask, UIContext, asked, kept, mountAsk }
 }
 
 /** Types a question in the box and sends it. */
@@ -53,30 +68,103 @@ describe('Ask keeps the visit’s questions', () => {
     expect((box as HTMLInputElement).value).toBe('')
   })
 
-  it('sends each question alone, and doesn’t say it remembers', async () => {
-    const { mountAsk, calledOn } = await load()
+  it('sends each question with the conversation before it, and says that it remembers', async () => {
+    const { mountAsk, asked } = await load()
     await mountAsk()
+    expect(screen.getByText('It remembers this conversation, so you can ask a follow-up.')).toBeTruthy()
     await ask('One?')
     await ask('Two?')
-    const bodies = vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/brain/ask').map(([, init]) => JSON.parse(String(init?.body)))
-    expect(bodies).toEqual([{ question: 'One?', everywhere: false }, { question: 'Two?', everywhere: false }])
-    expect(calledOn().filter((c) => c === 'POST /api/brain/ask')).toHaveLength(2)
-    expect(document.body.textContent).not.toMatch(/remember|follow.?up|earlier|conversation/i)
+    expect(asked).toEqual([
+      { question: 'One?', everywhere: false, turns: [] },
+      { question: 'Two?', everywhere: false, turns: [{ role: 'user', text: 'One?' }, { role: 'assistant', text: 'The answer to One?' }] },
+    ])
   })
 
-  it('still has them when you come back to the screen, until the page is reloaded', async () => {
-    const { mountAsk } = await load()
+  it('sends the last six, each cut short, and a question with no answer alone', async () => {
+    const long = 'x'.repeat(3000)
+    const { mountAsk, asked } = await load((question) => (question === 'Nothing?' ? { sources: [source(1)], searchedBy: 'words' } : { answer: { text: '', parts: [{ text: `${long} `, sources: [1] }] }, sources: [source(1)], searchedBy: 'words' }))
     await mountAsk()
+    for (const q of ['Q1', 'Q2', 'Nothing?', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8']) await ask(q)
+    // Q8 is the question: the six before it are Q2 to Q7.
+    const last = asked.at(-1)!.turns
+    expect(last.filter((t) => t.role === 'user').map((t) => t.text)).toEqual(['Q2', 'Nothing?', 'Q4', 'Q5', 'Q6', 'Q7'])
+    // The one with no answer goes without one, and nothing is made up for it.
+    const at = last.findIndex((t) => t.text === 'Nothing?')
+    expect(last[at + 1].role).toBe('user')
+    const answers = last.filter((t) => t.role === 'assistant')
+    expect(answers).toHaveLength(5)
+    expect(answers.every((t) => t.text === 'x'.repeat(1200))).toBe(true)
+  })
+
+  it('has the conversation the hub kept when the screen opens, with its sources, even after a reload', async () => {
+    const first = await load()
+    await first.mountAsk()
     await ask('What is the plan?')
     await ask('Who owns it?')
     cleanup()
-    await mountAsk()
-    expect(questions()).toEqual(['What is the plan?', 'Who owns it?'])
+    // Coming back: as it was, the hub's own.
+    await first.mountAsk()
+    await waitFor(() => expect(questions()).toEqual(['What is the plan?', 'Who owns it?']))
     cleanup()
-    const reloaded = await load()
+    const reloaded = await load(undefined, first.kept)
     await reloaded.mountAsk()
-    expect(questions()).toEqual([])
+    await waitFor(() => expect(questions()).toEqual(['What is the plan?', 'Who owns it?']))
+    const [firstTurn] = [...document.querySelectorAll('.ask-result')]
+    expect(firstTurn.textContent).toContain('The answer to What is the plan?')
+    expect(within(firstTurn as HTMLElement).getAllByText('Note 1').length).toBeGreaterThan(0)
+    // A question after the reload goes with what the hub had.
+    await ask('And then?')
+    expect(reloaded.asked.at(-1)!.turns.map((t) => t.text)).toEqual(['What is the plan?', 'The answer to What is the plan?', 'Who owns it?', 'The answer to Who owns it?'])
+  })
+
+  it('shows another device’s turns, as the hub has them, and the scope it was asked with', async () => {
+    const result = { answer: { text: '', parts: [{ text: 'It is on the other binder.', sources: [3] }] }, sources: [source(1), source(2), source(3, { binder: 'b1', binderName: 'Binder', title: 'Far away', url: 'https://hub.test/b1/#/notes/n3' })], searchedBy: 'words' }
+    const { mountAsk } = await load(undefined, [{ question: 'Where is it?', result, everywhere: true }])
+    await mountAsk()
+    await waitFor(() => expect(questions()).toEqual(['Where is it?']))
+    expect((screen.getByRole('checkbox', { name: 'Every binder I’m in' }) as HTMLInputElement).checked).toBe(true)
+    expect(screen.getByText('It is on the other binder.')).toBeTruthy()
+  })
+
+  it('carries on without the conversation when the hub can’t give it', async () => {
+    const { mountAsk, standInRoute } = await load()
+    standInRoute('GET', '/api/brain/conversation', () => new Response(JSON.stringify({ error: 'no' }), { status: 500 }))
+    await mountAsk()
+    await ask('One?')
+    expect(questions()).toEqual(['One?'])
+  })
+
+  it('waits for the conversation before sending a question from ⌘K or Home, so it follows what the hub has', async () => {
+    const result = { answer: { text: '', parts: [{ text: 'Sam.', sources: [] }] }, sources: [], searchedBy: 'words' }
+    const { mountAsk, standInRoute, asked } = await load(undefined, [{ question: 'Who books it?', result, everywhere: false }])
+    let release = () => {}
+    const held = new Promise<void>((done) => { release = done })
+    standInRoute('GET', '/api/brain/conversation', async () => { await held; return { turns: [{ question: 'Who books it?', result, everywhere: false }] } })
+    await mountAsk(ui(), { asked: { question: 'and when?', at: 1 } })
+    await screen.findByRole('heading', { name: 'and when?' })
+    expect(asked).toEqual([])
+    release()
+    await waitFor(() => expect(asked).toHaveLength(1))
+    expect(asked[0].turns.map((t) => t.text)).toEqual(['Who books it?', 'Sam.'])
+    await waitFor(() => expect(questions()).toEqual(['Who books it?', 'and when?']))
+  })
+
+  it('starts a new conversation after asking, and the hub forgets the old one', async () => {
+    const { mountAsk, asked, kept } = await load()
+    await mountAsk()
+    expect(screen.queryByRole('button', { name: /New conversation/ })).toBeNull()
+    await ask('One?')
+    fireEvent.click(screen.getByRole('button', { name: 'New conversation' }))
+    // The first press only asks.
+    expect(screen.getByRole('button', { name: 'Start over? Press again' })).toBeTruthy()
+    expect(questions()).toEqual(['One?'])
+    expect(kept).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Start over? Press again' }))
+    await waitFor(() => expect(questions()).toEqual([]))
+    expect(kept).toHaveLength(0)
     expect(screen.getByRole('heading', { name: 'Ask your binders' })).toBeTruthy()
+    await ask('Two?')
+    expect(asked.at(-1)).toEqual({ question: 'Two?', everywhere: false, turns: [] })
   })
 
   it('answers a question from ⌘K or Home once, and puts it with the rest', async () => {

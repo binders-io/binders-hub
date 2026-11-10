@@ -1,4 +1,5 @@
 import { tools, type AgentTool } from './agents.ts'
+import { trashKept } from './notes.ts'
 import { withTestResult, type Challenge, type Debrief, type TestResult, type WorktreeDiff } from './changeSet.ts'
 import { runsKept, type Schedule, type ScheduleRun } from './schedule.ts'
 // The work: cards on a binder's board, the agents that take them, their pull requests, the change sets those are
@@ -186,6 +187,8 @@ export interface Card {
   /** A live run waiting on a permission: what it wants to do, until its agent's owner answers or the run moves on. */
   permission?: { request: string; agent: string; tool: string; what: string; at: string; answer?: 'allow' | 'deny'; by?: string }
   activity: Activity[]
+  /** In a browser's light state: how many older lines of its activity were left out, which the card's page asks for when it opens. */
+  activityMore?: number
   cost?: number
   /** Tokens its runs used, all told. */
   tokens?: number
@@ -302,6 +305,10 @@ export interface PullRequest {
   mergeable?: 'clean' | 'behind' | 'conflicts' | 'blocked' | 'unknown'
   /** The commit it made on its base when it merged, as GitHub says: what an environment's deployed commit is compared with. Missing from before it was kept. */
   mergeSha?: string
+  /** When the hub first saw it merged or closed, if its card didn't say: what the weeks its diff is kept for are counted from. */
+  endedAt?: string
+  /** The lines of its files were dropped from the state, once it had been over for a while: GitHub has them, and the hub asks when they're opened. */
+  linesDropped?: boolean
 }
 
 export type ChangeSetState = 'assembling' | 'review' | 'merging' | 'merged' | 'shipped'
@@ -525,6 +532,22 @@ export interface WorkState {
   briefs?: RepoBrief[]
   folderRules?: FolderRule[]
   noteWork?: NoteWork[]
+  /** Cards deleted in the last 30 days, oldest first: the hub's, never in what a browser holds (shared/light.ts). */
+  trashedCards?: TrashedCard[]
+}
+
+/** A card deleted, whole with its activity, with who deleted it and when: it can be put back until it's emptied from the trash. */
+export interface TrashedCard {
+  card: Card
+  /** A person's login, an agent's name, or "hub". */
+  by: string
+  at: string
+}
+
+/** The card as it's put back: in its stage, held by no agent, and a card that was being worked waiting in Ready. */
+export function cardPutBack(card: Card, by: string, at: string): Card {
+  const { agentId: _holder, permission: _permission, doing: _doing, progress: _progress, ...rest } = card
+  return withActivity({ ...rest, stage: card.stage === 'working' ? 'ready' : card.stage }, { at, by, kind: 'moved', text: 'Put back from the trash' })
 }
 
 export const emptyWork = (): WorkState => ({ agents: [], cards: [], proposals: [], pulls: [], changeSets: [], environments: [], runs: [], chats: [], schedules: [], briefs: [], folderRules: [], noteWork: [] })
@@ -536,13 +559,15 @@ export type WorkChange =
   | { type: 'agent.put'; agent: Agent }
   | { type: 'agent.seen'; id: string; at: string }
   | { type: 'agent.revoke'; id: string }
-  | { type: 'card.put'; card: Card }
+  /** `restored`: the hub put it back from the trash, which only it says, so the trash lets go of it. */
+  | { type: 'card.put'; card: Card; restored?: { by: string; at: string } }
   | { type: 'card.update'; id: string; fields: Partial<Omit<Card, 'id' | 'activity'>>; activity?: Activity }
   /** An agent taking a card: only the first one applied gets it, so two agents asking at once never both do. */
   | { type: 'card.claim'; id: string; agentId: string; at: string }
   | { type: 'card.release'; id: string; agentId: string; at: string; why: string; failed?: boolean }
   | { type: 'card.activity'; id: string; activity: Activity }
-  | { type: 'card.delete'; id: string }
+  /** `by` and `at` are the hub's, stamped on as it's written: with them, the card goes to the trash instead of nowhere. */
+  | { type: 'card.delete'; id: string; by?: string; at?: string }
   | { type: 'proposal.put'; proposal: Proposal }
   | { type: 'proposal.update'; id: string; fields: Partial<Pick<Proposal, 'state' | 'cardId' | 'meantFor' | 'claim' | 'rule'>> }
   /** A proposal accepted: only the first counts, and under a rule, only up to its limit for the note. */
@@ -623,8 +648,10 @@ export function applyWork<S extends WorkState>(state: S, change: WorkChange): S 
         // What it held goes back on the board.
         cards: state.cards.map((c) => (c.agentId === change.id && c.stage === 'working' ? { ...c, permission: undefined, agentId: undefined, stage: 'ready', doing: undefined, progress: undefined } : c)),
       }
-    case 'card.put':
-      return { ...state, cards: upsert(state.cards, { ...change.card, stage: current(change.card.stage) }) }
+    case 'card.put': {
+      const trashed = change.restored ? state.trashedCards?.filter((t) => t.card.id !== change.card.id) : state.trashedCards
+      return { ...state, cards: upsert(state.cards, { ...change.card, stage: current(change.card.stage) }), ...(trashed ? { trashedCards: trashed } : {}) }
+    }
     case 'card.update':
       return {
         ...state,
@@ -667,8 +694,14 @@ export function applyWork<S extends WorkState>(state: S, change: WorkChange): S 
       }
     case 'card.activity':
       return { ...state, cards: state.cards.map((c) => (c.id === change.id ? withActivity(c, change.activity) : c)) }
-    case 'card.delete':
-      return { ...state, cards: state.cards.filter((c) => c.id !== change.id) }
+    case 'card.delete': {
+      const card = state.cards.find((c) => c.id === change.id)
+      if (!card) return state
+      // Stamped by the hub, it goes to the trash, whole; without a stamp (from before there was a trash, or a client's own
+      // copy of the change) it's just removed, so a log read again from its start doesn't fill the trash.
+      const trashed = change.at ? [...(state.trashedCards ?? []).filter((t) => t.card.id !== card.id), { card, by: change.by ?? 'hub', at: change.at }].slice(-trashKept) : state.trashedCards
+      return { ...state, cards: state.cards.filter((c) => c.id !== change.id), ...(trashed ? { trashedCards: trashed } : {}) }
+    }
     case 'proposal.put':
       return { ...state, proposals: upsert(state.proposals, change.proposal) }
     case 'proposal.update':
@@ -832,8 +865,10 @@ export function resumeFor(state: WorkState, agent: Agent, busy: string[] = []): 
   const people = (by: string) => by !== 'hub' && !state.agents.some((a) => a.id === by)
   return state.cards.find((c) => {
     if (c.agentId !== agent.id || c.stage !== 'working' || c.needsYou || busy.includes(c.id)) return false
-    // Someone asking for its debrief or a Challenge isn't talking to the agent working it.
-    const last = c.activity.filter((a) => a.kind !== 'debrief' && a.kind !== 'challenge' && a.kind !== 'message').at(-1)
+    // Someone asking for its debrief or a Challenge isn't talking to the agent working it. Read from the end, as the last
+    // line is the one wanted and a card keeps hundreds.
+    let last: Activity | undefined
+    for (let i = c.activity.length - 1; i >= 0 && !last; i--) if (c.activity[i].kind !== 'debrief' && c.activity[i].kind !== 'challenge' && c.activity[i].kind !== 'message') last = c.activity[i]
     return !!last && (last.kind === 'answer' || last.kind === 'comment' || last.kind === 'moved') && people(last.by)
   })
 }
@@ -859,16 +894,29 @@ export const asksOf = (card: Pick<Card, 'needsYou' | 'permission'>) =>
   card.needsYou ?? (card.permission && !card.permission.answer ? `Allow ${card.permission.tool}: ${card.permission.what}` : undefined)
 
 export function nextFor(state: WorkState & { binders: { id: string; repo?: string }[] }, agent: Agent, busy: string[] = []): Card | undefined {
-  const done = new Set(state.cards.filter((c) => c.stage === 'review' || c.stage === 'live').map((c) => c.id))
-  // A wait for a card that isn't on the board (deleted, or never a card's id) holds nothing up.
-  const there = new Set(state.cards.map((c) => c.id))
-  // A card split into parts isn't offered whole, however far along the parts are: it follows them.
-  const split = new Set(state.cards.flatMap((c) => (c.parent ? [c.parent] : [])))
-  return state.cards
-    .filter((c) => c.stage === 'ready' && !c.agentId && !busy.includes(c.id) && !split.has(c.id))
-    .filter((c) => mayTake(state, agent, c))
-    .filter((c) => c.waitsFor.every((w) => done.has(w) || !there.has(w)))
-    .sort((a, b) => Number(b.meantFor === agent.id) - Number(a.meantFor === agent.id) || a.createdAt.localeCompare(b.createdAt))[0]
+  // The cards it could take, found first and on their own: on a board of thousands few are ready, and everything else
+  // the board has to say is looked up only for these.
+  const open = state.cards.filter((c) => c.stage === 'ready' && !c.agentId && !busy.includes(c.id) && mayTake(state, agent, c))
+  if (!open.length) return undefined
+  const names = new Set(open.map((c) => c.id))
+  const waitedOn = new Set(open.flatMap((c) => c.waitsFor))
+  // One pass over the board for the two things asked of the rest of it: which of these were split into parts, and where
+  // the cards they wait on stand.
+  const split = new Set<string>()
+  const finished = new Map<string, boolean>()
+  for (const c of state.cards) {
+    if (c.parent && names.has(c.parent)) split.add(c.parent)
+    if (waitedOn.has(c.id)) finished.set(c.id, !!finished.get(c.id) || c.stage === 'review' || c.stage === 'live')
+  }
+  // A card split into parts isn't offered whole, however far along the parts are: it follows them. A wait for a card that
+  // isn't on the board (deleted, or never a card's id) holds nothing up.
+  const meant = (c: Card) => Number(c.meantFor === agent.id)
+  let best: Card | undefined
+  for (const c of open) {
+    if (split.has(c.id) || !c.waitsFor.every((w) => finished.get(w) ?? true)) continue
+    if (!best || meant(c) > meant(best) || (meant(c) === meant(best) && c.createdAt.localeCompare(best.createdAt) < 0)) best = c
+  }
+  return best
 }
 
 /**

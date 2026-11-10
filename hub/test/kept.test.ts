@@ -175,6 +175,30 @@ describe('a Binder’s saved state', () => {
     assert.equal(hub.version, 5)
   })
 
+  it('stands by the saved state when the whole log makes fewer notes than it held, with nothing new since', async () => {
+    const theNote = (id: string) => ({ id, title: id, binderId: 'b1', editedAt: '2026-11-09T00:00:00.000Z', editors: ['you'], text: `# ${id}\n` })
+    const noteOf = (id: string): Change => ({ type: 'note.put', note: theNote(id) })
+    const entries = (changes: Change[]): Entry[] => changes.map((change, n) => ({ version: n + 1, id: `c${n + 1}`, client: 'hub', at: '2026-11-09T00:00:00.000Z', change }))
+    const logWith = (all: Entry[]): ChangeLog => ({
+      kind: 'memory',
+      append: async () => all.length + 1,
+      read: async (after: number, limit = 1000) => all.filter((e) => e.version > after).slice(0, limit),
+      latest: async () => all.at(-1)?.version ?? 0,
+      startAt: async () => {},
+      onAppend: () => {},
+      close: async () => {},
+    })
+    const had = { ...new Hub(new MemoryLog()).state, binders: [{ id: 'b1', name: 'Server' }], notes: [theNote('n1'), theNote('n2')] }
+    // The log is whole and as far on as the file, and reading it makes one note where the file has two.
+    const short = new Hub(logWith(entries([{ type: 'binder.put', binder: { id: 'b1', name: 'Server' } }, noteOf('n1')])))
+    await short.start(undefined, { version: 2, state: had })
+    assert.deepEqual(short.state.notes.map((n) => n.id), ['n1', 'n2'])
+    // With something in the log since the file was saved, a note deleted say, the log is what happened.
+    const since = new Hub(logWith(entries([{ type: 'binder.put', binder: { id: 'b1', name: 'Server' } }, noteOf('n1'), noteOf('n2'), { type: 'note.delete', id: 'n2' }])))
+    await since.start(undefined, { version: 3, state: had })
+    assert.deepEqual(since.state.notes.map((n) => n.id), ['n1'])
+  })
+
   it('keeps the file as it was before this start beside the new one', async () => {
     const dir = await tempDir('state')
     const file = new StateFile(join(dir, 'state.json'))
@@ -184,6 +208,8 @@ describe('a Binder’s saved state', () => {
     await hub.start()
     await hub.record({ kind: 'hub' }, folder('other'))
     const again = new StateFile(join(dir, 'state.json'))
+    // It keeps aside only a file it could read, never one that was damaged.
+    await again.read()
     await again.follow(hub)
     await again.stop()
     assert.equal(await readFile(join(dir, 'state.prev.json'), 'utf8'), before)
@@ -209,7 +235,8 @@ describe('a whole hub with Redis rebuilt', () => {
   const start = async (cwd: string, redis: string, extra: Record<string, string> = {}) => {
     const { HUB_SPACE: _, ...inherited } = process.env
     hub = spawn(process.execPath, [main], { cwd, stdio: 'ignore', env: { ...inherited, HOME: cwd, PORT: String(port), HOST: '127.0.0.1', PUBLIC_URL: url, REDIS_URL: redis, HUB_SECRET: 'test-secret', HUB_POLL: 'off', HUB_DEV_LOGIN: '1', LOG_LEVEL: 'silent', ...extra } })
-    await until(async () => (await fetch(`${url}/health`).catch(() => undefined))?.ok === true, 30_000)
+    // /health answers as soon as the process is up; it's /ready that waits for the Binders.
+    await until(async () => (await fetch(`${url}/ready`).catch(() => undefined))?.ok === true, 30_000)
   }
   const stop = async () => {
     const running = hub

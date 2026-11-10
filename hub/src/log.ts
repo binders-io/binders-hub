@@ -18,6 +18,11 @@ export interface ChangeLog {
   /** Carries on from a version: a log that was lost, with its Binder's state saved at that version. */
   startAt(version: number): Promise<void>
   onAppend(listener: () => void): void
+  /**
+   * Forgets every change up to and including this version: a Binder whose state is saved past it starts from that
+   * state and reads only what follows, so the log needn't hold its whole history.
+   */
+  trim?(upTo: number): Promise<void>
   /** Resolves once it hears of appends, so what's read after that misses nothing. */
   listening?(): Promise<void>
   close(): Promise<void>
@@ -57,6 +62,12 @@ export class MemoryLog implements ChangeLog {
     this.entries = []
   }
 
+  async trim(upTo: number) {
+    const gone = Math.max(0, Math.min(this.entries.length, upTo - this.base))
+    this.entries.splice(0, gone)
+    this.base += gone
+  }
+
   onAppend(listener: () => void) {
     this.listeners.push(listener)
   }
@@ -76,29 +87,82 @@ redis.call('PUBLISH', KEYS[3], v)
 return v
 `
 
-/** The log on Redis Streams: shared by every hub on the same Redis, and kept across restarts with persistence on. */
+/**
+ * The two connections every Binder's log shares: one for commands, and one that listens. A Binder of its own for each
+ * person would otherwise cost two connections each, and Redis lets a few thousand in by default. The listening one
+ * tells each log of appends to its own channel only.
+ */
+export class RedisPair {
+  readonly redis: Redis
+  private subscriber: Redis
+  private channels = new Map<string, { listeners: Set<() => void>; subscribed: Promise<unknown> }>()
+  private closed = false
+
+  constructor(url: string) {
+    this.redis = new Redis(url, { lazyConnect: false, maxRetriesPerRequest: 3 })
+    this.subscriber = new Redis(url, { lazyConnect: false })
+    // It goes on trying by itself. Without someone listening, each try is an "unhandled error" on stderr.
+    for (const client of [this.redis, this.subscriber]) client.on('error', (error: Error) => log.warn({ why: error.message }, 'The change log can’t reach Redis'))
+    this.subscriber.on('message', (channel: string) => this.channels.get(channel)?.listeners.forEach((listener) => listener()))
+  }
+
+  /** Calls `listener` on each message to `channel`. Resolves once Redis has the subscription (or can't be reached). */
+  listen(channel: string, listener: () => void) {
+    let found = this.channels.get(channel)
+    if (!found) {
+      found = { listeners: new Set(), subscribed: this.subscriber.subscribe(channel).catch(() => {}) }
+      this.channels.set(channel, found)
+    }
+    found.listeners.add(listener)
+    return found.subscribed
+  }
+
+  /** Stops one listener; the channel is left when nobody is on it. */
+  unlisten(channel: string, listener: () => void) {
+    const found = this.channels.get(channel)
+    if (!found) return
+    found.listeners.delete(listener)
+    if (found.listeners.size) return
+    this.channels.delete(channel)
+    if (!this.closed) void this.subscriber.unsubscribe(channel).catch(() => {})
+  }
+
+  close() {
+    this.closed = true
+    this.channels.clear()
+    this.subscriber.disconnect()
+    this.redis.disconnect()
+  }
+}
+
+/**
+ * The log on Redis Streams: shared by every hub on the same Redis, and kept across restarts with persistence on. Given
+ * a `pair`, it shares that pair of connections with the other logs and leaves it open when it closes; without one, it
+ * opens a pair of its own and closes that.
+ */
 export class RedisLog implements ChangeLog {
   readonly kind = 'redis'
   readonly redis: Redis
-  private subscriber: Redis
+  private pair: RedisPair
+  private ownsPair: boolean
   private keys: { stream: string; version: string; channel: string; seen: string }
   private listeners: (() => void)[] = []
   private subscribed: Promise<unknown>
+  private wake = () => this.listeners.forEach((listener) => listener())
   /**
    * The highest version this hub has seen. Each append goes on from at least there, in the same step as it's numbered:
    * with Redis emptied under a running hub, a lower number would be read after by nobody.
    */
   private highest = 0
 
-  constructor(url: string, space: string) {
-    this.redis = new Redis(url, { lazyConnect: false, maxRetriesPerRequest: 3 })
-    this.subscriber = new Redis(url, { lazyConnect: false })
+  constructor(url: string, space: string, pair?: RedisPair) {
+    this.ownsPair = !pair
+    this.pair = pair ?? new RedisPair(url)
+    this.redis = this.pair.redis
     this.keys = { stream: `hub:${space}:log`, version: `hub:${space}:version`, channel: `hub:${space}:appended`, seen: `hub:${space}:seen:` }
+    // The same script for every Binder, so on a shared connection each log defines it over the last, harmlessly.
     this.redis.defineCommand('hubAppend', { numberOfKeys: 4, lua: appendScript })
-    // It goes on trying by itself. Without someone listening, each try is an "unhandled error" on stderr.
-    for (const client of [this.redis, this.subscriber]) client.on('error', (error: Error) => log.warn({ why: error.message }, 'The change log can’t reach Redis'))
-    this.subscribed = this.subscriber.subscribe(this.keys.channel).catch(() => {})
-    this.subscriber.on('message', () => this.listeners.forEach((listener) => listener()))
+    this.subscribed = this.pair.listen(this.keys.channel, this.wake)
   }
 
   async ping() {
@@ -137,13 +201,17 @@ export class RedisLog implements ChangeLog {
     return Number((await this.redis.get(this.keys.version)) ?? 0)
   }
 
+  async trim(upTo: number) {
+    if (upTo > 0) await this.redis.xtrim(this.keys.stream, 'MINID', `${upTo + 1}-0`)
+  }
+
   onAppend(listener: () => void) {
     this.listeners.push(listener)
   }
 
   async close() {
-    this.subscriber.disconnect()
-    this.redis.disconnect()
+    this.pair.unlisten(this.keys.channel, this.wake)
+    if (this.ownsPair) this.pair.close()
   }
 }
 

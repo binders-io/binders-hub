@@ -6,8 +6,9 @@ import { call } from '../data/api'
 import { useUI } from '../ui'
 import { go } from '../route'
 import { cardNumber } from '../../../shared/work.ts'
-import { forAttention, waitingOn, type WaitKind } from '../../../shared/waiting.ts'
-import { openRow } from '../data/notify'
+import { forAttention, type WaitKind } from '../../../shared/waiting.ts'
+import { openRow, waitingFor } from '../data/notify'
+import { useMayChangeBinder } from '../screens/settings/access'
 import { useModal } from './useModal'
 
 interface Command {
@@ -56,6 +57,8 @@ export function Palette({ onClose }: { onClose: () => void }) {
   const store = useStore()
   const { state } = store
   const { openItem, connectClaudeCode, askQuestion, binder } = useUI()
+  // A reader is offered what reads and asks: the actions that change things are left out.
+  const mayChange = useMayChangeBinder()
   const [found, setFound] = useState<Passage[]>([])
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
@@ -63,14 +66,14 @@ export function Palette({ onClose }: { onClose: () => void }) {
   const commands = useMemo<Command[]>(() => {
     const list: Command[] = []
     // What waits on you or anyone, from the one place that works it out.
-    for (const row of forAttention(waitingOn(state, state.me?.user.login))) {
+    for (const row of forAttention(waitingFor(state))) {
       const { verb, icon } = doing[row.kind]
       list.push({ id: `wait-${row.id}`, label: verb ? `${verb}: ${row.title}` : row.title, detail: row.detail, group: 'Actions', icon, run: () => openRow(row) })
     }
     // In the binder you're in, as N is; with all of them showing, the first.
     const target = binder !== 'all' && state.binders.some((b) => b.id === binder) ? binder : state.binders[0]?.id
-    if (target) list.push({ id: 'new-note', label: 'New note', group: 'Actions', icon: FileText, run: () => go({ screen: 'notes', id: store.addNote(target) }) })
-    list.push({ id: 'new-agent', label: 'Set up an agent', group: 'Actions', icon: Bot, run: () => go({ screen: 'agents' }) })
+    if (target && mayChange) list.push({ id: 'new-note', label: 'New note', group: 'Actions', icon: FileText, run: () => go({ screen: 'notes', id: store.addNote(target) }) })
+    if (mayChange) list.push({ id: 'new-agent', label: 'Set up an agent', group: 'Actions', icon: Bot, run: () => go({ screen: 'agents' }) })
     if (connectClaudeCode) list.push({ id: 'claude-code', label: 'Add the hub to Claude Code', group: 'Actions', icon: SquareTerminal, hint: 'MCP', run: connectClaudeCode })
     list.push(
       { id: 'home', label: 'Home', group: 'Go to', icon: LayoutDashboard, hint: '1', run: () => go({ screen: 'home' }) },
@@ -98,7 +101,7 @@ export function Palette({ onClose }: { onClose: () => void }) {
     for (const note of state.notes) list.push({ id: `n-${note.id}`, label: note.title, group: 'Notes', icon: FileText, hint: state.binders.find((b) => b.id === note.binderId)?.name, run: () => go({ screen: 'notes', id: note.id }) })
     for (const card of state.cards) list.push({ id: `c-${card.id}`, label: card.title, group: 'Cards', icon: SquareCheck, hint: cardNumber(card), run: () => openItem(card.id) })
     return list
-  }, [state, store, openItem, connectClaudeCode, binder])
+  }, [state, store, openItem, connectClaudeCode, binder, mayChange])
 
   // The passages come from the hub, when typing pauses. What was found stays until the next answer, so the list holds still.
   const asked = query.trim()

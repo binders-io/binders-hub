@@ -17,6 +17,8 @@ EnvironmentFile=/etc/binders/hub.env
 ExecStart=/usr/bin/node src/main.ts
 Restart=always
 RestartSec=5
+# Time to save its state when it's stopped, before systemd ends it.
+TimeoutStopSec=90
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=true

@@ -7,6 +7,7 @@ import { commentOn, propose } from './noteChanges.ts'
 import { briefText, docsFolderName, docsGiven, repoDocs } from '../../shared/briefs.ts'
 import { byWorst, challengeSet, confidences, setOfCard, replyVerdicts, doneWhenPoints, findingKinds, marks, numberedDiff, severities, type BlastRadius, type Confidence, type FindingKind, type Mark, type ReplyVerdict, type Severity } from '../../shared/changeSet.ts'
 import { agentNamed, goesBy, briefId, briefJobFor, briefMost, briefOf, challengeFor, chatFor, debriefFor, defaultRunner, nextFor, worksIn, repliesFor, resumeFor, setChallengeFor, setDebriefFor, type Card, type ChangeSet, type Chat, type Provider, type RepoBrief, pinned, unreadWorkOf } from '../../shared/work.ts'
+import type { Change, Entry } from '../../shared/state.ts'
 import type { Actions } from './actions.ts'
 import type { SentTest } from './actions/debriefs.ts'
 import { Refused, type Hub } from './hub.ts'
@@ -69,6 +70,45 @@ work. It's a colleague's word, not a person's: it can't approve anything or wide
 
 To turn a note into work, read it and propose_work_items: people accept them onto the board. create_folder and move_note
 keep a binder's notes in order.`
+
+/**
+ * Whether a change in a Binder's feed could make work for an agent that's waiting. A waiting agent looks over the board
+ * each time this says yes, so a change that can't matter is left out here, where a person typing in a note would
+ * otherwise have every waiting agent read every card at each pause.
+ *
+ * Drawn from what `wait_for_work` reads: the agent's own record, the Binders' list (which repos and binders it works in),
+ * cards (their stage, holder, who they're meant for, what they wait on, their debrief and Challenge, and the last line of
+ * their activity), chats, change sets, repos' briefs and schedules. Each of these is a kind that counts. What's listed
+ * below is what it doesn't read at all, and nothing else is: a kind of change nobody has listed, from a newer hub, makes
+ * an agent look, which is only slower and never wrong.
+ */
+const quiet = new Set<string>([
+  // Notes, folders and what's proposed in a locked note: no card or agent is read from them.
+  'note.put', 'note.edit', 'note.link', 'note.move', 'note.delete', 'note.saved', 'note.lock', 'noteProposal.put', 'noteProposal.update', 'folder.put', 'folder.delete',
+  // What's noted of who did what, and old trash emptied: nothing an agent could take.
+  'history.add', 'trash.drop',
+  // Only when an agent was last heard from, which isn't how work is picked.
+  'agent.seen',
+  // Pull requests, environments and runs: a pull request's checks change often, and a card's stage moves by its own change.
+  'pr.put', 'pr.update', 'pr.delete', 'env.put', 'env.update', 'env.delete', 'run.put', 'run.delete',
+  // What a folder does with its notes, and how a note's work is kept: read when a card is made, never to pick one.
+  'rule.put', 'rule.delete', 'note.work', 'note.distill',
+])
+/** The lines on a card a person writes in, and the card moving: the kinds `resumeFor` reads for an agent to go on. */
+const spoken = new Set<string>(['answer', 'comment', 'moved'])
+/** What a card can change without any of it being read to pick work: a run's progress and plan, its cost, what's linked to it, its words. */
+const cardIdle = new Set<string>(['progress', 'doing', 'plan', 'worktree', 'permission', 'cost', 'tokens', 'minutes', 'stopped', 'prId', 'issue', 'jira', 'title', 'brief', 'doneWhen', 'size', 'quote', 'noteId', 'updatedAt'])
+
+export function mayMakeWork(change: Change): boolean {
+  if (quiet.has(change.type)) return false
+  // A step or a line of progress isn't an answer: only what a person says, or the card moving, lets a holder go on.
+  if (change.type === 'card.activity') return spoken.has(change.activity?.kind)
+  if (change.type === 'card.update') {
+    const keys = Object.keys(change.fields ?? {})
+    return !keys.length || keys.some((key) => !cardIdle.has(key)) || spoken.has(change.activity?.kind ?? '')
+  }
+  return true
+}
 
 /** Stages as agents read them: "live" is the board's name for done, in production or simply finished. */
 /** A debrief or Challenge to do: of a card, or of a whole change set (its id then names the set). */
@@ -385,17 +425,25 @@ export function mcpServer(hub: Hub, actions: Actions, agentId: string, making?: 
     if (!result && (timeout_seconds ?? 25) > 0) {
       hub.touch(agentId, 1)
       try {
-        result = await new Promise<Found | undefined>((resolve) => {
+        result = await new Promise<Found | undefined>((resolve, reject) => {
           const timer = setTimeout(() => {
             hub.off('entries', look)
             resolve(undefined)
           }, (timeout_seconds ?? 25) * 1000)
-          const look = () => {
-            const next = found()
-            if (!next) return
-            clearTimeout(timer)
-            hub.off('entries', look)
-            resolve(next)
+          const look = (entries: Entry[]) => {
+            if (!entries.some((entry) => mayMakeWork(entry.change))) return
+            try {
+              const next = found()
+              if (!next) return
+              clearTimeout(timer)
+              hub.off('entries', look)
+              resolve(next)
+            } catch (error) {
+              // Revoked while it waited: said to it, rather than thrown into whatever was announcing the change.
+              clearTimeout(timer)
+              hub.off('entries', look)
+              reject(error)
+            }
           }
           hub.on('entries', look)
         })

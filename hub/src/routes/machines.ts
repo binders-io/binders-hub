@@ -22,7 +22,8 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
   })
 
   // The installer: the runner and its `binders` command on this machine, then `binders` with what's passed, so one line
-  // sets an agent up in the background: curl -fsSL <hub>/install | sh -s -- add --token bnd_… --workspace ~/code/app
+  // sets an agent up in the background: curl -fsSL <hub>/install | sh -s -- add --token bnd_… --workspace ~/code/app, or
+  // a whole machine from the Agents page's line: curl -fsSL <hub>/install | sh -s -- join bnj_…
   app.get('/install', async (_request, reply) => reply.type('text/plain; charset=utf-8').header('cache-control', 'no-cache').send(installer(options.publicUrl)))
   app.get('/install.ps1', async (_request, reply) => reply.type('text/plain; charset=utf-8').header('cache-control', 'no-cache').send(windowsInstaller(options.publicUrl)))
 
@@ -67,6 +68,8 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
       if (space && named && named !== space.id) return setByHand(reply, 'This agent’s token is for another binder.')
       const there = space?.hub.state.agents.find((a) => a.id === agent.id && !a.revoked)
       if (!space || !there) return setByHand(reply, agentStale)
+      // An agent acts with its owner's reach, which for a reader is none that changes anything.
+      if (spaces.roleOf(space.id, there.owner) === 'reader') return setByHand(reply, `@${there.owner} can only read this binder, so ${there.name} can’t work in it. Ask one of its owners to let them change it, or set the agent up again under someone who can.`)
       // Its token speaks as its owner's agent, so only while its owner is in the Binder (one with no members is open to
       // everyone), or is one of the hub's named admins, who may open any team Binder.
       if (!spaces.roleOf(space.id, there.owner) && !(namedAdmin(there.owner) && !spaces.info(space.id)?.personal)) return setByHand(reply, `@${there.owner} isn’t in this binder any more, so ${there.name} can’t work in it. Ask one of its owners to add them back, or set the agent up again under someone who is in it.`)
@@ -159,6 +162,7 @@ export function windowsInstaller(publicUrl: string) {
   const hub = publicUrl.replace(/\/$/, '').replace(/[^\w:/.@%+~-]/g, '')
   return `# Binders: installs (or updates) the runner and its binders command for ${hub}, then runs binders with what was passed.
 #   & ([scriptblock]::Create((irm ${hub}/install.ps1))) add --token bnd_... --workspace C:\\code\\app
+#   & ([scriptblock]::Create((irm ${hub}/install.ps1))) join bnj_...
 $ErrorActionPreference = 'Stop'
 $Hub = '${hub}'
 $Dir = Join-Path $HOME '.binders'
@@ -186,6 +190,7 @@ export function installer(publicUrl: string) {
   return `#!/bin/sh
 # Binders: installs (or updates) the runner and its \`binders\` command for ${hub}, then runs binders with what was passed.
 #   curl -fsSL ${hub}/install | sh -s -- add --token bnd_… --workspace ~/code/app
+#   curl -fsSL ${hub}/install | sh -s -- join bnj_…
 set -e
 HUB="${hub}"
 DIR="$HOME/.binders"

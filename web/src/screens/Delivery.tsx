@@ -8,7 +8,7 @@ import { attempt, toast } from '../components/Toast'
 import { CheckGlyph, Progress, ago } from '../components/bits'
 import { ConfirmButton } from '../components/ConfirmButton'
 import { LookButton, environmentRepos, howEnvironmentsArrive } from '../components/Environments'
-import { useBinderAccess } from './settings/access'
+import { useBinderAccess, useMayChangeBinder } from './settings/access'
 import { href } from '../route'
 
 const spring = { type: 'spring', stiffness: 380, damping: 34 } as const
@@ -49,6 +49,8 @@ export function Delivery() {
   const store = useStore()
   const { state } = store
   const { may } = useBinderAccess()
+  // Promote puts a version on the next environment: a reader sees where each stands and has no button for it.
+  const mayPromote = useMayChangeBinder()
   const repos = environmentRepos(state.environments)
 
   return (
@@ -123,7 +125,7 @@ export function Delivery() {
                     {next && (
                       <div className="promote">
                         <span className={`promote-line${move ? ' ready' : ''}`} />
-                        {move ? (
+                        {move && mayPromote ? (
                           <ConfirmButton
                             className="button primary"
                             question={`Promote ${move.version} to ${next.name}? Press again`}

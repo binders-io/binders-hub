@@ -1,16 +1,21 @@
+import { randomUUID } from 'node:crypto'
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { Refusal } from '../auth.ts'
 import { save } from '../../../shared/noteDoc.ts'
 import { Refused } from '../hub.ts'
+import { captureFolders } from '../brain/brain.ts'
 import { commentOn, decide, propose, setLock } from '../noteChanges.ts'
-import { fromMarkdown, lockStops, titleOf } from '../../../shared/notes.ts'
+import { fromMarkdown, lockStops, slug, titleOf, type Binder, type Note } from '../../../shared/notes.ts'
+import { readerWords, type Space } from '../spaces.ts'
 import { bodies } from '../schemas.ts'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { Context } from './context.ts'
 
-// Cards, change sets, schedules and what else people ask of the work.
+// Cards, change sets, schedules and what else people ask of the work: a note's lock, versions, sending and summing up too.
 
 export async function workRoutes(app: FastifyInstance, context: Context) {
-  const { sp, login, param, act, bodyOf, spaces, isAdmin } = context
+  const { sp, login, param, act, bodyOf, spaces, isAdmin, fail, webUrl } = context
   /** Asking an agent for a debrief or a Challenge: the one named, or one the hub picks. */
   const askFor = <T>(request: FastifyRequest, ask: (login: string, id: string, agentId?: string, effort?: string) => Promise<T>) => {
     const { agentId, effort } = bodyOf(bodies.ask, request)
@@ -19,6 +24,12 @@ export async function workRoutes(app: FastifyInstance, context: Context) {
   app.post('/api/cards', act(async (request) => {
     return sp(request).actions.createCard({ kind: 'user', login: login(request) }, bodyOf(bodies.newCard, request))
   }))
+  // A card's whole activity: a browser's state has the recent lines and the newest few, and asks for the rest when the card opens.
+  app.get('/api/cards/:id/activity', async (request, reply) => {
+    const card = sp(request).hub.state.cards.find((c) => c.id === param(request, 'id'))
+    if (!card) return reply.code(404).send({ error: 'No such card.' })
+    return { activity: card.activity }
+  })
   app.get('/api/cards/:id/change-set', act(async (request) => sp(request).actions.changeSet(param(request, 'id'))))
   app.get('/api/cards/:id/debrief', act(async (request) => sp(request).actions.debriefOf(param(request, 'id'))))
   app.post('/api/cards/:id/debrief', act(async (request) => askFor(request, sp(request).actions.askDebrief)))
@@ -99,12 +110,17 @@ export async function workRoutes(app: FastifyInstance, context: Context) {
   app.post('/api/sets/:id/review', act(async (request) => sp(request).actions.sendForReview(login(request), param(request, 'id'))))
   app.post('/api/sets/:id/order', act(async (request) => sp(request).actions.reorderSet(login(request), param(request, 'id'), bodyOf(bodies.order, request).prIds)))
   app.post('/api/sets/:id/check', act(async (request) => sp(request).actions.checkSet(param(request, 'id'), request.githubToken)))
-  // A pull request's diff, with its lines: a browser's state leaves them out until it's opened.
+  // A pull request's diff, with its lines: a browser's state leaves them out until it's opened. One that's been over for
+  // a while has none in the state, and they're read from GitHub, and not put back.
   app.get('/api/pulls/:repo/:number/files', async (request, reply) => {
     const id = `${decodeURIComponent(param(request, 'repo'))}#${param(request, 'number')}`
     const pull = sp(request).hub.state.pulls.find((p) => p.id === id)
     if (!pull) return reply.code(404).send({ error: 'No such pull request.' })
-    return { files: pull.files }
+    try {
+      return { files: await sp(request).actions.pullFiles(pull) }
+    } catch (error) {
+      return fail(reply, error)
+    }
   })
   app.post('/api/pulls/:repo/:number/update-branch', act(async (request) => sp(request).actions.updateBranch(`${decodeURIComponent(param(request, 'repo'))}#${param(request, 'number')}`, request.githubToken)))
   app.post('/api/pulls/:repo/:number/resolve', act(async (request) => sp(request).actions.sendBackToResolve(login(request), `${decodeURIComponent(param(request, 'repo'))}#${param(request, 'number')}`)))
@@ -213,6 +229,65 @@ export async function workRoutes(app: FastifyInstance, context: Context) {
     return { ok: true }
   }))
 
+  // Sending a note to another of the person's Binders ---------------------------------------------------------------------
+  // A note moves only inside its Binder, so making what a phone heard the team's work is a copy: the words, the pictures
+  // in them, and a line each way saying where it came from and where it went. Only Binders they're a member of count.
+  app.get('/api/notes/send-to', act(async (request) => {
+    const here = sp(request).id
+    // Not one they can only read: a note sent there would be a note written there.
+    const own = spaces.forPerson(login(request), false).filter(({ info, role }) => info.id !== here && role !== 'reader' && spaces.get(info.id))
+    return { binders: own.map(({ info }) => ({ id: info.id, name: info.name, personal: !!info.personal })).sort((a, b) => Number(b.personal) - Number(a.personal)) }
+  }))
+  app.post('/api/notes/:id/send', act(async (request) => {
+    const me = login(request)
+    const body = (request.body ?? {}) as { binder?: unknown }
+    if (typeof body.binder !== 'string' || !body.binder) throw new Refused('Say which Binder to send it to.')
+    const mine = spaces.forPerson(me, false)
+    const from = sp(request)
+    if (!mine.some((s) => s.info.id === from.id)) throw new Refused('You’re not in the Binder this note is in, so you can’t send it from there.')
+    const chosen = mine.find((s) => s.info.id === body.binder)
+    const target = chosen?.info
+    if (!target) throw new Refused('You’re not in that Binder.')
+    if (chosen.role === 'reader') throw new Refused(readerWords)
+    if (target.id === from.id) throw new Refused('That note is in that Binder already.')
+    const to = spaces.get(target.id)
+    if (!to) throw new Refused('That Binder isn’t available just now. Try again in a moment.')
+    const note = from.hub.state.notes.find((n) => n.id === param(request, 'id'))
+    if (!note) throw new Refused('That note isn’t there any more.')
+    const part = to.hub.state.binders[0]
+    if (!part) throw new Refused('That Binder has no place for notes yet.')
+    // At the top of its notes, or in the folder it keeps captures in, when it has one: no folder is made for this.
+    const folder = to.hub.state.folders.find((f) => f.binderId === part.id && !f.parentId && f.name.toLowerCase() === captureFolders.conversation.toLowerCase())
+    const at = new Date().toISOString()
+    const fromUrl = webUrl(from.id, 'note', note.id)
+    const copy: Note = {
+      id: `note-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`, title: note.title, binderId: part.id, ...(folder ? { folderId: folder.id } : {}),
+      editedAt: at, editedBy: me, editors: [me], text: '',
+      // What was heard in a room is still read by a person before work comes of it, wherever it's kept.
+      ...(note.captured ? { captured: note.captured } : {}),
+    }
+    copy.text = copyWords(note, `Sent from [${asLinkText(note.title || titleOf(note.text))}](${fromUrl}) in ${asWords(spaceName(spaces.info(from.id)))} by @${me} on ${when(at)}.`)
+    // Sending it twice makes a second copy, and says so.
+    const again = to.hub.state.notes.some((n) => n.text.split('\n').some((line) => line.startsWith('_Sent from ') && line.includes(`](${fromUrl})`)))
+    await copyPictures(note.text, from, to, part, mine.map((s) => spaces.get(s.info.id)).filter((s): s is Space => !!s))
+    await to.hub.record({ kind: 'user', login: me }, { type: 'note.put', note: copy })
+    // The original keeps where it went, unless it's locked against this person: then it's left exactly as it is.
+    const marked = !lockStops(note, { login: me, manager: manager(request) })
+    if (marked) {
+      const there = webUrl(to.id, 'note', copy.id)
+      const text = `${note.text.replace(/\n+$/, '')}\n\n_Sent to ${asWords(spaceName(target))} on ${when(at)}: [${asLinkText(copy.title || titleOf(copy.text))}](${there})._\n`
+      await from.hub.record({ kind: 'user', login: me }, { type: 'note.edit', id: note.id, text, title: note.title, by: me, at })
+    }
+    return { id: copy.id, binder: target.id, binderName: spaceName(target), again, ...(folder ? { folder: folder.name } : {}), marked, url: webUrl(to.id, 'note', copy.id) }
+  }))
+  // Sums up any note, with the hub's model: the summary is put in beside its words, as the hub's.
+  app.post('/api/notes/:id/sum-up', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, act(async (request) => {
+    const { brain } = sp(request)
+    if (!brain) throw new Refused('This Binder doesn’t sum notes up.')
+    await brain.sumUp(param(request, 'id'), { login: login(request), manager: manager(request) })
+    return { ok: true }
+  }))
+
   // Each binder's cards as issues: how many are on GitHub, and what last went wrong.
   app.get('/api/issues', async (request) => {
     const { hub, issues, notes } = sp(request)
@@ -239,4 +314,47 @@ export async function workRoutes(app: FastifyInstance, context: Context) {
     await notes?.push()
     return { ok: true }
   }))
+}
+
+/** A Binder's name as people read it: a personal one is just "Personal". */
+const spaceName = (info?: { name: string; personal?: string }) => (info?.personal ? 'Personal' : info?.name ?? 'a Binder')
+
+/** Words in the line a note carries, as they read: nothing in them is taken for Markdown. */
+const asWords = (words: string) => words.replace(/([\\_*`[\]<>])/g, '\\$1')
+const asLinkText = asWords
+
+/** A time as the quiet lines in a note give it. */
+const when = (iso: string) => `${iso.slice(0, 16).replace('T', ' ')} UTC`
+
+/** A note's words for its copy: its title, the line saying where it came from, then the rest as it was. */
+function copyWords(note: Note, line: string) {
+  const first = note.text.split('\n', 1)[0]
+  const heading = /^#\s/.test(first)
+  const rest = (heading ? note.text.slice(first.length) : note.text).replace(/^\n+/, '')
+  return `${heading ? first : `# ${note.title || titleOf(note.text)}`}\n\n_${line}_\n\n${rest}`.replace(/\n+$/, '') + '\n'
+}
+
+/**
+ * The pictures a note shows, put in the notes of the Binder it's sent to: they're kept by their contents' hash in the
+ * Binder they were put in, and only the people of a Binder find them there. One that can't be found is left out.
+ */
+async function copyPictures(text: string, from: Space, to: Space, part: Binder, theirs: Space[]) {
+  const names = [...new Set([...text.matchAll(/\/api\/files\/([a-f0-9]{24}\.[a-z0-9]+)/g)].map((m) => m[1]))]
+  if (!names.length || !to.filesDir) return
+  const dirsOf = async (space: Space) => {
+    if (!space.filesDir) return []
+    const top = join(space.filesDir, '..')
+    return [space.filesDir, ...(await readdir(top, { withFileTypes: true }).catch(() => [])).filter((d) => d.isDirectory() && !d.name.startsWith('.')).map((d) => join(top, d.name, 'files'))]
+  }
+  const searched = (await Promise.all([from, ...theirs.filter((s) => s !== from)].map(dirsOf))).flat()
+  const into = join(to.filesDir, '..', slug(part.name), 'files')
+  await mkdir(into, { recursive: true })
+  for (const name of names) {
+    for (const dir of searched) {
+      const file = await readFile(join(dir, name)).catch(() => undefined)
+      if (!file) continue
+      await writeFile(join(into, name), file)
+      break
+    }
+  }
 }

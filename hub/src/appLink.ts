@@ -4,13 +4,13 @@ import type { Entry } from '../../shared/state.ts'
 import type { Activity, Card, Stage } from '../../shared/work.ts'
 import type { Binder, Folder, Note } from '../../shared/notes.ts'
 import { titleOf } from '../../shared/notes.ts'
-import type { Space, Spaces } from './spaces.ts'
-import { personalId } from './spaces.ts'
+import type { Role, Space, Spaces } from './spaces.ts'
+import { personalId, readerWords } from './spaces.ts'
 import { Refused } from './hub.ts'
 import { Refusal } from './auth.ts'
 import { ask, talk, transcriptionTurns, type AskPlace, type AskSource } from './brain/brain.ts'
 import { BrainUnavailable } from './brain/models.ts'
-import { speakersByOverlap, transcriptMarkdown, type SaidBy } from './brain/captures.ts'
+import { chosenHome, firstWords, speakersByOverlap, summaryHeading, transcriptMarkdown, transcriptOf, type SaidBy } from './brain/captures.ts'
 import type { BrainSettingsStore } from './brain/settings.ts'
 import type { SourceKind } from './brain/index.ts'
 import { log } from './logger.ts'
@@ -20,7 +20,7 @@ import { log } from './logger.ts'
 // suggestions, decision…) and binders/changed in return, the same JSON-RPC in the same shapes, here over a WebSocket
 // signed in as the person. So every screen the iPhone has works with no Mac. Its binders are the binders of every Binder
 // the person is in, each kept to its own; what it captures goes to the person's own Binder, never a team's unless they
-// put it there. What the hub can't do yet isn't in the features it lists, so the iPhone hides it rather than half-work.
+// chose that for their captures (Your account) or put a note there. What the hub can't do yet isn't in the features it lists, so the iPhone hides it rather than half-work.
 
 const columnOf: Record<Stage, string> = { proposed: 'backlog', ready: 'ready', working: 'in_progress', blocked: 'blocked', review: 'review', live: 'done' }
 const stageOf: Record<string, Stage> = { backlog: 'proposed', ready: 'ready', in_progress: 'working', blocked: 'blocked', review: 'review', done: 'live' }
@@ -51,6 +51,8 @@ interface Place {
   spaceName: string
   binder: Binder
   personal: boolean
+  /** Theirs there: a reader sees it all and changes none of it. */
+  role: Role
 }
 
 /** What came of a capture or moment, as the iPhone's CaptureOutcome has it (camelCase, its own keys). */
@@ -105,6 +107,8 @@ interface Suggestion {
   kind: 'card' | 'answer' | 'idea'
   text: string
   binder: string
+  /** The place it was offered in (its key), which a name can stop finding; the iPhone isn't told it. */
+  place?: string
   sources: string[]
   status: 'offered' | 'accepted' | 'dismissed'
   at: string
@@ -142,6 +146,31 @@ class Failure extends Error {
   }
 }
 
+/**
+ * The Binder a person's captures go to, by its id: the one they chose, while they're still in it, else their own. Only
+ * Binders they're a member of count, so one they've left (or never were in) is their own again, and so is one they can
+ * only read: a capture is a note, and a reader writes none there.
+ */
+export async function captureHome(spaces: Spaces, login: string) {
+  const own = personalId(login)
+  const kv = spaces.get(own)?.brain?.kv
+  const chosen = kv ? await chosenHome(kv) : undefined
+  return chosen && spaces.forPerson(login, false).some((s) => s.info.id === chosen && s.role !== 'reader') ? chosen : own
+}
+
+/** What a card from a captured note starts with: the note's summary, or with none, how it begins. */
+export function briefOf(markdown: string) {
+  const heading = `\n${summaryHeading}\n`
+  const start = markdown.indexOf(heading)
+  if (start >= 0) {
+    const rest = markdown.slice(start + heading.length).replace(/^\n+/, '')
+    // Up to its lists (Points, Decisions, Follow-ups) or the next heading.
+    const summary = rest.slice(0, rest.search(/\n\n\*\*|\n## |$/)).trim()
+    if (summary) return summary
+  }
+  return firstWords(transcriptOf(markdown), 400)
+}
+
 export class AppLinkSession {
   private deps: AppLinkDeps
   private login: string
@@ -168,13 +197,13 @@ export class AppLinkSession {
   /** The binders of every Binder the person is in (as a member: a hub admin's others aren't theirs to carry about). */
   places(): Place[] {
     const out: Place[] = []
-    for (const { info } of this.deps.spaces.forPerson(this.login, false)) {
+    for (const { info, role } of this.deps.spaces.forPerson(this.login, false)) {
       const space = this.deps.spaces.get(info.id)
       if (!space) continue
       const binders = space.hub.state.binders
       for (const binder of binders) {
         const base = binders.length === 1 ? (info.personal ? 'Personal' : info.name) : `${info.personal ? 'Personal' : info.name} · ${binder.name}`
-        out.push({ key: `${info.id}/${binder.id}`, name: base, space, spaceId: info.id, spaceName: info.name, binder, personal: Boolean(info.personal) })
+        out.push({ key: `${info.id}/${binder.id}`, name: base, space, spaceId: info.id, spaceName: info.name, binder, personal: Boolean(info.personal), role })
       }
     }
     // Names the iPhone tells apart: a second of the same name says which Binder it's in.
@@ -199,8 +228,20 @@ export class AppLinkSession {
     return own
   }
 
+  /** Throws, in words the iPhone can show, when the person can only read this binder: every write asks this of its binder. */
+  private mayChange(place: Place) {
+    if (place.role === 'reader') throw new Refused(readerWords)
+    return place
+  }
+
   private own(): Place {
     return this.place()
+  }
+
+  /** Where what the person captures goes: their chosen Binder (its first binder), else their own. */
+  private async home(): Promise<Place> {
+    const id = await captureHome(this.deps.spaces, this.login)
+    return this.places().find((p) => p.spaceId === id) ?? this.own()
   }
 
   /** The place an id the iPhone has (`space/item`) is in, and the item's own id. */
@@ -357,6 +398,7 @@ export class AppLinkSession {
         throw new Refused('On your hub, an agent lets go of its own cards.')
       case 'comment_task': {
         const { card, place } = this.card(text('id'))
+        this.mayChange(place)
         const words = text('text').trim()
         if (!words) throw new Refused('Say something first.')
         await place.space.actions.comment(this.login, card.id, words)
@@ -376,7 +418,7 @@ export class AppLinkSession {
         return this.addNote(args)
       case 'add_todo': {
         // To-dos are cards: something to do goes on the board, in Backlog.
-        const place = this.place(text('binder') || undefined)
+        const place = this.mayChange(this.place(text('binder') || undefined))
         const title = text('text').trim().split('\n')[0].slice(0, 200)
         if (!title) throw new Refused('Say what to do.')
         const card = await place.space.actions.createCard({ kind: 'user', login: this.login }, { binderId: place.binder.id, title, stage: 'proposed' })
@@ -457,7 +499,7 @@ export class AppLinkSession {
 
   private async createTask(args: Record<string, unknown>) {
     const text = (key: string) => (typeof args[key] === 'string' ? (args[key] as string).trim() : '')
-    const place = this.place(text('binder') || undefined)
+    const place = this.mayChange(this.place(text('binder') || undefined))
     const title = text('title')
     if (!title) throw new Refused('A card needs a title.')
     const agent = this.agentNamed(place.space, text('for') || undefined)
@@ -469,6 +511,7 @@ export class AppLinkSession {
   private async updateTask(args: Record<string, unknown>) {
     const text = (key: string) => (typeof args[key] === 'string' ? (args[key] as string) : undefined)
     const { card, place } = this.card(text('id') ?? '')
+    this.mayChange(place)
     const fields: Partial<Card> = {}
     if (text('for') !== undefined) {
       const agent = text('for') ? this.agentNamed(place.space, text('for')) : undefined
@@ -488,6 +531,7 @@ export class AppLinkSession {
 
   private async decision(params: Record<string, unknown>) {
     const { card, place } = this.card(String(params.card ?? ''))
+    this.mayChange(place)
     await place.space.actions.answerPermission(this.login, card.id, String(params.approval ?? ''), params.approve === true)
     return { message: params.approve === true ? 'Approved.' : 'Declined.' }
   }
@@ -581,6 +625,7 @@ export class AppLinkSession {
         place = this.placeOfBinder(spaceId, folder.f.binderId) ?? place
       }
     }
+    this.mayChange(place)
     const firstLine = words.split('\n')[0].replace(/^#+\s*/, '').trim()
     const title = firstLine.slice(0, 120) || 'Note'
     const text = words.startsWith('#') ? words : `# ${title}\n\n${words.split('\n').slice(1).join('\n').trim()}`.trimEnd() + '\n'
@@ -666,7 +711,7 @@ export class AppLinkSession {
     return {}
   }
 
-  /** A conversation All-day capture heard: kept once as a note in the person's own Binder, summed up, and what came of it said. */
+  /** A conversation All-day capture heard: kept once as a note where their captures go (their own Binder unless they chose another), summed up, and what came of it said. */
   private async conversation(params: Record<string, unknown>) {
     const id = String(params.id ?? '')
     if (!id) throw new Refused('A conversation needs its id.')
@@ -678,7 +723,7 @@ export class AppLinkSession {
     const transcript = transcriptMarkdown(said, names)
     const lines = transcript ? transcript.split('\n\n') : []
     const words = lines.join(' ').split(/\s+/).length
-    const place = this.own()
+    const place = await this.home()
     const at = new Date().toISOString()
     // A few words are no conversation: not kept, as on the Mac.
     if (words < 12) {
@@ -701,7 +746,7 @@ export class AppLinkSession {
       if (!summary?.followUps.length) return
       const key = `app:suggestions:${this.login.toLowerCase()}`
       const kept = (await this.ledgerGet<Suggestion[]>(key)) ?? []
-      const fresh: Suggestion[] = summary.followUps.slice(0, 3).map((line, i) => ({ id: `${id.toLowerCase()}-${i}`, conversation: id, kind: 'card', text: line, binder: place.name, sources: [], status: 'offered', at: new Date().toISOString() }))
+      const fresh: Suggestion[] = summary.followUps.slice(0, 3).map((line, i) => ({ id: `${id.toLowerCase()}-${i}`, conversation: id, kind: 'card', text: line, binder: place.name, place: place.key, sources: [], status: 'offered', at: new Date().toISOString() }))
       await this.ledgerSet(key, [...fresh, ...kept.filter((s) => s.conversation !== id)].slice(0, 100))
       appEvents.emit('changed', this.login, ['meetings'])
     }).catch((err) => log.warn({ err }, 'Saying what came of a capture failed'))
@@ -769,7 +814,13 @@ export class AppLinkSession {
   private async suggestions() {
     const since = Date.now() - 3 * 86_400_000
     const kept = (await this.ledgerGet<Suggestion[]>(`app:suggestions:${this.login.toLowerCase()}`)) ?? []
-    return { suggestions: kept.filter((s) => Date.parse(s.at) >= since).map(({ at: _at, ...s }) => s) }
+    return { suggestions: kept.filter((s) => Date.parse(s.at) >= since).map(({ at: _at, place: _place, ...s }) => s) }
+  }
+
+  /** The note a follow-up came from: the one its conversation was filed as, if it's still in that Binder. */
+  private async noteOf(found: Suggestion, place: Place) {
+    const filed = await this.ledgerGet<{ space: string; note: string }>(`app:capture:${found.conversation.toLowerCase()}`)
+    return filed?.space === place.spaceId ? place.space.hub.state.notes.find((n) => n.id === filed.note) : undefined
   }
 
   private async suggestionAction(params: Record<string, unknown>) {
@@ -779,9 +830,24 @@ export class AppLinkSession {
     if (!found) throw new Refused('That suggestion isn’t here any more.')
     if (found.status !== 'offered') return { message: found.status === 'accepted' ? 'Already on the board.' : 'Already set aside.' }
     if (params.action === 'accept' || params.action === 'give') {
-      const place = this.place(found.binder)
+      // Where the conversation went, even when that's a team's: and they may not be in it any more.
+      let place: Place
+      try {
+        place = this.place(found.place ?? found.binder)
+      } catch {
+        throw new Refused(`You’re not in ${found.binder} any more, so that can’t go on its board.`)
+      }
+      this.mayChange(place)
       const agent = params.action === 'give' ? this.agentNamed(place.space, typeof params.agent === 'string' ? params.agent : undefined) : undefined
-      await place.space.actions.createCard({ kind: 'user', login: this.login }, { binderId: place.binder.id, title: found.text.slice(0, 200), stage: found.kind === 'idea' ? 'proposed' : 'ready', meantFor: agent?.id })
+      const from = await this.noteOf(found, place)
+      // Taken on, it waits in Proposed for a person to look, like what Distill proposes; handed to an agent by name, it's theirs to start.
+      await place.space.actions.createCard({ kind: 'user', login: this.login }, {
+        binderId: from?.binderId ?? place.binder.id,
+        title: found.text.slice(0, 200),
+        stage: agent ? 'ready' : 'proposed',
+        meantFor: agent?.id,
+        ...(from ? { noteId: from.id, quote: found.text, brief: briefOf(from.text) } : {}),
+      })
       found.status = 'accepted'
     } else found.status = 'dismissed'
     await this.ledgerSet(key, kept)
@@ -803,7 +869,7 @@ export class AppLinkSession {
       return { id, outcome: this.outcomeShape(outcome) }
     }
     const sorted = params.kind === 'question' ? { kind: 'question' as const, title: said } : await model.sortMoment(said)
-    const place = this.own()
+    const place = await this.home()
     let outcome: Outcome
     if (sorted.kind === 'todo' || sorted.kind === 'idea') {
       const title = (sorted.title || said).slice(0, 200)
@@ -831,6 +897,8 @@ export class AppLinkSession {
       if (outcome.state === 'undone') return { message: 'Already taken back.' }
       const made = outcome.made
       if (made) {
+        // What it made is in a Binder they may since have been made a reader of: not taken back from there.
+        if (this.places().some((p) => p.spaceId === made.space && p.role === 'reader')) throw new Refused(readerWords)
         const space = this.deps.spaces.get(made.space)
         if (made.kind === 'card') {
           const card = space?.hub.state.cards.find((c) => c.id === made.id)
@@ -868,7 +936,7 @@ export class AppLinkSession {
         brain,
         url: (kind: SourceKind, id: string) => this.deps.webUrl(spaceId, kind, id),
         keep: (kind: SourceKind, id: string) => (kind === 'note' ? state.notes : state.cards).some((x) => x.id === id && ids.has(x.binderId)),
-        work: { id: spaceId, name: places.length === 1 ? places[0].name : places[0].spaceName, hub: places[0].space.hub, actions: places[0].space.actions, binders: [...ids], github: () => this.deps.githubIn?.(spaceId) ?? Promise.resolve(undefined) },
+        work: { id: spaceId, name: places.length === 1 ? places[0].name : places[0].spaceName, hub: places[0].space.hub, actions: places[0].space.actions, binders: [...ids], github: () => this.deps.githubIn?.(spaceId) ?? Promise.resolve(undefined), ...(places[0].role === 'reader' ? { readOnly: true } : {}) },
       }]
     })
   }
@@ -970,14 +1038,14 @@ export class AppLinkSession {
       if (type.startsWith('chat.')) return ['chats']
       return []
     }
-    for (const { info } of this.deps.spaces.forPerson(this.login, false)) {
+    for (const { info, role } of this.deps.spaces.forPerson(this.login, false)) {
       const space = this.deps.spaces.get(info.id)
       if (!space) continue
       const follow = (entries: Entry[]) => {
         for (const { change } of entries) {
           for (const kind of kindsOf(change)) this.pending.add(kind)
           // A permission an agent asks of its owner: rung once on their iPhone.
-          if (change.type === 'card.update' && change.fields?.permission && !change.fields.permission.answer) this.approval(space, info.id, change.id)
+          if (change.type === 'card.update' && change.fields?.permission && !change.fields.permission.answer && role !== 'reader') this.approval(space, info.id, change.id)
         }
         this.soon()
       }

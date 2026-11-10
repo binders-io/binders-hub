@@ -1,14 +1,15 @@
-import { useEffect, useState } from 'react'
-import { BookMarked, Ellipsis, History, Link2, Lock, LockOpen } from 'lucide-react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
+import { BookMarked, Ellipsis, History, Link2, Lock, LockOpen, Send, Sparkles } from 'lucide-react'
 import { guideMost } from '../../../shared/guide.ts'
 import { lineDiff, fromMarkdown, type Note, type NoteProposal } from '../../../shared/notes.ts'
 import { call } from '../data/api'
-import { spaceHeaders } from '../data/space'
+import { spaceHeaders, spaceHref } from '../data/space'
 import { useActions, useHub } from '../data/store'
 import { openMenuUnder, type MenuItem } from './ContextMenu'
 import { Dialog } from './Dialog'
 import { href } from '../route'
 import { attempt, failure, toast } from './Toast'
+import { useMayChangeBinder } from '../screens/settings/access'
 
 // What's kept around a note: its lock, its versions, what's proposed for it while it's locked, and whether it's the
 // guide every agent in its binder reads first.
@@ -35,6 +36,71 @@ export function useMayChange(note: Pick<Note, 'id' | 'locked'>) {
   return known?.id === note.id && known.by === by && known.may
 }
 
+// Sending a note to another of your Binders, and summing it up: what a note's ⋯ menu adds, on a phone and in the list.
+
+export interface SendTarget {
+  id: string
+  name: string
+  personal: boolean
+}
+
+/** The Binders a note can go to: your others. The hub says which, as it knows which you're in. */
+export function useSendTargets() {
+  const [targets, setTargets] = useState<SendTarget[]>([])
+  useEffect(() => {
+    let gone = false
+    void call<{ binders?: SendTarget[] }>('GET', '/api/notes/send-to').then((answer) => {
+      if (!gone) setTargets(answer.binders ?? [])
+    }, () => undefined)
+    return () => { gone = true }
+  }, [])
+  return targets
+}
+
+/** Where a note is in another Binder: that Binder's own address, on this hub. */
+export const noteInBinder = (binder: string, id: string) => spaceHref(binder, `#/notes/${id}`)
+
+/** Copies a note to another Binder, and says where it went: with Open, and when it's a second copy, that. */
+export async function sendNote(note: Pick<Note, 'id'>, target: SendTarget) {
+  const sent = await attempt(() => call<{ id: string; binder: string; binderName: string; again: boolean }>('POST', `/api/notes/${note.id}/send`, { binder: target.id }))
+  if (!sent) return
+  toast(sent.again ? `Sent to ${sent.binderName} again. It has two copies of this note now.` : `Sent to ${sent.binderName}.`, {
+    action: { label: 'Open', run: () => window.location.assign(noteInBinder(sent.binder, sent.id)) },
+  })
+}
+
+// The notes being summed up now, for a menu to say so.
+const summing = new Set<string>()
+const watchers = new Set<() => void>()
+const watchSumming = (tell: () => void) => {
+  watchers.add(tell)
+  return () => { watchers.delete(tell) }
+}
+export const isSumming = (id: string) => summing.has(id)
+
+/** Has the hub's model sum a note up: its summary goes in beside the words, and a toast says when it's there. */
+export async function sumUp(note: Pick<Note, 'id'>) {
+  if (summing.has(note.id)) return
+  summing.add(note.id)
+  watchers.forEach((tell) => tell())
+  const done = await attempt(() => call('POST', `/api/notes/${note.id}/sum-up`))
+  summing.delete(note.id)
+  watchers.forEach((tell) => tell())
+  if (done) toast('Summed up. The summary is in the note.')
+}
+
+/** Whether a note has enough words to be worth summing up, and none of a summary yet. */
+export const canSumUp = (note: Pick<Note, 'text'>) => note.text.replace(/^#[^\n]*\n?/, '').trim().split(/\s+/).length >= 25 && !note.text.includes('\n## Summary\n')
+
+/** "Send to…" and "Sum it up" for a note's menu: each only when it can be done. */
+export function sendAndSumItems(note: Pick<Note, 'id' | 'text'>, targets: SendTarget[]): MenuItem[] {
+  const working = isSumming(note.id)
+  return [
+    ...(targets.length ? [{ label: 'Send to…', icon: <Send size={14} />, submenu: targets.map((target) => ({ label: target.name, onSelect: () => void sendNote(note, target) })) }] : []),
+    ...(canSumUp(note) || working ? [{ label: working ? 'Summing it up…' : 'Sum it up', icon: <Sparkles size={14} />, disabled: working, onSelect: () => void sumUp(note) }] : []),
+  ]
+}
+
 const noProposals: NoteProposal[] = []
 
 const whoIs = (id: string, agents: { id: string; name: string }[]) => agents.find((a) => a.id === id)?.name ?? `@${id}`
@@ -59,6 +125,8 @@ function Diff({ before, after }: { before: string; after: string }) {
 }
 
 function ProposalRow({ proposal, note, mayChange, agents }: { proposal: NoteProposal; note: Note; mayChange: boolean; agents: { id: string; name: string }[] }) {
+  // A reader reads what's suggested and what was said; they add nothing.
+  const reads = !useMayChangeBinder()
   const [said, setSaid] = useState('')
   const open = proposal.state === 'open'
   const stale = open && proposal.base !== note.text
@@ -70,7 +138,7 @@ function ProposalRow({ proposal, note, mayChange, agents }: { proposal: NoteProp
       <p>{proposal.why}</p>
       <Diff before={proposal.base} after={proposal.text} />
       {proposal.comments.map((c, index) => <p key={index} className="note-proposal-said"><b>{whoIs(c.by, agents)}</b> {c.text}</p>)}
-      {open && (
+      {open && !reads && (
         <>
           <label className="field"><span className="field-label">Talk it over</span>
             <textarea id={`proposal-comment-${proposal.id}`} rows={2} value={said} onChange={(e) => setSaid(e.target.value)} />
@@ -95,6 +163,7 @@ interface Commit {
 }
 
 function Versions({ note, mayChange, onPropose }: { note: Note; mayChange: boolean; onPropose: (text: string) => void }) {
+  const reads = !useMayChangeBinder()
   const [commits, setCommits] = useState<Commit[]>()
   const [chosen, setChosen] = useState<{ sha: string; text: string }>()
   useEffect(() => {
@@ -120,7 +189,7 @@ function Versions({ note, mayChange, onPropose }: { note: Note; mayChange: boole
         <div>
           <p className="faint">From that version to the note now:</p>
           <Diff before={chosen.text} after={note.text} />
-          {chosen.text.trim() !== note.text.trim() && (
+          {chosen.text.trim() !== note.text.trim() && !reads && (
             mayChange
               ? <button type="button" className="button" onClick={() => void attempt(() => call('POST', `/api/notes/${note.id}/restore`, { sha: chosen.sha }))}>Go back to this version</button>
               : <button type="button" className="button" onClick={() => onPropose(chosen.text)}>Suggest going back to this version</button>
@@ -155,6 +224,7 @@ function ProposeForm({ note, start, onDone }: { note: Note; start: string; onDon
 function NoteReview({ note, mayChange, onClose, opening }: { note: Note; mayChange: boolean; onClose: () => void; opening: 'proposals' | 'versions' }) {
   const proposals = useHub((state) => state.noteProposals ?? noProposals)
   const agents = useHub((state) => state.agents)
+  const reads = !useMayChangeBinder()
   const [tab, setTab] = useState(opening)
   const [proposing, setProposing] = useState<string>()
   const mine = proposals.filter((p) => p.noteId === note.id).sort((a, b) => Number(b.state === 'open') - Number(a.state === 'open') || b.at.localeCompare(a.at))
@@ -167,13 +237,13 @@ function NoteReview({ note, mayChange, onClose, opening }: { note: Note; mayChan
             <div className="note-review-tabs" role="tablist">
               <button type="button" role="tab" aria-selected={tab === 'proposals'} className={`button${tab === 'proposals' ? ' primary' : ''}`} onClick={() => setTab('proposals')}>Suggested changes</button>
               <button type="button" role="tab" aria-selected={tab === 'versions'} className={`button${tab === 'versions' ? ' primary' : ''}`} onClick={() => setTab('versions')}>Versions</button>
-              {note.locked && !mayChange && <button type="button" className="button" onClick={() => setProposing(note.text)}>Suggest a change</button>}
+              {note.locked && !mayChange && !reads && <button type="button" className="button" onClick={() => setProposing(note.text)}>Suggest a change</button>}
             </div>
             {tab === 'versions'
               ? <Versions note={note} mayChange={mayChange} onPropose={setProposing} />
               : mine.length
                 ? mine.map((p) => <ProposalRow key={p.id} proposal={p} note={note} mayChange={mayChange} agents={agents} />)
-                : <p className="faint">{note.locked ? 'No suggested changes. Anyone in this binder can suggest one, and agents do it with propose_note_change.' : 'Suggested changes are for locked notes. This one can be edited directly.'}</p>}
+                : <p className="faint">{reads ? 'No suggested changes.' : note.locked ? 'No suggested changes. Anyone in this binder can suggest one, and agents do it with propose_note_change.' : 'Suggested changes are for locked notes. This one can be edited directly.'}</p>}
           </>
         )}
     </Dialog>
@@ -183,9 +253,14 @@ function NoteReview({ note, mayChange, onClose, opening }: { note: Note; mayChan
 /** The note's guide, lock and history buttons; on a phone, one button for them all, with what `more` adds. */
 export function NoteControls({ note, mayChange, more }: { note: Note; mayChange: boolean; more?: MenuItem[] }) {
   const store = useActions()
+  // A reader gets what reads: the versions and the link. The guide, the lock, Send to and Sum up change the Binder.
+  const reads = !useMayChangeBinder()
   const binder = useHub((state) => state.binders.find((b) => b.id === note.binderId))
   const open = useHub((state) => (state.noteProposals ?? []).filter((p) => p.noteId === note.id && p.state === 'open').length)
   const [review, setReview] = useState<'proposals' | 'versions'>()
+  const targets = useSendTargets()
+  // Redrawn when this note's summary starts and ends, so its menu item says which.
+  useSyncExternalStore(watchSumming, () => isSumming(note.id))
   const guide = binder?.guideNoteId === note.id
   const lockTitle = note.locked
     ? mayChange ? `Locked by @${note.locked.by}: only they and this Binder’s owners and admins can change it. Unlock it` : `Locked by @${note.locked.by}: suggest changes for review`
@@ -196,9 +271,12 @@ export function NoteControls({ note, mayChange, more }: { note: Note; mayChange:
   if (more) {
     const items: MenuItem[] = [
       { label: open ? `Review ${open} suggested change${open === 1 ? '' : 's'}` : 'Versions and suggested changes', icon: <History size={14} />, onSelect: openReview },
-      { label: note.locked ? 'Unlock' : 'Lock', icon: note.locked ? <LockOpen size={14} /> : <Lock size={14} />, disabled: !!note.locked && !mayChange, onSelect: toggleLock },
-      { label: guide ? 'Stop using as the guide' : 'Make it the binder’s guide', icon: <BookMarked size={14} />, onSelect: toggleGuide },
+      ...(reads ? [] : [
+        { label: note.locked ? 'Unlock' : 'Lock', icon: note.locked ? <LockOpen size={14} /> : <Lock size={14} />, disabled: !!note.locked && !mayChange, onSelect: toggleLock },
+        { label: guide ? 'Stop using as the guide' : 'Make it the binder’s guide', icon: <BookMarked size={14} />, onSelect: toggleGuide },
+      ]),
       { label: 'Copy link', icon: <Link2 size={14} />, onSelect: () => copyNoteLink(note.id) },
+      ...(reads ? [] : sendAndSumItems(note, targets)),
       ...more,
     ]
     return (
@@ -212,8 +290,8 @@ export function NoteControls({ note, mayChange, more }: { note: Note; mayChange:
   }
   return (
     <>
-      <button type="button" className={`icon-button${guide ? ' on' : ''}`} aria-pressed={guide} onClick={toggleGuide} title={guide ? 'This is the binder’s guide: every agent here reads it first. Stop using it as the guide' : 'Make this the binder’s guide: every agent here reads it first'} aria-label="Binder guide"><BookMarked size={15} /></button>
-      <button type="button" className={`icon-button${note.locked ? ' on' : ''}`} aria-pressed={!!note.locked} disabled={!!note.locked && !mayChange} onClick={toggleLock} title={lockTitle} aria-label={note.locked ? 'Locked' : 'Lock'}>{note.locked ? <Lock size={15} /> : <LockOpen size={15} />}</button>
+      {!reads && <button type="button" className={`icon-button${guide ? ' on' : ''}`} aria-pressed={guide} onClick={toggleGuide} title={guide ? 'This is the binder’s guide: every agent here reads it first. Stop using it as the guide' : 'Make this the binder’s guide: every agent here reads it first'} aria-label="Binder guide"><BookMarked size={15} /></button>}
+      {!reads && <button type="button" className={`icon-button${note.locked ? ' on' : ''}`} aria-pressed={!!note.locked} disabled={!!note.locked && !mayChange} onClick={toggleLock} title={lockTitle} aria-label={note.locked ? 'Locked' : 'Lock'}>{note.locked ? <Lock size={15} /> : <LockOpen size={15} />}</button>}
       <button type="button" className={`icon-button${open ? ' on' : ''}`} onClick={openReview} title={open ? `${open} suggested change${open === 1 ? '' : 's'} to review` : 'Versions and suggested changes'} aria-label="Versions and suggested changes"><History size={15} />{open > 0 && <i className="waiting num">{open}</i>}</button>
       {guide && note.text.length > guideMost && <span className="note-guide-long" title={`Agents are given the first ${guideMost.toLocaleString()} characters, and can read the rest`}>Long for a guide</span>}
       {review && <NoteReview note={note} mayChange={mayChange} opening={review} onClose={() => setReview(undefined)} />}

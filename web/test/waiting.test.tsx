@@ -52,6 +52,29 @@ describe('Home: what waits on you', () => {
     expect(within(tile).getByText('1 question · 1 to approve · 1 proposed')).toBeTruthy()
   })
 
+  // The number counts rows, so the line adds up to it: a note's nine proposed cards are one row, and the line says so.
+  it('says a note’s proposed cards are one thing, so the line adds up to the number', async () => {
+    cleanup()
+    const proposal = (n: number) => ({ id: `p${n}`, binderId: 'b1', noteId: 'n1', title: `Card ${n}`, quote: '', brief: '', doneWhen: '', size: 'S' as const, by: 'a1', state: 'new' as const })
+    const asked = Array.from({ length: 6 }, (_, n) => card(`Asked ${n}`, 'blocked', { agentId: 'a1', needsYou: 'Which?' }))
+    standInHub(() => ({ ...busy(), cards: asked, proposals: Array.from({ length: 9 }, (_, n) => proposal(n)) }))
+    await mount(<UIContext.Provider value={ui()}><Home /></UIContext.Provider>)
+    const tile = screen.getByRole('button', { name: /Waiting on you/ })
+    expect(within(tile).getByText('8')).toBeTruthy()
+    expect(within(tile).getByText('6 questions · 1 to approve · 1 note with 9 proposed')).toBeTruthy()
+  })
+
+  it('says how many a card’s findings are, as one card', async () => {
+    cleanup()
+    const finding = (id: string) => ({ id, kind: 'bug' as const, file: 'a.ts', line: 1, what: 'Wrong', confidence: 'confirmed' as const, severity: 'high' as const })
+    const reviewed = card('Reviewed', 'review', { agentId: 'a1', challenge: { state: 'done', askedBy: 'you', askedAt: 'then', agentId: 'a2', picked: 'hub', authors: ['a1'], findings: [finding('f1'), finding('f2'), finding('f3')] } })
+    standInHub(() => ({ ...busy(), cards: [reviewed], proposals: [], changeSets: [] }))
+    await mount(<UIContext.Provider value={ui()}><Home /></UIContext.Provider>)
+    const tile = screen.getByRole('button', { name: /Waiting on you/ })
+    expect(within(tile).getByText('1')).toBeTruthy()
+    expect(within(tile).getByText('1 card with 3 to look at')).toBeTruthy()
+  })
+
   it('lists it in groups: for you, for anyone here, and what’s on others folded away with its count', async () => {
     await mount(<UIContext.Provider value={ui()}><Home /></UIContext.Provider>)
     const list = screen.getByRole('region', { name: 'Waiting on you' })

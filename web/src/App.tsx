@@ -8,9 +8,11 @@ import { BinderSwitcher } from './components/BinderSwitcher'
 import { useBinderName } from './components/useBinderName'
 import { poppedOut } from './components/notesLayout'
 import { Palette } from './components/Palette'
+import { ReaderLine } from './components/ReaderLine'
+import { useMayChangeBinder } from './screens/settings/access'
 import { Toast } from './components/Toast'
 import { SideAgents } from './components/SideAgents'
-import { openRow, useNotifications, useWaiting } from './data/notify'
+import { openRow, useNotifications, useWaiting, waitingFor } from './data/notify'
 import { Account, AgentTerminal, Agents, Ask, ChangeSets, Delivery, Flow, Home, Notes, prefetchScreens, Settings, Work } from './lazyScreens'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { UIContext, type UI } from './ui'
@@ -20,7 +22,7 @@ import { ContextMenuHost } from './components/ContextMenu'
 import { useModal } from './components/useModal'
 import { SwarmDialog } from './components/SwarmDialog'
 import { ClaudeCodeDialog } from './components/ClaudeCode'
-import { forAttention, screenOf, waitingOn } from '../../shared/waiting.ts'
+import { forAttention, screenOf } from '../../shared/waiting.ts'
 
 /** The binder you're in, remembered in this browser; one that's gone falls back to the first. */
 function useBinder(ids: string[]) {
@@ -110,7 +112,7 @@ function useFocusOnScreenChange(screen: Route['screen']) {
  */
 function countsIn(state: State, binder: string): Partial<Record<Route['screen'], number>> {
   const counts: Partial<Record<Route['screen'], number>> = {}
-  for (const row of forAttention(waitingOn(state, state.me?.user.login, { binder }))) {
+  for (const row of forAttention(waitingFor(state, binder))) {
     const screen = screenOf[row.kind]
     counts[screen] = (counts[screen] ?? 0) + 1
   }
@@ -161,10 +163,12 @@ export default function App() {
   const ui = useMemo<UI>(() => ({ openItem: (id: string) => go({ screen: 'work', id }), openPalette: () => setPalette(true), binder, setBinder, splitCard: (id: string) => setSplitting(id), connectClaudeCode: () => setClaudeCode(true), askQuestion: (question: string) => { setAsked({ question, at: Date.now() }); go({ screen: 'ask' }) } }), [binder, setBinder])
 
   // A new note in the binder you're looking at, opened.
+  const mayChange = useMayChangeBinder()
   const newNote = useCallback(() => {
+    if (!mayChange) return
     const target = binder !== 'all' ? binder : binders[0]?.id
     go({ screen: 'notes', id: target ? store.addNote(target) : '' })
-  }, [binder, binders, store])
+  }, [binder, binders, store, mayChange])
 
   const onKey = useCallback((event: KeyboardEvent) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
@@ -287,6 +291,7 @@ export default function App() {
           </header>
           <UpdateFailed />
           <NewVersion />
+          <ReaderLine />
           <div ref={content} tabIndex={-1} className={`screen${moving ? ' moving' : ''}`}>
             <ErrorBoundary resetOn={routeKey}>
               <Suspense fallback={<ScreenLoading />}>

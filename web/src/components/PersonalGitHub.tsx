@@ -30,6 +30,8 @@ export function PersonalGitHub() {
     })
   }
   const remove = () => void attempt(() => call<Status>('DELETE', '/api/personal/oauth')).then((next) => next && setStatus(next))
+  // The connection only shows as gone once the hub has said so; a refusal is shown, not swallowed.
+  const disconnect = () => void attempt(async () => { await call('DELETE', '/api/me/personal-github'); return true }).then((done) => done && setStatus({ ...status, connected: false }))
   const homepage = new URL(status.callback).origin
   // GitHub's new OAuth App form, filled in: its name, homepage and callback come with the link.
   const form = new URL(owner === 'org' && org.trim() ? `https://github.com/organizations/${encodeURIComponent(org.trim())}/settings/applications/new` : 'https://github.com/settings/applications/new')
@@ -46,7 +48,7 @@ export function PersonalGitHub() {
           <div>
             <h3>Your OAuth App</h3>
             {status.oauthApp.set ? (
-              <p>Set: <span className="mono">{status.oauthApp.clientId}</span>. <button className="text-button" onClick={remove}>Take it away</button> (and the connection made through it).</p>
+              <p>Set: <span className="mono">{status.oauthApp.clientId}</span>. <ConfirmButton className="text-button" question="Take away your OAuth App and your GitHub connection? Press again" onConfirm={remove}>Take it away</ConfirmButton> (and the connection made through it).</p>
             ) : (
               <form className="form" onSubmit={save}>
                 <ol className="oauth-steps">
@@ -75,7 +77,7 @@ export function PersonalGitHub() {
           <span className="step-mark">{step > 2 ? <Check size={13} strokeWidth={3} /> : 2}</span>
           <div>
             <h3>Connect your GitHub</h3>
-            {status.connected ? <p>Connected. <ConfirmButton className="text-button" question="Disconnect it? Press again" onConfirm={() => void call('DELETE', '/api/me/personal-github').then(() => setStatus({ ...status, connected: false }))}>Disconnect</ConfirmButton></p>
+            {status.connected ? <p>Connected. <ConfirmButton className="text-button" question="Disconnect it? Press again" onConfirm={disconnect}>Disconnect</ConfirmButton></p>
               : step === 2 ? <><p>GitHub asks to let your OAuth App reach your repos, so the hub can make {status.suggested} and push your notes to it.</p><a className="button primary" href="/auth/github?personal=1"><Github size={14} /> Connect my GitHub</a></>
               : <p>After your OAuth App is set.</p>}
           </div>

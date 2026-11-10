@@ -1,6 +1,6 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { AnimatePresence } from 'motion/react'
-import { Check, ChevronDown, ChevronRight, Copy, KeyRound, Play, Plus, RotateCw, SquareTerminal, Trash2 } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Copy, KeyRound, Laptop, Play, RotateCw, SquareTerminal, Trash2 } from 'lucide-react'
 import type { Agent, Provider } from '../data/model'
 import { isListening, isOnline, useStore, runnerPlaces, runnersOf } from '../data/store'
 import { agentRepos, asksOf, usualRules, defaultRunner, runnerShown, toolForProvider, type RunnerSettings } from '../../../shared/work.ts'
@@ -15,10 +15,12 @@ import { href } from '../route'
 import { useUI } from '../ui'
 import { workerPrompt } from '../data/prompts'
 import { RunnerSteps } from '../components/RunnerSteps'
+import { AddMachine } from '../components/AddMachine'
 import { RepoInput } from '../components/RepoInput'
 import { runnerState } from '../components/runnerState'
 import { ScheduleList } from '../components/Schedules'
 import { SettingsLink } from '../components/SettingsLink'
+import { useMayChangeBinder } from './settings/access'
 
 /** What an agent shows as, from the tool its runner starts. */
 const providerFor = (tool: AgentTool): Provider => (tool === 'codex' ? 'openai' : tool === 'custom' ? 'other' : tool)
@@ -39,6 +41,9 @@ export function Agents() {
   const store = useStore()
   const { state } = store
   const { connectClaudeCode } = useUI()
+  // A reader sees the agents and what they're doing; setting one up, editing, tokens and revoking are for those who may change the Binder.
+  const may = useMayChangeBinder()
+  const [addingMachine, setAddingMachine] = useState(false)
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<Agent>()
   const [token, setToken] = useState<{ agent: Agent; token: string }>()
@@ -55,7 +60,8 @@ export function Agents() {
         </div>
         <div className="head-actions">
           {connectClaudeCode && <button className="button" onClick={connectClaudeCode}><SquareTerminal size={14} /> Add to Claude Code</button>}
-          <button className="button primary" onClick={() => setAdding(true)}><Plus size={14} /> Set up an agent</button>
+          {may && <button className="button quiet" onClick={() => setAdding(true)}>Set one up by hand</button>}
+          {may && <button className="button primary" onClick={() => setAddingMachine(true)}><Laptop size={14} /> Add a machine</button>}
         </div>
       </header>
 
@@ -73,7 +79,8 @@ export function Agents() {
         {!agents.length && (
           <div className="empty-screen">
             <h2>No agents yet</h2>
-            <p>Set one up, connect it with the token it shows, and it starts taking cards from the board.</p>
+            {may && <p>Add a machine: one line, run in the folder with the code, sets up an agent there that takes cards from the board.</p>}
+            {may && <button className="button primary" onClick={() => setAddingMachine(true)}><Laptop size={14} /> Add a machine</button>}
           </div>
         )}
       </div>
@@ -81,12 +88,13 @@ export function Agents() {
       {(state.schedules ?? []).length > 0 && (
         <section className="schedules-section">
           <h3>Scheduled runs</h3>
-          <p className="faint">Notes put on the board as cards on a timer. Set them from a note’s Schedule button.</p>
+          {may && <p className="faint">Notes put on the board as cards on a timer. Set them from a note’s Schedule button.</p>}
           <ScheduleList schedules={state.schedules ?? []} />
         </section>
       )}
 
       <AnimatePresence>
+        {addingMachine && <AddMachine key="machine" onClose={() => setAddingMachine(false)} />}
         {(adding || editing) && <AgentDialog key="agent" agent={editing} onClose={() => { setAdding(false); setEditing(undefined) }} onMade={(made) => { setAdding(false); setToken(made) }} />}
         {token && <TokenDialog key="token" agent={token.agent} token={token.token} onClose={() => setToken(undefined)} />}
         {starting && (
@@ -102,6 +110,7 @@ export function Agents() {
 /** One agent: what it's doing first, then where it works and what it can do, as chips that fold up when there are many. */
 function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent; onEdit: () => void; onToken: () => void; onRevoke: () => void; onStart: () => void }) {
   const { state } = useStore()
+  const may = useMayChangeBinder()
   // On a phone what it's doing comes first, and the rest when asked for.
   const phone = usePhone()
   const [factsOpen, setFactsOpen] = useState(false)
@@ -144,12 +153,12 @@ function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent
         <AgentAvatar agent={agent} size={44} live={holding.length > 0} />
         <div className="agent-name">
           <h3>{agent.name}</h3>
+          {/* Each piece stays whole and the line wraps between them: the separators are drawn after a piece, so none starts a line. */}
           <span className="agent-meta">
-            <span className={`status-dot${online ? ' online' : ''}${listening ? ' listening' : ''}`} />
-            {asks.length ? `${asks.length === 1 ? 'A question' : `${asks.length} questions`} for you` : listening ? 'Listening for work' : holding.length && online ? 'Working' : online ? 'Online' : agent.lastSeen ? `Seen ${ago(agent.lastSeen)} ago` : 'Not running'}
-            {provider && <span className="faint"> · {provider}</span>}
-            <span className="faint agent-access"> · {shortAccess[(runner ?? defaultRunner).access]}</span>
-            {theirs && <span className="faint agent-owner"> · @{agent.owner}’s</span>}
+            <span className="agent-piece"><span className={`status-dot${online ? ' online' : ''}${listening ? ' listening' : ''}`} />{asks.length ? `${asks.length === 1 ? 'A question' : `${asks.length} questions`} for you` : listening ? 'Listening for work' : holding.length && online ? 'Working' : online ? 'Online' : agent.lastSeen ? `Seen ${ago(agent.lastSeen)} ago` : 'Not running'}</span>
+            {provider && <span className="agent-piece faint">{provider}</span>}
+            <span className="agent-piece faint agent-access">{shortAccess[(runner ?? defaultRunner).access]}</span>
+            {theirs && <span className="agent-piece faint agent-owner">@{agent.owner}’s</span>}
           </span>
         </div>
       </header>
@@ -182,7 +191,7 @@ function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent
         {runner?.model && <><dt>Model</dt><dd className="runs-on mono" title={runner.model}>{runner.model}</dd></>}
       </dl>}
 
-      {(!listening || runnerState(agent).old) && (
+      {may && (!listening || runnerState(agent).old) && (
         <div className="agent-start">
           <p className={online && runnerState(agent).old ? 'runner-old' : 'faint'}>{online && runnerState(agent).old ? runnerState(agent).text : 'Its runner isn’t running.'}</p>
           {restartable
@@ -190,7 +199,7 @@ function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent
             : <button className="button primary" onClick={onStart}><Play size={13} /> {listening ? 'Restart the runner' : 'Start the runner'}</button>}
         </div>
       )}
-      <footer>
+      {may && <footer>
         {state.me?.user.login.toLowerCase() === agent.owner.toLowerCase() && (runner?.tool ?? 'claude') !== 'custom' && !toolInfo(runner?.tool ?? 'claude').noTerminal && (
           <a className="button" href={href({ screen: 'terminal', id: agent.id })} title={`${toolInfo(runner?.tool ?? 'claude').name} in a terminal on its machine, as you’d use it there`}><SquareTerminal size={14} /> Terminal</a>
         )}
@@ -200,7 +209,7 @@ function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent
           <ConfirmButton className="button only-icon" question="Cut off its runner? Press again" onConfirm={onToken} title="New token: the old one stops working, and the runner using it is cut off" label={`New token for ${agent.name}`}><KeyRound size={14} /></ConfirmButton>
           <ConfirmButton className="button only-icon danger" question="Revoke it? Press again" onConfirm={onRevoke} title="Revoke: its token stops working at once, and what it holds goes back on the board" label={`Revoke ${agent.name}`}><Trash2 size={14} /></ConfirmButton>
         </span>
-      </footer>
+      </footer>}
     </article>
   )
 }

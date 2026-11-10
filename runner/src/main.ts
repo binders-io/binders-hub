@@ -24,15 +24,15 @@ if (process.argv[2] === 'agent') process.exit(await agentCommand(process.argv.sl
 // The daemon that serves this machine's model servers to the hub's brain (brain.ts), as binders add runs it.
 if (process.argv[2] === 'brain') process.exit(await brainCommand(process.argv.slice(3)))
 
-// binders add / list / logs / start / stop / restart / remove: agents in the background (daemon.ts).
+// binders add / join / list / logs / start / stop / restart / remove: agents in the background (daemon.ts).
 const sub = process.argv[2]
 if (sub && (subcommands.has(sub) || sub === 'help')) {
   if (sub === 'help') {
     console.log(usage)
     process.exit(0)
   }
-  // binders add and remove talk to the hub from here, not from a worker: this process starts itself again to do it.
-  if (['add', 'remove', 'rm'].includes(sub) && !process.env.BINDERS_RUNNER_WORKER) {
+  // binders add, join and remove talk to the hub from here, not from a worker: this process starts itself again to do it.
+  if (['add', 'join', 'remove', 'rm'].includes(sub) && !process.env.BINDERS_RUNNER_WORKER) {
     const network = nodeNetwork()
     const again = spawnSync(process.execPath, [...network.args, process.argv[1], ...process.argv.slice(2)], { stdio: 'inherit', env: { ...process.env, ...network.env, BINDERS_RUNNER_WORKER: '1' } })
     process.exit(again.status ?? 1)

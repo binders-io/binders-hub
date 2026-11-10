@@ -90,7 +90,7 @@ export const bodies = {
   newSpace: z.looseObject({ id: maybe, name: maybe, owner: maybe }),
   named: z.looseObject({ name: maybe }),
   removeSpace: z.looseObject({ name: maybe }),
-  member: z.looseObject({ role: z.enum(['owner', 'admin', 'member']).optional() }),
+  member: z.looseObject({ role: z.enum(['owner', 'admin', 'member', 'reader']).optional() }),
   newCard: z.looseObject({ binderId: text, title: text, brief: maybe, doneWhen: maybe, size: z.enum(['S', 'M', 'L']).optional(), meantFor: maybe, waitsFor: texts, noteId: maybe, quote: maybe }),
   ask: z.looseObject({ agentId: maybe, effort: maybe }),
   finding: z.looseObject({ action: maybe }),
@@ -128,6 +128,8 @@ export const bodies = {
     machine: z.string().max(40).optional(), embeddingsMachine: z.string().max(40).optional(), transcriptionMachine: z.string().max(40).optional(), speechMachine: z.string().max(40).optional(),
   }),
   machine: z.looseObject({ name: text.max(60) }),
+  /** A machine joining with a line from the Agents page: what it found on itself, as ids of tools and owner/name repos. */
+  machineJoin: z.looseObject({ token: text.max(200), host: z.string().max(200).optional(), tools: z.array(z.string().max(40)).max(40), folder: z.string().max(1000).optional(), repos: z.array(z.string().max(200)).max(100).optional() }),
   pull: z.looseObject({ model: z.string().min(1).max(200), job: z.enum(['chat', 'embeddings', 'transcription', 'speech']), source: z.enum(['ollama', 'hf']).optional() }),
   serve: z.looseObject({ runtime: z.enum(['mlx-audio', 'lmstudio']), job: z.enum(['chat', 'embeddings', 'transcription', 'speech']) }),
   chooseJobs: z.looseObject({ jobs: z.array(z.enum(['chat', 'embeddings', 'transcription', 'speech'])).min(1).max(4) }),

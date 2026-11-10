@@ -5,8 +5,8 @@ import { Auth } from './auth.ts'
 import { GitHubConnection } from './githubConnection.ts'
 import { JiraConnection } from './jira.ts'
 import { Hub } from './hub.ts'
-import { MemoryKV, RedisKV, type KV } from './kv.ts'
-import { MemoryLog, RedisLog, type ChangeLog } from './log.ts'
+import { HubLease, MemoryKV, RedisKV, type KV } from './kv.ts'
+import { MemoryLog, RedisLog, RedisPair, type ChangeLog } from './log.ts'
 import { GitNotesSaver } from './savers/gitNotes.ts'
 import { IssuesSaver } from './savers/issues.ts'
 import { JiraSaver } from './savers/jira.ts'
@@ -19,6 +19,7 @@ import { agentReach } from './reach.ts'
 import { Merger } from './merger.ts'
 import { Webhooks } from './webhooks.ts'
 import { GitHubPoller } from './poller.ts'
+import { Teller } from './tell.ts'
 import { OptionsStore, optionsFromEnv } from './options.ts'
 import { log as hubLog } from './logger.ts'
 import { BrainSettingsStore } from './brain/settings.ts'
@@ -46,6 +47,8 @@ import type { Binder } from '../../shared/notes.ts'
 //   HUB_POLL, HUB_POLL_SECONDS  asking GitHub instead of webhooks: auto (while no webhook arrives), on or off; every 30 s
 //   NOTES_QUIET_SECONDS     how long typing pauses before a note is committed (60)
 //   WEB_DIR                 the web app, built (web/dist), for the hub to serve itself when Vite isn't in front of it
+//   HUB_LEASE_SECONDS       how long this hub's hold on its Redis lasts if it dies without letting go (30); it renews it a third of that often
+//   HUB_LEASE_WAIT_SECONDS  how long it waits for another hub's hold on the same Redis to lapse before giving up (40)
 //   LOG=1                   every request in the log, not only what goes wrong; LOG_LEVEL sets how much (info)
 //   CSP_ENFORCE             1 for browsers to enforce the content security policy; unset, they report what it would stop
 //   BRAIN_PROVIDER, BRAIN_MODEL, BRAIN_BASE_URL, BRAIN_API_KEY (or ANTHROPIC_API_KEY), EMBEDDINGS_BASE_URL, EMBEDDINGS_MODEL,
@@ -57,6 +60,39 @@ const publicUrl = (env.PUBLIC_URL ?? 'http://localhost:5173').replace(/\/$/, '')
 const hubKeys = '_hub'
 const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1'
 
+// Every Binder's log shares one pair of connections, so a hub with thousands of them doesn't use up Redis's.
+const redisPair = env.REDIS_URL ? new RedisPair(env.REDIS_URL) : undefined
+
+// Only one hub may use a Redis: a second would merge, post issues and ask GitHub alongside the first. A hub that's
+// restarting waits for its earlier self's hold to lapse, if that one didn't let go. Without a Redis there's nothing to share.
+const seconds = (value: string | undefined, fallback: number) => (Number(value) > 0 ? Number(value) * 1000 : fallback)
+const leaseMs = seconds(env.HUB_LEASE_SECONDS, 30_000)
+const leaseWaitMs = seconds(env.HUB_LEASE_WAIT_SECONDS, 40_000)
+/** Set once the hub is up enough to stop properly. */
+let stopHub: ((code: number) => Promise<void>) | undefined
+const lease = redisPair && new HubLease(redisPair.redis, {
+  ttlMs: leaseMs,
+  renewMs: leaseMs / 3,
+  waitMs: leaseWaitMs,
+  onWait: () => console.log(`Another hub holds this Redis. Waiting up to ${Math.round(leaseWaitMs / 1000)} seconds for it to let go.`),
+  onLost: (holder) => {
+    console.error(`Another hub (${holder ?? 'unknown'}) has taken this Redis over, and only one may use it. This hub is stopping.`)
+    if (stopHub) void stopHub(1)
+    else process.exit(1)
+  },
+})
+const early = lease && (() => void lease.release().finally(() => process.exit(0)))
+if (lease && redisPair) {
+  const taken = await lease.take()
+  if (!taken.held) {
+    console.error(`Another hub is running on this Redis${taken.holder ? ` (${taken.holder})` : ''}, and only one may. Stop it first, or give this hub a Redis of its own.`)
+    redisPair.close()
+    process.exit(1)
+  }
+  // Until the real ones are in place, below: a stop in between still lets go.
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, early!)
+}
+
 const { secret, made } = await hubSecret(env.HUB_SECRET, resolve('.data/secret'))
 if (made) console.log(`Made the hub's secret in ${resolve('.data/secret')}: keep it with the hub's data.`)
 const sealer = new Sealer(secret)
@@ -65,8 +101,8 @@ const sealer = new Sealer(secret)
 // A hub that held one Binder kept it in that Binder's keys: moved once.
 // The first Binder's address: as set, else as the store already has it, else "main" for a new hub.
 const hubFile = resolve('.data/hub-kept.json')
-const space = env.HUB_SPACE ?? (env.REDIS_URL ? await storedFirstSpace(env.REDIS_URL) : undefined) ?? 'main'
-const firstLog: ChangeLog = env.REDIS_URL ? new RedisLog(env.REDIS_URL, space) : new MemoryLog()
+const space = env.HUB_SPACE ?? (redisPair ? await storedFirstSpace(redisPair) : undefined) ?? 'main'
+const firstLog: ChangeLog = env.REDIS_URL ? new RedisLog(env.REDIS_URL, space, redisPair) : new MemoryLog()
 if (firstLog instanceof RedisLog) {
   const moved = await moveHubKeys(firstLog, space)
   if (moved) console.log(`Moved ${moved} of the hub's own keys out of ${space}'s.`)
@@ -123,7 +159,7 @@ const notesRoot = resolve(env.NOTES_DIR ?? '.data/notes')
 async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   const first = id === space
   const dir = (name: string) => (first ? resolve(`.data/${name}`) : resolve(`.data/binders/${id}/${name}`))
-  const log = first ? firstLog : env.REDIS_URL ? new RedisLog(env.REDIS_URL, id) : new MemoryLog()
+  const log = first ? firstLog : env.REDIS_URL ? new RedisLog(env.REDIS_URL, id, redisPair) : new MemoryLog()
   // Each binder's GitHub is its own: its app, its installations and its people's sign-ins to it, seen by no other
   // binder, so a binder set up for one organization shows its repos to nobody outside it. A personal binder has no
   // GitHub App: its notes repo is its person's own, reached through the hub's OAuth App (pushTo, below).
@@ -149,7 +185,7 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   hub.lockManager = (login) => spaces.mayManage(id, login, false)
   started = hub
   // A Binder is one notebook: it starts with the one binder its notes and board are in, named as it is.
-  await hub.start(first ? startingSeed(options.get().allowedUsers[0] ?? 'you') : [{ type: 'binder.put', binder: info.personal ? { id: 'notes', name: 'Notes', createdBy: info.personal } : { id: 'main', name: info.name, createdBy: info.createdBy } }], await stateFile?.read())
+  await hub.start(first ? startingSeed(options.get().allowedUsers[0] ?? 'you') : [{ type: 'binder.put', binder: info.personal ? { id: 'notes', name: 'Notes', createdBy: info.personal } : { id: 'main', name: info.name, createdBy: info.createdBy } }], await stateFile?.read(), await stateFile?.readDocs())
   await stateFile?.follow(hub)
   const actions = new Actions(hub, github)
   // Agents reach no more of GitHub than their owners.
@@ -172,6 +208,10 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   const jiraIssues = new JiraSaver(hub, () => jira, ownKv, id)
   void jiraIssues.load().catch(() => undefined)
   jiraIssues.start()
+  // A channel the binder tells when something starts waiting, if its owners set one (Settings → How work flows).
+  const tell = new Teller(ownKv, sealer, id, { state: () => hub.state, name: () => spaces.info(id)?.name ?? info.name, several: () => spaces.list().length > 1, base: boardUrl })
+  await tell.load().catch(() => undefined)
+  tell.start()
   // A Challenge's findings as a review on the card's pull request, in binders that turn it on.
   const reviews = new ReviewsSaver(hub, github, { publicUrl: boardUrl })
   reviews.start()
@@ -220,11 +260,12 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   const scheduler = new Scheduler(hub, actions)
   scheduler.start()
   const running: Space = {
-    id, hub, actions, webhooks, github, notes, poller, issues, jira, jiraIssues, filesDir: join(notesDir, 'files'), brain,
+    id, hub, actions, webhooks, github, notes, poller, issues, jira, jiraIssues, tell, filesDir: join(notesDir, 'files'), brain,
     stop: async () => {
       // First: the rest of stopping can take longer than a server gives it.
-      await stateFile?.save()
+      await stateFile?.save().catch(() => undefined)
       scheduler.stop()
+      tell.stop()
       brain.stop()
       poller.stop()
       await notes.stop()
@@ -242,10 +283,34 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
 // A hub with no list of Binders yet: the one it had, with no members, so whoever the hub let in still gets in, as
 // before. Adding its first member, as owner, closes it to everyone else.
 const spaces = new Spaces(kv, startSpace)
-await spaces.load({ id: space, name: env.HUB_NAME ?? space, members: [] })
 
+// Listening comes first and the Binders start after: with thousands of them that takes a while, and a server that
+// watches /health must see a hub that's busy rather than one that's gone. Until they're up, /ready and every other
+// request say so (see server.ts).
 const app = await buildServer(spaces, { auth, options, brain: brainSettings, machines: brainMachines }, { publicUrl, logger: hubLog, logRequests: env.LOG === '1', webDir: env.WEB_DIR, enforceCsp: env.CSP_ENFORCE === '1' })
 await app.listen({ port, host })
+console.log(`Binders hub listening on http://${host}:${port}; starting its Binders.`)
+
+const stop = async (code: number) => {
+  await app.close()
+  await spaces.stop()
+  // Last of the hub's, so the next one starts at once.
+  await lease?.release()
+  redisPair?.close()
+  process.exit(code)
+}
+stopHub = stop
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  if (early) process.off(signal, early)
+  process.on(signal, () => void stop(0))
+}
+
+try {
+  await spaces.load({ id: space, name: env.HUB_NAME ?? space, members: [] })
+} catch (error) {
+  console.error(error)
+  await stop(1)
+}
 
 const githubOf = (s: Space) => {
   const status = s.github.status()
@@ -264,14 +329,6 @@ const lines = [
 // Nobody can sign in yet: a one-time link to set GitHub up.
 if (!signInThrough() && !auth.options.devLogin()) lines.push(`set up: ${publicUrl}/auth/setup?code=${await auth.setupCode()}`)
 console.log(lines.join('\n  '))
-
-const stop = async () => {
-  await app.close()
-  await spaces.stop()
-  process.exit(0)
-}
-process.on('SIGINT', stop)
-process.on('SIGTERM', stop)
 
 /** Moves the hub's own keys (hub:<first>:kv:…) to hub:_hub:kv:…, once: renamed, so each keeps what's left of its expiry. */
 async function moveHubKeys(log: RedisLog, from: string) {
@@ -319,14 +376,9 @@ async function moveGitHubKeys(log: RedisLog, first: string) {
   return moved
 }
 
-async function storedFirstSpace(url: string) {
+async function storedFirstSpace(pair: RedisPair) {
   // The file first: Redis may have been rebuilt, and its first Binder would look like a new hub's.
   const kept = await firstSpaceIn(await new KeptKV(new MemoryKV(), hubFile).load())
   if (kept) return kept
-  const probe = new RedisLog(url, hubKeys)
-  try {
-    return await firstSpaceIn(new RedisKV(probe.redis, hubKeys))
-  } finally {
-    await probe.close()
-  }
+  return firstSpaceIn(new RedisKV(pair.redis, hubKeys))
 }

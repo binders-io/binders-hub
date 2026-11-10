@@ -4,10 +4,11 @@ import { applyChange, emptyState, type Change, type Entry, type HubState, type O
 import type { ChangeLog } from './log.ts'
 import type { SavedState } from './kept.ts'
 import type { Presence } from '../../shared/work.ts'
-import { changesTo, check, NoteDocs, type NoteDoc } from '../../shared/noteDoc.ts'
+import { changesTo, check, load as loadDoc, NoteDocs, save as saveDoc, textOf, type NoteDoc } from '../../shared/noteDoc.ts'
 import { log } from './logger.ts'
 import { lockStops } from '../../shared/notes.ts'
 import { whatsWrong } from './schemas.ts'
+import { describe, noted, stamped, whoIs } from './history.ts'
 
 /** Who's sending a change. */
 export type Actor = { kind: 'user'; login: string } | { kind: 'agent'; id: string } | { kind: 'hub' }
@@ -61,37 +62,81 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
   private fallback?: SavedState
 
   /**
-   * Reads the whole log; a hub whose log is empty starts with what `seed` gives. A log behind the state saved in `saved`
-   * lost what it had: the hub takes that state, and the log goes on from its version. So does a log with a hole in it,
-   * whenever that hole was made: what's before the hole is in the saved state, and only what's after it is read.
+   * Starts from the state saved before, with each note's document as it was saved beside it (`docs`), and reads only
+   * what the log has after that: how long a Binder takes to start doesn't grow with how long it has been going, and the
+   * log needn't hold its whole history. A hub with no saved state reads its whole log, and one whose log is empty
+   * starts with what `seed` gives.
+   *
+   * With a saved state and no documents saved yet (a Binder from before they were), the whole log is read once more, so
+   * every note's document is as it was and whoever is editing goes on from theirs: where that log has a hole in it, at
+   * its start or in its middle, the saved state stands for what's before the hole.
    */
-  async start(seed?: Change[], saved?: SavedState) {
+  async start(seed?: Change[], saved?: SavedState, docs?: Map<string, Uint8Array>) {
     // Listening first, then reading: a change made between the two would otherwise wait for the next one to be heard of.
     await this.log.listening?.()
-    if (saved) {
-      const latest = await this.log.latest().catch(() => undefined)
-      if (latest !== undefined && latest < saved.version) {
-        log.warn({ log: this.log.kind, latest, saved: saved.version }, 'The change log is behind this Binder’s saved state: carrying on from the saved state')
-        this.take(saved)
-        await this.log.startAt(saved.version)
-      } else this.fallback = saved
-    }
-    await this.catchUp()
-    this.fallback = undefined
-    // Read through, and still short of what was saved, or with none of the binders it had: the log didn't give what
-    // it should have. The saved state stands, with whatever the log has after it.
-    if (saved && (this.version < saved.version || (saved.state.binders.length > 0 && !this.state.binders.length))) {
-      log.error({ log: this.log.kind, read: this.version, saved: saved.version }, 'The change log gave less than this Binder’s saved state holds: carrying on from the saved state')
-      const further = this.version
+    const latest = saved ? await this.log.latest().catch(() => undefined) : undefined
+    const behind = !!saved && latest !== undefined && latest < saved.version
+    if (saved && (docs || behind)) {
       this.take(saved)
-      await this.log.startAt(Math.max(saved.version, further))
+      const kept: string[] = []
+      for (const [noteId, bytes] of docs ?? []) {
+        try {
+          this.docs.put(noteId, loadDoc(bytes))
+          kept.push(noteId)
+        } catch (err) {
+          log.warn({ err, note: noteId }, 'Couldn’t read a note’s saved document: it starts again from the note’s text')
+        }
+      }
+      if (behind) {
+        log.warn({ log: this.log.kind, latest, saved: saved.version }, 'The change log is behind this Binder’s saved state: carrying on from the saved state')
+        await this.log.startAt(saved.version)
+      }
       await this.catchUp()
+      // A document that doesn't say what its note says would put its own words back at the note's next edit: set aside.
+      for (const noteId of kept) {
+        const doc = this.docs.peek(noteId)
+        const note = this.state.notes.find((n) => n.id === noteId)
+        if (doc && (!note || textOf(doc) !== note.text)) {
+          if (note) log.warn({ note: noteId }, 'A note’s saved document didn’t match its text: it starts again from the text')
+          this.docs.drop(noteId)
+        }
+      }
+    } else {
+      this.fallback = saved
+      await this.catchUp()
+      this.fallback = undefined
+      // Read through, and short of what was saved: with none of the binders it had, or, with nothing in the log since
+      // the state was saved, fewer binders, notes or cards than it held. The log didn't give what it should have, and
+      // the saved state stands, with whatever the log has after it.
+      const fewer = !!saved && this.version === saved.version && (
+        this.state.binders.length < saved.state.binders.length || this.state.notes.length < saved.state.notes.length || this.state.cards.length < saved.state.cards.length)
+      if (saved && (this.version < saved.version || (saved.state.binders.length > 0 && !this.state.binders.length) || fewer)) {
+        log.error({ log: this.log.kind, read: this.version, saved: saved.version }, 'The change log gave less than this Binder’s saved state holds: carrying on from the saved state')
+        const further = this.version
+        this.take(saved)
+        await this.log.startAt(Math.max(saved.version, further))
+        await this.catchUp()
+      }
+      // Every document it now has is saved with the state, for the starts after this one.
+      this.docs.changeAll()
     }
     if (this.version === 0 && seed?.length) {
       const at = new Date().toISOString()
       for (const [index, change] of seed.entries()) await this.log.append({ id: `seed-${index}`, client: 'hub', at, change })
       await this.catchUp()
     }
+  }
+
+  /**
+   * The notes' documents that changed since this was last asked, as they're saved (undefined: the note has none any
+   * more), for keeping beside the state. `again` puts back ones that couldn't be saved.
+   */
+  changedDocs(): Map<string, Uint8Array | undefined> {
+    return new Map([...this.docs.takeChanged()].map(([noteId, doc]) => [noteId, doc ? saveDoc(doc) : undefined]))
+  }
+
+  docsChangedAgain(noteIds: Iterable<string>) {
+    this.docs.changedAgain(noteIds)
   }
 
   /** Carries on from a saved state: its notes' documents are made again from their text as they're next edited. */
@@ -205,18 +250,29 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
     const versions: number[] = []
     // Tried first on a copy, each on the ones before it: what can't be applied never reaches the log.
     let trial = this.state
-    for (const { id, change } of outgoing) {
-      this.check(change, login)
-      await vet?.(change)
-      const ready = await this.prepare(change)
-      try {
-        trial = applyChange(trial, ready)
-      } catch {
-        throw new Refused(`That change can’t be applied (${change.type}).`)
+    const noting: string[] = []
+    try {
+      for (const { id, change } of outgoing) {
+        this.check(change, login)
+        await vet?.(change)
+        // Who deleted a note or a card, and when, is the hub's to say: whatever the client wrote is replaced.
+        const ready = stamped(await this.prepare(change), login, at)
+        const sentences = describe(trial, ready)
+        try {
+          trial = applyChange(trial, ready)
+        } catch {
+          throw new Refused(`That change can’t be applied (${change.type}).`)
+        }
+        const version = await this.log.append({ id, client: `user:${login}:${tab}`, at, change: ready })
+        versions.push(version)
+        // A resend is in the log already, and noted.
+        if (version) noting.push(...sentences)
       }
-      versions.push(await this.log.append({ id, client: `user:${login}:${tab}`, at, change: ready }))
+    } finally {
+      // What went in is noted even when a later change was refused: those before it are in the log.
+      await this.catchUp()
+      await noted(this, { kind: 'user', login }, noting)
     }
-    await this.catchUp()
     return versions
   }
 
@@ -235,6 +291,8 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
     const wrong = whatsWrong(change)
     if (wrong) throw new Refused(`That change can’t be used (${change.type}): ${wrong}.`)
     this.guardLock(change, { kind: 'user', login })
+    // Put back from the trash is the hub's own doing, from its copy: a client's copy of a note or card isn't "restored".
+    if ((change.type === 'note.put' || change.type === 'card.put') && change.restored) throw new Refused('A note or a card is put back from the trash, not written.')
     // A permission runs something on an agent's machine: answered through answerPermission, by its owner, never written.
     if (change.type === 'card.update' && change.fields.permission) throw new Refused('A permission is answered on its card, by its agent’s owner.')
     if (change.type === 'card.put' && change.card.permission && JSON.stringify(change.card.permission) !== JSON.stringify(this.state.cards.find((c) => c.id === change.card.id)?.permission)) throw new Refused('A permission is answered on its card, by its agent’s owner.')
@@ -303,8 +361,12 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
   /** The hub's own changes, and what agents do through its tools. */
   async record(actor: Actor, change: Change, id: string = randomUUID()) {
     this.guardLock(change, actor)
-    const version = await this.log.append({ id, client: clientOf(actor), at: new Date().toISOString(), change: await this.prepare(change) })
+    const at = new Date().toISOString()
+    const ready = stamped(await this.prepare(change), whoIs(this.state, actor), at)
+    const sentences = describe(this.state, ready)
+    const version = await this.log.append({ id, client: clientOf(actor), at, change: ready })
     await this.catchUp()
+    await noted(this, actor, sentences)
     return version
   }
 

@@ -11,6 +11,8 @@ import { Refused, type Hub } from './hub.ts'
 import { Refusal } from './auth.ts'
 import { ask, askText, type SpaceBrain } from './brain/brain.ts'
 import { agentOnline } from './brain/board.ts'
+import { chosenHome } from './brain/captures.ts'
+import { personalId, readerWords, type Role } from './spaces.ts'
 import type { BrainSettingsStore } from './brain/settings.ts'
 
 // The hub's MCP server for a person's own terminal, not an agent's: signed in through OAuth, it reads and writes the
@@ -25,7 +27,7 @@ import type { BrainSettingsStore } from './brain/settings.ts'
 export interface PersonPlace {
   id: string
   name: string
-  role: 'owner' | 'admin' | 'member'
+  role: Role
   hub: Hub
   actions: Actions
   /** Its brain, to answer questions from and to put captures in. */
@@ -121,6 +123,10 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
     if (hits.length > 1) throw new Refused(`That’s in more than one of your binders (${hits.map((h) => h.place.name).join(', ')}): say which with binder.`)
     return hits[0]
   }
+  /** A reader sees everything and writes nothing: every tool that changes something asks this first, of the binder it changes. */
+  const mayWrite = (place: PersonPlace) => {
+    if (place.role === 'reader') throw new Refused(readerWords)
+  }
   const whichBinder = z.string().optional().describe('the binder it’s in, when you’re connected to several and it’s in more than one')
 
   const findNote = (place: PersonPlace, ref: string) => place.hub.state.notes.find((n) => n.id === ref) ?? place.hub.state.notes.find((n) => titleOf(n.text).toLowerCase() === ref.trim().toLowerCase())
@@ -168,12 +174,12 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
     }
   }
   const listed = () => spots().map(({ place, binder }) => ({
-    id: idOf(place, binder.id), name: binder.name, ...(several ? { address: place.id } : {}), role: place.role, repo: binder.repo, ...(binder.repos?.length ? { repos: binder.repos } : {}),
+    id: idOf(place, binder.id), name: binder.name, ...(several ? { address: place.id } : {}), role: place.role, ...(place.role === 'reader' ? { note: readerWords } : {}), repo: binder.repo, ...(binder.repos?.length ? { repos: binder.repos } : {}),
     ready: place.hub.state.cards.filter((c) => c.binderId === binder.id && c.stage === 'ready').length,
   }))
 
   server.registerTool('whoami', { description: 'You, as Binders knows you: your login, and every binder this connection reaches.', inputSchema: {} }, run(async () => {
-    const binders = listed().map(({ id, name, role }) => ({ id, name, role }))
+    const binders = listed().map(({ id, name, role, note }) => ({ id, name, role, ...(note ? { note } : {}) }))
     return text({ login, name: session.name, ...(binders.length === 1 ? { binder: { id: binders[0].id, name: binders[0].name } } : {}), binders })
   }))
 
@@ -225,6 +231,7 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
     inputSchema: { id: z.string(), why: z.string(), find: z.string().optional(), replace: z.string().optional(), text: z.string().optional(), binder: whichBinder },
   }, run(async ({ id, why, find, replace, text: whole, binder }: { id: string; why: string; find?: string; replace?: string; text?: string; binder?: string }) => {
     const { place, note } = noteAt(id, binder, 'read')
+    mayWrite(place)
     let next: string
     if (find !== undefined) {
       const at = note.text.indexOf(find)
@@ -243,6 +250,7 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
   }, run(async ({ id, text: said, binder }: { id: string; text: string; binder?: string }) => {
     const found = locate((place) => place.hub.state.noteProposals.find((p) => p.id === id), binder)
     if (!found) throw new Refused(`No proposal ${id}.`)
+    mayWrite(found.place)
     await commentOn(found.place.hub, actor, login, id, said)
     return text('Said.')
   }))
@@ -257,6 +265,7 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
 
   server.registerTool('create_note', { description: 'Makes a note in a binder from Markdown.', inputSchema: { binder: z.string(), text: z.string() } }, run(async ({ binder, text: body }: { binder: string; text: string }) => {
     const { place, binder: target } = binderNamed(binder, 'write in')
+    mayWrite(place)
     if (isBlank(body)) throw new Refused('The note is empty.')
     const id = `note-${Date.now().toString(36)}`
     await place.hub.record(actor, { type: 'note.put', note: { id, title: titleOf(body), binderId: target.id, editedAt: new Date().toISOString(), editors: [login], text: body } })
@@ -265,6 +274,7 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
 
   server.registerTool('append_to_note', { description: 'Adds Markdown at the end of a note.', inputSchema: { id: z.string(), text: z.string(), binder: whichBinder } }, run(async ({ id, text: more, binder }: { id: string; text: string; binder?: string }) => {
     const { place, note } = noteAt(id, binder, 'write in')
+    mayWrite(place)
     const next = `${note.text.replace(/\s*$/, '')}\n\n${more.trim()}\n`
     await place.hub.record(actor, { type: 'note.edit', id: note.id, text: next, title: titleOf(next), by: login, at: new Date().toISOString() })
     return text('Added.')
@@ -275,6 +285,7 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
     inputSchema: { id: z.string(), find: z.string().optional(), replace: z.string().optional(), text: z.string().optional(), binder: whichBinder },
   }, run(async ({ id, find, replace, text: whole, binder }: { id: string; find?: string; replace?: string; text?: string; binder?: string }) => {
     const { place, note } = noteAt(id, binder, 'write in')
+    mayWrite(place)
     let next: string
     if (find !== undefined) {
       const at = note.text.indexOf(find)
@@ -295,6 +306,7 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
     inputSchema: { binder: z.string(), name: z.string(), parent: z.string().optional() },
   }, run(async ({ binder, name, parent }: { binder: string; name: string; parent?: string }) => {
     const { place, binder: target } = binderNamed(binder, 'write in')
+    mayWrite(place)
     const clean = name.trim()
     if (!clean) throw new Refused('A folder needs a name.')
     const under = parent ? findFolder(place, target.id, parent) : undefined
@@ -320,6 +332,7 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
     }
     if (!found) throw new Refused(`No note ${id} you may write in.`)
     const { place, item: note } = found
+    mayWrite(place)
     const target = binder ? binderNamed(binder, 'write in') : { place, binder: place.hub.state.binders.find((b) => b.id === note.binderId)! }
     if (!target.binder) throw new Refused(`No binder for ${id}.`)
     if (target.place !== place) throw new Refused(`A note stays in its own Binder (${place.name}): to have it in ${target.place.name}, get_note and create_note there.`)
@@ -360,6 +373,7 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
     inputSchema: { binder: z.string(), title: z.string(), brief: z.string().optional(), done_when: z.string().optional(), size: z.enum(['S', 'M', 'L']).optional(), waits_for: z.array(z.string()).optional() },
   }, run(async ({ binder, title, brief, done_when, size, waits_for }: { binder: string; title: string; brief?: string; done_when?: string; size?: Card['size']; waits_for?: string[] }) => {
     const { place, binder: target } = binderNamed(binder, 'write in')
+    mayWrite(place)
     const elsewhere = (waits_for ?? []).filter((w) => !place.hub.state.cards.some((c) => c.id === w && c.binderId === target.id))
     if (elsewhere.length) throw new Refused(`A card waits only for cards in its own binder: ${elsewhere.join(', ')} ${elsewhere.length === 1 ? 'isn’t' : 'aren’t'} in ${target.name}.`)
     return text(summary(place, await place.actions.createCard(actor, { binderId: target.id, title, brief, doneWhen: done_when, size, waitsFor: waits_for })))
@@ -367,6 +381,7 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
 
   server.registerTool('comment_task', { description: 'Leaves a comment on a card, as you.', inputSchema: { id: z.string(), text: z.string(), binder: whichBinder } }, run(async ({ id, text: body, binder }: { id: string; text: string; binder?: string }) => {
     const { place, card } = cardAt(id, binder)
+    mayWrite(place)
     await place.actions.comment(login, card.id, body)
     return text('Commented.')
   }))
@@ -388,6 +403,7 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
     const found = locate((place) => place.hub.state.cards.find((c) => c.id === id || goesBy(c, id)), binder)
     if (!found) throw new Refused(`No card ${id} you may see.`)
     const { place, item: card } = found
+    mayWrite(place)
     const { hub } = place
     const nameOf = nameIn(place)
     const any = ref.trim().toLowerCase() === 'any'
@@ -406,6 +422,7 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
     inputSchema: { id: z.string(), binder: whichBinder },
   }, run(async ({ id, binder }: { id: string; binder?: string }) => {
     const { place, card } = cardAt(id, binder)
+    mayWrite(place)
     await place.actions.stopCard(login, card.id)
     return text(`Stopped “${card.title}”. It’s in Proposed.`)
   }))
@@ -539,6 +556,7 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
     },
   }, run(async ({ note: ref, items, binder }: { note: string; items: { title: string; quote: string; brief?: string; done_when?: string; size?: Card['size']; meant_for?: string }[]; binder?: string }) => {
     const { place, note } = noteAt(ref, binder, 'read')
+    mayWrite(place)
     const { hub } = place
     const taken = new Set([...hub.state.proposals.filter((p) => p.noteId === note.id && p.state !== 'dismissed').map((p) => p.quote), ...(note.work ?? []).map((w) => w.quote)])
     const added: string[] = []
@@ -598,6 +616,7 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
     inputSchema: { repo: z.string(), text: z.string(), binder: whichBinder },
   }, run(async ({ repo, text: lesson, binder }: { repo: string; text: string; binder?: string }) => {
     const place = repoAt(repo, binder)
+    mayWrite(place)
     const brief = await place.actions.addLesson(actor, repo, lesson)
     return text({ repo: brief.repo, lessons: brief.lessons?.length ?? 0 })
   }))
@@ -609,6 +628,22 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
   const keepIn = (place: PersonPlace, binderId: string) => {
     const ids = new Set([...place.hub.state.notes.filter((n) => n.binderId === binderId).map((n) => `note:${n.id}`), ...place.hub.state.cards.filter((c) => c.binderId === binderId).map((c) => `card:${c.id}`)])
     return (kind: 'note' | 'card', id: string) => ids.has(`${kind}:${id}`)
+  }
+
+  /**
+   * The binder a capture goes to when none is named: the Binder the person chose for their captures, when this connection
+   * reaches it, else their own, and with neither, the only binder there is. Their choice is kept in their own Binder's store.
+   */
+  const captureHome = async (): Promise<Spot> => {
+    const own = places.find((p) => p.id === personalId(login))
+    const chosen = own?.brain ? await chosenHome(own.brain.kv) : undefined
+    // One they can only read isn't where a capture can go: it's their own again, as for one they've left.
+    const home = places.find((p) => p.id === chosen && p.role !== 'reader') ?? own
+    const first = home?.hub.state.binders[0]
+    if (home && first) return { place: home, binder: first }
+    const all = spots()
+    if (all.length === 1) return all[0]
+    throw new Refused(`Say which binder to put it in. Yours: ${all.map((s) => `${idOf(s.place, s.binder.id)} (${s.binder.name})`).join(', ') || 'none'}.`)
   }
 
   if (brain) {
@@ -623,17 +658,18 @@ export function personServer(places: PersonPlace[], session: PersonSession, brai
         brain: place.brain,
         url: (kind: 'note' | 'card', id: string) => brain.url(place.id, kind, id),
         ...(only ? { keep: keepIn(place, only.binder.id) } : {}),
-        work: { id: place.id, name: only ? only.binder.name : place.name, hub: place.hub, actions: place.actions, ...(only ? { binders: [only.binder.id] } : {}) },
+        work: { id: place.id, name: only ? only.binder.name : place.name, hub: place.hub, actions: place.actions, ...(only ? { binders: [only.binder.id] } : {}), ...(place.role === 'reader' ? { readOnly: true } : {}) },
       }] : []))
       if (!asking.length) throw new Refused('These binders have no brain to ask.')
       return text(askText(await ask(brain.settings, asking, question, { person: login })))
     }))
 
     server.registerTool('capture', {
-      description: 'Puts something captured in a binder as a note: a dictation (your own words), a conversation, or a meeting’s transcript. It goes in the folder for its kind (Dictations, Captures, Meetings) unless one is named, and a conversation or meeting is summed up at the top when the hub has a model. The folder’s rules then apply, such as Distill.',
-      inputSchema: { binder: z.string(), kind: z.enum(['dictation', 'conversation', 'meeting']), text: z.string().max(400_000), title: z.string().max(300).optional(), folder: z.string().max(120).optional() },
-    }, run(async ({ binder, kind, text: words, title, folder }: { binder: string; kind: 'dictation' | 'conversation' | 'meeting'; text: string; title?: string; folder?: string }) => {
-      const spot = binderNamed(binder, 'write in')
+      description: 'Puts something captured in a binder as a note: a dictation (your own words), a conversation, or a meeting’s transcript. With no binder named it goes where you chose your captures to go (your own binder unless you chose another). It goes in the folder for its kind (Dictations, Captures, Meetings) unless one is named, and a conversation or meeting is summed up at the top when the hub has a model. The folder’s rules then apply, such as Distill.',
+      inputSchema: { binder: z.string().optional(), kind: z.enum(['dictation', 'conversation', 'meeting']), text: z.string().max(400_000), title: z.string().max(300).optional(), folder: z.string().max(120).optional() },
+    }, run(async ({ binder, kind, text: words, title, folder }: { binder?: string; kind: 'dictation' | 'conversation' | 'meeting'; text: string; title?: string; folder?: string }) => {
+      const spot = binder ? binderNamed(binder, 'write in') : await captureHome()
+      mayWrite(spot.place)
       if (!spot.place.brain) throw new Refused('That binder doesn’t take captures.')
       if (!words.trim()) throw new Refused('A capture needs its words.')
       const made = await spot.place.brain.capture(login, { kind, text: words, title }, { binderId: spot.binder.id, folder })

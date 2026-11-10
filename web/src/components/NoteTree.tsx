@@ -3,7 +3,7 @@ import type { NoteProposal } from '../../../shared/notes.ts'
 import { createElement, useEffect, useState, type DragEvent, type ReactNode } from 'react'
 import { ArrowUpRight, BookPlus, ChevronRight, CloudUpload, FilePlus, LoaderCircle, FileText, BookMarked, Lock, Folder as FolderIcon, FolderOpen, FolderCog, FolderInput, FolderPlus, Link2, MoreHorizontal, Pencil, Search, Settings2, Trash2, X } from 'lucide-react'
 import { ConfirmButton } from './ConfirmButton'
-import { copyNoteLink } from './NoteControls'
+import { copyNoteLink, sendAndSumItems, useSendTargets } from './NoteControls'
 import { openMenu, openMenuUnder, type MenuItem } from './ContextMenu'
 import { FolderRuleDialog } from './FolderRules'
 import { attempt, failure, toast } from './Toast'
@@ -11,12 +11,22 @@ import type { Folder, Note } from '../data/model'
 import { sameFields, useActions, useHub, type NotesSaved } from '../data/store'
 import { go, href } from '../route'
 import { useUI } from '../ui'
+import { useMayChangeBinder } from '../screens/settings/access'
 
 const collapsedKey = 'binders-hub-collapsed'
 const noProposals: NoteProposal[] = []
 
-const sameRow = sameFields<Note>('id', 'title', 'binderId', 'folderId', 'saving', 'locked')
+const sameRow = sameFields<Note>('id', 'title', 'binderId', 'folderId', 'saving', 'locked', 'captured')
 const sameRows = (a: Note[], b: Note[]) => a.length === b.length && a.every((note, index) => sameRow(note, b[index]))
+
+/**
+ * When a captured note was recorded, for the order of a folder of captures: the time on the line under its title, which
+ * the hub writes (a note that's been summed up or added to since still says when it was heard), else when it last changed.
+ */
+const recordedAt = (note: Note) => {
+  const heard = /^_[^\n]*?(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) UTC/m.exec(note.text.slice(0, 600))
+  return heard ? `${heard[1]}T${heard[2]}` : note.editedAt
+}
 
 function readCollapsed(): Set<string> {
   try {
@@ -79,6 +89,8 @@ export function SaveAll() {
 /** The binder's folders and notes as a tree, as Finder shows them. Drag a note onto a folder to move it. */
 export function NoteTree({ currentId }: { currentId: string }) {
   const store = useActions()
+  // A reader browses, opens and searches: nothing here makes, moves, renames or deletes.
+  const may = useMayChangeBinder()
   const binders = useHub((state) => state.binders)
   const folders = useHub((state) => state.folders)
   const proposals = useHub((state) => state.proposals)
@@ -86,6 +98,7 @@ export function NoteTree({ currentId }: { currentId: string }) {
   const reviewing = (noteId: string) => noteProposals.filter((p) => p.noteId === noteId && p.state === 'open').length
   const guides = new Set(binders.flatMap((b) => (b.guideNoteId ? [b.guideNoteId] : [])))
   const ui = useUI()
+  const sendTargets = useSendTargets()
   const [filter, setFilter] = useState('')
   // Typing changes a note's text, which the tree only reads to search it.
   const notes = useHub((state) => state.notes, filter ? Object.is : sameRows)
@@ -127,7 +140,7 @@ export function NoteTree({ currentId }: { currentId: string }) {
   // A note or a folder dropped here moves into it: a folder, or the top of a binder.
   const dropProps = (key: string, binderId: string, folderId?: string) => ({
     onDragOver: (event: DragEvent) => {
-      if (!event.dataTransfer.types.includes('text/note') && !event.dataTransfer.types.includes('text/folder')) return
+      if (!may || !event.dataTransfer.types.includes('text/note') && !event.dataTransfer.types.includes('text/folder')) return
       event.preventDefault()
       event.stopPropagation()
       setDropOn(key)
@@ -164,14 +177,19 @@ export function NoteTree({ currentId }: { currentId: string }) {
     ]).filter((place) => place.binderId !== here.binderId || place.folderId !== here.folderId)
     return places.length ? [{ label: 'Move to', icon: icon(FolderInput), submenu: places.map((place) => ({ label: place.label, onSelect: () => move(place.binderId, place.folderId) })) }] : []
   }
-  const noteMenu = (note: Note): MenuItem[] => [
+  const noteMenu = (note: Note): MenuItem[] => may ? [
     { label: 'Open', icon: icon(ArrowUpRight), onSelect: () => go({ screen: 'notes', id: note.id }) },
     { label: 'Copy link', icon: icon(Link2), onSelect: () => copyNoteLink(note.id) },
     { separator: true },
     { label: 'New note beside it', icon: icon(FilePlus), onSelect: () => newNote(note.binderId, note.folderId) },
     ...moveItems({ binderId: note.binderId, folderId: note.folderId }, (binderId, folderId) => store.moveNote(note.id, binderId, folderId)),
+    // Its words as they are now: the list's own copy leaves out what's typed since.
+    ...sendAndSumItems(store.current().notes.find((n) => n.id === note.id) ?? note, sendTargets),
     { separator: true },
     { label: 'Delete', icon: icon(Trash2), danger: true, confirm: 'Delete the note? Press again', onSelect: () => store.deleteNote(note.id) },
+  ] : [
+    { label: 'Open', icon: icon(ArrowUpRight), onSelect: () => go({ screen: 'notes', id: note.id }) },
+    { label: 'Copy link', icon: icon(Link2), onSelect: () => copyNoteLink(note.id) },
   ]
   const folderMenu = (folder: Folder): MenuItem[] => [
     { label: 'New note', icon: icon(FilePlus), onSelect: () => newNote(folder.binderId, folder.id) },
@@ -183,15 +201,14 @@ export function NoteTree({ currentId }: { currentId: string }) {
     { label: 'Delete', icon: icon(Trash2), danger: true, confirm: 'Delete it? What’s in it moves up', onSelect: () => store.deleteFolder(folder.id) },
   ]
   const projectMenu = (binderId: string): MenuItem[] => [
-    { label: 'New note', icon: icon(FilePlus), onSelect: () => newNote(binderId) },
-    ...(binders.find((b) => b.id === binderId)?.guideNoteId ? [{ label: 'Open its guide', icon: icon(BookMarked), onSelect: () => go({ screen: 'notes', id: binders.find((b) => b.id === binderId)!.guideNoteId! }) }] : [{ label: 'Add a guide for agents', icon: icon(BookMarked), onSelect: () => {
+    ...(may ? [{ label: 'New note', icon: icon(FilePlus), onSelect: () => newNote(binderId) }] : []),
+    ...(binders.find((b) => b.id === binderId)?.guideNoteId ? [{ label: 'Open its guide', icon: icon(BookMarked), onSelect: () => go({ screen: 'notes', id: binders.find((b) => b.id === binderId)!.guideNoteId! }) }] : may ? [{ label: 'Add a guide for agents', icon: icon(BookMarked), onSelect: () => {
       const binder = binders.find((b) => b.id === binderId)
       const id = store.addNote(binderId, undefined, guideTemplate(binder?.name ?? 'This binder'))
       store.updateBinder(binderId, { guideNoteId: id })
       go({ screen: 'notes', id })
-    } }]),
-    { label: 'New folder', icon: icon(FolderPlus), onSelect: () => newFolder(binderId) },
-    { separator: true },
+    } }] : []),
+    ...(may ? [{ label: 'New folder', icon: icon(FolderPlus), onSelect: () => newFolder(binderId) }, { separator: true as const }] : []),
     { label: 'Binder settings', icon: icon(Settings2), onSelect: () => go({ screen: 'settings', id: 'general' }) },
   ]
 
@@ -208,7 +225,7 @@ export function NoteTree({ currentId }: { currentId: string }) {
         href={href({ screen: 'notes', id: note.id })}
         className={`tree-row note-row${note.id === currentId ? ' on' : ''}`}
         style={{ paddingLeft: 12 + depth * 16 }}
-        draggable
+        draggable={may}
         onDragStart={(event) => event.dataTransfer.setData('text/note', note.id)}
         onContextMenu={(event) => openMenu(event, noteMenu(note))}
       >
@@ -232,12 +249,14 @@ export function NoteTree({ currentId }: { currentId: string }) {
   const folderRows = (folder: Folder, depth: number): ReactNode => {
     const open = !collapsed.has(folder.id)
     const children = folders.filter((f) => f.parentId === folder.id)
-    const inside = notes.filter((n) => n.folderId === folder.id).sort((a, b) => a.title.localeCompare(b.title))
+    // A folder of captures has today's on top; every other is by title.
+    const inside = notes.filter((n) => n.folderId === folder.id)
+    inside.sort(inside.some((n) => n.captured) ? (a, b) => recordedAt(b).localeCompare(recordedAt(a)) || a.title.localeCompare(b.title) : (a, b) => a.title.localeCompare(b.title))
     return (
       <div key={folder.id} role="group">
         <div className={`tree-row folder-row${dropOn === folder.id ? ' drop' : ''}`} style={{ paddingLeft: 4 + depth * 16 }} {...dropProps(folder.id, folder.binderId, folder.id)}
-          onContextMenu={(event) => renaming !== folder.id && openMenu(event, folderMenu(folder))}
-          draggable={renaming !== folder.id} onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.setData('text/folder', folder.id); event.dataTransfer.effectAllowed = 'move' }}>
+          onContextMenu={(event) => may && renaming !== folder.id && openMenu(event, folderMenu(folder))}
+          draggable={may && renaming !== folder.id} onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.setData('text/folder', folder.id); event.dataTransfer.effectAllowed = 'move' }}>
           <button className="tree-chevron" onClick={() => toggle(folder.id)} aria-expanded={open} aria-label={open ? `Close ${folder.name}` : `Open ${folder.name}`}>
             <ChevronRight size={13} style={{ transform: open ? 'rotate(90deg)' : 'none' }} />
           </button>
@@ -256,18 +275,18 @@ export function NoteTree({ currentId }: { currentId: string }) {
               }}
             />
           ) : (
-            <button className="tree-label folder-name" onClick={() => toggle(folder.id)} onDoubleClick={() => setRenaming(folder.id)} title="Double-click to rename">
+            <button className="tree-label folder-name" onClick={() => toggle(folder.id)} onDoubleClick={() => may && setRenaming(folder.id)} title={may ? 'Double-click to rename' : undefined}>
               <b>{folder.name}</b>
             </button>
           )}
           <span className="tree-count num">{count(folder.binderId, folder.id)}</span>
-          <span className="tree-actions">
+          {may && <span className="tree-actions">
             <button onClick={() => newNote(folder.binderId, folder.id)} aria-label={`New note in ${folder.name}`} title="New note"><FilePlus size={13} /></button>
             <button onClick={() => newFolder(folder.binderId, folder.id)} aria-label={`New folder in ${folder.name}`} title="New folder"><FolderPlus size={13} /></button>
             <button onClick={() => setRenaming(folder.id)} aria-label={`Rename ${folder.name}`} title="Rename"><Pencil size={13} /></button>
             <ConfirmButton className="" question="Delete? Press again" label={`Delete ${folder.name}`} title="Delete the folder (what’s in it moves up)" onConfirm={() => store.deleteFolder(folder.id)}><Trash2 size={13} /></ConfirmButton>
-          </span>
-          {renaming !== folder.id && more(folder.name, () => folderMenu(folder))}
+          </span>}
+          {may && renaming !== folder.id && more(folder.name, () => folderMenu(folder))}
         </div>
         {open && (
           <>
@@ -297,9 +316,9 @@ export function NoteTree({ currentId }: { currentId: string }) {
           <input id="note-filter" placeholder="Filter notes" value={filter} onChange={(event) => setFilter(event.target.value)} onKeyDown={(event) => event.key === 'Escape' && setFilter('')} />
           {filter && <button onClick={() => setFilter('')} aria-label="Clear filter"><X size={12} /></button>}
         </label>
-        <button className="icon-button" onClick={() => binders[0] && newNote(current?.binderId ?? (ui.binder !== 'all' ? ui.binder : binders[0].id), current?.folderId)} disabled={!binders.length} aria-label="New note" title="New note (N, or ⌥⌘N)"><FilePlus size={15} /></button>
-        <SaveAll />
-        {!binders.length && <button className="icon-button" onClick={() => setNewBinder('')} aria-label="Start its notes" title="Start its notes"><BookPlus size={15} /></button>}
+        {may && <button className="icon-button" onClick={() => binders[0] && newNote(current?.binderId ?? (ui.binder !== 'all' ? ui.binder : binders[0].id), current?.folderId)} disabled={!binders.length} aria-label="New note" title="New note (N, or ⌥⌘N)"><FilePlus size={15} /></button>}
+        {may && <SaveAll />}
+        {may && !binders.length && <button className="icon-button" onClick={() => setNewBinder('')} aria-label="Start its notes" title="Start its notes"><BookPlus size={15} /></button>}
       </div>
       {newBinder !== undefined && (
         <form className="tree-new-binder" onSubmit={(event) => { event.preventDefault(); if (newBinder.trim()) store.addBinder(newBinder); setNewBinder(undefined) }}>
@@ -322,10 +341,10 @@ export function NoteTree({ currentId }: { currentId: string }) {
                   <ChevronRight size={13} style={{ transform: open ? 'rotate(90deg)' : 'none' }} />
                 </button>
                 <button className="tree-label" onClick={() => toggle(binder.id)}><b>{binder.name}</b></button>
-                <span className="tree-actions">
+                {may && <span className="tree-actions">
                   <button onClick={() => newNote(binder.id)} aria-label={`New note in ${binder.name}`} title="New note"><FilePlus size={13} /></button>
                   <button onClick={() => newFolder(binder.id)} aria-label={`New folder in ${binder.name}`} title="New folder"><FolderPlus size={13} /></button>
-                </span>
+                </span>}
                 {more(binder.name, () => projectMenu(binder.id))}
               </div>
               {open && (

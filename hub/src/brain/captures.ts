@@ -1,3 +1,4 @@
+import type { KV } from '../kv.ts'
 import type { CaptureKind, Summary, TimedText } from './models.ts'
 
 // What a phone or Mac sends the hub when it captured something: a dictation, a conversation it heard, or a meeting,
@@ -21,6 +22,15 @@ export interface Capture {
 
 export const summaryHeading = '## Summary'
 export const transcriptHeading = '## Transcript'
+
+/** The fewest words a note needs to be worth summing up. */
+export const summaryMinWords = 25
+
+/** Whether words are enough to be worth summing up. */
+export const worthSumming = (text: string) => text.trim().split(/\s+/).length >= summaryMinWords
+
+/** Whether a note has a summary under its heading already. */
+export const hasSummary = (markdown: string) => markdown.includes(`\n${summaryHeading}\n`)
 
 const kindNames: Record<CaptureKind, string> = { dictation: 'Dictation', conversation: 'Conversation', meeting: 'Meeting', note: 'Note' }
 
@@ -140,3 +150,22 @@ export function withTranscript(markdown: string, transcript: string) {
   const after = next >= 0 ? rest.slice(next) : ''
   return `${markdown.slice(0, bodyStart)}\n\n${transcript.trim()}\n${after ? `${after.replace(/^\n?/, '\n')}` : ''}`
 }
+
+/** The words to sum up in a note as it reads now: what's under its transcript heading, or, with none, everything under its title. */
+export function transcriptOf(markdown: string) {
+  const start = markdown.indexOf(`\n${transcriptHeading}\n`)
+  if (start < 0) return markdown.replace(/^#[^\n]*\n?/, '').trim()
+  const rest = markdown.slice(start + 1 + transcriptHeading.length)
+  const next = rest.search(/\n## /)
+  return (next >= 0 ? rest.slice(0, next) : rest).trim()
+}
+
+// Where a person's captures go is theirs to say, and only theirs: kept in their own Binder's store, which nobody else
+// reads. The Binder's id, or nothing for their own.
+const homeKey = 'capture-home'
+
+/** The Binder a person chose for what they capture, if they did. */
+export const chosenHome = (kv: KV) => kv.get(homeKey).then((id) => id || undefined, () => undefined)
+
+/** Chooses the Binder for what a person captures; none puts it back to their own. */
+export const chooseHome = (kv: KV, id?: string) => (id ? kv.set(homeKey, id) : kv.del(homeKey))

@@ -349,16 +349,28 @@ export abstract class CardService extends ActionsBase {
     return this.card(card.id)
   }
 
-  /** The diff of a card's worktree, from its runner: kept on the card until the work has a pull request. */
+  /** The diff of a card's worktree, from its runner: kept on the card until the work has a pull request, or is done. */
   async reportDiff(agentId: string, cardId: string, report: { branch: string; base: string; diff: string }) {
     const card = this.held(agentId, cardId)
     const { files, cut } = parseDiff(report.diff)
     const was = card.worktree
+    // Its pull request has the diff (or it's done): kept there, not here too.
+    if (this.pullHasDiff(card)) return { branch: report.branch.slice(0, 200), base: report.base.slice(0, 80), files, at: this.now(), ...(cut ? { cut } : {}) }
     // The same diff again changes nothing, so the log doesn't grow while an agent reads.
     if (was && was.branch === report.branch && was.base === report.base && !!was.cut === cut && JSON.stringify(was.files) === JSON.stringify(files)) return was
     const worktree = { branch: report.branch.slice(0, 200), base: report.base.slice(0, 80), files, at: this.now(), ...(cut ? { cut } : {}) }
     await this.hub.record({ kind: 'agent', id: agentId }, { type: 'card.update', id: card.id, fields: { worktree } })
     return worktree
+  }
+
+  /**
+   * Whether what a card's work changed is held somewhere else: it's done, or its pull request has the files (their lines
+   * may have been dropped since, but not their names). Its worktree's copy is then of no use.
+   */
+  protected pullHasDiff(card: Card) {
+    if (card.stage === 'live') return true
+    const pull = pullOf(this.hub.state, card)
+    return !!pull && pull.files.length > 0
   }
 
   async ask(agentId: string, cardId: string, question: string) {
@@ -425,13 +437,13 @@ export abstract class CardService extends ActionsBase {
     // Finished: so is its plan.
     const plan = card.plan?.map((step) => ({ ...step, done: true }))
     if (!pullRef) {
-      await this.hub.record(actor, { type: 'card.update', id: card.id, fields: { stage: 'live', doing: undefined, progress: 1, plan, stopped: undefined }, activity: { at, by: agentId, kind: 'completed', text: summary.slice(0, 4000) } })
+      await this.hub.record(actor, { type: 'card.update', id: card.id, fields: { stage: 'live', doing: undefined, progress: 1, plan, stopped: undefined, worktree: undefined }, activity: { at, by: agentId, kind: 'completed', text: summary.slice(0, 4000) } })
       return this.card(card.id)
     }
     const ref = parsePullRef(pullRef)
     if (!ref) throw new Refused('Give the pull request as owner/repo#12 or its address on GitHub.')
     const pull = await this.linkPull(ref.repo, ref.number, { cardId: card.id, agentId })
-    await this.hub.record(actor, { type: 'card.update', id: card.id, fields: { stage: 'review', prId: pull.id, doing: undefined, progress: 1, plan, stopped: undefined }, activity: { at, by: agentId, kind: 'completed', text: summary.slice(0, 4000) } })
+    await this.hub.record(actor, { type: 'card.update', id: card.id, fields: { stage: 'review', prId: pull.id, doing: undefined, progress: 1, plan, stopped: undefined, ...(this.card(card.id).worktree && this.pullHasDiff({ ...card, prId: pull.id }) ? { worktree: undefined } : {}) }, activity: { at, by: agentId, kind: 'completed', text: summary.slice(0, 4000) } })
     await this.hub.record(actor, { type: 'card.activity', id: card.id, activity: { at, by: agentId, kind: 'pr', text: `Opened ${pull.repo.split('/')[1]}#${pull.number}` } })
     return this.card(card.id)
   }

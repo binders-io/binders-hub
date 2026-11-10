@@ -15,6 +15,7 @@ import { AgentAvatar, CheckGlyph, RepoTag, checksSummary, unpicked, usePhone } f
 import { heard } from '../data/sync'
 import { href } from '../route'
 import { useUI } from '../ui'
+import { useMayChangeBinder } from './settings/access'
 
 const spring = { type: 'spring', stiffness: 380, damping: 34 } as const
 
@@ -65,6 +66,8 @@ const rememberedTab = (): Tab => {
 export function ChangeSets({ id }: { id: string }) {
   const store = useStore()
   const { state } = store
+  // A reader sees every change set, and approves, closes and deletes none: those controls aren't drawn.
+  const may = useMayChangeBinder()
   const { binder } = useUI()
   const [tab, setTab] = useState<Tab>(rememberedTab)
   const phone = usePhone()
@@ -146,7 +149,7 @@ export function ChangeSets({ id }: { id: string }) {
             </div>
           </div>
           <div className="approve">
-            {set.state === 'review' || (set.state === 'assembling' && pulls.length > 0) ? (
+            {may && (set.state === 'review' || (set.state === 'assembling' && pulls.length > 0)) ? (
               <>
                 <ConfirmButton
                   className="button primary big"
@@ -164,7 +167,7 @@ export function ChangeSets({ id }: { id: string }) {
               </>
             ) : set.approvedBy ? (
               <span className="approve-note done"><ShieldCheck size={14} /> Approved by {set.approvedBy === state.me?.user.login ? 'you' : nameFor(state, set.approvedBy)}</span>
-            ) : (
+            ) : may && (
               <span className="approve-note">Agents add pull requests here as they finish cards.</span>
             )}
           </div>
@@ -231,16 +234,16 @@ export function ChangeSets({ id }: { id: string }) {
             set.debrief ? <DebriefView set={set} /> : (
               <section className="work-section debrief" aria-label="Debrief">
                 <h2>Debrief <span className="debrief-actions"><SetDebriefButton set={set} className="text-button" /></span></h2>
-                <p className="faint">{pulls.length ? `An agent reads all ${pulls.length === 1 ? 'its pull request' : `${pulls.length} pull requests`} together and writes one debrief: what it does, what changed, every card’s done-when marked, what to look at, and how to try it.` : 'Once it has a pull request.'}</p>
+                <p className="faint">{!may ? 'No debrief has been written yet.' : pulls.length ? `An agent reads all ${pulls.length === 1 ? 'its pull request' : `${pulls.length} pull requests`} together and writes one debrief: what it does, what changed, every card’s done-when marked, what to look at, and how to try it.` : 'Once it has a pull request.'}</p>
               </section>
             )
           )}
-          {tab === 'review' && (pulls.length ? <SetChallenge set={set} /> : <p className="faint">Once it has a pull request.</p>)}
+          {tab === 'review' && (pulls.length ? (may || set.challenge ? <SetChallenge set={set} /> : <p className="faint">No Challenge has been asked for yet.</p>) : <p className="faint">Once it has a pull request.</p>)}
         </div>
         {/* Well away from Approve. */}
-        <footer className="set-foot">
+        {may && <footer className="set-foot">
           <ConfirmButton className="text-button delete-set" question={`Delete change set #${set.number}? Press again`} detail={deleteWarning(set, pulls, state.environments)} onConfirm={() => { setDeleted(set.id); void attempt(() => store.deleteSet(set.id)) }}>Delete change set</ConfirmButton>
-        </footer>
+        </footer>}
       </div>
     </div>
   )
@@ -250,6 +253,7 @@ export function ChangeSets({ id }: { id: string }) {
 const diffOpenLines = 800
 
 function PullSection({ pull, order, startOpen }: { pull: PullRequest; order: number; startOpen: boolean }) {
+  const may = useMayChangeBinder()
   const [open, setOpen] = useState(startOpen)
   const { state } = useStore()
   const agent = state.agents.find((a) => a.id === pull.agentId)
@@ -283,7 +287,7 @@ function PullSection({ pull, order, startOpen }: { pull: PullRequest; order: num
           {pull.mergeable === 'conflicts' ? (
             <>
               <span>{card?.stage === 'ready' && card.meantFor ? `Back with ${nameFor(state, card.meantFor)} to resolve.` : card?.stage === 'working' ? `${nameFor(state, card.agentId ?? '')} is resolving it.` : 'Its changes clash with what’s on its base now.'}</span>
-              {card && card.stage !== 'working' && !(card.stage === 'ready' && card.meantFor) && (
+              {may && card && card.stage !== 'working' && !(card.stage === 'ready' && card.meantFor) && (
                 <button className="button" onClick={() => void attempt(() => call('POST', `/api/pulls/${encodeURIComponent(pull.repo)}/${pull.number}/resolve`))}>Send back to {agent?.name ?? 'its agent'} to resolve</button>
               )}
               <a className="text-button" href={`${pull.url}/conflicts`} target="_blank" rel="noreferrer">Resolve on GitHub</a>
@@ -291,7 +295,7 @@ function PullSection({ pull, order, startOpen }: { pull: PullRequest; order: num
           ) : (
             <>
               <span>Its base has moved on; nothing clashes.</span>
-              <button className="button" onClick={() => void attempt(() => call('POST', `/api/pulls/${encodeURIComponent(pull.repo)}/${pull.number}/update-branch`))}>Update the branch</button>
+              {may && <button className="button" onClick={() => void attempt(() => call('POST', `/api/pulls/${encodeURIComponent(pull.repo)}/${pull.number}/update-branch`))}>Update the branch</button>}
             </>
           )}
         </div>

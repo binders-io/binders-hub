@@ -7,6 +7,7 @@ import { nameFor, useClock, useStore } from '../data/store'
 import { ago, quietWords, unpicked } from './bits'
 import { attempt } from './Toast'
 import { href } from '../route'
+import { useMayChangeBinder } from '../screens/settings/access'
 
 // A Challenge: an adversarial review by an agent that didn't write the work, which gets the diff, the brief and the
 // done-when but never the authors' plan or log. Of a whole change set, all its pull requests together, so what goes
@@ -27,8 +28,10 @@ const canChallenge = (state: Parameters<typeof pullOf>[0], card: Card) => challe
 export function ChallengeButton({ card, inline = false, pick = false, className = 'button' }: { card: Card; inline?: boolean; pick?: boolean; className?: string }) {
   const store = useStore()
   const { state } = store
+  // Asking an agent to review changes the Binder: a reader has the findings that are there, and no button for more.
+  const may = useMayChangeBinder()
   const [reviewer, setReviewer] = useState('')
-  if (!canChallenge(state, card)) return null
+  if (!may || !canChallenge(state, card)) return null
   // In a change set, the set's: all its pull requests, all their authors. A new one waits for replies to the last.
   const set = setOfCard(state, card)
   const cards = set ? cardsOfSet(state, set) : [card]
@@ -82,7 +85,8 @@ function lineUrl(pull: PullRequest | undefined, finding: Finding) {
 /** Asks the author to reply to the findings: one round, so the button goes once it's answered. */
 function RepliesButton({ card, challenge }: { card: Card; challenge: Challenge }) {
   const store = useStore()
-  if (!repliable(challenge)) return null
+  const may = useMayChangeBinder()
+  if (!may || !repliable(challenge)) return null
   const author = authorOf(store.state, card, challenge)
   if (!author) return null
   const name = nameFor(store.state, author)
@@ -97,6 +101,7 @@ function RepliesButton({ card, challenge }: { card: Card; challenge: Challenge }
 export function ChallengeView({ card, under = false }: { card: Card; under?: boolean }) {
   const store = useStore()
   const { state } = store
+  const may = useMayChangeBinder()
   // Whether it has waited long enough to be asked again changes with the time alone.
   useClock()
   const challenge = card.challenge
@@ -131,7 +136,7 @@ export function ChallengeView({ card, under = false }: { card: Card; under?: boo
       {unpicked(challenge) && !again && !under && (
         <p className="debrief-status moved">
           {quietWords(agent, challenge)}{reviewed ? ' The last findings are below.' : ''}{' '}
-          <button type="button" className="text-button" onClick={() => void attempt(() => store.challenge(card.id))}>Ask again</button>
+          {may && <button type="button" className="text-button" onClick={() => void attempt(() => store.challenge(card.id))}>Ask again</button>}
         </p>
       )}
       {challenge.state === 'failed' && <p className="debrief-status failed">{agent} couldn’t review it: {challenge.failed}{reviewed ? ' The last findings are below.' : ''}</p>}
@@ -184,6 +189,8 @@ export function ChallengeView({ card, under = false }: { card: Card; under?: boo
 function FindingActions({ card, finding }: { card: Card; finding: Finding }) {
   const store = useStore()
   const { state } = store
+  // A reader sees what was done with a finding, and has nothing to do with one.
+  const may = useMayChangeBinder()
   const act = (action: Parameters<typeof store.finding>[2]) => void attempt(() => store.finding(card.id, finding.id, action))
   const outcome = finding.outcome
   if (outcome) {
@@ -193,10 +200,11 @@ function FindingActions({ card, finding }: { card: Card; finding: Finding }) {
       <div className="finding-actions done">
         {outcome.kind === 'sent back' && <span>Sent back to {nameFor(state, outcome.agentId ?? '')} by {who}, {ago(outcome.at)}</span>}
         {outcome.kind === 'card' && <span>Made a card by {who}: {made ? <a href={href({ screen: 'work', id: made.id })}>{made.title}</a> : 'since deleted'}</span>}
-        {outcome.kind === 'dismissed' && <><span>Dismissed by {who}, {ago(outcome.at)}</span> <button type="button" className="text-button" onClick={() => act('reopen')}><Undo2 size={12} /> Open again</button></>}
+        {outcome.kind === 'dismissed' && <><span>Dismissed by {who}, {ago(outcome.at)}</span> {may && <button type="button" className="text-button" onClick={() => act('reopen')}><Undo2 size={12} /> Open again</button>}</>}
       </div>
     )
   }
+  if (!may) return null
   // As the hub picks it: the card's holder, or its pull request's agent when the holder is gone or revoked.
   const live = (id?: string) => (id && state.agents.some((a) => a.id === id && !a.revoked) ? id : undefined)
   const author = live(card.agentId) ?? live(pullOf(state, card)?.agentId)
@@ -230,11 +238,14 @@ export function FindingsLink({ card }: { card: Card }) {
 export function SetChallenge({ set }: { set: ChangeSet }) {
   const store = useStore()
   const { state } = store
+  const may = useMayChangeBinder()
   useClock()
   const [reviewer, setReviewer] = useState('')
   const cards = cardsOfSet(state, set)
   if (!cards.length) return null
   const challenge = set.challenge
+  // Nothing has been asked, and a reader can't ask: nothing to show.
+  if (!may && !challenge) return null
   const authors = [...new Set(cards.flatMap((c) => authorsOf(state, c)))]
   const reviewers = state.agents.filter((a) => !a.revoked && (!a.binders.length || a.binders.includes(set.binderId)))
   const answering = cards.map((c) => c.challenge?.replies).find((r) => replying(r))
@@ -249,8 +260,8 @@ export function SetChallenge({ set }: { set: ChangeSet }) {
         Challenge
         {done && <span className="num faint">{total ? `${total} finding${total === 1 ? '' : 's'}` : 'nothing found'}</span>}
         <span className="debrief-actions">
-          {canReply && <button type="button" className="text-button" title="Each card’s author answers the findings on its pull request once: fixed, or disagrees and why." onClick={() => void attempt(() => store.setReplies(set.id))}><MessageSquareReply size={13} /> Ask the authors to reply</button>}
-          {!busy && reviewers.length > 0 && (
+          {may && canReply && <button type="button" className="text-button" title="Each card’s author answers the findings on its pull request once: fixed, or disagrees and why." onClick={() => void attempt(() => store.setReplies(set.id))}><MessageSquareReply size={13} /> Ask the authors to reply</button>}
+          {may && !busy && reviewers.length > 0 && (
             <span className="challenge-ask">
               <ReasoningPicker />
               <select aria-label="Who challenges it" value={reviewer} onChange={(e) => setReviewer(e.target.value)}>
@@ -267,7 +278,7 @@ export function SetChallenge({ set }: { set: ChangeSet }) {
       {unpicked(challenge) && (
         <p className="debrief-status moved">
           {quietWords(nameFor(state, challenge!.agentId), challenge!)}{' '}
-          <button type="button" className="text-button" onClick={() => void attempt(() => store.setChallenge(set.id, reviewer || undefined))}>Ask again</button>
+          {may && <button type="button" className="text-button" onClick={() => void attempt(() => store.setChallenge(set.id, reviewer || undefined))}>Ask again</button>}
         </p>
       )}
       {challenge?.state === 'failed' && <p className="debrief-status failed">{nameFor(state, challenge.agentId)} couldn’t review it: {challenge.failed}</p>}

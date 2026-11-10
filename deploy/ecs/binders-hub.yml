@@ -278,12 +278,17 @@ Resources:
             - { Name: HUB_SECRET, ValueFrom: !Ref HubSecret }
             - { Name: REDIS_URL, ValueFrom: !Ref RedisUrlSecret }
           MountPoints: [{ SourceVolume: hub-data, ContainerPath: /app/hub/.data }]
+          # Time to save its state when the task stops (ECS's default is 30 seconds; Fargate allows up to 120).
+          StopTimeout: 90
+          # Time to start: the hub says it's ready once every Binder has started, which a hub with many takes a while to. ECS counts no failures for the
+          # first 300 seconds, its longest start period, and then four in a row end the task; twenty are about five
+          # minutes more, so the hub has ten minutes in all.
           HealthCheck:
             Command: [CMD, node, -e, "fetch('http://127.0.0.1:4400/ready').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
             Interval: 15
             Timeout: 5
-            Retries: 4
-            StartPeriod: 60
+            Retries: 20
+            StartPeriod: 300
           LogConfiguration:
             LogDriver: awslogs
             Options: { awslogs-group: !Ref Logs, awslogs-region: !Ref AWS::Region, awslogs-stream-prefix: hub }
@@ -298,7 +303,8 @@ Resources:
       DesiredCount: 1
       # Never two hubs at once: the old task stops before the new one starts.
       DeploymentConfiguration: { MaximumPercent: 100, MinimumHealthyPercent: 0 }
-      HealthCheckGracePeriodSeconds: 120
+      # The load balancer's checks don't count against a hub for its first ten minutes, as it may be reading its state.
+      HealthCheckGracePeriodSeconds: 600
       EnableExecuteCommand: true
       NetworkConfiguration:
         AwsvpcConfiguration:

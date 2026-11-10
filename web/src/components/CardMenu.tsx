@@ -6,6 +6,7 @@ import { href } from '../route'
 import { attempt, failure, toast } from './Toast'
 import { AgentAvatar } from './bits'
 import { openMenuUnder, type MenuItem } from './ContextMenu'
+import { useMayChangeBinder } from '../screens/settings/access'
 
 /** Where a person can move a card by hand. The card's page and its ⋯ menu both list these, so they can't differ. */
 export interface Move {
@@ -51,8 +52,13 @@ export async function stopHolding(card: Card, store: Actions) {
  * What can be done to a card, for its ⋯ on the board and a right-click on it anywhere: open it, copy its link, move
  * it, give it to an agent, nudge the one holding it, or delete it.
  */
-export function cardMenuItems(card: Card, store: Actions, open: (id: string) => void, split?: () => void): MenuItem[] {
+export function cardMenuItems(card: Card, store: Actions, open: (id: string) => void, split?: () => void, mayChange = true): MenuItem[] {
   const state = store.current()
+  // A reader opens a card and copies its link: moving, giving, nudging, stopping and deleting change the Binder.
+  if (!mayChange) return [
+    { label: 'Open', icon: createElement(ArrowUpRight, { size: 13 }), onSelect: () => open(card.id) },
+    { label: 'Copy link', icon: createElement(Link2, { size: 13 }), onSelect: () => copyCardLink(card.id) },
+  ]
   const held = (card.stage === 'working' || card.stage === 'blocked') && !!card.agentId
   const holder = state.agents.find((a) => a.id === card.agentId)
   return [
@@ -77,9 +83,10 @@ export function cardMenuItems(card: Card, store: Actions, open: (id: string) => 
 /** A card's ⋯ on the board: the same menu as a right-click on it, drawn under the button. */
 export function CardMenu({ card, open, split }: { card: Card; open: (id: string) => void; split?: () => void }) {
   const store = useActions()
+  const may = useMayChangeBinder()
   return (
     <div className="card-menu" onClick={(e) => e.stopPropagation()}>
-      <button type="button" className="card-menu-button" aria-label={`Actions for ${card.title}`} aria-haspopup="menu" onClick={(event) => openMenuUnder(event, cardMenuItems(card, store, open, split))}>
+      <button type="button" className="card-menu-button" aria-label={`Actions for ${card.title}`} aria-haspopup="menu" onClick={(event) => openMenuUnder(event, cardMenuItems(card, store, open, split, may))}>
         <MoreHorizontal size={15} />
       </button>
     </div>

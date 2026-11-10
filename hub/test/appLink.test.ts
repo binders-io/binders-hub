@@ -184,7 +184,7 @@ describe('the hub as an iPhone’s brain', () => {
       const offered = ((await phone.request('binders/suggestions')).result as { suggestions: { id: string; kind: string; text: string; status: string }[] }).suggestions
       assert.deepEqual(offered.map((s) => [s.kind, s.text, s.status]), [['card', 'Book the garage for Tuesday', 'offered']])
       await phone.request('binders/suggestion', { id: offered[0].id, action: 'accept' })
-      assert.ok(set.own.hub.state.cards.some((c) => c.title === 'Book the garage for Tuesday' && c.stage === 'ready'))
+      assert.ok(set.own.hub.state.cards.some((c) => c.title === 'Book the garage for Tuesday' && c.stage === 'proposed'))
       // Sent again by the outbox: nothing new.
       await phone.request('binders/conversation', { id, started: '2026-11-07T10:00:00Z', ended: '2026-11-07T10:05:00Z', segments, speakers: {}, device: 'iPhone', engine: 'parakeet' })
       assert.equal(set.own.hub.state.notes.filter((n) => n.captured === 'conversation').length, 1)

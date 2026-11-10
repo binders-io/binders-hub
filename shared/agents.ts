@@ -42,8 +42,14 @@ export const tools: ToolInfo[] = [
 
 export const toolInfo = (id: AgentTool | undefined) => tools.find((t) => t.id === id) ?? tools[0]
 
+/** The tools a machine can be asked about by finding their command there: all but a command of the person's own. */
+export const findable = tools.filter((t) => t.command)
+
+/** The tool Binders picks for a machine, from the ones installed on it: the first of `installed` in the order above. */
+export const preferred = (installed: readonly string[]) => findable.find((t) => installed.includes(t.id))
+
 /** The runner the hub hands out; one older than this lacks things the app offers (several cards at once, chats). */
-export const runnerVersion = '0.16.0'
+export const runnerVersion = '0.17.0'
 
 /** The first runner that restarts when asked from the Agents page. */
 export const restartSince = '0.8.1'

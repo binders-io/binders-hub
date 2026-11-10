@@ -3,6 +3,7 @@ import { Check, ChevronDown, Layers } from 'lucide-react'
 import type { Card } from '../data/model'
 import { isListening, useStore } from '../data/store'
 import { AgentAvatar } from './bits'
+import { useMayChangeBinder } from '../screens/settings/access'
 
 /**
  * Who a card is for, at the top of its page, and the place to change it: pick an agent, or any agent. Giving away a
@@ -11,6 +12,7 @@ import { AgentAvatar } from './bits'
 export function AgentPicker({ card, working }: { card: Card; working: boolean }) {
   const store = useStore()
   const { state } = store
+  const may = useMayChangeBinder()
   const [open, setOpen] = useState(false)
   const box = useRef<HTMLDivElement>(null)
   const holder = state.agents.find((a) => a.id === card.agentId)
@@ -40,6 +42,21 @@ export function AgentPicker({ card, working }: { card: Card; working: boolean })
   const give = (agentId: string) => {
     store.giveCard(card.id, agentId)
     setOpen(false)
+  }
+
+  // A reader is told who it's with, and can't give it to another.
+  if (!may) {
+    return (
+      <div className="work-agent-picker">
+        <div className="work-agent">
+          {shown ? <AgentAvatar agent={shown} size={34} live={working} /> : <span className="any-agent"><Layers size={16} /></span>}
+          <div>
+            <b>{shown?.name ?? 'Any agent'}</b>
+            <span>{holder ? (card.needsYou ? 'Waiting on an answer' : working ? holder.runsOn ?? 'Working on it' : 'Had it') : meant ? 'It’s meant for them' : 'The first one free that can do it'}</span>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (

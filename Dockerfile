@@ -39,5 +39,5 @@ ENV BINDERS_COMMIT=$COMMIT BINDERS_COMMIT_SUBJECT=$COMMIT_SUBJECT BINDERS_REPO_U
 USER node
 WORKDIR /app/hub
 EXPOSE 4400
-HEALTHCHECK --interval=15s --timeout=5s --start-period=30s CMD ["node", "-e", "fetch('http://127.0.0.1:4400/ready').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s CMD ["node", "-e", "fetch('http://127.0.0.1:4400/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
 CMD ["node", "src/main.ts"]

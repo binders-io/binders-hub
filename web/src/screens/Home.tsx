@@ -80,8 +80,8 @@ export function Home() {
           {!agents.length && !loaded && <div className="home-empty"><p className="faint" role="status">Loading…</p></div>}
           {!agents.length && loaded && (
             <div className="home-empty">
-              <p>No agents yet. Set one up, start its runner, and it takes cards from the board as they come.</p>
-              <a className="button primary" href={href({ screen: 'agents' })}>Set up an agent</a>
+              <p>No agents yet. Add a machine: one line, run in the folder with the code, and an agent there takes cards from the board as they come.</p>
+              <a className="button primary" href={href({ screen: 'agents' })}>Add a machine</a>
             </div>
           )}
         </section>
@@ -202,21 +202,28 @@ function AgentTile({ agent, cards, onOpen }: { agent: Agent; cards: Card[]; onOp
 
 const kindIcon: Record<WaitKind, LucideIcon> = { question: MessageCircleQuestion, stopped: CircleAlert, permission: KeyRound, changeSet: GitPullRequest, proposals: Sparkles, noteChange: FileText, findings: SearchCheck, promotion: Rocket }
 
-/** What the rows are, in a line for the count: "2 questions · 1 to approve". */
+/**
+ * What the rows are, in a line for the count: "2 questions · 1 to approve". The count is of rows, so each part counts
+ * rows too and they add up to it. A row that stands for several things (a note's proposed cards, a card's findings)
+ * counts as one and says how many it holds.
+ */
 function whatWaits(rows: Waiting[]) {
-  const sum = (...kinds: WaitKind[]) => rows.filter((r) => kinds.includes(r.kind)).reduce((n, r) => n + (r.kind === 'proposals' ? r.count : 1), 0)
+  const of = (...kinds: WaitKind[]) => rows.filter((r) => kinds.includes(r.kind))
+  const holds = (list: Waiting[]) => list.reduce((n, r) => n + r.count, 0)
   const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
-  const counts: [number, (n: number) => string][] = [
-    [sum('question'), (n) => plural(n, 'question')],
-    [sum('stopped'), (n) => plural(n, 'stopped card')],
-    [sum('permission'), (n) => plural(n, 'permission')],
-    [sum('changeSet'), (n) => `${n} to approve`],
-    [sum('proposals'), (n) => `${n} proposed`],
-    [sum('noteChange'), (n) => plural(n, 'note change')],
-    [sum('findings'), (n) => `${n} to look at`],
-    [sum('promotion'), (n) => `${n} to promote`],
+  // "1 note with 9 proposed" when a row holds more than one thing, else just "1 proposed".
+  const many = (list: Waiting[], what: string, within: string) => (holds(list) === list.length ? `${list.length} ${what}` : `${plural(list.length, within)} with ${holds(list)} ${what}`)
+  const counts: [Waiting[], (list: Waiting[]) => string][] = [
+    [of('question'), (l) => plural(l.length, 'question')],
+    [of('stopped'), (l) => plural(l.length, 'stopped card')],
+    [of('permission'), (l) => plural(l.length, 'permission')],
+    [of('changeSet'), (l) => `${l.length} to approve`],
+    [of('proposals'), (l) => many(l, 'proposed', 'note')],
+    [of('noteChange'), (l) => plural(l.length, 'note change')],
+    [of('findings'), (l) => many(l, 'to look at', 'card')],
+    [of('promotion'), (l) => `${l.length} to promote`],
   ]
-  return counts.filter(([n]) => n > 0).map(([n, say]) => say(n)).join(' · ')
+  return counts.filter(([list]) => list.length > 0).map(([list, say]) => say(list)).join(' · ')
 }
 
 /** How long a row has waited, in words; nothing when it has no date. */

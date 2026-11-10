@@ -26,6 +26,7 @@ import { useUI } from '../ui'
 import { openMenu } from '../components/ContextMenu'
 import { cardMenuItems } from '../components/CardMenu'
 import { ScheduleDialog } from '../components/Schedules'
+import { useMayChangeBinder } from './settings/access'
 
 const spring = { type: 'spring', stiffness: 380, damping: 34 } as const
 
@@ -57,6 +58,7 @@ function pick(state: State, id: string, binder: string, last: string | undefined
 export function Notes({ id }: { id: string }) {
   const store = useActions()
   const binders = useHub((state) => state.binders)
+  const mayChangeBinder = useMayChangeBinder()
   const { binder, setBinder } = useUI()
   // Notes from the sidebar opens the note you were last on in this binder, else its first.
   const last = lastNote(binder)
@@ -98,8 +100,8 @@ export function Notes({ id }: { id: string }) {
         <NoteTree currentId="" />
         <div className="empty-screen">
           <h2>No notes yet</h2>
-          <p>{binders.length ? 'Write one, then Distill it into work for your agents.' : 'Make a binder first: “New binder…” is in the switcher at the top left.'}</p>
-          {binders[0] && <button className="button primary" onClick={() => go({ screen: 'notes', id: store.addNote(binders[0].id) })}>New note</button>}
+          <p>{!mayChangeBinder ? 'Nothing has been written in this binder yet.' : binders.length ? 'Write one, then Distill it into work for your agents.' : 'Make a binder first: “New binder…” is in the switcher at the top left.'}</p>
+          {binders[0] && mayChangeBinder && <button className="button primary" onClick={() => go({ screen: 'notes', id: store.addNote(binders[0].id) })}>New note</button>}
         </div>
       </div>
     )
@@ -144,6 +146,7 @@ function useKeyboardRoom(active: boolean) {
 function NoteScreen({ noteId, listFirst, onDeleted }: { noteId: string; listFirst: boolean; onDeleted: (noteId: string) => void }) {
   const store = useActions()
   const { openItem } = useUI()
+  const mayChangeBinder = useMayChangeBinder()
   const note = useHub((state) => state.notes.find((n) => n.id === noteId), sameShape)
   const allProposals = useHub((state) => state.proposals)
   const allCards = useHub((state) => state.cards)
@@ -176,7 +179,9 @@ function NoteScreen({ noteId, listFirst, onDeleted }: { noteId: string; listFirs
   }, [listFirst, phone])
   const listOpen = phone && listFor !== undefined && listFor === noteId
   const [distiller, setDistiller] = useState('')
-  const [side, setSide] = useState<'chat' | 'distill'>(() => (poppedOut() === 'chat' ? 'chat' : rememberedSide()))
+  const [chosenSide, setSide] = useState<'chat' | 'distill'>(() => (poppedOut() === 'chat' ? 'chat' : rememberedSide()))
+  // Distill puts cards on the board: a reader has the chat, which only asks.
+  const side = mayChangeBinder ? chosenSide : 'chat'
   const chooseSide = (next: 'chat' | 'distill') => {
     setSide(next)
     rememberSide(next)
@@ -186,7 +191,7 @@ function NoteScreen({ noteId, listFirst, onDeleted }: { noteId: string; listFirs
   const [chatFocused, setChatFocused] = useState(false)
   // On a phone the note, its chat and Distill each fill the screen, one at a time; every note opens on itself.
   const [shown, setShown] = useState<{ noteId: string; view: NoteView }>({ noteId, view: 'note' })
-  const view = phone && shown.noteId === noteId ? shown.view : 'note'
+  const view = phone && shown.noteId === noteId ? (!mayChangeBinder && shown.view === 'distill' ? 'chat' : shown.view) : 'note'
   const chooseView = (next: NoteView) => {
     // The box being left behind may not say it lost focus.
     setFocused(false)
@@ -196,6 +201,7 @@ function NoteScreen({ noteId, listFirst, onDeleted }: { noteId: string; listFirs
   }
   // Asked for from another screen (Home's proposed cards, a Proposed mark in the note): Distill, open.
   useDistillAsked(noteId, () => {
+    if (!mayChangeBinder) return
     chooseSide('distill')
     if (phone) {
       setListFor(undefined)
@@ -246,7 +252,8 @@ function NoteScreen({ noteId, listFirst, onDeleted }: { noteId: string; listFirs
     }
   }
 
-  const mayChange = useMayChange(note ?? { id: noteId })
+  // A reader's note opens read-only; so does a locked one for whoever the lock stops.
+  const mayChange = useMayChange(note ?? { id: noteId }) && mayChangeBinder
   const writing = phone && focused && view === 'note'
   useKeyboardRoom(writing || (phone && chatFocused && view === 'chat'))
   if (!note) return null
@@ -281,7 +288,7 @@ function NoteScreen({ noteId, listFirst, onDeleted }: { noteId: string; listFirs
   return (
     <div className={`notes${focus !== 'none' ? ` focus-${focus}` : ''}${popped ? ' popped' : ''}${listOpen ? ' list-open' : ''}${views ? ' views' : ''}`} style={{ gridTemplateColumns: columns }}>
       {showTree && <NoteTree currentId={note.id} />}
-      {views && <NoteViews view={view} onChange={chooseView} waiting={fresh.length} />}
+      {views && <NoteViews view={view} onChange={chooseView} waiting={fresh.length} noDistill={!mayChangeBinder} />}
 
       {showNote && <article className="note" hidden={phone && view !== 'note'}>
         {showTree && !phone && <div className="resize-handle" onPointerDown={drag('tree')} role="separator" aria-orientation="vertical" aria-label="Resize the notes list" />}
@@ -289,12 +296,12 @@ function NoteScreen({ noteId, listFirst, onDeleted }: { noteId: string; listFirs
           {phone ? (
             <>
               {focus === 'none' && <button type="button" className="note-back" onClick={() => setListFor(listOpen ? undefined : note.id)} aria-expanded={listOpen} aria-label={listOpen ? 'Hide the notes list' : 'Show the notes list'}><ChevronLeft size={18} /> Notes</button>}
-              <NoteControls note={note} mayChange={mayChange} more={[
+              <NoteControls note={note} mayChange={mayChange} more={mayChangeBinder ? [
                 { label: scheduled ? `Schedules (${scheduled})` : 'Schedule it', icon: <CalendarClock size={14} />, onSelect: () => setScheduling(true) },
                 { label: ownSet ? 'Join the open change set' : 'Give it its own change set', icon: <GitPullRequest size={14} />, onSelect: toggleOwnSet },
                 { separator: true },
                 { label: 'Delete this note', icon: <Trash2 size={14} />, danger: true, confirm: 'Delete this note for good?', onSelect: deleteThis },
-              ]} />
+              ] : []} />
             </>
           ) : (
             <>
@@ -303,15 +310,15 @@ function NoteScreen({ noteId, listFirst, onDeleted }: { noteId: string; listFirs
                 {focus === 'none' && <button type="button" className="icon-button" onClick={() => change({ treeOpen: !layout.treeOpen })} title={layout.treeOpen ? 'Hide the notes list' : 'Show the notes list'} aria-label={layout.treeOpen ? 'Hide the notes list' : 'Show the notes list'}><PanelLeft size={15} /></button>}
                 {focus === 'none' && <button type="button" className="icon-button" onClick={() => change({ sideOpen: !layout.sideOpen })} title={layout.sideOpen ? 'Hide the chat and Distill' : 'Show the chat and Distill'} aria-label={layout.sideOpen ? 'Hide the side panel' : 'Show the side panel'}><PanelRight size={15} /></button>}
                 {!popped && <button type="button" className="icon-button" onClick={() => setFocus(focus === 'note' ? 'none' : 'note')} title={focus === 'note' ? 'Leave full screen (Esc)' : 'Full screen'} aria-label={focus === 'note' ? 'Leave full screen' : 'Full screen'}>{focus === 'note' ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>}
-                <button type="button" className={`icon-button${scheduled ? ' on' : ''}`} onClick={() => setScheduling(true)} title={scheduled ? `Scheduled: ${scheduled} schedule${scheduled === 1 ? '' : 's'}` : 'Schedule it: run this note as a card on a timer'} aria-label="Schedule"><CalendarClock size={15} /></button>
-                <button type="button" className={`icon-button${ownSet ? ' on' : ''}`} aria-pressed={ownSet} onClick={toggleOwnSet} title={ownSet ? 'This note’s work gets its own change set. Click to add it to the open one instead.' : 'This note’s work joins the open change set. Click to give it its own.'} aria-label="Own change set"><GitPullRequest size={15} /></button>
+                {mayChangeBinder && <button type="button" className={`icon-button${scheduled ? ' on' : ''}`} onClick={() => setScheduling(true)} title={scheduled ? `Scheduled: ${scheduled} schedule${scheduled === 1 ? '' : 's'}` : 'Schedule it: run this note as a card on a timer'} aria-label="Schedule"><CalendarClock size={15} /></button>}
+                {mayChangeBinder && <button type="button" className={`icon-button${ownSet ? ' on' : ''}`} aria-pressed={ownSet} onClick={toggleOwnSet} title={ownSet ? 'This note’s work gets its own change set. Click to add it to the open one instead.' : 'This note’s work joins the open change set. Click to give it its own.'} aria-label="Own change set"><GitPullRequest size={15} /></button>}
                 {!popped && <button type="button" className="icon-button" onClick={() => popOut('note', note.id)} title="Open in a window of its own" aria-label="Pop out"><ExternalLink size={15} /></button>}
               </span>
-              <ConfirmButton className="note-delete" question="Delete this note for good? Press again" label="Delete this note" title="Delete this note" onConfirm={deleteThis}><Trash2 size={14} /></ConfirmButton>
+              {mayChangeBinder && <ConfirmButton className="note-delete" question="Delete this note for good? Press again" label="Delete this note" title="Delete this note" onConfirm={deleteThis}><Trash2 size={14} /></ConfirmButton>}
             </>
           )}
         </NoteMeta>
-        {note.locked && !mayChange && <p className="note-locked"><Lock size={13} /> Locked by @{note.locked.by}. Use the versions button to propose a change for review.</p>}
+        {note.locked && !mayChange && <p className="note-locked"><Lock size={13} /> Locked by @{note.locked.by}.{mayChangeBinder && ' Use the versions button to propose a change for review.'}</p>}
         {mayChange && !phone && <Toolbar editor={editor} raw={raw} onRaw={showRaw} />}
         <NoteEditor key={`${note.id}:${mayChange ? 'edit' : 'read'}`} noteId={note.id} binderId={note.binderId} folderId={note.folderId} editor={editor} raw={raw} readOnly={!mayChange} onFocusChange={setFocused} />
         {mayChange && writing && <Toolbar editor={editor} raw={raw} onRaw={showRaw} onDone={() => editor.current?.view()?.contentDOM.blur()} />}
@@ -323,7 +330,7 @@ function NoteScreen({ noteId, listFirst, onDeleted }: { noteId: string; listFirs
         {!phone && <div className="side-head">
           <div className="side-tabs" role="tablist">
             <button role="tab" aria-selected={side === 'chat'} className={side === 'chat' ? 'on' : ''} onClick={() => chooseSide('chat')}><MessageSquare size={14} /> Chat</button>
-            <button role="tab" aria-selected={side === 'distill'} className={side === 'distill' ? 'on' : ''} onClick={() => chooseSide('distill')}><Sparkles size={14} /> Distill</button>
+            {mayChangeBinder && <button role="tab" aria-selected={side === 'distill'} className={side === 'distill' ? 'on' : ''} onClick={() => chooseSide('distill')}><Sparkles size={14} /> Distill</button>}
           </div>
           {focus === 'none' && <button type="button" className="icon-button" onClick={() => change({ wide: !layout.wide })} title={layout.wide ? 'Narrower' : 'Wider'} aria-label={layout.wide ? 'Narrower' : 'Wider'}>{layout.wide ? <ChevronsRight size={15} /> : <ChevronsLeft size={15} />}</button>}
           {!popped && <button type="button" className="icon-button" onClick={() => { chooseSide('chat'); setFocus(focus === 'chat' ? 'none' : 'chat') }} title={focus === 'chat' ? 'Leave full screen (Esc)' : 'Chat full screen'} aria-label={focus === 'chat' ? 'Leave full screen' : 'Chat full screen'}>{focus === 'chat' ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>}
@@ -479,6 +486,7 @@ interface EditorProps {
 const NoteEditor = memo(function NoteEditor({ noteId, binderId, folderId, editor, raw, readOnly, onFocusChange }: EditorProps) {
   const store = useActions()
   const { openItem } = useUI()
+  const may = useMayChangeBinder()
   const live = useLiveNote(noteId)
   const text = useHub((state) => state.notes.find((n) => n.id === noteId)?.text ?? '')
   const work = useHub((state) => workOf(state, noteId), sameWork)
@@ -488,18 +496,19 @@ const NoteEditor = memo(function NoteEditor({ noteId, binderId, folderId, editor
     distill: () => openOnDistill(noteId),
     menu: (itemId, event) => {
       const card = store.current().cards.find((c) => c.id === itemId)
-      if (card) openMenu(event, cardMenuItems(card, store, openItem))
+      if (card) openMenu(event, cardMenuItems(card, store, openItem, undefined, may))
     },
-  }), [work, openItem, store, noteId])
+  }), [work, openItem, store, noteId, may])
   // What [[links]] reach: the notes by title. One that isn't there yet is made beside this note.
   const links = useMemo(() => ({
     titles: () => store.current().notes.map((n) => n.title),
     exists: (title: string) => store.current().notes.some((n) => n.title.toLowerCase() === title.toLowerCase()),
     open: (title: string) => {
       const found = store.current().notes.find((n) => n.title.toLowerCase() === title.toLowerCase())
-      go({ screen: 'notes', id: found ? found.id : store.addNote(binderId, folderId, `# ${title}\n\n`) })
+      // A reader follows a link to a note that's there; one that isn't would have to be written.
+      if (found || may) go({ screen: 'notes', id: found ? found.id : store.addNote(binderId, folderId, `# ${title}\n\n`) })
     },
-  }), [store, binderId, folderId])
+  }), [store, binderId, folderId, may])
   return <MarkdownEditor ref={editor} noteId={noteId} text={text} live={live} onChange={(next, changes) => store.editNote(noteId, next, changes)} links={links} marks={marks} raw={raw} readOnly={readOnly} onFocusChange={onFocusChange} />
 })
 

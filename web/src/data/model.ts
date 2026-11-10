@@ -1,7 +1,7 @@
 // The web app's view of the hub: the shared types, and how the board names its stages.
 export type { Binder, Folder, Note, WorkLink, NotesState } from '../../../shared/notes.ts'
 export type { Activity, Agent, Card, ChangeSet, Check, CheckState, DiffLine, Environment, FileDiff, PlanStep, Proposal, Provider, PullRequest, Run, Stage } from '../../../shared/work.ts'
-export type { Change, Entry, HubState, Outgoing } from '../../../shared/state.ts'
+export type { Change, Entry, HistoryLine, HistoryPage, HubState, Outgoing, TrashItem } from '../../../shared/state.ts'
 import type { Profile } from '../../../shared/people.ts'
 import type { Stage } from '../../../shared/work.ts'
 
@@ -59,7 +59,8 @@ export interface Me {
   spaces: { id: string; name: string; role: Role }[]
 }
 
-export type Role = 'owner' | 'admin' | 'member'
+/** A reader sees everything in a Binder and changes nothing in it. */
+export type Role = 'owner' | 'admin' | 'member' | 'reader'
 
 /** A Binder as Settings shows it: who runs it, which everyone in it sees, and its members only where you may change them. */
 export interface SpaceView {

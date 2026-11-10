@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { call } from '../../data/api'
 import type { SpaceView } from '../../data/model'
 import { space } from '../../data/space'
-import { useStore } from '../../data/store'
+import { useHub, useStore } from '../../data/store'
 import { attempt } from '../../components/Toast'
 
 // What the sections of this binder's group have in common: the binder as the hub lists it, who may change it, and when a
@@ -37,8 +37,18 @@ export function useBinderAccess() {
   const spaces = useSpaces()
   const me = useStore().state.me
   const managers = spaces.here?.managers ?? []
-  const may = !!me?.hubAdmin || me?.role === 'owner' || me?.role === 'admin' || (!!spaces.here && managers.length === 0)
+  // A reader changes nothing in the Binder, the hub's admins who are readers there included.
+  const may = me?.role !== 'reader' && (!!me?.hubAdmin || me?.role === 'owner' || me?.role === 'admin' || (!!spaces.here && managers.length === 0))
   return { ...spaces, managers, may }
+}
+
+/**
+ * Whether you may change the Binder you're in: not when you're a reader, who sees all of it and changes none of it. Every
+ * control that changes something asks this. Until the hub has said who you are, you may, so nobody's controls flicker
+ * away and back; a reader who presses one anyway is refused by the hub, in words that show as a toast.
+ */
+export function useMayChangeBinder() {
+  return useHub((state) => state.me?.role !== 'reader')
 }
 
 /** Which control was just saved, for a moment. `saved(key)` says one was; `shown(key)` says whether to show it. */

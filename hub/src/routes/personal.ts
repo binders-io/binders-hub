@@ -1,9 +1,12 @@
 import { Refused } from '../hub.ts'
+import { captureHome } from '../appLink.ts'
+import { chooseHome } from '../brain/captures.ts'
+import { personalId, readerWords } from '../spaces.ts'
 import { bodies } from '../schemas.ts'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { Context } from './context.ts'
 
-// A personal Binder's repo.
+// A personal Binder's repo, and where a person's captures go.
 
 export async function personalRoutes(app: FastifyInstance, context: Context) {
   const { spaces, auth, sp, login, isAdmin, act, bodyOf, callback } = context
@@ -46,6 +49,33 @@ export async function personalRoutes(app: FastifyInstance, context: Context) {
     return personalNow(request)
   }))
   app.get('/api/personal', act(async (request) => personalNow(request)))
+
+  // Where what the person's phone and Mac capture goes: their own Binder, or a team's they're in. Theirs alone, kept in
+  // their own Binder's store, and read as their own again when it names a Binder they've left.
+  const capturesNow = async (request: FastifyRequest) => {
+    const me = login(request)
+    const own = personalId(me)
+    return {
+      home: await captureHome(spaces, me),
+      // Only Binders they're a member of and can change: a hub admin's others aren't theirs to send captures to, and a
+      // reader's notes can't be written there.
+      binders: spaces.forPerson(me, false).filter((s) => s.role !== 'reader').map(({ info }) => ({ id: info.id, name: info.name, personal: !!info.personal })).sort((a, b) => Number(b.id === own) - Number(a.id === own)),
+    }
+  }
+  app.get('/api/personal/captures', act(async (request) => capturesNow(request)))
+  app.put('/api/personal/captures', act(async (request) => {
+    const me = login(request)
+    const body = (request.body ?? {}) as { binder?: unknown }
+    if (typeof body.binder !== 'string' || !body.binder) throw new Refused('Say which Binder your captures go to.')
+    const there = spaces.forPerson(me, false).find((s) => s.info.id === body.binder)
+    if (!there) throw new Refused('You’re not in that Binder.')
+    if (there.role === 'reader') throw new Refused(readerWords)
+    const kv = spaces.get(personalId(me))?.brain?.kv
+    if (!kv) throw new Refused('Your own Binder isn’t ready yet. Try again in a moment.')
+    // Their own is the default: nothing is kept for it.
+    await chooseHome(kv, body.binder === personalId(me) ? undefined : body.binder)
+    return capturesNow(request)
+  }))
   /** Makes the repo (or takes it, when it's there already and the app reaches it) and links the Notes project to it. */
   app.post('/api/personal/repo', act(async (request) => {
     const status = await personalNow(request)

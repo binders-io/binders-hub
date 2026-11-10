@@ -108,6 +108,23 @@ describe('actions', () => {
     expect(sent?.change).toMatchObject({ id: 'c3', fields: { stage: 'ready', agentId: null } })
   })
 
+  it('let go of a card’s worktree diff when it’s moved to Done by hand, since nothing reads it then', async () => {
+    const actions: { move?: ReturnType<typeof useActions>['moveCard'] } = {}
+    function Grab() {
+      const { moveCard } = useActions()
+      useEffect(() => { actions.move = moveCard }, [moveCard])
+      return null
+    }
+    await mount(<><Grab /></>)
+    const worktree = { branch: 'b', base: 'main', files: [], at: 'then' }
+    await hear({ type: 'entries', entries: [entry(2, { type: 'card.put', card: card('c4', 'blocked', { worktree }) }), entry(3, { type: 'card.put', card: card('c5', 'blocked') })] })
+    await act(async () => { actions.move!('c4', 'live'); actions.move!('c5', 'live') })
+    await act(async () => { await new Promise((r) => setTimeout(r, 300)) })
+    const sent = posted.flatMap((p) => p.changes).map((c) => c.change).filter((c) => c.type === 'card.update')
+    expect(sent.find((c) => c.id === 'c4')?.fields).toMatchObject({ stage: 'live', worktree: null })
+    expect(sent.find((c) => c.id === 'c5')?.fields).not.toHaveProperty('worktree')
+  })
+
   it('show at once, and go to the hub in order, with typing joined', async () => {
     function Editor() {
       const { editNote } = useActions()

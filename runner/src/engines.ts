@@ -1,9 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { createWriteStream } from 'node:fs'
+import { accessSync, constants, createWriteStream, statSync } from 'node:fs'
 import { mkdir, readFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { freemem, homedir, totalmem } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
+import { findable, type AgentTool } from '../../shared/agents.ts'
 
 // What serves the models downloaded on this machine, when the hub asks for one, as Ollama does for its own: the daemon
 // lists every model here that an engine on this machine can run, and starts that engine when a request names the model.
@@ -70,6 +71,36 @@ export const engines: Record<EngineId, EngineSpec> = {
       return vllm && model ? [vllm, ['serve', model, ...at(port)]] : undefined
     },
   },
+}
+
+/**
+ * Where an agent tool's command may be: on the PATH, and where installers put it when they don't add it to the PATH a
+ * service sees (the same places the runner itself looks when it starts the tool).
+ */
+export function toolFolders(command: string, path = process.env.PATH ?? '', home = homedir(), windows = process.platform === 'win32', appData = process.env.APPDATA) {
+  const usual = windows
+    ? [join(home, '.local', 'bin'), ...(appData ? [join(appData, 'npm')] : []), join(home, `.${command}`, 'bin'), join(home, '.bun', 'bin'), join(home, '.cargo', 'bin'), join(home, 'go', 'bin')]
+    : [join(home, `.${command}`, 'bin'), join(home, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin', join(home, '.bun', 'bin'), join(home, '.npm-global', 'bin'), join(home, '.cargo', 'bin'), join(home, 'go', 'bin')]
+  return [...path.split(delimiter).filter(Boolean), ...usual]
+}
+
+/** Whether a program is at this path: a file that can be run (on Windows, with the ending its installer gives it). */
+function isProgram(path: string, windows: boolean) {
+  const runs = (file: string) => {
+    try {
+      if (!statSync(file).isFile()) return false
+      if (!windows) accessSync(file, constants.X_OK)
+      return true
+    } catch {
+      return false
+    }
+  }
+  return windows ? ['.exe', '.cmd'].some((ending) => runs(path + ending)) : runs(path)
+}
+
+/** The agent tools installed on this machine, in the product's order of preference (the first is the one it would pick). */
+export function toolsHere(folders: (command: string) => string[] = (command) => toolFolders(command), windows = process.platform === 'win32'): AgentTool[] {
+  return findable.filter((tool) => folders(tool.command).some((folder) => isProgram(join(folder, tool.command), windows))).map((tool) => tool.id)
 }
 
 /** A speech or transcription model, by its name. */

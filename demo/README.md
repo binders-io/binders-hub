@@ -10,7 +10,7 @@ are taken from, so they never come from a real hub.
   environments yet. Dates are counted back from when it runs.
 - `hub.ts`: starts it. It keeps everything in this process and reads no settings from the environment, so it can't open a
   real hub's Redis, notes or keys. It listens on 127.0.0.1 only, and its GitHub is a port nothing answers on. The screens
-  are told GitHub is connected, so they read as a set-up hub's, and nothing you approve or promote reaches a repo.
+  are told GitHub is connected, so they read as a set-up hub's, and nothing you approve or promote reaches a repo. It can't add machines: Add a machine on the Agents page says so.
 - `shoot.ts`: takes the pictures.
 
 ## Set up
@@ -51,7 +51,7 @@ a `-dark` suffix in dark:
 
 The Hub film's pictures are larger (a 1440×900 window at 2×, so 2880×1800) and of more screens: Home, Board, the note on
 Distill, the card and its steps, the blocked card's question, change set #12's debrief, Challenge and functional test plan, Delivery, Agents
-and Settings → Repo briefs, as `shot-<screen>-light.webp` and `shot-<screen>-dark.webp`:
+and the repo briefs in Settings → GitHub, as `shot-<screen>-light.webp` and `shot-<screen>-dark.webp`:
 
 ```sh
 npm run shots -- ~/Documents/reelkit/films/hub-flow/assets film

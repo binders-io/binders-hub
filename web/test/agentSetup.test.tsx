@@ -13,7 +13,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 const setUp = async (agents = [agent]) => {
   standInHub(() => hubState({ agents }))
   await mount(<Agents />)
-  fireEvent.click(screen.getByRole('button', { name: /Set up an agent/ }))
+  fireEvent.click(screen.getByRole('button', { name: /Set one up by hand/ }))
   return (await screen.findByRole('dialog', { name: 'Set up an agent' })) as HTMLElement
 }
 const more = (dialog: HTMLElement) => dialog.querySelector('details.agent-more') as HTMLDetailsElement
@@ -29,7 +29,7 @@ describe('setting up an agent is short', () => {
   it('points at the binder’s repos in Settings → GitHub, as a link, when it has some', async () => {
     standInHub(() => hubState({ agents: [], binders: [{ id: 'b1', name: 'Binder', repos: ['acme/api', 'acme/web'] }] }))
     await mount(<Agents />)
-    fireEvent.click(screen.getByRole('button', { name: /Set up an agent/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Set one up by hand/ }))
     const dialog = (await screen.findByRole('dialog', { name: 'Set up an agent' })) as HTMLElement
     const link = within(dialog).getByRole('link', { name: 'Settings → GitHub', hidden: true })
     expect(link.getAttribute('href')).toBe('#/settings/github')

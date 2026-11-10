@@ -1,16 +1,21 @@
 import type { FastifyInstance } from 'fastify'
+import { z } from 'zod'
 import { Refused } from '../hub.ts'
+import { captureHome } from '../appLink.ts'
+import { log } from '../logger.ts'
 import { bodies } from '../schemas.ts'
+import { personalId, readerWords } from '../spaces.ts'
 import { ask, search, type AskPlace } from '../brain/brain.ts'
 import { carryOut, takeProposal } from '../brain/board.ts'
 import type { BrainSettings } from '../brain/settings.ts'
 import { candidates, isGateway, jobs, offers } from '../brain/autoPick.ts'
 import { runnerVersion } from '../../../shared/agents.ts'
-import type { Capture } from '../brain/captures.ts'
+import { chosenHome, type Capture } from '../brain/captures.ts'
 import type { Context } from './context.ts'
 
 // The hub's brain: how it's set up (an admin's), questions answered from a Binder's notes and cards, and what a phone
 // or Mac captured put in as notes. A question is asked in the request's Binder, or in every Binder the person is in.
+// Ask's conversation is kept for each person, in the Binder it was asked in.
 
 /** A phone's outbox sends a day's captures at once: more than that in a minute is something else. */
 const captureLimit = { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }
@@ -130,14 +135,53 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
       const info = spaces.info(id)
       const name = info?.name ?? id
       const who = login(request)
-      return [{ id, name, brain: space.brain, url: (kind, item) => webUrl(id, kind, item), work: { id, name, hub: space.hub, actions: space.actions, github: () => (info?.personal ? Promise.resolve(undefined) : auth.githubFor(who, id)) } }]
+      // A reader asks and is told how things stand, and has nothing done: the brain refuses to offer them a change here.
+      const readOnly = spaces.roleOf(id, who) === 'reader'
+      return [{ id, name, brain: space.brain, url: (kind, item) => webUrl(id, kind, item), work: { id, name, hub: space.hub, actions: space.actions, github: () => (info?.personal ? Promise.resolve(undefined) : auth.githubFor(who, id)), ...(readOnly ? { readOnly } : {}) } }]
     })
   }
 
+  /** What was said before, as a client sends it: the hub cuts it to the last few turns and a length it can use. */
+  const said = z.array(z.looseObject({ role: z.enum(['user', 'assistant']), text: z.string().max(20_000) })).max(60)
+  const asking = bodies.brainAsk.extend({ turns: said.optional() })
+
   app.post('/api/brain/ask', askLimit, act(async (request) => {
     if (!brainSettings) throw new Refused('This hub has no brain.')
-    const body = bodyOf<{ question: string; everywhere?: boolean }>(bodies.brainAsk, request)
-    return ask(brainSettings, placesFor(request, body.everywhere), body.question, { person: login(request), may: true })
+    const body = bodyOf<{ question: string; everywhere?: boolean; turns?: z.infer<typeof said> }>(asking, request)
+    const result = await ask(brainSettings, placesFor(request, body.everywhere), body.question, { person: login(request), may: true, turns: body.turns })
+    // Ask's own page sends the conversation so far, even when it's empty: what it asks is kept for the person, to open
+    // again on any device. An offer to do something isn't, as it can't be taken up later. Another client asking alone
+    // adds nothing to it.
+    if (body.turns && !result.proposal) {
+      try {
+        await sp(request).brain?.keepTurn(login(request), { question: body.question.trim().slice(0, 2000), everywhere: !!body.everywhere, result })
+      } catch (err) {
+        log.warn({ why: err instanceof Error ? err.message : String(err) }, 'Couldn’t keep a question to Ask')
+      }
+    }
+    return result
+  }))
+
+  // The person's conversation with Ask in this Binder, oldest first. Only theirs, and only what rests on Binders they're
+  // still in: a turn that drew on one they've left isn't shown, even to them.
+  app.get('/api/brain/conversation', act(async (request) => {
+    const who = login(request)
+    const mine = new Set([sp(request).id, ...spaces.forPerson(who, false).map((s) => s.info.id)])
+    const turns = (await sp(request).brain?.thread(who)) ?? []
+    return { turns: turns.filter((t) => t.result.sources.every((s) => mine.has(s.binder))) }
+  }))
+  app.delete('/api/brain/conversation', act(async (request) => {
+    await sp(request).brain?.forgetThread(login(request))
+  }))
+
+  // A question about one note, from its Chat when no agent can answer: the note in front of the brain, in full, and the
+  // rest of this Binder to draw on. The brain only reads here; the note is changed by an agent. The chat's turns are the
+  // page's, for the visit.
+  const aboutNote = z.looseObject({ question: z.string().min(1).max(2000), turns: said.optional() })
+  app.post('/api/notes/:id/ask', askLimit, act(async (request) => {
+    if (!brainSettings) throw new Refused('This hub has no brain.')
+    const body = bodyOf<{ question: string; turns?: z.infer<typeof said> }>(aboutNote, request)
+    return ask(brainSettings, placesFor(request), body.question, { about: { place: sp(request).id, note: param(request, 'id') }, turns: body.turns })
   }))
 
   // A person's answer to what a question came to: theirs alone, once, and still in a Binder they can open.
@@ -146,6 +190,9 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
     const who = login(request)
     const proposal = takeProposal(who, body.id)
     if (!proposal || !spaces.forPerson(who, isAdmin(who)).some((s) => s.info.id === proposal.place)) throw new Refused('That isn’t waiting any more: ask again.')
+    // Asked about a Binder they could change, and since made a reader of: not carried out. The hook leaves this address to
+    // say so, as the Binder it's for is the proposal's, not the request's.
+    if (body.go && spaces.roleOf(proposal.place, who) === 'reader') throw new Refused(readerWords)
     return { said: body.go ? await carryOut(proposal) : 'All right, I’ve left it.' }
   }))
 
@@ -157,12 +204,23 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
   }))
 
   app.post('/api/captures', captureLimit, act(async (request) => {
-    const space = sp(request)
-    if (!space.brain) throw new Refused('This Binder doesn’t take captures.')
     const body = bodyOf<Capture & { sourceId?: string; binder?: string; folder?: string }>(bodies.capture, request)
+    const who = login(request)
+    let space = sp(request)
+    // One that names no Binder (by its address or a binder in its body) goes where the person chose their captures to
+    // go, while they're still in it. With no choice made, it goes where it always has.
+    const named = request.headers['x-binders-space'] || (request.query as { space?: string } | undefined)?.space || body.binder
+    if (!named) {
+      const own = spaces.get(personalId(who))?.brain?.kv
+      const home = own && (await chosenHome(own)) ? spaces.get(await captureHome(spaces, who)) : undefined
+      if (home?.brain) space = home
+    }
+    // Where it goes is only known here, so the hook leaves this address to say so: a reader's capture is refused.
+    if (spaces.roleOf(space.id, who) === 'reader') throw new Refused(readerWords)
+    if (!space.brain) throw new Refused('This Binder doesn’t take captures.')
     if (!body.text.trim()) throw new Refused('A capture needs its words.')
     const capture: Capture = { kind: body.kind, text: body.text, title: body.title, recordedAt: body.recordedAt, durationSeconds: body.durationSeconds, device: body.device, speakers: body.speakers }
-    const made = await space.brain.capture(login(request), capture, { binderId: body.binder, folder: body.folder, sourceId: body.sourceId })
+    const made = await space.brain.capture(who, capture, { binderId: body.binder, folder: body.folder, sourceId: body.sourceId })
     const { id, title, binderId, folderId } = made.note
     return { note: { id, title, binderId, folderId }, created: made.created, summarizing: made.summarizing, url: webUrl(space.id, 'note', id) }
   }))

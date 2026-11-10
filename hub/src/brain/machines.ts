@@ -80,9 +80,10 @@ const hash = (token: string) => createHash('sha256').update(token).digest('hex')
 const listKey = 'brain-machines'
 const tokenKey = (token: string) => `brain-machine-token:${hash(token)}`
 const joinKey = (token: string) => `brain-machine-join:${hash(token)}`
+const lineKey = (token: string) => `machine-join:${hash(token)}`
 /** How long a command for adding machines works: run it on as many machines as you like until then. */
 export const joinHours = 24
-const hostName = (host: string) => host.replace(/\.local$/i, '').replace(/[^\w .@-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60)
+export const hostName = (host: string) => host.replace(/\.local$/i, '').replace(/[^\w .@-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60)
 
 /** How long a request through a machine may take at most, whatever it asks (a long recording, written down). */
 const longest = 20 * 60_000
@@ -188,13 +189,46 @@ export class BrainMachines {
   }
 
   /**
+   * The line for adding a machine with code on it, made on the Agents page by anyone in a Binder: it works on any number
+   * of machines for a day. It's kept apart from the brain's own, so it never adds a machine of the hub's to someone who
+   * isn't one of its admins.
+   */
+  async agentLine(by: string, binder: string) {
+    const token = `bnj_${randomBytes(24).toString('base64url')}`
+    const expiresAt = new Date(Date.now() + joinHours * 3_600_000).toISOString()
+    await this.kv.set(lineKey(token), JSON.stringify({ by, binder, expiresAt }), joinHours * 3600)
+    return { token, expiresAt }
+  }
+
+  /** Who made a line for adding machines with code, and for which Binder, while it works. */
+  async lineFor(token: string): Promise<{ by: string; binder: string; expiresAt: string } | undefined> {
+    const kept = token.startsWith('bnj_') ? await this.kv.get(lineKey(token)) : undefined
+    if (!kept) return undefined
+    const line = JSON.parse(kept) as { by: string; binder: string; expiresAt: string }
+    return Date.parse(line.expiresAt) > Date.now() ? line : undefined
+  }
+
+  /** Whether a token is a line from Settings → Brain, for a machine that only lends models. */
+  async isBrainLine(token: string) {
+    return token.startsWith('bnj_') && !!(await this.kv.get(joinKey(token)))
+  }
+
+  /**
    * A machine joining with that command: added under its host's name, with a token of its own. The same host joining
    * again (the command run once more) is the same machine, with a fresh token.
    */
   async join(joinToken: string, host: string) {
     const kept = joinToken.startsWith('bnj_') ? await this.kv.get(joinKey(joinToken)) : undefined
-    if (!kept) throw new Refused('That command has run out or was replaced. Get a new one in Settings → Brain → Your machines.')
+    if (!kept) {
+      if (await this.lineFor(joinToken)) throw new Refused('That line is for a machine with code on it: run it with binders join, not binders add.')
+      throw new Refused('That command has run out or was replaced. Get a new one in Settings → Brain → Your machines.')
+    }
     const { by } = JSON.parse(kept) as { by: string }
+    return this.joinAs(by, host)
+  }
+
+  /** A machine of `by`'s joining by its host's name: as above, once the line it came with is known to be good. */
+  async joinAs(by: string, host: string) {
     const name = hostName(host) || 'A machine'
     const same = this.machines.find((m) => (m.host ?? '').toLowerCase() === host.toLowerCase())
     if (!same) return this.add(by, name, host)

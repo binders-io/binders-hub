@@ -8,6 +8,7 @@ import { nameFor, useActions, useClock, useHub, useStore } from '../data/store'
 import { ago, quietWords, unpicked } from './bits'
 import { attempt, failure, toast } from './Toast'
 import { href } from '../route'
+import { useMayChangeBinder } from '../screens/settings/access'
 
 // A debrief: what a change set proposes, all its pull requests together, written by an agent when a person asks (a card
 // not in a set yet has its own, of its worktree). Asking on a card in a set asks for its set's. The view shows its five
@@ -19,11 +20,13 @@ const pending = (debrief?: Debrief) => !!debrief && (debrief.state === 'asked' |
 /** Asks an agent for the card's debrief. `inline` is a chip for a card on the board: the click doesn't open the card too. */
 export function DebriefButton({ card, inline = false, className = 'button' }: { card: Card; inline?: boolean; className?: string }) {
   const { debrief } = useActions()
+  // Asking an agent for one changes the Binder: a reader has the debrief that's there, and no button for another.
+  const may = useMayChangeBinder()
   // In a change set, the set's: all its pull requests together.
   const set = useHub((state) => (debriefable(card.stage) ? setOfCard(state, card) : undefined))
   const live = set ? set.debrief : card.debrief
   const writer = useHub((state) => (live ? nameFor(state, live.agentId) : ''))
-  if (!debriefable(card.stage)) return null
+  if (!may || !debriefable(card.stage)) return null
   const busy = pending(live)
   const label = busy ? 'Debriefing…' : live?.state === 'done' ? 'Debrief again' : 'Debrief'
   const title = busy ? `${writer} is writing its debrief` : set ? `An agent reads all of change set #${set.number}’s pull requests together and writes one debrief` : 'An agent reads what this card’s work proposes and writes a debrief'
@@ -72,6 +75,7 @@ function ReadAloud({ words }: { words: string }) {
 /** Asks for a change set's debrief, from its page. */
 export function SetDebriefButton({ set, className = 'button' }: { set: ChangeSet; className?: string }) {
   const store = useStore()
+  const may = useMayChangeBinder()
   const busy = pending(set.debrief)
   const label = busy ? 'Debriefing…' : set.debrief?.state === 'done' ? 'Debrief again' : 'Debrief'
   const button = (
@@ -80,6 +84,7 @@ export function SetDebriefButton({ set, className = 'button' }: { set: ChangeSet
       <ClipboardList size={13} /> {label}
     </button>
   )
+  if (!may) return null
   return busy ? button : <span className="challenge-ask"><ReasoningPicker />{button}</span>
 }
 
@@ -90,6 +95,7 @@ export function SetDebriefButton({ set, className = 'button' }: { set: ChangeSet
 export function DebriefView({ card, set }: { card?: Card; set?: ChangeSet }) {
   const store = useStore()
   const { state } = store
+  const may = useMayChangeBinder()
   // Whether it has waited long enough to be asked again changes with the time alone.
   useClock()
   // On a card in a set, the set's: as it's being written, and its last one.
@@ -124,7 +130,7 @@ export function DebriefView({ card, set }: { card?: Card; set?: ChangeSet }) {
       {unpicked(debrief) && (
         <p className="debrief-status moved">
           {quietWords(agent, debrief)}{written ? ' The last one is below.' : ''}{' '}
-          <button type="button" className="text-button" onClick={() => void attempt(() => (inSet ? store.setDebrief(inSet.id) : store.debrief(card!.id)))}>Ask again</button>
+          {may && <button type="button" className="text-button" onClick={() => void attempt(() => (inSet ? store.setDebrief(inSet.id) : store.debrief(card!.id)))}>Ask again</button>}
         </p>
       )}
       {debrief.state === 'failed' && <p className="debrief-status failed">{agent} couldn’t write it: {debrief.failed}{written ? ' The last one is below.' : ''}</p>}
@@ -184,6 +190,8 @@ const riskTone = { high: 'risk-high', medium: 'risk-medium', low: 'risk-low' } a
 export function TestPlan({ id, plan, title }: { id: string; plan: TestCase[]; title: string }) {
   const { recordTest } = useActions()
   const { state } = useStore()
+  // Marking a test records it on the Binder: a reader sees the plan and what others recorded.
+  const may = useMayChangeBinder()
   const [noting, setNoting] = useState<string>()
   const [note, setNote] = useState('')
   const { total, passed, failed } = testTally(plan)
@@ -218,7 +226,7 @@ export function TestPlan({ id, plan, title }: { id: string; plan: TestCase[]; ti
                 {test.result.outcome === 'passed' ? 'Passed' : 'Failed'} for {nameFor(state, test.result.by)}, {ago(test.result.at)}{test.result.note ? `: ${test.result.note}` : ''}
               </p>
             )}
-            {noting === test.id ? (
+            {!may ? null : noting === test.id ? (
               <form className="test-note" onSubmit={(event) => { event.preventDefault(); mark(test, 'failed', note) }}>
                 <input autoFocus aria-label={`What went wrong in ${test.title}`} placeholder="What you saw instead, in one line" value={note} maxLength={testTextMost} onChange={(event) => setNote(event.target.value)} />
                 <button type="submit" className="button">Fail it</button>

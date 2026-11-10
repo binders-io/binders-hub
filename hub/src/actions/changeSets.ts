@@ -2,9 +2,10 @@ import type { Merger } from '../merger.ts'
 import type { Change } from '../../../shared/state.ts'
 import { titleOf } from '../../../shared/notes.ts'
 import { cardChangeSet, cardsOfSet, setChangeSet, pullOf } from '../../../shared/changeSet.ts'
-import type { ChangeSet, PullRequest } from '../../../shared/work.ts'
+import type { ChangeSet, FileDiff, PullRequest } from '../../../shared/work.ts'
 import { GitHubError } from '../github.ts'
 import { Refused, type Actor } from '../hub.ts'
+import { noted } from '../history.ts'
 import { EnvironmentService } from './environments.ts'
 import { mergeableOf } from './base.ts'
 import { sameRepo } from '../../../shared/work.ts'
@@ -95,11 +96,74 @@ export abstract class ChangeSetService extends EnvironmentService {
         if (!(error instanceof GitHubError)) throw error
       }
     }
-    pull = { ...pull, cardId: link.cardId ?? pull.cardId, agentId: link.agentId ?? pull.agentId }
+    // Read again with its lines: they're back in the state, so it isn't one whose lines were dropped.
+    const { linesDropped, ...kept } = pull
+    pull = { ...kept, cardId: link.cardId ?? pull.cardId, agentId: link.agentId ?? pull.agentId, ...(linesDropped && !pull.files.some((f) => f.lines.length) ? { linesDropped } : {}) }
     await this.hub.record({ kind: 'hub' }, { type: 'pr.put', pull })
     const card = pull.cardId ? this.hub.state.cards.find((c) => c.id === pull.cardId) : undefined
+    // The pull request has the diff now, so the card needn't carry its worktree's too.
+    if (card?.worktree && pull.files.length) await this.hub.record({ kind: 'hub' }, { type: 'card.update', id: card.id, fields: { worktree: undefined } })
     if (card && !this.hub.state.changeSets.some((s) => s.prIds.includes(pull.id))) await this.addToSet(card.binderId, pull.id, card.noteId)
     return this.hub.state.pulls.find((p) => p.id === id)!
+  }
+
+  /**
+   * A pull request's diff with its lines. The state has them until the pull request has been over for a while; after
+   * that GitHub does, and they're read from it each time and not put back.
+   */
+  async pullFiles(pull: PullRequest): Promise<FileDiff[]> {
+    if (!pull.linesDropped) return pull.files
+    const github = await this.github.forRepo(pull.repo).catch(() => undefined)
+    if (!github) throw new Refused('This pull request is old, so its changes are kept on GitHub, and the hub can’t reach GitHub right now. Try again in a moment.')
+    try {
+      return await github.files(pull.repo, pull.number)
+    } catch {
+      throw new Refused('This pull request is old, so its changes are kept on GitHub, and GitHub didn’t answer. Try again in a moment.')
+    }
+  }
+
+  /**
+   * When a pull request ended: what its card says (it merged then), else what the hub noted the first time it saw it
+   * over. Not known until then.
+   */
+  private endedOf(pull: PullRequest): number | undefined {
+    const card = pull.cardId ? this.hub.state.cards.find((c) => c.id === pull.cardId) : undefined
+    const merged = pull.state === 'merged' ? card?.activity.findLast((a) => a.kind === 'merged')?.at : undefined
+    const at = Date.parse(pull.endedAt ?? merged ?? '')
+    return Number.isFinite(at) ? at : undefined
+  }
+
+  /**
+   * A pull request that's been merged or closed for longer than `keptMs` keeps its files' names and counts but not
+   * their lines: GitHub has those, and the hub asks it when they're opened (`pullFiles`). A pull request over with no
+   * date to count from is dated now. At most `batch` pull requests at a time, so one pass never writes a huge change.
+   * Gives how many were changed.
+   */
+  async dropOldDiffs(now: number, keptMs: number, batch = 20): Promise<number> {
+    const changes: Change[] = []
+    for (const pull of this.hub.state.pulls) {
+      if (changes.length >= batch) break
+      if ((pull.state !== 'merged' && pull.state !== 'closed') || pull.linesDropped || !pull.files.some((f) => f.lines?.length)) continue
+      const ended = this.endedOf(pull)
+      if (ended === undefined) changes.push({ type: 'pr.update', id: pull.id, fields: { endedAt: new Date(now).toISOString() } })
+      else if (now - ended > keptMs) changes.push({ type: 'pr.update', id: pull.id, fields: { files: pull.files.map((f) => ({ ...f, lines: [] })), linesDropped: true } })
+    }
+    if (changes.length) await this.hub.recordAll({ kind: 'hub' }, changes)
+    return changes.length
+  }
+
+  /**
+   * A card done, or with a pull request that has its files, needn't carry its worktree's diff too: cleared where it's
+   * still there (cards from before it was cleared as they went, and ones a person or GitHub moved on). At most `batch`.
+   */
+  async clearDoneWorktrees(batch = 20): Promise<number> {
+    const changes: Change[] = []
+    for (const card of this.hub.state.cards) {
+      if (changes.length >= batch) break
+      if (card.worktree && this.pullHasDiff(card)) changes.push({ type: 'card.update', id: card.id, fields: { worktree: undefined } })
+    }
+    if (changes.length) await this.hub.recordAll({ kind: 'hub' }, changes)
+    return changes.length
   }
 
   /** The binder's change set that's taking pull requests, made when there isn't one. */
@@ -145,6 +209,7 @@ export abstract class ChangeSetService extends EnvironmentService {
         { type: 'set.delete', id: setId },
       ]
       await this.hub.recordAll({ kind: 'user', login }, changes)
+      await noted(this.hub, { kind: 'user', login }, `Deleted change set #${set.number} “${set.title}”.`)
     })
   }
 
@@ -241,6 +306,7 @@ export abstract class ChangeSetService extends EnvironmentService {
     const failing = pulls.filter((p) => p.state !== 'merged' && p.state !== 'closed').flatMap((p) => p.checks.filter((c) => c.state === 'failed').map((c) => `${p.repo.split('/')[1]}#${p.number} ${c.name}`))
     if (failing.length) throw new Refused(`Some checks failed: ${failing.join(', ')}.`)
     await this.hub.record({ kind: 'user', login }, { type: 'set.update', id: set.id, fields: { state: 'merging', approvedBy: login, waiting: undefined } })
+    await noted(this.hub, { kind: 'user', login }, `Approved change set #${set.number} “${set.title}”.`)
     await this.runTrain(set.id, login, token)
     return this.hub.state.changeSets.find((s) => s.id === set.id)!
   }
@@ -352,7 +418,7 @@ export abstract class ChangeSetService extends EnvironmentService {
   protected async recordMerged(actor: Actor, set: ChangeSet, pull: PullRequest, by: string, mergeSha?: string) {
     await this.hub.recordAll(actor, [
       { type: 'pr.update', id: pull.id, fields: { state: 'merged', mergeable: undefined, ...(mergeSha ? { mergeSha } : {}) } },
-      ...(pull.cardId ? [{ type: 'card.update', id: pull.cardId, fields: { stage: 'live' }, activity: { at: this.now(), by, kind: 'merged', text: `Merged with change set #${set.number}` } } satisfies Change] : []),
+      ...(pull.cardId ? [{ type: 'card.update', id: pull.cardId, fields: { stage: 'live', worktree: undefined }, activity: { at: this.now(), by, kind: 'merged', text: `Merged with change set #${set.number}` } } satisfies Change] : []),
     ])
   }
 

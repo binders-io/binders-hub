@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEven
 import { motion } from 'motion/react'
 import { ArrowLeft, ArrowUpRight, Check, ChevronDown, CornerUpLeft, FilePen, FileSearch, FileText, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, Globe, Link2, ListChecks, MessageCircleQuestion, OctagonAlert, Quote, ShieldQuestionMark, Rocket, Send, ShieldCheck, Sparkles, Square, SquareTerminal, Trash2, Workflow } from 'lucide-react'
 import { stages, type Card, type Environment, type HubState, type PullRequest } from '../data/model'
-import { nameFor, useStore } from '../data/store'
+import { nameFor, useCardHistory, useStore } from '../data/store'
 import { CheckGlyph, Progress, RepoTag, Who, ago, askedWords, checksSummary, foldRepeats, leaveCard, onTouch, stageTone, stoppedBlock, stoppedWords, usePhone } from '../components/bits'
 import { PullDiffs } from '../components/Diffs'
 import { Terminal } from '../components/Terminal'
@@ -18,6 +18,7 @@ import { go, href } from '../route'
 import { useUI } from '../ui'
 import { titleOf } from '../../../shared/notes.ts'
 import { mayTake, meantForNow, repoEnvironments } from '../../../shared/work.ts'
+import { useMayChangeBinder } from './settings/access'
 
 type StepState = 'done' | 'now' | 'next'
 
@@ -74,7 +75,11 @@ const changesOpenLines = 400
 export function Work({ id }: { id: string }) {
   const store = useStore()
   const { state } = store
+  // A reader sees the whole card, and moves, answers, edits and deletes none of it: those controls aren't drawn.
+  const may = useMayChangeBinder()
   const card = state.cards.find((c) => c.id === id)
+  // Its whole activity: the state has the recent lines, and the rest are asked for when the card opens.
+  const { activity, failed: historyFailed, again: loadHistory } = useCardHistory(card)
   const { binder: inBinder, setBinder } = useUI()
   useEffect(() => {
     if (card && inBinder !== 'all' && card.binderId !== inBinder) setBinder(card.binderId)
@@ -83,7 +88,7 @@ export function Work({ id }: { id: string }) {
   // What it did: a box of its own that scrolls, opening at the latest step and following new ones while you're there.
   const stepsBox = useRef<HTMLOListElement>(null)
   const seenSteps = useRef(0)
-  const stepCount = card ? card.activity.filter((x) => x.kind === 'step').length : 0
+  const stepCount = activity.filter((x) => x.kind === 'step').length
   useEffect(() => {
     const box = stepsBox.current
     if (!box) return
@@ -117,22 +122,23 @@ export function Work({ id }: { id: string }) {
   const binder = state.binders.find((b) => b.id === card.binderId)
   const current = steps.find((s) => s.state === 'now')
   const working = card.stage === 'working'
-  const tasks = card.activity.filter((a) => a.kind === 'step')
-  const lines = sessionLines(card.activity)
+  const tasks = activity.filter((a) => a.kind === 'step')
+  const lines = sessionLines(activity)
   const held = card.stage === 'working' && !!card.agentId
   // What an agent holds, working or blocked on a question: Stop ends it, and deleting says so.
   const holds = (card.stage === 'working' || card.stage === 'blocked') && !!card.agentId
   const holder = state.agents.find((a) => a.id === card.agentId)
   // Words on a card in review reach no agent on their own: sending them back does, and the hub takes that only while its pull request is open.
-  const canSendBack = card.stage === 'review' && !!agent && !!pull && pull.state === 'open'
+  const canSendBack = may && card.stage === 'review' && !!agent && !!pull && pull.state === 'open'
   const moveTo = (stage: Card['stage']) => store.moveCard(card.id, stage)
   // Its words are the person's to fix until an agent has them: while it's proposed or ready, or blocked with nobody on it.
   const canEdit = card.stage === 'proposed' || card.stage === 'ready' || (card.stage === 'blocked' && !card.agentId)
+  const editable = canEdit && may
   const wordsFixed = card.stage === 'review' ? 'It’s in review, so its words stay as they are.' : card.stage === 'live' ? 'It’s done, so its words stay as they are.' : `${holder?.name ?? 'An agent'} is working on it, so its words stay as they are.`
   const change = (fields: Partial<Card>, said: string) => store.updateCard(card.id, fields, said)
   const sizeNames: Record<Card['size'], string> = { S: 'Small', M: 'Medium', L: 'Large' }
   const stoppedHere = stoppedBlock(card)
-  const conversation = card.activity.filter((a) => a.kind === 'question' || a.kind === 'answer' || a.kind === 'comment' || a.kind === 'message')
+  const conversation = activity.filter((a) => a.kind === 'question' || a.kind === 'answer' || a.kind === 'comment' || a.kind === 'message')
   // The open question is shown once, in the conversation, marked; the banner is only for a question that isn't there.
   const lastQuestion = card.needsYou ? conversation.map((a) => a.kind).lastIndexOf('question') : -1
   const plan = card.plan ?? []
@@ -142,7 +148,7 @@ export function Work({ id }: { id: string }) {
   const edits = tasks.filter((t) => /Edit|Write|Update/.test(t.tool ?? ''))
   const runs = tasks.filter((t) => t.tool === 'Bash')
   // Newest first, a run of the same event as one line, and the latest 30 until asked for all.
-  const timeline = foldRepeats(card.activity.filter((a) => a.kind !== 'step' && a.kind !== 'said' && a.kind !== 'message')).reverse()
+  const timeline = foldRepeats(activity.filter((a) => a.kind !== 'step' && a.kind !== 'said' && a.kind !== 'message')).reverse()
   const shownTimeline = allActivity ? timeline : timeline.slice(0, 30)
 
   /** Sends words to the hub, and clears the box only once it has taken them: if it fails they're still there to send again. */
@@ -196,7 +202,7 @@ export function Work({ id }: { id: string }) {
               )
             })()}
           </div>
-          <h1>{canEdit ? <EditableText label="Title" value={card.title} required onSave={(title) => change({ title }, 'Changed the title')} /> : card.title}</h1>
+          <h1>{editable ? <EditableText label="Title" value={card.title} required onSave={(title) => change({ title }, 'Changed the title')} /> : card.title}</h1>
         </div>
         {/* Once there's a debrief, its own section has the button. */}
         {!card.debrief && <DebriefButton card={card} />}
@@ -226,7 +232,7 @@ export function Work({ id }: { id: string }) {
               <p>
                 <b>{card.stopped.why}</b>
                 <span className="faint">{askedWords(card.stopped.at)}</span>
-                {stoppedHere && <span className="faint stopped-next">Fix what’s wrong, then answer below and it goes back to Ready.</span>}
+                {may && stoppedHere && <span className="faint stopped-next">Fix what’s wrong, then answer below and it goes back to Ready.</span>}
               </p>
             </section>
           )}
@@ -236,7 +242,7 @@ export function Work({ id }: { id: string }) {
               <div className="permission-body">
                 <b>{card.permission.tool}</b>
                 <pre className="mono">{card.permission.what}</pre>
-                {holder && holder.owner.toLowerCase() === state.me?.user.login.toLowerCase() ? (
+                {may && holder && holder.owner.toLowerCase() === state.me?.user.login.toLowerCase() ? (
                   <div className="permission-actions">
                     <button className="button primary" onClick={() => void attempt(() => store.answerPermission(card.id, card.permission!.request, true))}>Allow</button>
                     <button className="button" onClick={() => void attempt(() => store.answerPermission(card.id, card.permission!.request, false))}>Deny</button>
@@ -266,6 +272,8 @@ export function Work({ id }: { id: string }) {
           <DebriefView card={card} />
           <ChallengeView card={card} />
 
+          {historyFailed && <p className="faint small work-history" role="status">The older part of what it did didn’t load. <button type="button" className="text-button" onClick={loadHistory}>Try again</button></p>}
+
           <section className="work-section conversation-section">
             <h2>Conversation <span className="num faint">{conversation.length}</span></h2>
             {conversation.length > 0 && (
@@ -282,11 +290,11 @@ export function Work({ id }: { id: string }) {
                 ))}
               </ol>
             )}
-            <form className="reply" onSubmit={send}>
+            {may && <form className="reply" onSubmit={send}>
               <input id="card-reply" autoFocus={!!card.needsYou && !onTouch()} value={reply} onChange={(e) => setReply(e.target.value)} placeholder={stoppedHere ? 'Write anything, and it goes back to Ready…' : card.needsYou ? 'Answer the question…' : working ? 'Tell it something: it stops, reads it and carries on…' : canSendBack ? `Comment, or send it back to ${agent!.name} with these words…` : 'Add a comment…'} />
               <button className="button primary" disabled={!reply.trim() || sending}><Send size={14} /> {card.needsYou ? 'Answer' : canSendBack ? 'Comment' : 'Send'}</button>
               {canSendBack && <button type="button" className="button" disabled={!reply.trim() || sending} onClick={() => void sendBack(reply)}><CornerUpLeft size={14} /> Send back to {agent!.name}</button>}
-            </form>
+            </form>}
           </section>
 
           {plan.length > 0 && (
@@ -345,8 +353,8 @@ export function Work({ id }: { id: string }) {
         <aside className="work-side">
           <section className="side-card brief-card">
             <h3>Brief</h3>
-            {canEdit ? <EditableText label="Brief" value={card.brief} multiline placeholder="No brief. Add one." onSave={(brief) => change({ brief }, 'Changed the brief')} /> : <p className="brief-text">{card.brief || 'No brief.'}</p>}
-            {canEdit ? (
+            {editable ? <EditableText label="Brief" value={card.brief} multiline placeholder="No brief. Add one." onSave={(brief) => change({ brief }, 'Changed the brief')} /> : <p className="brief-text">{card.brief || 'No brief.'}</p>}
+            {editable ? (
               <>
                 <h3>Done when</h3>
                 <EditableText label="Done when" value={card.doneWhen} placeholder="Add how you’ll know it’s finished" onSave={(doneWhen) => change({ doneWhen }, 'Changed the done-when')} />
@@ -358,10 +366,10 @@ export function Work({ id }: { id: string }) {
             ) : (
               <>
                 {card.doneWhen && <><h3>Done when</h3><p className="brief-text">{card.doneWhen}</p></>}
-                <p className="faint small">{wordsFixed}</p>
+                {!canEdit && <p className="faint small">{wordsFixed}</p>}
               </>
             )}
-            {card.stage === 'proposed' && (
+            {may && card.stage === 'proposed' && (
               <>
                 <p className="faint small">No agent takes it while it’s proposed. Fix its words, then put it in Ready.</p>
                 <button type="button" className="button primary" onClick={() => moveTo('ready')}>Put it in Ready</button>
@@ -370,8 +378,8 @@ export function Work({ id }: { id: string }) {
           </section>
 
           <section className="side-card">
-            <h3>Move it</h3>
-            <div className="stage-moves" role="group" aria-label="Move to">
+            {may && <h3>Move it</h3>}
+            {may && <div className="stage-moves" role="group" aria-label="Move to">
               {movesOf(card).map((m) => {
                 const ask = moveAsk(card, m.stage, holder?.name)
                 // Taking a card from its agent stops the run, so that one asks first.
@@ -379,14 +387,14 @@ export function Work({ id }: { id: string }) {
                   ? <ConfirmButton key={m.stage} className="" question={ask} onConfirm={() => moveTo(m.stage)}>{m.title}</ConfirmButton>
                   : <button key={m.stage} type="button" className={card.stage === m.stage ? 'on' : ''} disabled={card.stage === m.stage} onClick={() => moveTo(m.stage)}>{m.title}</button>
               })}
-            </div>
+            </div>}
             <div className="card-controls">
               <button type="button" className="button" onClick={() => copyCardLink(card.id)}><Link2 size={13} /> Copy link</button>
-              {held && !card.needsYou && <button className="button primary" onClick={() => void attempt(() => store.comment(card.id, 'Carry on with this card.'))}><Send size={13} /> Nudge {holder?.name ?? 'the agent'}</button>}
-              {holds && <button type="button" className="button" onClick={() => void stopHolding(card, store)}><Square size={13} /> Stop</button>}
-              <ConfirmButton className="button danger" question={holds ? `Delete it and stop ${holder?.name ?? 'the agent'}? Press again` : 'Delete it? Press again'} onConfirm={() => { store.deleteCard(card.id); go({ screen: 'flow' }) }}><Trash2 size={14} /> Delete</ConfirmButton>
+              {may && held && !card.needsYou && <button className="button primary" onClick={() => void attempt(() => store.comment(card.id, 'Carry on with this card.'))}><Send size={13} /> Nudge {holder?.name ?? 'the agent'}</button>}
+              {may && holds && <button type="button" className="button" onClick={() => void stopHolding(card, store)}><Square size={13} /> Stop</button>}
+              {may && <ConfirmButton className="button danger" question={holds ? `Delete it and stop ${holder?.name ?? 'the agent'}? Press again` : 'Delete it? Press again'} onConfirm={() => { store.deleteCard(card.id); go({ screen: 'flow' }) }}><Trash2 size={14} /> Delete</ConfirmButton>}
             </div>
-            {held && <p className="faint small">{holder?.name ?? 'An agent'} holds it. {card.needsYou ? 'Answer its question and it carries on.' : 'Nudge sends it a comment, and it carries on as soon as its runner is listening.'}</p>}
+            {may && held && <p className="faint small">{holder?.name ?? 'An agent'} holds it. {card.needsYou ? 'Answer its question and it carries on.' : 'Nudge sends it a comment, and it carries on as soon as its runner is listening.'}</p>}
           </section>
 
           {note && (

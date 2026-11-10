@@ -8,6 +8,7 @@ import type { GitHubPoller } from './poller.ts'
 import type { GitNotesSaver } from './savers/gitNotes.ts'
 import type { IssuesSaver } from './savers/issues.ts'
 import type { JiraSaver } from './savers/jira.ts'
+import type { Teller } from './tell.ts'
 import type { Webhooks } from './webhooks.ts'
 
 // One hub, several Binders: each its own team, with its own change log, projects, notes, cards and agents, and its own
@@ -16,7 +17,11 @@ import type { Webhooks } from './webhooks.ts'
 // log and the apps have always called it. Sessions, people's and agents' tokens and the hub's options are the hub's
 // own, shared by all its Binders.
 
-export type Role = 'owner' | 'admin' | 'member'
+// A reader sees everything in a Binder and can ask its brain about it, and changes nothing in it.
+export type Role = 'owner' | 'admin' | 'member' | 'reader'
+
+/** What a reader is told wherever they try to change a Binder: its owners are the ones who can let them. */
+export const readerWords = 'You can read this binder, and can’t change it. One of its owners can let you.'
 
 export interface Member {
   login: string
@@ -56,6 +61,8 @@ export interface Space {
   /** The binder's own Jira: its saver writes cards there, its webhook brings what happened back. */
   jira?: JiraConnection
   jiraIssues?: JiraSaver
+  /** The channel it tells when something starts waiting. */
+  tell?: Teller
   /** Where pictures put in its notes are kept. */
   filesDir?: string
   /** Its brain: the index of its notes and cards, what's captured put in as notes, questions answered. */
@@ -86,6 +93,19 @@ export class Spaces {
   private make: (id: string, info: SpaceInfo) => Promise<Space>
   /** Every Binder the hub has made, those taken off it too: their addresses stay taken. */
   private infos: SpaceInfo[] = []
+  // What's asked on every request, kept to hand rather than found in `infos` each time, which a hub with thousands of
+  // Binders would walk several times over. Each is changed where `infos` is: see `add`, `index` and `unindex`.
+  private byId = new Map<string, SpaceInfo>()
+  /** Where each was made in the list, so a person's Binders come out in that order. */
+  private madeAt = new Map<string, number>()
+  /** By login, in lower case: the Binders that name them as a member. Where to look; a Binder's own members say what they are. */
+  private memberOf = new Map<string, Set<string>>()
+  /** The live Binders with no members: anyone the hub lets in may open them. */
+  private open = new Set<string>()
+  /** `list()`, until a Binder is made, taken off the hub or loaded. */
+  private live?: readonly SpaceInfo[]
+  /** Set once every Binder has started: until then the hub answers only that it's starting. */
+  private started = false
   private running = new Map<string, Space>()
   /** The Binder the hub started with: kept for good, as its files are the hub's own folders. */
   private firstId?: string
@@ -99,15 +119,16 @@ export class Spaces {
   /** Reads which Binders there are and starts each. A hub with none gets `first`, with `members`. */
   async load(first: { id: string; name: string; members: Member[] }) {
     const raw = await this.kv.get(listKey)
-    this.infos = raw ? (JSON.parse(raw) as SpaceInfo[]) : []
+    this.setInfos(raw ? (JSON.parse(raw) as SpaceInfo[]) : [])
     this.firstId = first.id
     if (!this.infos.length) {
-      this.infos = [{ id: first.id, name: first.name, createdAt: new Date().toISOString(), createdBy: 'hub', members: first.members }]
+      this.setInfos([{ id: first.id, name: first.name, createdAt: new Date().toISOString(), createdBy: 'hub', members: first.members }])
       await this.save()
     }
     // Team Binders first: a personal one reaches GitHub through one of them.
     const live = this.list()
     for (const info of [...live.filter((i) => !i.personal), ...live.filter((i) => i.personal)]) this.running.set(info.id, await this.make(info.id, info))
+    this.started = true
     return this
   }
 
@@ -116,10 +137,57 @@ export class Spaces {
     const made = new Spaces(kv, async () => { throw new Refused('This hub can’t make Binders.') })
     made.firstId = spaces[0]?.info.id
     for (const { info, space } of spaces) {
-      made.infos.push({ ...info, createdAt: new Date().toISOString(), createdBy: 'hub' })
+      made.add({ ...info, createdAt: new Date().toISOString(), createdBy: 'hub' })
       made.running.set(info.id, space)
     }
+    made.started = true
     return made
+  }
+
+  /** Whether every Binder has started. */
+  get ready() {
+    return this.started
+  }
+
+  private setInfos(infos: SpaceInfo[]) {
+    this.infos = []
+    this.byId.clear()
+    this.madeAt.clear()
+    this.memberOf.clear()
+    this.open.clear()
+    this.live = undefined
+    for (const info of infos) this.add(info)
+  }
+
+  /** A Binder made or loaded: at the end of the list, and in what finds it. */
+  private add(info: SpaceInfo) {
+    this.madeAt.set(info.id, this.infos.length)
+    this.infos.push(info)
+    this.byId.set(info.id, info)
+    this.index(info)
+    this.live = undefined
+  }
+
+  private index(info: SpaceInfo) {
+    if (info.removedAt) return
+    if (!info.members.length) this.open.add(info.id)
+    for (const member of info.members) {
+      const login = member.login.toLowerCase()
+      const ids = this.memberOf.get(login) ?? new Set<string>()
+      ids.add(info.id)
+      this.memberOf.set(login, ids)
+    }
+  }
+
+  /** Call before its members change or it's taken off the hub, with the members it has now. */
+  private unindex(info: SpaceInfo) {
+    this.open.delete(info.id)
+    for (const member of info.members) {
+      const login = member.login.toLowerCase()
+      const ids = this.memberOf.get(login)
+      ids?.delete(info.id)
+      if (ids && !ids.size) this.memberOf.delete(login)
+    }
   }
 
   private async save() {
@@ -127,17 +195,18 @@ export class Spaces {
   }
 
   /** The Binders on the hub: not those taken off it. */
-  list() {
-    return this.infos.filter((s) => !s.removedAt)
+  list(): readonly SpaceInfo[] {
+    return (this.live ??= this.infos.filter((s) => !s.removedAt))
   }
 
   info(id: string) {
-    return this.infos.find((s) => s.id === id && !s.removedAt)
+    const info = this.byId.get(id)
+    return info && !info.removedAt ? info : undefined
   }
 
   /** Whether an address is used, by a Binder or by one that was taken off the hub: nothing new is made over it. */
   private taken(id: string) {
-    return this.infos.some((s) => s.id === id)
+    return this.byId.has(id)
   }
 
   get(id: string) {
@@ -155,15 +224,27 @@ export class Spaces {
 
   roleOf(id: string, login: string): Role | undefined {
     const info = this.info(id)
-    if (!info) return undefined
+    return info && this.roleIn(info, login)
+  }
+
+  private roleIn(info: SpaceInfo, login: string): Role | undefined {
     if (!info.members.length) return 'member'
     return info.members.find((m) => same(m.login, login))?.role
   }
 
   /** The Binders a person may open, theirs first in the order they were made. Hub admins may open all. */
   forPerson(login: string, hubAdmin = false) {
-    return this.list()
-      .map((info) => ({ info, role: this.roleOf(info.id, login) ?? (hubAdmin && !info.personal ? ('admin' as const) : undefined) }))
+    // A hub admin's answer is most of the list anyway; for anyone else it's their own Binders and the open ones.
+    if (hubAdmin) {
+      return this.list()
+        .map((info) => ({ info, role: this.roleIn(info, login) ?? (!info.personal ? ('admin' as const) : undefined) }))
+        .filter((s): s is { info: SpaceInfo; role: Role } => !!s.role)
+    }
+    const ids = [...(this.memberOf.get(login.toLowerCase()) ?? []), ...this.open]
+    return ids
+      .sort((a, b) => this.madeAt.get(a)! - this.madeAt.get(b)!)
+      .map((id) => this.info(id)!)
+      .map((info) => ({ info, role: this.roleIn(info, login) }))
       .filter((s): s is { info: SpaceInfo; role: Role } => !!s.role)
   }
 
@@ -198,7 +279,7 @@ export class Spaces {
     if (!loginPattern.test(owner)) throw new Refused('Its owner is a GitHub login.')
     const info: SpaceInfo = { id, name, createdAt: new Date().toISOString(), createdBy: by, members: [{ login: owner, role: 'owner' }], ...(fields.home ? { home: fields.home } : {}) }
     this.running.set(id, await this.make(id, info))
-    this.infos.push(info)
+    this.add(info)
     await this.save()
     return info
   }
@@ -214,7 +295,7 @@ export class Spaces {
     const work = (async () => {
       const info: SpaceInfo = { id, name: 'Personal', createdAt: new Date().toISOString(), createdBy: login, members: [{ login, role: 'owner' }], personal: login, ...(home ? { home } : {}) }
       this.running.set(id, await this.make(id, info))
-      this.infos.push(info)
+      this.add(info)
       await this.save()
       return info
     })()
@@ -243,12 +324,14 @@ export class Spaces {
     if (info.personal) throw new Refused('A personal Binder is its person’s alone.')
     const clean = login.trim().replace(/^@/, '')
     if (!loginPattern.test(clean)) throw new Refused('A member is a GitHub login.')
-    if (!['owner', 'admin', 'member'].includes(role)) throw new Refused('A member is an owner, an admin or a member.')
+    if (!['owner', 'admin', 'member', 'reader'].includes(role)) throw new Refused('A member is an owner, an admin, a member or a reader.')
     const existing = info.members.find((m) => same(m.login, clean))
     if ((role === 'owner' || existing?.role === 'owner') && !byOwner) throw new Refused('Only an owner makes or unmakes owners.')
     const members = existing ? info.members.map((m) => (m === existing ? { ...m, role } : m)) : [...info.members, { login: clean, role }]
     if (!members.some((m) => m.role === 'owner')) throw new Refused(info.members.length ? 'A Binder keeps at least one owner.' : 'A Binder’s first member is its owner.')
+    this.unindex(info)
     info.members = members
+    this.index(info)
     await this.save()
     return info
   }
@@ -261,7 +344,9 @@ export class Spaces {
     if (existing.role === 'owner' && !byOwner) throw new Refused('Only an owner removes an owner.')
     const members = info.members.filter((m) => m !== existing)
     if (!members.some((m) => m.role === 'owner')) throw new Refused('A Binder keeps at least one owner.')
+    this.unindex(info)
     info.members = members
+    this.index(info)
     await this.save()
     return info
   }
@@ -280,8 +365,10 @@ export class Spaces {
     const info = this.need(id)
     if (this.isFirst(id)) throw new Refused('The hub’s first Binder can’t be removed: its files are the hub’s own.')
     if (info.personal) throw new Refused('A personal Binder can’t be removed.')
+    this.unindex(info)
     info.removedAt = new Date().toISOString()
     info.removedBy = by
+    this.live = undefined
     await this.save()
     const space = this.running.get(id)
     this.running.delete(id)

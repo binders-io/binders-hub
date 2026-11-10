@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react'
-import { Bot, Brain, ChevronLeft, ChevronRight, KeyRound, Plug, Server, SlidersHorizontal, Users, Workflow } from 'lucide-react'
+import { Bot, Brain, ChevronLeft, ChevronRight, History as HistoryIcon, KeyRound, Plug, Server, SlidersHorizontal, Users, Workflow } from 'lucide-react'
 import { space } from '../data/space'
 import { useStore } from '../data/store'
 import { useRoute } from '../route'
@@ -11,16 +11,17 @@ import { usePhone } from '../components/bits'
 import { Flow } from './settings/Flow'
 import { General } from './settings/General'
 import { GitHub } from './settings/GitHub'
+import { HistoryPart } from './settings/History'
 import { HubStatus } from './settings/HubStatus'
 import { JiraPart } from './settings/Jira'
 import { groups, isSection, rememberSection, rememberedSection, sectionHref, sections, type GroupId, type SectionId } from './settings/sections'
 
 const icons: Record<SectionId, (props: { size?: number }) => ReactNode> = {
-  general: SlidersHorizontal, people: Users, github: Github, flow: Workflow, jira: Plug, access: KeyRound, brain: Brain, agents: Bot, status: Server,
+  general: SlidersHorizontal, people: Users, github: Github, flow: Workflow, jira: Plug, history: HistoryIcon, access: KeyRound, brain: Brain, agents: Bot, status: Server,
 }
 
 /**
- * Settings, in two groups: this binder's (its name and people, its GitHub, how work flows, Jira) and the whole hub's (who
+ * Settings, in two groups: this binder's (its name and people, its GitHub, how work flows, Jira, its history) and the whole hub's (who
  * gets in, the brain, agents, status), which are the same for every binder on it. Each section has an address of its own,
  * `#/settings/<section>`; with none, it's the one this browser last had open, and on a phone the list of them. What's yours
  * rather than the binder's (who you're signed in as, your GitHub, your apps) is on your account page.
@@ -86,6 +87,7 @@ export function Settings() {
           {section.id === 'github' && <GitHub />}
           {section.id === 'flow' && <Flow />}
           {section.id === 'jira' && <JiraPart />}
+          {section.id === 'history' && <HistoryPart />}
           {section.id === 'access' && <HubOptionsPanel part="access" />}
           {section.id === 'brain' && <BrainPanel />}
           {section.id === 'agents' && <HubOptionsPanel part="agents" />}

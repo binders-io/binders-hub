@@ -5,6 +5,7 @@ import { isListening, isOnline, sameList, useActions, useHub, usePresence, type 
 import { toolInfo } from '../../../shared/agents.ts'
 import type { TerminalInfo } from '../../../shared/terminal.ts'
 import { href } from '../route'
+import { useMayChangeBinder } from '../screens/settings/access'
 import { AgentAvatar, stageTone } from './bits'
 
 const closedKey = 'binders-hub-side-agents-closed'
@@ -33,6 +34,8 @@ export function SideAgents({ agents }: { agents: Agent[] }) {
   const holding = useHub(heldCards, sameList)
   const terminals = useHub((state) => state.terminals)
   const me = useHub((state) => state.me?.user.login.toLowerCase())
+  // A reader sees who's working on what; giving a card away, a terminal and setting up a machine are for those who may change it.
+  const may = useMayChangeBinder()
   usePresence()
   const [closed, setClosed] = useState(readClosed)
   const [dropOn, setDropOn] = useState<string>()
@@ -58,7 +61,7 @@ export function SideAgents({ agents }: { agents: Agent[] }) {
       <h2>Agents</h2>
       {sorted.map((agent) => {
         const cards = held(agent)
-        const mine = agent.owner.toLowerCase() === me
+        const mine = may && agent.owner.toLowerCase() === me
         const terminalTool = (agent.runner?.tool ?? 'claude') !== 'custom'
         const open = mine ? terminals[agent.id]?.sessions ?? [] : []
         const asks = cards.filter((c) => c.needsYou).length
@@ -70,14 +73,14 @@ export function SideAgents({ agents }: { agents: Agent[] }) {
             : isListening(agent) ? 'Listening for work' : isOnline(agent) ? 'Online' : 'Not running'
         return (
           <div key={agent.id} className={`side-agent-group${dropOn === agent.id ? ' drop' : ''}`}
-            onDragOver={(e) => { if (e.dataTransfer.types.includes('text/binders-card')) { e.preventDefault(); setDropOn(agent.id) } }}
+            onDragOver={(e) => { if (may && e.dataTransfer.types.includes('text/binders-card')) { e.preventDefault(); setDropOn(agent.id) } }}
             onDragLeave={() => setDropOn(undefined)}
-            onDrop={(e) => { e.preventDefault(); setDropOn(undefined); const id = e.dataTransfer.getData('text/binders-card'); if (id) giveCard(id, agent.id) }}>
+            onDrop={(e) => { e.preventDefault(); setDropOn(undefined); const id = e.dataTransfer.getData('text/binders-card'); if (may && id) giveCard(id, agent.id) }}>
             <div className="side-agent-row">
               <button type="button" className="side-agent-toggle" onClick={() => toggle(agent.id)} disabled={!has} aria-expanded={shown} aria-label={shown ? `Hide what ${agent.name} has` : `Show what ${agent.name} has`}>
                 {has && <ChevronRight size={12} className={shown ? 'open' : ''} />}
               </button>
-              <a className="side-agent" href={href({ screen: 'agents' })} title={`${agent.name}: drop a card here to give it to it`}>
+              <a className="side-agent" href={href({ screen: 'agents' })} title={may ? `${agent.name}: drop a card here to give it to it` : agent.name}>
                 <AgentAvatar agent={agent} size={22} live={busy.length > 0} />
                 <span className="side-agent-text">
                   <b>{agent.name}</b>
@@ -107,7 +110,7 @@ export function SideAgents({ agents }: { agents: Agent[] }) {
           </div>
         )
       })}
-      {!agents.length && <a className="side-empty" href={href({ screen: 'agents' })}>Set up an agent</a>}
+      {!agents.length && may && <a className="side-empty" href={href({ screen: 'agents' })}>Add a machine</a>}
     </div>
   )
 }

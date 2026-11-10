@@ -2,13 +2,13 @@ import { shownName } from '../../../shared/people.ts'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { emptyState, type Change, type HubState } from '../../../shared/state.ts'
 import { isBlank, titleOf } from '../../../shared/notes.ts'
-import type { Agent, Card, Environment, Me, Note, Provider } from './model'
+import type { Activity, Agent, Card, Environment, Me, Note, Provider } from './model'
 import { handMove, type Presence, type RunnerSettings } from '../../../shared/work.ts'
 import type { TestOutcome } from '../../../shared/changeSet.ts'
 import { call } from './api'
 import { askedReasoning } from '../components/Reasoning'
-import { failure } from '../components/Toast'
-import { clientId, HubConnection, queue, receive, rememberCache, rememberOutbox, settled, shown, snapshot, startingSync, type AgentTerminals, type Connection, type Sync } from './sync'
+import { attempt, failure, toast } from '../components/Toast'
+import { clientId, HubConnection, queue, receive, rememberCache, rememberOutbox, settled, shown, snapshot, startingSync, withHistory, type AgentTerminals, type Connection, type Sync } from './sync'
 import { LiveNotes, type LiveNote, type Waiting } from './liveNote'
 import { spaceHeaders } from './space'
 
@@ -115,6 +115,7 @@ export interface Actions {
   /** Deletes a folder; what was in it moves up to where it was. */
   deleteFolder: (id: string) => void
   moveNote: (noteId: string, binderId: string, folderId?: string) => void
+  /** Deletes a note, which the hub keeps for 30 days: the toast that follows has Undo. */
   deleteNote: (noteId: string) => void
   clearChat: (chatId: string) => void
   /** An edit to a note: Automerge changes to its document, with its text after them; or the whole text, until the document is here. */
@@ -128,7 +129,10 @@ export interface Actions {
   updateCard: (id: string, fields: Partial<Card>, note?: string) => void
   /** A person ran one of a debrief's functional tests (on a card or a change set, by its id): passed or failed, or cleared with null. */
   recordTest: (id: string, test: string, outcome: TestOutcome | null, note?: string) => void
+  /** Deletes a card, which the hub keeps for 30 days: the toast that follows has Undo. */
   deleteCard: (id: string) => void
+  /** Puts a deleted note or card back from the Binder's trash, as it was. */
+  putBack: (kind: 'note' | 'card', id: string) => Promise<void>
   /** Moves a card to a stage; anywhere but review or done takes it from its agent, with any question it asked. */
   moveCard: (id: string, stage: Card['stage']) => void
   /** Gives a card to an agent (or opens it to any): one held by another agent goes back on the board for it. */
@@ -380,6 +384,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const actions = useMemo<Actions>(() => {
     const now = held.get
     const login = () => now().me?.user.login ?? 'you'
+    // The hub has to have the deletion first, as it keeps what it deleted: what's waiting is sent before this asks.
+    const putBack = async (kind: 'note' | 'card', id: string) => {
+      const done = await attempt(async () => {
+        await flush()
+        await call('POST', `/api/trash/${kind}/${encodeURIComponent(id)}/restore`)
+        return true
+      })
+      if (done) toast('Put back.')
+    }
     return {
       current: now,
       addNote: (binderId, folderId, text = '# ') => {
@@ -417,12 +430,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (folder && name.trim() && name.trim() !== folder.name) change({ type: 'folder.put', folder: { ...folder, name: name.trim() } })
       },
       moveNote: (noteId, binderId, folderId) => change({ type: 'note.move', id: noteId, binderId, folderId }),
-      deleteNote: (noteId) => change({ type: 'note.delete', id: noteId }),
+      deleteNote: (noteId) => {
+        change({ type: 'note.delete', id: noteId })
+        toast('Deleted.', { action: { label: 'Undo', run: () => void putBack('note', noteId) } })
+      },
       clearChat: (chatId) => change({ type: 'chat.clear', id: chatId }),
       editNote: (noteId, text, changes) => change({ type: 'note.edit', id: noteId, text, title: titleOf(text), by: login(), at: new Date().toISOString(), ...(changes ? { changes } : {}) }),
       discardIfEmpty: (noteId) => {
         const note = now().notes.find((n) => n.id === noteId)
-        if (note && isEmpty(note)) change({ type: 'note.delete', id: noteId })
+        // Throwing away an empty note is a change, which a reader's leaving of one they only looked at must not send.
+        if (note && isEmpty(note) && now().me?.role !== 'reader') change({ type: 'note.delete', id: noteId })
       },
       addBinder: (name, repo) => {
         const id = newId('binder')
@@ -440,7 +457,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       createCard: (card) => call<Card>('POST', '/api/cards', card),
       recordTest: (id, test, outcome, note) => change({ type: 'test.result', id, test, result: outcome ? { outcome, ...(note?.trim() ? { note: note.trim() } : {}), by: login(), at: new Date().toISOString() } : null }),
       updateCard: (id, fields, note) => change({ type: 'card.update', id, fields, activity: note ? { at: new Date().toISOString(), by: login(), kind: 'moved', text: note } : undefined }),
-      deleteCard: (id) => change({ type: 'card.delete', id }),
+      deleteCard: (id) => {
+        change({ type: 'card.delete', id })
+        toast('Deleted.', { action: { label: 'Undo', run: () => void putBack('card', id) } })
+      },
+      putBack,
       moveCard: (id, stage) => {
         const state = now()
         const card = state.cards.find((c) => c.id === id)
@@ -450,7 +471,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         const keep = 'agentId' in fields === false
         const names: Record<Card['stage'], string> = { proposed: 'Proposed', ready: 'Ready', working: 'Agents working', blocked: 'Blocked', review: 'In review', live: 'Done' }
         const holder = state.agents.find((a) => a.id === card.agentId)?.name ?? 'the agent'
-        change({ type: 'card.update', id, fields, activity: { at: new Date().toISOString(), by: login(), kind: 'moved', text: held && !keep ? `Took it back from ${holder}: ${names[stage]}` : `Moved it to ${names[stage]}` } })
+        // Done, the diff of its worktree is of no more use to anyone.
+        change({ type: 'card.update', id, fields: stage === 'live' && card.worktree ? { ...fields, worktree: undefined } : fields, activity: { at: new Date().toISOString(), by: login(), kind: 'moved', text: held && !keep ? `Took it back from ${holder}: ${names[stage]}` : `Moved it to ${names[stage]}` } })
       },
       giveCard: (id, agentId) => {
         const state = now()
@@ -544,7 +566,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (await loadMe()) await hub.current?.start()
       },
     }
-  }, [held, change, loadMe])
+  }, [held, change, flush, loadMe])
 
   return (
     <LiveContext.Provider value={lives}>
@@ -618,6 +640,40 @@ export function useActions() {
   const actions = useContext(ActionsContext)
   if (!actions) throw new Error('useActions outside StoreProvider')
   return actions
+}
+
+/**
+ * A card's whole activity. The state holds only its recent lines and says how many it left out (`activityMore`); when
+ * there are some, the rest are asked for as the card opens and put in front, and what the state gets live meanwhile
+ * after them. Until they're here, or if they don't come, it's what the state has.
+ */
+export function useCardHistory(card: Card | undefined) {
+  const id = card?.id
+  const left = (card?.activityMore ?? 0) > 0
+  const [got, setGot] = useState<{ id: string; activity: Activity[] }>()
+  const [failed, setFailed] = useState(false)
+  const [tries, setTries] = useState(0)
+  useEffect(() => {
+    if (!id || !left) return
+    let gone = false
+    setFailed(false)
+    call<{ activity: Activity[] }>('GET', `/api/cards/${encodeURIComponent(id)}/activity`).then(
+      ({ activity }) => {
+        if (!gone) setGot({ id, activity })
+      },
+      () => {
+        if (!gone) setFailed(true)
+      },
+    )
+    return () => {
+      gone = true
+    }
+  }, [id, left, tries])
+  const whole = got && got.id === id ? got.activity : undefined
+  const held = card?.activity
+  const activity = useMemo(() => (held && whole ? withHistory(held, whole) : held ?? []), [held, whole])
+  const again = useCallback(() => setTries((n) => n + 1), [])
+  return { activity, failed: failed && !whole, again }
 }
 
 const everything = (state: State) => state

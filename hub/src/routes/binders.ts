@@ -1,9 +1,13 @@
 import { Refused } from '../hub.ts'
+import { noted } from '../history.ts'
 import { bodies } from '../schemas.ts'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { Context } from './context.ts'
 
 // The hub's Binders and who's in them.
+
+/** A role as a sentence says it. */
+const aRole = { owner: 'an owner', admin: 'an admin', member: 'a member', reader: 'a reader' }
 
 export async function binderRoutes(app: FastifyInstance, context: Context) {
   const { spaces, auth, login, param, isAdmin, act, bodyOf } = context
@@ -18,7 +22,7 @@ export async function binderRoutes(app: FastifyInstance, context: Context) {
         ...(spaces.isFirst(info.id) ? { first: true } : {}),
         members: spaces.mayManage(info.id, login(request), admin) ? info.members : undefined,
         // Everyone in a Binder sees who runs it.
-        managers: info.members.filter((m) => m.role !== 'member').map(({ login, role }) => ({ login, role })),
+        managers: info.members.filter((m) => m.role === 'owner' || m.role === 'admin').map(({ login, role }) => ({ login, role })),
       })),
       // Anyone makes a Binder; the hub's admins may make one for someone else.
       mayCreate: true,
@@ -32,13 +36,14 @@ export async function binderRoutes(app: FastifyInstance, context: Context) {
     if (!spaces.mayManage(id, login(request), admin)) throw new Refused('Only the Binder’s owners and admins can change who’s in it.')
     return { id, byOwner: admin || spaces.roleOf(id, login(request)) === 'owner' }
   }
-  /** Revokes every agent a person owns in a Binder, as the agents route revokes one, and says which. */
-  const revokeAgentsOf = async (id: string, owner: string, by: string) => {
+  /** Revokes every agent a person owns in a Binder, as the agents route revokes one, and says which. `why` finishes the history line. */
+  const revokeAgentsOf = async (id: string, owner: string, by: string, why = 'is no longer in this Binder') => {
     const hub = spaces.get(id)?.hub
     const revoked: { id: string; name: string }[] = []
     for (const agent of hub?.state.agents.filter((a) => !a.revoked && a.owner.toLowerCase() === owner.toLowerCase()) ?? []) {
       await auth.revokeAgent(agent.id)
       await hub!.record({ kind: 'user', login: by }, { type: 'agent.revoke', id: agent.id })
+      await noted(hub!, { kind: 'user', login: by }, `Revoked the agent “${agent.name}”, as @${owner} ${why}.`)
       revoked.push({ id: agent.id, name: agent.name })
     }
     return revoked
@@ -56,16 +61,27 @@ export async function binderRoutes(app: FastifyInstance, context: Context) {
   }))
   app.patch('/api/spaces/:id', act(async (request) => {
     const { id } = managing(request)
+    const was = spaces.info(id)?.name
     const info = await spaces.rename(id, bodyOf(bodies.named, request).name ?? '')
     // Its one binder goes by its name.
     const hub = spaces.get(id)?.hub
     const sole = hub?.state.binders.length === 1 ? hub.state.binders[0] : undefined
+    // That change is noted as the binder renamed; with none to follow, the Binder's own new name is.
     if (hub && sole && sole.name !== info.name) await hub.record({ kind: 'user', login: login(request) }, { type: 'binder.put', binder: { ...sole, name: info.name } })
+    else if (hub && was !== info.name) await noted(hub, { kind: 'user', login: login(request) }, `Renamed this Binder from “${was}” to “${info.name}”.`)
     return spaceView(request)
   }))
   app.put('/api/spaces/:id/members/:login', act(async (request) => {
     const { id, byOwner } = managing(request)
-    await spaces.setMember(id, param(request, 'login'), bodyOf(bodies.member, request).role ?? 'member', byOwner)
+    const role = bodyOf(bodies.member, request).role ?? 'member'
+    const was = spaces.info(id)?.members.find((m) => m.login.toLowerCase() === param(request, 'login').trim().replace(/^@/, '').toLowerCase())
+    const info = await spaces.setMember(id, param(request, 'login'), role, byOwner)
+    const now = info.members.find((m) => m.login.toLowerCase() === param(request, 'login').trim().replace(/^@/, '').toLowerCase())
+    const hub = spaces.get(id)?.hub
+    if (hub && now && was?.role !== role) await noted(hub, { kind: 'user', login: login(request) }, was ? `Made @${now.login} ${aRole[role]}.` : `Added @${now.login} to this Binder as ${aRole[role]}.`)
+    // A reader changes nothing, and an agent acts with its owner's reach: so what they set up here stops, as when they leave.
+    // Said each time, so a reader who somehow has one left loses it.
+    if (role === 'reader') return { ...spaceView(request), revoked: await revokeAgentsOf(id, now?.login ?? param(request, 'login'), login(request), 'can only read this Binder now') }
     return spaceView(request)
   }))
   // Taking someone out takes their agents with them: a token is checked against its agent, so it would go on working.
@@ -76,7 +92,10 @@ export async function binderRoutes(app: FastifyInstance, context: Context) {
     const me = login(request)
     const leaving = spaces.info(id) && who.toLowerCase() === me.toLowerCase() && spaces.info(id)!.members.some((m) => m.login.toLowerCase() === me.toLowerCase())
     const byOwner = leaving ? spaces.roleOf(id, me) === 'owner' : managing(request).byOwner
+    const was = spaces.info(id)?.members.find((m) => m.login.toLowerCase() === who.toLowerCase())
     await spaces.removeMember(id, who, byOwner)
+    const hub = spaces.get(id)?.hub
+    if (hub) await noted(hub, { kind: 'user', login: me }, leaving ? `@${me} left this Binder.` : `Took @${was?.login ?? who} out of this Binder.`)
     return { ...spaceView(request), revoked: await revokeAgentsOf(id, who, me) }
   }))
   // Taking a Binder off the hub destroys nothing: it stops, and isn't listed or opened again.

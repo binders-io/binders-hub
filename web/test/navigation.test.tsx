@@ -113,9 +113,9 @@ describe('Add to Claude Code', () => {
     expect(screen.queryByRole('button', { name: 'Add to Claude Code' })).toBeNull()
   })
 
-  it('is on the Agents page, beside Set up an agent, and opens its dialog', async () => {
+  it('is on the Agents page, beside Add a machine, and opens its dialog', async () => {
     await open('#/agents')
-    const buttons = screen.getByRole('button', { name: 'Set up an agent' }).parentElement!
+    const buttons = screen.getByRole('button', { name: 'Add a machine' }).parentElement!
     const add = within(buttons).getByRole('button', { name: 'Add to Claude Code' })
     fireEvent.click(add)
     const dialog = await screen.findByRole('dialog', { name: 'Add the hub to Claude Code' })

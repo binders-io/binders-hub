@@ -9,6 +9,7 @@ import { ago } from '../../components/bits'
 import { Environments } from '../../components/Environments'
 import { FolderRuleDialog } from '../../components/FolderRules'
 import { ScheduleList } from '../../components/Schedules'
+import { TellChannel } from '../../components/TellChannel'
 import { attempt } from '../../components/Toast'
 import { Changeable, Saved, WhoCan } from './shared'
 import { useBinderAccess, useSaved } from './access'
@@ -56,6 +57,7 @@ export function Flow() {
           ))}
         </ul>
       </Changeable>
+      <TellChannel />
       <Environments />
       <Schedules />
       <FolderRules />

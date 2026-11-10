@@ -30,10 +30,12 @@ export const sameRows = (a: readonly Waiting[], b: readonly Waiting[]) => a.leng
   return x.id === y.id && x.for === y.for && x.title === y.title && x.detail === y.detail && x.since === y.since && x.count === y.count
 })
 
+/** What waits on you, from the state, for every binder you're in or for one. Nothing waits on a reader: every row is someone else's. */
+export const waitingFor = (state: State, binder?: string) => waitingOn(state, state.me?.user.login, { binder, reads: state.me?.role === 'reader' })
+
 /** What waits on you, for every binder you're in, or for one: your rows, then anyone's, then others'. */
 export function useWaiting(binder?: string) {
-  const login = useHub((state) => state.me?.user.login)
-  const select = useCallback((state: State) => waitingOn(state, login, { binder }), [login, binder])
+  const select = useCallback((state: State) => waitingFor(state, binder), [binder])
   return useHub(select, sameRows)
 }
 

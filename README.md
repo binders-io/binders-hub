@@ -50,14 +50,17 @@ your own machines, where your code is: the hub only hands them work.
    back), install it on your repos, and sign in with GitHub. Then give your binder its repo, also in Settings → GitHub.
    See [Connect GitHub](#connect-github).
 
-5. **Add an agent**, in Agents: set one up and run the command it shows on the machine where your code is. That starts
-   the [runner](#the-runner-agents-that-take-work-on-their-own), which takes cards with Claude Code, Codex or a command
-   of your own.
+5. **Add a machine**, in Agents: it shows one line to run in the folder with your code, on each machine that should
+   take cards. The hub finds the agent tool installed there, makes the agent and starts the
+   [runner](#the-runner-agents-that-take-work-on-their-own), which takes cards with Claude Code, Codex or another tool.
+   To set an agent up by hand instead, see the runner's section.
 
-Your data is in `/var/lib/binders` (Redis's append-only file and the hub's notes and secret): back it up with
-`/etc/binders/hub.env`. To update, `git pull` and run the same `docker compose … up -d --build`, or let
-`deploy/update.sh` do it from a timer (it runs the tests first, and follows whatever is on the branch it's given, so
-point it at a tag or your fork). To look around first with invented data, see [demo/](demo/README.md).
+Your data is in `/var/lib/binders`: Redis's append-only file, and the hub's own folder with its notes, each Binder's
+saved state and note documents, its settings and its secret. Back it up with `/etc/binders/hub.env`; a hub starts from
+the saved states even with an empty Redis (see [docs/DEPLOY.md](docs/DEPLOY.md#backups)). To update, `git pull` and run
+the same `docker compose … up -d --build`, or let `deploy/update.sh` do it from a timer (it runs the tests first, and
+follows whatever is on the branch it's given, so point it at a tag or your fork). To look around first with invented
+data, see [demo/](demo/README.md).
 
 
 ## Run it on this Mac, to work on it
@@ -83,6 +86,10 @@ and, with `--profile tunnel`, a Cloudflare tunnel that gives it its public addre
 docker compose -f deploy/compose.yml --profile tunnel up -d --build
 ```
 
+The hub listens before its Binders have started: `/health` answers at once, and `/ready` answers once they have, with a
+503 saying it's still starting until then. Only one hub may use a Redis: a second one started on the same Redis waits a
+while for the first to go, then says so and stops.
+
 `deploy/update.sh` keeps a server on the newest commit of its branch: run from a clone by a timer (a systemd timer or cron, every few minutes), it fetches, runs the tests
 (`docker build --target test`), and rebuilds only when they pass. Optionally, `deploy/move.sh user@server` moves a hub on a
 Mac there, with the hub here stopped: its secret (which seals GitHub's keys), its notes, and its Redis, copied key by
@@ -97,13 +104,16 @@ members, at its own address (`https://hub/mobile-app/`). Anyone signed in makes 
 left, and owns it. Its owners and admins add and remove people in Settings → People, and only they (and the hub's
 admins) change where its cards and notes go: its repo, its agents' repos, whether notes are pushed, whether cards are
 kept as issues, and whether a Challenge's findings are posted as review comments. Everyone in a binder sees who runs it.
-A person can leave a binder (Settings → General), unless they're its only owner; leaving, or being taken out, revokes
-the agents they own there. A binder's owners and the hub's admins can take it off the hub by typing its name: nothing is
-destroyed, its notes stay in its repo and its data on the hub's disk, and its address stays taken. The hub's first
-binder and personal binders can't be taken off. Everyone also gets a binder of their own at `/~login`, which nobody else
-opens (the hub's admins included), its notes synced to a private `<login>/binders-notes` repo once the hub's GitHub App
-is on their account. Sessions, apps' and agents' tokens and the hub's options are the hub's; an agent's token belongs to
-the binder it was made in.
+A person in a binder is an owner, an admin, a member or a reader, set in Settings → People. A reader sees everything in it and can ask its brain, and changes nothing: what they try to change is
+refused, with a line saying so, and nothing waits on them. Making someone a reader revokes the agents they own there,
+and an agent whose owner can only read isn't accepted. A person can leave a binder (Settings → General), unless they're
+its only owner; leaving, or being taken out, revokes the agents they own there. The switcher shows how many things wait
+in each of the other binders you're in. A binder's owners and the hub's admins can take it off the hub by typing its
+name: nothing is destroyed, its notes stay in its repo and its data on the hub's disk, and its address stays taken. The
+hub's first binder and personal binders can't be taken off. Everyone also gets a binder of their own at `/~login`, which
+nobody else opens (the hub's admins included), its notes synced to a private `<login>/binders-notes` repo once the hub's
+GitHub App is on their account. Sessions, apps' and agents' tokens and the hub's options are the hub's; an agent's token
+belongs to the binder it was made in.
 
 The first binder is the one a hub had before it held several (`HUB_SPACE`, `main` by default, or the one its store already has; named by
 `HUB_NAME`). It keeps its folders and starts with no members, so whoever the hub let in still gets in; adding its first
@@ -142,6 +152,18 @@ for a person.
 **Locks and suggested changes.** A person can lock a note they've settled. Then only they and the binder's owners and
 admins can change or move it, whether the change comes from a person or an agent. Anyone else suggests a change, with
 why; people and agents can talk it over, and whoever may change the note accepts it or turns it down.
+
+**Telling a channel.** What waits on people reaches them outside the open tab. A binder's owners and admins give it an
+address in Settings → How work flows: a Slack incoming webhook, or anything that takes a JSON post. Each thing that
+starts waiting is then posted there once, saying what it is and who it's for, with a link. The address is kept sealed and
+never shown again, only its host; the hub posts only over https to a public address; and a post that fails is tried again
+later without losing what was waiting.
+
+**History and what's deleted.** A binder keeps a history of who did what (Settings → History): notes, cards and folders
+deleted, people added, taken out or given another role, where its cards and notes go changed, agents set up or revoked,
+change sets approved and environments promoted. It shows the last thousand lines, by person. A deleted note or card
+goes to the binder's trash whole and can be put back for 30 days, from the Undo after deleting or from Settings →
+History. A deleted card's GitHub issue is closed, saying who deleted it, and opens again if the card is put back.
 
 ## Delivery
 
@@ -234,6 +256,19 @@ reaches the hub again, it gives back any card the hub says its agent holds and i
 that died), unless another runner works as the same agent. A card whose run fails twice in a row isn't taken a third
 time: it waits in Blocked with why.
 
+**Add a machine.** The Agents page leads with it. It shows one line to run in the folder with your code, on each machine
+that should take cards, and says how long it's good for: a day, on as many machines as you like. On macOS or Linux it's
+`curl -fsSL https://your-hub/install | sh -s -- join bnj_…`, and on Windows the PowerShell form the page shows.
+`binders join` looks at the machine: which agent tools are installed (Claude Code, Codex and the others the Agents page
+lists) and which GitHub repos the folder holds. The hub chooses the tool and makes the agent, named for the tool and the
+machine, and the runner starts in the background, as below. Each machine shows on the page as it joins and starts
+listening. The same machine running the line again is the same agent, with a fresh token. With no agent tool on the
+machine, it says which it looked for: install one and run the line again. A hub admin's line also lends the machine's
+models to the hub's brain (see [The brain](#the-brain)).
+
+**By hand.** For a tool or a name the hub wouldn't have chosen, **Set one up by hand** on the Agents page makes an agent
+with a token, shown once. To run it in a terminal on the machine where the code is:
+
 ```sh
 cd runner && npm install
 BINDERS_TOKEN=bnd_… node src/main.ts --hub http://localhost:5173 --workspace ~/code/my-repo
@@ -246,8 +281,9 @@ their GitHub name and private email) or, set so in its settings, by the hub's Gi
 default: no prompts; Auto, where Claude Code decides what's safe; or edits only), its model and time limit are the
 agent's runner settings, on the Agents page; the runner reads them before each card.
 
-To keep agents running in the background instead, the hub's installer sets up the `binders` command and the agent in
-one line (the Agents page's Start the runner gives it with the token filled in):
+To keep an agent set up by hand running in the background instead, the hub's installer sets up the `binders` command and
+the agent in one line (the Agents page's Start the runner gives it with the token filled in). An agent added with a
+machine's line runs this way too:
 
 ```bash
 curl -fsSL https://your-hub/install | sh -s -- add --token bnd_… --workspace ~/code/my-repo
@@ -373,9 +409,10 @@ A binder can mirror its cards into one Jira Cloud project: **Settings → Jira**
 
 ## Connect an agent
 
-In **Agents**, set one up: it gets a token, shown once, and the settings to paste into Claude Code, Codex, Claude
-Desktop or any MCP client. The agent then calls `whoami`, `wait_for_work`, `claim_task`, `report_progress`, `ask` and
-`complete_task` (the MCP server's instructions say how).
+To have agents take cards, add a machine in **Agents** (see [the runner](#the-runner-agents-that-take-work-on-their-own)). To connect an agent you
+run yourself, choose **Set one up by hand** there: it gets a token, shown once, and the settings to paste into Claude
+Code, Codex, Claude Desktop or any MCP client. The agent then calls `whoami`, `wait_for_work`, `claim_task`, `report_progress`, `ask` and `complete_task` (the
+MCP server's instructions say how).
 
 To try it without a real agent: `cd hub && HUB_URL=http://localhost:5173 BINDERS_TOKEN=bnd_… npm run stand-in`.
 
@@ -403,8 +440,9 @@ an agent is given only cards of its own. The connection loses a binder as soon a
 accepted on `/api`. A client that can’t sign in with OAuth can be given a person token on the account page (**Create a
 token**), for the binder it's made in, to put in its config as a Bearer token; it lasts until it’s stopped. A
 connection can read and write notes, make and comment on cards, assign them, and read change sets, debriefs and
-Challenges, ask the brain a question and put captures in (`ask`, `capture`); taking work and finishing it stays with
-agents.
+Challenges, ask the brain a question and put captures in (`ask`, `capture`; with no binder named, a capture goes where
+the person chose their captures to go); taking work and finishing it stays with agents. In a binder they can only read,
+a connection reads and asks, and writes nothing.
 
 The hub is the OAuth server for this: MCP clients discover it from a 401, register themselves, and exchange a code with
 PKCE (`/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke`, and the `.well-known` metadata). GitHub is
@@ -419,10 +457,16 @@ LM Studio, vLLM), which keeps the words on your machines. An embeddings model is
 by what they mean as well as by their words.
 
 - **Captures.** A phone or Mac sends a dictation, a conversation it heard or a meeting, as words, to
-  `POST /api/captures` with its app token. Each becomes a note in its binder's Dictations, Captures or Meetings folder.
-  A conversation or meeting gets a summary at the top when the hub has a model: what it was about, what was decided,
-  who said they'd do what. The folder's rules then apply, so a folder that Distills turns it into cards. Sent again with
-  the same `sourceId`, it gives back the note it made the first time.
+  `POST /api/captures` with its app token. Each becomes a note in a binder's Dictations, Captures or Meetings folder:
+  the binder its person chose for their captures on Your account (their own unless they say), unless the capture names
+  one. A conversation or meeting gets a summary at the top when the hub has a model: what it was about, what was decided,
+  who said they'd do what. One that arrived while no model answered gets its summary once one does, without writing over
+  what anyone added since. Any note with enough in it can be summed up from its menu. The folder's rules then apply, so
+  a folder that Distills turns it into cards. A follow-up the iPhone offers and a person accepts there is a card in
+  Proposed, with its note, its words and a brief. Sent again with the same `sourceId`, a capture gives back the note it
+  made the first time. A folder of captures shows the newest first.
+- **Sending a note.** A note's menu has Send to…, for another binder you're in: a copy goes there with its pictures, each
+  saying where the other is. That's how what a phone heard reaches a team's binder.
 - **Audio.** With a transcription model (any server that speaks OpenAI's transcription API: whisper.cpp,
   faster-whisper, a Parakeet server, OpenAI), the iPhone sends a conversation's audio to `POST /api/app/audio` and the
   hub writes it down with a bigger model than a phone can run, keeping the names of the voices the phone told apart. When
@@ -476,7 +520,11 @@ by what they mean as well as by their words.
     model's name through Ollama's own API. A transcript with no times never replaces the iPhone's timed one.
 - **Ask.** The **Ask** screen, `POST /api/brain/ask` and the MCP tool `ask` answer a question from the notes and cards of
   a binder, or every binder you're in, numbering the ones the answer rests on. Without a model, they give the passages
-  that match best.
+  that match best. Ask follows a conversation: a question is answered knowing what came before it, and the hub keeps a
+  person's conversation (their last 20 questions), so it's there on opening Ask again or on another device, until they
+  start a new one.
+- **A note's Chat.** When no agent is listening, a note's Chat answers from the hub's own model, with the note in front
+  of it and the rest of the binder to draw on. It reads the note and can't change it, and says an agent can.
 - **Search.** ⌘K finds notes and cards by title at once, and passages by their words and what they mean when typing pauses (`POST /api/brain/search`). Its Ask row takes what you typed to the Ask screen for a cited answer, and comes first when it reads as a question.
 - **Embeddings.** Notes and cards are cut into passages, and each goes to the embeddings model once its edits pause. Redis holds a working copy. The vectors are also written to the hub's disk, one file per note or card (a hash of each passage and its vector, none of its words), and pushed to the `binders-embeddings` branch of the binder's repo, which keeps no history. A binder with no repo, or with saving notes to it turned off, keeps them on the disk alone. A hub with an empty Redis takes vectors from these files before asking the model, and one with an empty disk fetches them back from the repo.
 - **Each binder's own.** A binder's index is kept in its own store, and a question reaches only the binders you're in.

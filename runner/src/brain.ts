@@ -525,6 +525,29 @@ export async function joinMachine(hub: string, joinToken: string, host = hostnam
   return { token: body.token, name: body.name ?? host, ...(body.id ? { id: body.id } : {}) }
 }
 
+/** What the hub made of a machine joining with the line from the Agents page. */
+export interface Joined {
+  agent: { id: string; name: string; tool: string; token: string }
+  binder?: { id: string; name: string }
+  /** Only when the line is a hub admin's: this machine's own token for lending its models. */
+  machine?: { id?: string; name: string; token: string }
+  /** Why the models aren't lent, when the line was an admin's and the hub couldn't add the machine. */
+  machineWhy?: string
+}
+
+/** A machine joining with a line from the Agents page (binders join): what it found on itself, and what the hub makes of it. */
+export async function joinAgent(hub: string, line: string, found: { host: string; tools: string[]; folder: string; repos: string[] }): Promise<Joined> {
+  let response: Response
+  try {
+    response = await fetch(`${hub.replace(/\/+$/, '')}/api/machines/join`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: line, ...found }), signal: AbortSignal.timeout(30_000) })
+  } catch {
+    throw new Error(`Couldn’t reach the hub at ${hub}.`)
+  }
+  const body = (await response.json().catch(() => ({}))) as Partial<Joined> & { error?: string }
+  if (!response.ok || !body.agent?.token?.startsWith('bnd_')) throw new Error(body.error ?? `The hub answered ${response.status}.`)
+  return { agent: body.agent, ...(body.binder ? { binder: body.binder } : {}), ...(body.machine?.token?.startsWith('bnw_') ? { machine: body.machine } : {}), ...(body.machineWhy ? { machineWhy: body.machineWhy } : {}) }
+}
+
 /** What it found here, in words, a line each: for binders add to say. */
 export function foundLines(servers: Server[]) {
   if (!servers.length) return ['  No model servers found here yet: nothing that listens on this machine answered with a list of models. Start one (Ollama, LM Studio, vLLM, TensorFold, a whisper or Kokoro server) and it’s offered within five minutes.']

@@ -4,6 +4,7 @@ import { forAttention, waitingOn, type Waiting } from '../../../shared/waiting.t
 import type { Actions } from '../actions.ts'
 import { Refused, type Hub } from '../hub.ts'
 import { log } from '../logger.ts'
+import { readerWords } from '../spaces.ts'
 import type { Passage } from './models.ts'
 
 // How the work stands, for the brain to go by, and what it can have done about it. How it stands goes to the model as one
@@ -23,6 +24,8 @@ export interface WorkPlace {
   binders?: string[]
   /** The person's own GitHub there, when they've connected it: what merges and deploys goes as them. */
   github?: () => Promise<string | undefined>
+  /** The person can read this Binder and not change it: what they ask the brain to do here is refused. */
+  readOnly?: boolean
 }
 
 type Kind = 'card' | 'set' | 'env' | 'binder'
@@ -266,6 +269,7 @@ export function propose(asked: Asked, board: Board, login: string, waitMs = 5000
   const target = board.targets.get(asked.mark)
   if (!target) throw new Refused(notWhich)
   const { place, id } = target
+  if (place.readOnly) throw new Refused(readerWords)
   const { hub, actions } = place
   const actor = { kind: 'user' as const, login }
   const nameOf = (agentId?: string) => hub.state.agents.find((a) => a.id === agentId)?.name ?? 'the agent'

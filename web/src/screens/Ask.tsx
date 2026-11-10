@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { AnimatePresence } from 'motion/react'
-import { ArrowUp, ArrowUpRight, Brain, Check, ChevronDown, FileText, LoaderCircle, SquareKanban } from 'lucide-react'
+import { ArrowUp, ArrowUpRight, Brain, Check, ChevronDown, FileText, LoaderCircle, MessageSquarePlus, SquareKanban } from 'lucide-react'
 import { call } from '../data/api'
 import { useActions, useHub } from '../data/store'
+import { useMayChangeBinder } from './settings/access'
 import { attempt } from '../components/Toast'
+import { ConfirmButton } from '../components/ConfirmButton'
 import { citeMark, Rendered } from '../components/Rendered'
 import { usePhone } from '../components/bits'
 import { NewCardDialog } from '../components/NewCardDialog'
@@ -16,8 +18,9 @@ import { useUI } from '../ui'
 // the answer rests on numbered under it, and from how the work stands now. Without a model on the hub, the passages that
 // match best. Home's question line and ⌘K's Ask row bring a question here. Asked to do something, it says what that
 // would do, in the hub's own words, and does it only when you say so here. An answer can become a note or a card.
-// Every question asked in this visit stays above the box with its answer, oldest first. Each is asked alone: nothing
-// before it is sent along.
+// Every question asked stays above the box with its answer, oldest first, and a question is asked with the last few
+// before it, so a follow-up means what it follows. The hub keeps the conversation for the person, in this Binder, so it's
+// here again on another device and after a reload; "New conversation" starts afresh.
 
 interface Source {
   n: number
@@ -56,8 +59,20 @@ interface Turn {
 
 /** The last question from ⌘K or Home this tab asked: this screen goes away and comes back, and asks each only once. */
 let lastAsked = 0
-/** Every question and answer in this tab, oldest first: opening one of the sources and coming back finds them still here. A reload clears them. */
+/** The conversation as this tab last had it, oldest first: shown at once when you come back, while the hub's is read again. */
 let history: Turn[] = []
+
+/** What the hub keeps of a turn: its question and what came of it. */
+interface Kept {
+  question: string
+  result: Result
+  everywhere: boolean
+}
+
+/** How many questions, with their answers, go along with a new one: the hub takes the last six. */
+const taken = 6
+/** The most of any one question or answer that goes along. */
+const cutAt = 1200
 
 /** A source's address as this tab opens it: in place when it's in this binder, else the hub's address for it. */
 function linkOf(source: Source) {
@@ -89,6 +104,12 @@ function bySource(sources: Source[]) {
 
 /** The answer as plain words, with no citation marks, for a note or a card's brief. */
 const answerText = (parts: { text: string; sources: number[] }[]) => parts.map((part) => part.text).join('').trim()
+
+/** The conversation so far, as the hub takes it with a new question: what was asked and what was answered, the latest few. */
+const earlier = (list: Turn[]) => list.slice(-taken).flatMap((t) => [
+  { role: 'user', text: t.question.slice(0, cutAt) },
+  ...(t.result.answer ? [{ role: 'assistant', text: answerText(t.result.answer.parts).slice(0, cutAt) }] : []),
+])
 
 /** A source as a link in a note: a note of the same binder by its title, as notes link to each other; anything else by its address. */
 function sourceLink(source: Source, binder: string) {
@@ -145,6 +166,8 @@ function Proposed({ proposal }: { proposal: Proposal }) {
 
 /** One question and what came of it: its answer with the citations in place, what to do with it, and the sources. */
 function Answer({ turn, onNote, onCard, mayKeep }: { turn: Turn; onNote: (turn: Turn) => void; onCard: (turn: Turn) => void; mayKeep: boolean }) {
+  // Keeping an answer as a note or a card writes to the Binder: a reader reads it, and asks again.
+  const may = useMayChangeBinder()
   const { result } = turn
   const [shown, setShown] = useState<number>()
   const [opened, setOpened] = useState<Set<number>>(new Set())
@@ -170,10 +193,12 @@ function Answer({ turn, onNote, onCard, mayKeep }: { turn: Turn; onNote: (turn: 
             text={answerMarkdown(result.answer.parts)}
             cite={(n) => <button type="button" className="ask-cite" title={titles.get(n)} onClick={() => toSource(n)} aria-label={`Source ${n}${titles.get(n) ? `: ${titles.get(n)}` : ''}`}>{n}</button>}
           />
-          <div className="ask-keep">
-            <button type="button" className="button" disabled={!mayKeep} onClick={() => onNote(turn)}><FileText size={14} /> Save as a note</button>
-            <button type="button" className="button" disabled={!mayKeep} onClick={() => onCard(turn)}><SquareKanban size={14} /> Make a card</button>
-          </div>
+          {may && (
+            <div className="ask-keep">
+              <button type="button" className="button" disabled={!mayKeep} onClick={() => onNote(turn)}><FileText size={14} /> Save as a note</button>
+              <button type="button" className="button" disabled={!mayKeep} onClick={() => onCard(turn)}><SquareKanban size={14} /> Make a card</button>
+            </div>
+          )}
         </>
       ) : (
         <p className="setup-note">
@@ -230,18 +255,46 @@ export function Ask({ asked: fromPalette }: { asked?: { question: string; at: nu
   const target = binder !== 'all' && binders.some((b) => b.id === binder) ? binder : binders[0]?.id
 
   const asks = useRef(0)
+  /** Whether a question has been answered here since this screen opened: the conversation read from the hub is then older. */
+  const changed = useRef(false)
+  /** The conversation the hub has, being read: a question waits for it, so it goes with what it follows. */
+  const reading = useRef<Promise<void>>(Promise.resolve())
+  useEffect(() => {
+    let current = true
+    reading.current = call<{ turns?: Kept[] }>('GET', '/api/brain/conversation').then((kept) => {
+      // Something answered meanwhile is the newest word: the hub's list will have it next time.
+      if (!current || changed.current || !kept?.turns) return
+      history = kept.turns.map((t, i) => ({ id: i + 1, question: t.question, result: t.result, everywhere: t.everywhere }))
+      setTurns(history)
+      if (history.length) setEverywhere(history.at(-1)!.everywhere)
+    }).catch(() => {})
+    return () => { current = false }
+  }, [])
+
   const send = useCallback(async (q: string, all: boolean) => {
     const mine = ++asks.current
     setPending(q)
-    const result = await attempt(() => call<Result>('POST', '/api/brain/ask', { question: q, everywhere: all }))
+    await reading.current
+    const result = await attempt(() => call<Result>('POST', '/api/brain/ask', { question: q, everywhere: all, turns: earlier(history) }))
     if (mine !== asks.current) return
     setPending(undefined)
     if (result) {
+      changed.current = true
       history = [...history, { id: (history.at(-1)?.id ?? 0) + 1, question: q, result, everywhere: all }]
       setTurns(history)
       setQuestion('')
     }
   }, [])
+
+  // The hub forgets it, and so does this page.
+  const startOver = async () => {
+    if (!(await attempt(() => call('DELETE', '/api/brain/conversation')))) return
+    asks.current++
+    changed.current = true
+    history = []
+    setTurns(history)
+    setQuestion('')
+  }
 
   const ask = (event: FormEvent) => {
     event.preventDefault()
@@ -317,11 +370,15 @@ export function Ask({ asked: fromPalette }: { asked?: { question: string; at: nu
               {pending ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} strokeWidth={2.6} />}
             </button>
           </div>
-          <label className="switch ask-scope" htmlFor="ask-everywhere">
-            <input id="ask-everywhere" type="checkbox" checked={everywhere} onChange={(e) => setEverywhere(e.target.checked)} />
-            <span aria-hidden="true" />
-            Every binder I’m in
-          </label>
+          <div className="ask-foot">
+            <label className="switch ask-scope" htmlFor="ask-everywhere">
+              <input id="ask-everywhere" type="checkbox" checked={everywhere} onChange={(e) => setEverywhere(e.target.checked)} />
+              <span aria-hidden="true" />
+              Every binder I’m in
+            </label>
+            {!empty && <ConfirmButton className="button ask-new" question="Start over? Press again" disabled={!!pending} onConfirm={() => void startOver()}><MessageSquarePlus size={14} /> New conversation</ConfirmButton>}
+          </div>
+          <p className="faint ask-follows">It remembers this conversation, so you can ask a follow-up.</p>
         </form>
       </div>
       <AnimatePresence>

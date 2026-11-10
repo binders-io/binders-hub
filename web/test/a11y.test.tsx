@@ -57,7 +57,7 @@ describe('axe', () => {
       failed: true,
     }))
     await open('#/agents')
-    fireEvent.click(screen.getByRole('button', { name: 'Set up an agent' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Set one up by hand' }))
     const box = await screen.findByRole('combobox', { name: 'Repos it works in' })
     act(() => box.focus())
     await screen.findByRole('option', { name: /acme\/docs/ })

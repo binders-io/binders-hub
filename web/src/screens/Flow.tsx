@@ -9,6 +9,7 @@ import { routeOf, useWaiting } from '../data/notify'
 import { heard } from '../data/sync'
 import { AgentAvatar, CheckDots, Progress, RepoTag, Who, ago, checksSummary, codeRepo, stageTone, stoppedBlock, stoppedWords } from '../components/bits'
 import { NewCardDialog } from '../components/NewCardDialog'
+import { useMayChangeBinder } from './settings/access'
 import { DebriefButton } from '../components/Debrief'
 import { CardMenu, cardMenuItems } from '../components/CardMenu'
 import { openMenu } from '../components/ContextMenu'
@@ -33,6 +34,8 @@ export function Flow() {
   const allProposals = useHub((state) => state.proposals)
   const agents = useHub((state) => state.agents)
   const noBinders = useHub((state) => !state.binders.length)
+  // A reader sees the whole board and changes none of it: no New card, no dragging, no Accept or Dismiss.
+  const may = useMayChangeBinder()
   // Until the hub has answered once, an empty column means nothing has arrived yet.
   const loaded = useHub((state) => heard(state.sync))
   const me = useHub((state) => state.me?.user.login)
@@ -132,7 +135,7 @@ export function Flow() {
             <button className="feed-toggle" onClick={() => setFeedOpen(!feedOpen)} aria-expanded={feedOpen}>
               <span className="live-dot" /> {feedOpen ? 'Hide activity' : 'Activity'}
             </button>
-            <button className="button primary" onClick={() => setAdding(true)} disabled={noBinders}><Plus size={14} /> New card</button>
+            {may && <button className="button primary" onClick={() => setAdding(true)} disabled={noBinders}><Plus size={14} /> New card</button>}
           </div>
         </div>
 
@@ -159,7 +162,7 @@ export function Flow() {
 
       <Feed cards={cards} agents={agents} />
 
-      <AnimatePresence>{adding && <NewCardDialog key="new" binderId={binder === 'all' ? undefined : binder} onClose={() => setAdding(false)} />}</AnimatePresence>
+      <AnimatePresence>{adding && may && <NewCardDialog key="new" binderId={binder === 'all' ? undefined : binder} onClose={() => setAdding(false)} />}</AnimatePresence>
     </div>
   )
 }
@@ -225,14 +228,23 @@ interface ColumnProps {
 /** One stage: drawn again when its cards change or a drag comes over it, not for what happens in the others. */
 const Column = memo(function Column({ stage, cards, proposals, hidden, older, olderShown, toggleOlder, agents, loaded, drop, dragging, setDropOn }: ColumnProps) {
   const store = useActions()
+  const may = useMayChangeBinder()
   const count = cards.length + proposals.length
   // Only a card an agent holds, blocked, can go back to working.
   const pausedHere = (id: string) => store.current().cards.some((c) => c.id === id && c.stage === 'blocked' && !!c.agentId)
+  // A drop can't ask first like the buttons do, so one that takes a card from its agent says so after.
+  const dropCard = (id: string) => {
+    const state = store.current()
+    const card = state.cards.find((c) => c.id === id)
+    const held = !!card && (card.stage === 'working' || card.stage === 'blocked') && !!card.agentId
+    store.moveCard(id, stage.id)
+    if (held && stage.id === 'ready') toast(`Took it from ${state.agents.find((a) => a.id === card?.agentId)?.name ?? 'the agent'} and stopped its run.`)
+  }
   return (
     <section className={`column ${stage.id}${drop ? ' drop' : ''}`} aria-label={stage.title}
-      onDragOver={(e) => { if (dragging.current && (stage.id !== 'working' || pausedHere(dragging.current))) { e.preventDefault(); setDropOn(stage.id) } }}
+      onDragOver={(e) => { if (may && dragging.current && (stage.id !== 'working' || pausedHere(dragging.current))) { e.preventDefault(); setDropOn(stage.id) } }}
       onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropOn(undefined) }}
-      onDrop={(e) => { e.preventDefault(); setDropOn(undefined); if (dragging.current) store.moveCard(dragging.current, stage.id); dragging.current = undefined }}>
+      onDrop={(e) => { e.preventDefault(); setDropOn(undefined); if (may && dragging.current) dropCard(dragging.current); dragging.current = undefined }}>
       <header>
         <i className={`dot ${stageTone[stage.id]}`} />
         <h2>{stage.title}</h2>
@@ -249,7 +261,7 @@ const Column = memo(function Column({ stage, cards, proposals, hidden, older, ol
           </AnimatePresence>
         )}
         {cards.map((card) => (
-          <div key={card.id} className="card-drag" draggable onDragStart={(e) => { e.dataTransfer.setData('text/binders-card', card.id); e.dataTransfer.effectAllowed = 'move'; dragging.current = card.id }} onDragEnd={() => { dragging.current = undefined; setDropOn(undefined) }}>
+          <div key={card.id} className="card-drag" draggable={may} onDragStart={(e) => { e.dataTransfer.setData('text/binders-card', card.id); e.dataTransfer.effectAllowed = 'move'; dragging.current = card.id }} onDragEnd={() => { dragging.current = undefined; setDropOn(undefined) }}>
             <CardView card={card} stage={stage.id} />
           </div>
         ))}
@@ -273,6 +285,7 @@ const sizeNames: Record<Proposal['size'], string> = { S: 'Small', M: 'Medium', L
  */
 function ProposalCard({ proposal: p, agent }: { proposal: Proposal; agent?: Agent }) {
   const store = useActions()
+  const may = useMayChangeBinder()
   const { openItem } = useUI()
   const binder = useHub((state) => state.binders.find((b) => b.id === p.binderId)?.name)
   const note = useHub((state) => state.notes.find((n) => n.id === p.noteId))
@@ -316,12 +329,14 @@ function ProposalCard({ proposal: p, agent }: { proposal: Proposal; agent?: Agen
           {note && <a className="link-row" href={href({ screen: 'notes', id: note.id })}>{note.title} <ArrowUpRight size={12} /></a>}
         </div>
       )}
-      <div className="proposal-actions">
-        <button className="mini-button primary" onClick={() => void accept()}>Accept</button>
-        <button className="mini-button" disabled={working} onClick={() => void editFirst()} title="Put it on the board in Proposed, where no agent takes it, and open it to change its words">Edit first</button>
-        <button className="mini-button" onClick={dismiss}>Dismiss</button>
-        {agent && <AgentAvatar agent={agent} size={20} />}
-      </div>
+      {(may || agent) && (
+        <div className="proposal-actions">
+          {may && <button className="mini-button primary" onClick={() => void accept()}>Accept</button>}
+          {may && <button className="mini-button" disabled={working} onClick={() => void editFirst()} title="Put it on the board in Proposed, where no agent takes it, and open it to change its words">Edit first</button>}
+          {may && <button className="mini-button" onClick={dismiss}>Dismiss</button>}
+          {agent && <AgentAvatar agent={agent} size={20} />}
+        </div>
+      )}
     </motion.div>
   )
 }
@@ -376,13 +391,14 @@ function cardFacts(state: State, card: Card) {
 const CardView = memo(function CardView({ card, stage }: { card: Card; stage: Stage }) {
   const store = useActions()
   const { openItem, splitCard } = useUI()
-  const split = splitCard ? () => splitCard(card.id) : undefined
+  const may = useMayChangeBinder()
+  const split = splitCard && may ? () => splitCard(card.id) : undefined
   const select = useCallback((state: State) => cardFacts(state, card), [card])
   const { agent, pull, set, binder, noteTitle, untakeable } = useHub(select, sameValues)
 
   return (
     // The whole card opens it for a pointer, and its title's button for a keyboard or a screen reader: a button can't hold the card's others.
-    <motion.article layout layoutId={card.id} className={`card ${stage}${asksOf(card) ? ' asks' : ''}`} onClick={() => openItem(card.id)} onContextMenu={(e) => openMenu(e, cardMenuItems(card, store, openItem, split))} transition={spring} initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }}>
+    <motion.article layout layoutId={card.id} className={`card ${stage}${asksOf(card) ? ' asks' : ''}`} onClick={() => openItem(card.id)} onContextMenu={(e) => openMenu(e, cardMenuItems(card, store, openItem, split, may))} transition={spring} initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }}>
       <div className="card-top">
         <span className="mono faint" title={card.jira ? `Its Jira issue: ${card.jira.key}` : card.issue ? `Its issue: #${card.issue.number} in ${card.issue.repo}` : undefined}>{cardNumber(card) ?? binder?.name}</span>
         {(() => {

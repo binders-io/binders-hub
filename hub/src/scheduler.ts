@@ -1,16 +1,23 @@
 import { nextRun } from '../../shared/schedule.ts'
 import type { Actions } from './actions.ts'
+import { emptyTrash } from './history.ts'
 import type { Hub } from './hub.ts'
 import { log } from './logger.ts'
 
 // The timer behind what runs without being asked: every half minute, each schedule that's on and due fires once. Due is
 // the first time its cron gives after its last run (or its making), so runs missed while the hub was down come to one
 // run, not one for each time missed. Then the notes a folder's rule says to Distill, and a note's own change sets that
-// have everything in, the cards whose agent has gone quiet, and the repos whose deployments are due a look on GitHub.
-// Each step's failure stays its own.
+// have everything in, the cards whose agent has gone quiet, the diffs nobody needs kept any more, and the repos whose
+// deployments are due a look on GitHub. Each step's failure stays its own.
 
 /** How long an agent can go unheard before the card it works on goes back on the board. */
 export const quietMs = 20 * 60_000
+
+/** How long a pull request's diff stays in the state after it's merged or closed: after that GitHub has it. */
+export const diffKeptMs = 14 * 86_400_000
+
+/** How many pull requests, and how many cards, a pass tidies, so it never writes a huge change. */
+export const tidyBatch = 20
 
 export class Scheduler {
   private timer?: NodeJS.Timeout
@@ -18,9 +25,9 @@ export class Scheduler {
 
   private hub: Hub
   private actions: Actions
-  private options: { everyMs?: number; now?: () => Date; quietMs?: number }
+  private options: { everyMs?: number; now?: () => Date; quietMs?: number; diffKeptMs?: number; tidyBatch?: number; trashKeptMs?: number }
 
-  constructor(hub: Hub, actions: Actions, options: { everyMs?: number; now?: () => Date; quietMs?: number } = {}) {
+  constructor(hub: Hub, actions: Actions, options: { everyMs?: number; now?: () => Date; quietMs?: number; diffKeptMs?: number; tidyBatch?: number; trashKeptMs?: number } = {}) {
     this.hub = hub
     this.actions = actions
     this.options = options
@@ -57,12 +64,21 @@ export class Scheduler {
       }
       await this.actions.distillDue(now).catch((err: Error) => log.warn({ err }, 'Distilling a folder’s notes failed'))
       await this.releaseQuiet(now).catch((err: Error) => log.warn({ err }, 'Putting back the cards of agents gone quiet failed'))
+      await this.tidyDiffs(now).catch((err: Error) => log.warn({ err }, 'Letting go of old diffs failed'))
+      await emptyTrash(this.hub, now.getTime(), this.options.trashKeptMs, this.options.tidyBatch).catch((err: Error) => log.warn({ err }, 'Emptying the old trash failed'))
       await this.actions.sendFinishedSets().catch((err: Error) => log.warn({ err }, 'Sending a note’s change set for review failed'))
       // Looking at GitHub for deployments paces itself, a repo at a time with a pause between, so it isn't waited for here.
       if (this.actions.deliveryLooks) void this.actions.lookDue(now.getTime()).catch((err: Error) => log.warn({ err }, 'Looking for deployments failed'))
     } finally {
       this.ticking = false
     }
+  }
+
+  /** The lines of diffs that are held on GitHub or by a pull request are let go of, a few at a time. */
+  private async tidyDiffs(now: Date) {
+    const batch = this.options.tidyBatch ?? tidyBatch
+    await this.actions.dropOldDiffs(now.getTime(), this.options.diffKeptMs ?? diffKeptMs, batch)
+    await this.actions.clearDoneWorktrees(batch)
   }
 
   /**

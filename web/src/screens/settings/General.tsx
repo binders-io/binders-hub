@@ -42,9 +42,10 @@ export function General() {
   const several = state.binders.length > 1
   const personal = !!here?.id.startsWith('~')
   const mine = me ? agentsOf(state.agents, me.user.login) : []
-  const isMember = !!me && (here?.role === 'member' || managers.some((m) => m.login.toLowerCase() === me.user.login.toLowerCase()))
+  // Leaving is theirs, whatever their role: a reader may leave as a member may.
+  const isMember = !!me && (here?.role === 'member' || here?.role === 'reader' || managers.some((m) => m.login.toLowerCase() === me.user.login.toLowerCase()))
   const onlyOwner = me?.role === 'owner' && managers.filter((m) => m.role === 'owner').length <= 1
-  const mayRemove = !!me && (!!me.hubAdmin || me.role === 'owner')
+  const mayRemove = !!me && me.role !== 'reader' && (!!me.hubAdmin || me.role === 'owner')
   const elsewhere = (spaces: SpaceView[] | undefined) => spaces?.find((s) => s.id !== here?.id)
 
   const leave = async () => {

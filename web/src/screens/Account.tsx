@@ -4,7 +4,7 @@ import { call } from '../data/api'
 import { useStore } from '../data/store'
 import { useUI } from '../ui'
 import { PersonAvatar, ago } from '../components/bits'
-import { attempt } from '../components/Toast'
+import { attempt, toast } from '../components/Toast'
 import { YourGitHub } from '../components/YourGitHub'
 import { BinderTag } from '../components/BinderTag'
 import { NotifySwitch } from '../components/NotifySwitch'
@@ -39,11 +39,42 @@ export function Account() {
           <NotifySwitch id="notify-account" explain />
           <p className="faint">When an agent asks you something, or work is ready to approve, and this page isn’t in front, this browser tells you. It’s remembered here only.</p>
         </section>
+        <CaptureHome />
         <YourGitHub />
         <Apps />
         <McpConnections />
       </div>
     </div>
+  )
+}
+
+/**
+ * Where what your phone and Mac capture goes: your own Binder, or a team's you're in. Kept on the hub, so it holds on
+ * every device. If it names a Binder you've left, captures go to your own again, and this says so.
+ */
+function CaptureHome() {
+  const [now, setNow] = useState<{ home: string; binders: { id: string; name: string; personal: boolean }[] }>()
+  useEffect(() => {
+    void call<typeof now>('GET', '/api/personal/captures').then(setNow, () => {})
+  }, [])
+  if (!now?.binders?.length) return null
+  const choose = (binder: string) => void attempt(() => call<NonNullable<typeof now>>('PUT', '/api/personal/captures', { binder })).then((saved) => {
+    if (!saved) return
+    setNow(saved)
+    const where = saved.binders.find((b) => b.id === saved.home)
+    toast(`Your captures go to ${where?.personal ? 'your own Binder' : where?.name} now.`)
+  })
+  return (
+    <section className="app-tokens">
+      <h3 id="capture-home-title">Where what your phone and Mac capture goes</h3>
+      <label className="field capture-home">
+        <span className="field-label">Binder</span>
+        <select id="capture-home" aria-labelledby="capture-home-title" value={now.home} onChange={(event) => choose(event.target.value)}>
+          {now.binders.map((b) => <option key={b.id} value={b.id}>{b.personal ? 'Your own Binder' : b.name}</option>)}
+        </select>
+      </label>
+      <p className="faint">Conversations, meetings and dictations arrive there as notes, and what they offer to do goes on its board. Your own Binder is yours alone.</p>
+    </section>
   )
 }
 

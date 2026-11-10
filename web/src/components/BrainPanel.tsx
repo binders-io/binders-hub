@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Check, Copy, Download as DownloadIcon, Sparkles } from 'lucide-react'
 import { call } from '../data/api'
 import { attempt, failure, toast } from './Toast'
+import { href } from '../route'
 import { Option, Segmented } from './HubOptionsPanel'
 
 // The hub's brain: the model that sums up what phones and Macs capture and answers questions from the binders, the
@@ -200,6 +201,7 @@ function Machines({ machines, onChange, latest }: { machines: Machine[]; onChang
   const until = command ? new Date(command.expiresAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : ''
   return (
     <Option title="Your machines" detail="A Mac, or a GPU box such as a DGX Spark, giving the hub its models. Run one line on it; the hub finds what it has and uses the best of it for each job.">
+      <p className="machine-serves">A machine with code on it is better added from the <a href={href({ screen: 'agents' })}>Agents page</a>: it sets up an agent there, and lends its models too.</p>
       {machines.length > 0 && (
         <ul className="machine-list">
           {machines.map((m) => (

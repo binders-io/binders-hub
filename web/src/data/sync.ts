@@ -1,6 +1,6 @@
 import type { TerminalInfo } from '../../../shared/terminal.ts'
 import { applyChange as apply, type Change, type Entry, type HubState, type Outgoing } from '../../../shared/state.ts'
-import { forWire, type Presence } from '../../../shared/work.ts'
+import { forWire, type Activity, type Presence } from '../../../shared/work.ts'
 import type { Note } from '../../../shared/notes.ts'
 import { space, spaceHeaders } from './space'
 
@@ -138,6 +138,27 @@ export function shown(sync: Sync, before?: HubState): HubState {
   const notes = state.notes.map((n) => (sending.has(n.id) || committing.has(n.id) || n.saving || n.committing ? mark(n, sending.has(n.id), committing.has(n.id)) : n))
   if (before && sameList(notes, before.notes)) return before.notes === state.notes ? state : { ...state, notes: before.notes }
   return sameList(notes, state.notes) ? state : { ...state, notes }
+}
+
+/** A line of a card's activity as it's told apart from the others: it has no id of its own. */
+const lineKey = (a: Activity) => `${a.at}|${a.by}|${a.kind}|${a.tool ?? ''}|${a.text}`
+
+/**
+ * A card's whole activity, from the hub when the card was opened, with what this tab holds of it: lines that came live
+ * since are added at the end, and the ones in both are shown once. A line that happens twice, the same words at the same
+ * moment, is shown as often as it is in the whole.
+ */
+export function withHistory(held: Activity[], whole: Activity[]): Activity[] {
+  const left = new Map<string, number>()
+  for (const line of whole) left.set(lineKey(line), (left.get(lineKey(line)) ?? 0) + 1)
+  const later: Activity[] = []
+  for (const line of held) {
+    const key = lineKey(line)
+    const count = left.get(key) ?? 0
+    if (count > 0) left.set(key, count - 1)
+    else later.push(line)
+  }
+  return later.length ? [...whole, ...later] : whole
 }
 
 let made = 0

@@ -3,6 +3,7 @@ import type { Change } from '../../../shared/state.ts'
 import { deliveryRepos, environmentBefore, environmentId, repoEnvironments, sameRepo, type Activity, type EnvState, type Environment, type PullRequest } from '../../../shared/work.ts'
 import { GitHubError, type DeploymentInfo, type DeploymentStatusInfo } from '../github.ts'
 import { Refused } from '../hub.ts'
+import { noted } from '../history.ts'
 import { log } from '../logger.ts'
 import { RuleService } from './rules.ts'
 
@@ -342,6 +343,7 @@ export abstract class EnvironmentService extends RuleService {
       order: siblings.length ? Math.max(...siblings.map((e, at) => e.order ?? at)) + 1 : 0, by: 'person',
     }
     await this.hub.record({ kind: 'user', login }, { type: 'env.put', environment })
+    await noted(this.hub, { kind: 'user', login }, `Added the environment “${name}” for ${repo}.`)
     await this.settleSets()
     return this.hub.state.environments.find((e) => e.id === id)!
   }
@@ -374,6 +376,7 @@ export abstract class EnvironmentService extends RuleService {
       for (const [at, each] of ordered.entries()) if (each === env || each.order !== at) changes.push({ type: 'env.update', id: each === env ? newId : each.id, fields: { order: at } })
     }
     await this.hub.recordAll(actor, changes)
+    await noted(this.hub, actor, newId === env.id ? `Changed the environment “${env.name}” in ${repo}.` : `Renamed the environment “${env.name}” in ${repo} to “${name}”.`)
     await this.settleSets()
     return this.hub.state.environments.find((e) => e.id === newId)!
   }
@@ -383,6 +386,7 @@ export abstract class EnvironmentService extends RuleService {
     const env = this.hub.state.environments.find((e) => e.id === id)
     if (!env) throw new Refused('No such environment.')
     await this.hub.record({ kind: 'user', login }, { type: 'env.delete', id })
+    await noted(this.hub, { kind: 'user', login }, `Removed the environment “${env.name}” from ${env.repo ?? 'its repo'}.`)
     await this.settleSets()
   }
 
@@ -405,5 +409,6 @@ export abstract class EnvironmentService extends RuleService {
       throw new Refused(`GitHub didn’t start ${env.deploy.workflow} on ${env.deploy.ref} in ${env.deploy.repo}: ${error.message}`)
     }
     await this.hub.record({ kind: 'user', login }, { type: 'env.update', id: env.id, fields: { state: 'deploying', progress: 0.05 } })
+    await noted(this.hub, { kind: 'user', login }, `Promoted ${from.version} from ${from.name} to the environment “${env.name}”${env.repo ? ` in ${env.repo}` : ''}.`)
   }
 }

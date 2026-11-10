@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { lightChange, lightState } from '../../../shared/light.ts'
+import { lightChange, lightState, withoutKept } from '../../../shared/light.ts'
 import { slug } from '../../../shared/notes.ts'
+import { historyOf, putBack, trashOf } from '../history.ts'
 import { isChange } from '../log.ts'
 import { Refused, type Hub } from '../hub.ts'
 import type { FastifyInstance } from 'fastify'
@@ -31,19 +32,32 @@ const whereItGoes = (binder?: Binder) => JSON.stringify([
 const clientPattern = /^[A-Za-z0-9_-]{6,64}$/
 
 export async function stateRoutes(app: FastifyInstance, context: Context) {
-  const { spaces, terminals, sp, login, param, isAdmin, fail, mayLink, mayLinkAll } = context
+  const { spaces, terminals, sp, login, param, isAdmin, fail, act, mayLink, mayLinkAll } = context
   // The state and its changes ----------------------------------------------------------------------------------------
 
   app.get('/api/state', async (request) => {
     const { hub } = sp(request)
     const query = request.query as { light?: string; have?: string; replay?: string }
-    if (query.light !== '1') return { version: hub.version, state: hub.state, presence: hub.presence() }
+    // Without the history and the trash, which are asked for when someone looks (and which the apps don't read).
+    if (query.light !== '1') return { version: hub.version, state: withoutKept(hub.state), presence: hub.presence() }
     // A browser's, without the lines of its diffs. Nothing more when it has this version already, or is coming back on
     // a page that's been following along and the live feed can bring it the rest.
     const have = Number(query.have)
     const current = have === hub.version || (query.replay === '1' && await canCatchUp(hub, have))
     return { version: hub.version, ...(current ? {} : { state: lightState(hub.state) }), presence: hub.presence() }
   })
+
+  // What happened in the Binder and what was deleted from it, for anyone in it: kept apart from the state a browser loads.
+  app.get('/api/history', act(async (request) => {
+    const query = request.query as { before?: string; who?: string }
+    return historyOf(sp(request).hub.state, { before: typeof query.before === 'string' ? query.before : undefined, who: typeof query.who === 'string' ? query.who : undefined })
+  }))
+  app.get('/api/trash', act(async (request) => ({ items: trashOf(sp(request).hub.state) })))
+  app.post('/api/trash/:kind/:id/restore', act(async (request) => {
+    const kind = param(request, 'kind')
+    if (kind !== 'note' && kind !== 'card') throw new Refused('Only notes and cards are kept in the trash.')
+    return putBack(sp(request).hub, login(request), kind, param(request, 'id'))
+  }))
 
   app.post('/api/changes', async (request, reply) => {
     const body = request.body as { client?: unknown; changes?: unknown } | undefined
@@ -89,6 +103,8 @@ export async function stateRoutes(app: FastifyInstance, context: Context) {
     const me = request.user!.login.toLowerCase()
     const terminalsOf = (key: string) => {
       const [inSpace, agentId] = key.split('/')
+      // A terminal runs commands on its owner's machine: a reader's browser is never told of one.
+      if (request.role === 'reader') return
       const agent = inSpace === spaceId && hub.state.agents.find((a) => a.id === agentId && !a.revoked && a.owner.toLowerCase() === me)
       if (agent && socket.readyState === socket.OPEN) socket.send(JSON.stringify({ type: 'terminals', agentId, ...terminals.list(key) }))
     }

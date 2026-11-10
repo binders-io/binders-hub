@@ -9,6 +9,7 @@ import { ConfirmButton } from './ConfirmButton'
 import { Dialog, Field } from './Dialog'
 import { attempt, toast } from './Toast'
 import { ago } from './bits'
+import { useMayChangeBinder } from '../screens/settings/access'
 
 // Scheduled runs: a note run as a card on a timer, for an agent. Set from the note (its Schedule button), and listed
 // with every other schedule on the Agents page.
@@ -167,6 +168,8 @@ function ScheduleForm({ noteId, schedule, onDone }: { noteId: string; schedule?:
 /** Schedules as rows: when, for whom, what came of the last run, and what can be done to each. */
 export function ScheduleList({ schedules, onEdit, showNote = true }: { schedules: Schedule[]; onEdit?: (schedule: Schedule) => void; showNote?: boolean }) {
   const { state } = useStore()
+  // Running, pausing, editing and deleting a schedule change the Binder: a reader reads when each one runs.
+  const may = useMayChangeBinder()
   return (
     <ul className="schedule-list">
       {schedules.map((s) => {
@@ -212,12 +215,12 @@ export function ScheduleList({ schedules, onEdit, showNote = true }: { schedules
                 </details>
               )}
             </div>
-            <div className="schedule-buttons">
+            {may && <div className="schedule-buttons">
               <button type="button" className="icon-button" title="Run now" aria-label="Run now" onClick={() => void attempt(() => call('POST', `/api/schedules/${s.id}/run`)).then((card) => { if (card) toast('On the board.') })}><Zap size={15} /></button>
               <button type="button" className="icon-button" title={s.enabled ? 'Turn off' : 'Turn on'} aria-label={s.enabled ? 'Turn off' : 'Turn on'} onClick={() => void attempt(() => call('PATCH', `/api/schedules/${s.id}`, { enabled: !s.enabled }))}>{s.enabled ? <Pause size={15} /> : <Play size={15} />}</button>
               {onEdit && <button type="button" className="text-button" onClick={() => onEdit(s)}>Edit</button>}
               <ConfirmButton className="icon-button" question="Delete it? Press again" title="Delete" label="Delete the schedule" onConfirm={() => void attempt(() => call('DELETE', `/api/schedules/${s.id}`))}><Trash2 size={15} /></ConfirmButton>
-            </div>
+            </div>}
           </li>
         )
       })}

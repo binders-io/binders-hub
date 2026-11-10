@@ -15,6 +15,7 @@ const roles: { id: Role; label: string }[] = [
   { id: 'owner', label: 'Owner' },
   { id: 'admin', label: 'Admin' },
   { id: 'member', label: 'Member' },
+  { id: 'reader', label: 'Reader' },
 ]
 
 const addressOf = (name: string) => name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').replace(/^[^a-z]+/, '').slice(0, 40)
@@ -36,7 +37,13 @@ export function People() {
   const path = (who: string) => `/api/spaces/${here.id}/members/${encodeURIComponent(who)}`
   const empty = managers.length === 0 && !members?.length
   const you = (login: string) => login.toLowerCase() === me.user.login.toLowerCase()
-  const put = (who: string, next: Role, key: string) => void change(() => call<SpacesView>('PUT', path(who), { role: next })).then((done) => done && saved(key))
+  const put = (who: string, next: Role, key: string) => void change(() => call<SpacesView & { revoked?: { id: string; name: string }[] }>('PUT', path(who), { role: next })).then((done) => {
+    if (!done) return
+    saved(key)
+    // A reader can't have agents, which act with their owner's reach, so the hub says which it stopped.
+    const revoked = done.revoked ?? []
+    if (revoked.length) toast(`@${who} can only read now, so their ${plural(revoked.length, 'agent was', 'agents were')} revoked: ${revoked.map((a) => a.name).join(', ')}.`)
+  })
   const take = (who: string) => void change(() => call<SpacesView & { revoked?: { id: string; name: string }[] }>('DELETE', path(who))).then((done) => {
     if (!done) return
     const revoked = done.revoked ?? []
@@ -73,6 +80,7 @@ export function People() {
               })}
               {!members.length && <li className="faint">Nobody yet.</li>}
             </ul>
+            <p className="field-hint">A reader sees everything in this binder, and can ask about it. They can’t change anything, and can’t have agents.</p>
             <div className="field">
               <div className="field-head"><label className="field-label" htmlFor="member-login">Add someone</label><Saved show={shown('add')} /></div>
               {/* GitHub logins suggested as you type; picking one, or Return, adds them with the role beside it. */}

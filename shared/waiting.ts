@@ -36,6 +36,8 @@ export interface Waiting {
 export interface WaitingOptions {
   /** Only what's in this binder; none, or "all", for every one. */
   binder?: string
+  /** The person can only read: nothing waits on them, so every row is on someone else, and still there to see. */
+  reads?: boolean
 }
 
 const lower = (text: string | undefined) => (text ?? '').toLowerCase()
@@ -147,7 +149,8 @@ export function waitingOn(state: HubState, login: string | undefined, options: W
     }
   }
 
-  return rows.sort((a, b) => order[a.for] - order[b.for] || oldest(a.since, b.since))
+  const sorted = rows.sort((a, b) => order[a.for] - order[b.for] || oldest(a.since, b.since))
+  return options.reads ? sorted.map((row) => ({ ...row, for: 'others' as const })) : sorted
 }
 
 /** The rows that call for attention: everything but what's on someone else. */

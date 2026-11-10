@@ -5,6 +5,7 @@ import { agent, card, entry, hear, hubState, mount, settle, standInHub } from '.
 import type { Card, ChangeSet, Proposal } from '../src/data/model'
 import { UIContext } from '../src/ui'
 import { Flow } from '../src/screens/Flow'
+import { Toast } from '../src/components/Toast'
 
 // The menu sits inside every card, so it draws when its card does: that's what's counted here.
 const drawn = vi.hoisted(() => ({ cards: {} as Record<string, number> }))
@@ -67,6 +68,20 @@ describe('the board', () => {
     expect(column('Ready').className).not.toContain('drop')
     await settle()
     expect(posted.flatMap((p) => p.changes)[0].change).toMatchObject({ type: 'card.update', id: 'Paused', fields: { stage: 'ready', agentId: null } })
+  })
+
+  it('says so when a drop takes a card from its agent, and when it doesn’t, says nothing', async () => {
+    await mount(<UIContext.Provider value={ui()}><Flow /><Toast /></UIContext.Provider>)
+    fireEvent.dragStart(cardNamed('Blocked by a person'), { dataTransfer })
+    fireEvent.drop(column('Ready'), { dataTransfer })
+    await settle()
+    expect(screen.queryByText(/Took it from/)).toBeNull()
+    fireEvent.dragStart(cardNamed('Paused'), { dataTransfer })
+    fireEvent.drop(column('Ready'), { dataTransfer })
+    await settle()
+    expect((await screen.findAllByText('Took it from Agent and stopped its run.')).length).toBeGreaterThan(0)
+    // The move itself isn't held back for the words.
+    expect(posted.flatMap((p) => p.changes).map((c) => c.change)).toContainEqual(expect.objectContaining({ id: 'Paused', fields: expect.objectContaining({ stage: 'ready', agentId: null }) }))
   })
 
   it('doesn’t take a drop on Agents working: agents take cards themselves', async () => {
