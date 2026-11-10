@@ -313,14 +313,14 @@ describe('machines of yours serving the brain’s models', () => {
   })
 
   it('lists every model each job can be done with, best first, leaving out helpers that aren’t voices', () => {
-    const mac = { id: 'm-mac', name: 'Mac.helfei.com', addedBy: 'boss', addedAt: '', online: true, platform: 'darwin arm64', facts: { memoryGb: 64 }, runtimes: ['hf'],
+    const mac = { id: 'm-mac', name: 'Studio-Mac.local', addedBy: 'boss', addedAt: '', online: true, platform: 'darwin arm64', facts: { memoryGb: 64 }, runtimes: ['hf'],
       running: [{ engine: 'mlx-audio' }],
       servers: [{ url: 'say:', kind: 'say', models: ['Karen', 'Samantha'] }, { url: 'http://models.binders/v1', kind: 'binders', models: ['beshkenadze/kitten-tts-g2p', 'mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16', 'mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit', 'mlx-community/Kokoro-82M-bf16'] }] }
     const all = candidates([mac])
     assert.deepEqual(all.speech.map((c) => [c.model || c.voice, c.state]), [
       ['mlx-community/Kokoro-82M-bf16', 'on-demand'], ['mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit', 'on-demand'], ['Samantha', 'voice'],
     ])
-    assert.equal(all.speech[0].machineName, 'Mac.helfei.com')
+    assert.equal(all.speech[0].machineName, 'Studio-Mac.local')
     assert.equal(bestPicks([mac]).speech?.model, 'mlx-community/Kokoro-82M-bf16')
     // Each reads in one voice, always, and says which it has: Qwen's CustomVoice changes voice on every request without.
     assert.deepEqual(all.speech.map((c) => c.voice), ['af_heart', 'Aiden', 'Samantha'])
@@ -385,7 +385,7 @@ describe('machines of yours serving the brain’s models', () => {
 
   it('takes a gateway to cloud models for what it is, lists none of them, and moves off one it chose there', async () => {
     const gatewayModels = ['Nemotron-3-Ultra-550B-A55B-BF16', 'Nemotron-3-Ultra-550B-A55B-BF16-256K', 'Meta-Llama-3.1-405B-Instruct', 'gpt-oss-120b', 'Nemotron-3-Super-120B-A12B-BF16', 'dall-e-3-3.0', 'dall-e-2-2.0', 'gpt-35-turbo-0301', 'gpt-35-turbo-0613']
-    const mac = { id: 'm-mac', name: 'Mac.helfei.com', addedBy: 'boss', addedAt: '', online: true, platform: 'darwin arm64', facts: { memoryGb: 64 },
+    const mac = { id: 'm-mac', name: 'Studio-Mac.local', addedBy: 'boss', addedAt: '', online: true, platform: 'darwin arm64', facts: { memoryGb: 64 },
       servers: [
         // Its first model's owner is NVIDIA's, so the daemon took it for NIM.
         { url: 'http://127.0.0.1:4000/v1', kind: 'nim', models: gatewayModels },
