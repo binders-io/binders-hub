@@ -5,19 +5,22 @@ import type { ChangeSet, Environment, PullRequest } from '../data/model'
 import { call } from '../data/api'
 import { nameFor, useStore } from '../data/store'
 import { attempt } from '../components/Toast'
+import { ConfirmButton } from '../components/ConfirmButton'
 import { DebriefView, SetDebriefButton } from '../components/Debrief'
 import { FindingsLink, SetChallenge } from '../components/Challenge'
-import { titleOf } from '../../../shared/notes.ts'
+import { PullDiffs } from '../components/Diffs'
 import { testTally } from '../../../shared/changeSet.ts'
-import { AgentAvatar, CheckGlyph, RepoTag, checksSummary, usePhone } from '../components/bits'
+import { AgentAvatar, CheckGlyph, RepoTag, checksSummary, unpicked, usePhone } from '../components/bits'
+import { heard } from '../data/sync'
 import { href } from '../route'
 import { useUI } from '../ui'
+import { useMayChangeBinder } from './settings/access'
 
 const spring = { type: 'spring', stiffness: 380, damping: 34 } as const
 
 const setLabel: Record<ChangeSet['state'], string> = {
   assembling: 'Assembling',
-  review: 'Waiting for you',
+  review: 'Waiting on you',
   merging: 'Merging',
   merged: 'Deploying',
   shipped: 'Shipped',
@@ -32,19 +35,16 @@ const mergeHelp: Record<NonNullable<PullRequest['mergeable']>, string> = {
   unknown: 'GitHub is working it out.',
 }
 
-/** What deleting a change set does, said before it happens. */
+/** What deleting a change set does, said under its button once it asks. */
 function deleteWarning(set: ChangeSet, pulls: PullRequest[], environments: Environment[]) {
   const open = pulls.filter((p) => p.state !== 'merged' && p.state !== 'closed').length
   const on = environments.filter((e) => e.changeSetIds.includes(set.id)).map((e) => e.name)
   return [
-    `Delete change set #${set.number}?`,
-    [
-      set.state === 'merging' ? 'Its merging stops.' : '',
-      open ? `${open === 1 ? 'Its open pull request stays' : `Its ${open} open pull requests stay`} open on GitHub, outside any change set.` : '',
-      on.length ? `It also leaves ${on.join(' and ')} in Delivery.` : '',
-      'Its cards stay. This can’t be undone.',
-    ].filter(Boolean).join(' '),
-  ].join('\n\n')
+    set.state === 'merging' ? 'Its merging stops.' : '',
+    open ? `${open === 1 ? 'Its open pull request stays' : `Its ${open} open pull requests stay`} open on GitHub, outside any change set.` : '',
+    on.length ? `It also leaves ${on.join(' and ')} in Delivery.` : '',
+    'Its cards stay. This can’t be undone.',
+  ].filter(Boolean).join(' ')
 }
 
 const prLabel: Record<PullRequest['state'], string> = { open: 'Open', approved: 'Approved', queued: 'In merge queue', merged: 'Merged', closed: 'Closed' }
@@ -65,9 +65,13 @@ const rememberedTab = (): Tab => {
 export function ChangeSets({ id }: { id: string }) {
   const store = useStore()
   const { state } = store
+  // A reader sees every change set, and approves, closes and deletes none: those controls aren't drawn.
+  const may = useMayChangeBinder()
   const { binder } = useUI()
   const [tab, setTab] = useState<Tab>(rememberedTab)
   const phone = usePhone()
+  // The set whose approval is on its way to the hub: the button can't be pressed again meanwhile.
+  const [merging, setMerging] = useState<string>()
   const choose = (next: Tab) => {
     setTab(next)
     try { window.localStorage.setItem('binders-set-tab', next) } catch { /* only a convenience */ }
@@ -78,7 +82,10 @@ export function ChangeSets({ id }: { id: string }) {
   const sets = state.changeSets
     .filter((c) => binder === 'all' || c.binderId === binder)
     .sort((a, b) => (order[a.state] ?? 2) - (order[b.state] ?? 2) || b.number - a.number)
-  const set = state.changeSets.find((c) => c.id === id) ?? sets[0]
+  // A set deleted from its own page: the address still names it for a moment, which isn't worth a word.
+  const [deleted, setDeleted] = useState<string>()
+  const asked = id ? state.changeSets.find((c) => c.id === id) : undefined
+  const set = asked ?? sets[0]
   // Opening a set asks GitHub whether each of its pull requests still merges.
   const setId = set?.id
   const setState = set?.state
@@ -86,6 +93,15 @@ export function ChangeSets({ id }: { id: string }) {
     if (!setId || (setState !== 'review' && setState !== 'assembling')) return
     void call('POST', `/api/sets/${setId}/check`).catch(() => {})
   }, [setId, setState])
+  if (id && !asked && id !== deleted && heard(state.sync)) {
+    return (
+      <div className="empty-screen">
+        <h2>That change set isn’t here any more</h2>
+        <p>It may have been deleted, or moved out of reach.</p>
+        <a className="button primary" href={href({ screen: 'changes', id: '' })}>Go to the change sets</a>
+      </div>
+    )
+  }
   if (!set) {
     return (
       <div className="empty-screen">
@@ -97,13 +113,14 @@ export function ChangeSets({ id }: { id: string }) {
   const firstNote = state.notes.find((n) => n.id === set.noteIds[0])
   const conflicts = set.prIds.map((p) => state.pulls.find((x) => x.id === p)).filter((p): p is PullRequest => !!p && p.state !== 'merged' && p.mergeable === 'conflicts')
   const pulls = set.prIds.map((p) => state.pulls.find((x) => x.id === p)).filter((p) => !!p)
+  const toMerge = pulls.filter((p) => p.state !== 'merged').length
   const pending = pulls.flatMap((p) => p.checks).filter((c) => c.state !== 'passed').length
   const added = pulls.flatMap((p) => p.files).reduce((n, f) => n + f.added, 0)
   const removed = pulls.flatMap((p) => p.files).reduce((n, f) => n + f.removed, 0)
   const repos = [...new Set(pulls.map((p) => p.repo))]
   // Diffs start open only when the whole set is small and the screen isn't a phone: a big set's every line at once is
   // more than a phone's browser holds.
-  const startOpen = !phone && pulls.flatMap((p) => p.files).reduce((n, f) => n + f.lines.length, 0) <= diffOpenLines
+  const startOpen = !phone && added + removed <= diffOpenLines
 
   return (
     <div className="changes">
@@ -126,25 +143,32 @@ export function ChangeSets({ id }: { id: string }) {
             <div className="set-meta">
               {repos.map((r) => <RepoTag key={r} repo={r} />)}
               <span className="num"><span className="plus">+{added}</span> <span className="minus">−{removed}</span></span>
-              {firstNote && <span>from <a href={href({ screen: 'notes', id: firstNote.id })}>{titleOf(firstNote.text)}</a>{set.forNote && ' only'}</span>}
+              {firstNote && <span>from <a href={href({ screen: 'notes', id: firstNote.id })}>{firstNote.title}</a>{set.forNote && ' only'}</span>}
               {set.debrief?.testPlan?.length ? <TestsLine set={set} /> : null}
             </div>
           </div>
           <div className="approve">
-            {set.state === 'review' || (set.state === 'assembling' && pulls.length > 0) ? (
+            {may && (set.state === 'review' || (set.state === 'assembling' && pulls.length > 0)) ? (
               <>
-                <button className="button primary big" disabled={!pulls.length || pulls.some((p) => p.state !== 'merged' && p.checks.some((c) => c.state === 'failed'))} onClick={() => void attempt(() => store.approveSet(set.id))}>
-                  <ShieldCheck size={16} /> {pulls.some((p) => p.state === 'merged') ? `Approve the other ${pulls.filter((p) => p.state !== 'merged').length} and merge` : `Approve ${pulls.length} and merge`}
-                </button>
+                <ConfirmButton
+                  className="button primary big"
+                  question={`Merge ${toMerge} pull request${toMerge === 1 ? '' : 's'}? Press again`}
+                  disabled={!pulls.length || merging === set.id || pulls.some((p) => p.state !== 'merged' && p.checks.some((c) => c.state === 'failed'))}
+                  onConfirm={() => {
+                    setMerging(set.id)
+                    void attempt(() => store.approveSet(set.id)).finally(() => setMerging(undefined))
+                  }}
+                >
+                  <ShieldCheck size={16} /> {merging === set.id ? 'Merging…' : pulls.some((p) => p.state === 'merged') ? `Approve the other ${toMerge} and merge` : `Approve ${pulls.length} and merge`}
+                </ConfirmButton>
                 <span className="approve-note">{pulls.some((p) => p.state !== 'merged' && p.checks.some((c) => c.state === 'failed')) ? 'A check failed: nothing merges until it passes.' : pending > 0 ? `Approve now and each merges once its checks pass (${pending} running).` : conflicts.length ? 'The hub settles conflicts as it merges.' : pending > 0 ? `Waiting on ${pending} check${pending === 1 ? '' : 's'}` : state.me?.github.token || state.me?.github.server ? 'Every check passed. Approved and merged on GitHub in this order, then staging.' : 'Every check passed. Merges in order, then staging. (GitHub isn’t connected, so the hub records it.)'}</span>
                 {set.state === 'assembling' && <button className="text-button" onClick={() => void attempt(() => store.sendForReview(set.id))}>Close it to new pull requests</button>}
               </>
             ) : set.approvedBy ? (
               <span className="approve-note done"><ShieldCheck size={14} /> Approved by {set.approvedBy === state.me?.user.login ? 'you' : nameFor(state, set.approvedBy)}</span>
-            ) : (
+            ) : may && (
               <span className="approve-note">Agents add pull requests here as they finish cards.</span>
             )}
-            <button className="text-button delete-set" onClick={() => { if (window.confirm(deleteWarning(set, pulls, state.environments))) void attempt(() => store.deleteSet(set.id)) }}>Delete change set</button>
           </div>
         </header>
 
@@ -168,12 +192,12 @@ export function ChangeSets({ id }: { id: string }) {
           </div>
         )}
 
-        {/* Its pull requests and their diffs, its debrief, and its review: a tab each, so one reads at a time. */}
+        {/* Its pull requests and their diffs, its debrief, and its Challenge: a tab each, so one reads at a time. */}
         <div className="set-tabs" role="tablist" aria-label="This change set">
           {([
-            ['changes', 'Changes', `${pulls.length} pull request${pulls.length === 1 ? '' : 's'}`],
+            ['changes', 'Pull requests', `${pulls.length} pull request${pulls.length === 1 ? '' : 's'}`],
             ['debrief', 'Debrief', debriefNote(set)],
-            ['review', 'Review', reviewNote(set)],
+            ['review', 'Challenge', reviewNote(set)],
           ] as const).map(([key, label, note]) => (
             <button key={key} type="button" role="tab" id={`set-tab-${key}`} aria-selected={tab === key} aria-controls={`set-panel-${key}`} className={tab === key ? 'on' : ''} onClick={() => choose(key)}>
               {label}
@@ -209,22 +233,26 @@ export function ChangeSets({ id }: { id: string }) {
             set.debrief ? <DebriefView set={set} /> : (
               <section className="work-section debrief" aria-label="Debrief">
                 <h2>Debrief <span className="debrief-actions"><SetDebriefButton set={set} className="text-button" /></span></h2>
-                <p className="faint">{pulls.length ? `An agent reads all ${pulls.length === 1 ? 'its pull request' : `${pulls.length} pull requests`} together and writes one debrief: what it does, what changed, every card’s done-when marked, what to look at, and how to try it.` : 'Once it has a pull request.'}</p>
+                <p className="faint">{!may ? 'No debrief has been written yet.' : pulls.length ? `An agent reads all ${pulls.length === 1 ? 'its pull request' : `${pulls.length} pull requests`} together and writes one debrief: what it does, what changed, every card’s done-when marked, what to look at, and how to try it.` : 'Once it has a pull request.'}</p>
               </section>
             )
           )}
-          {tab === 'review' && (pulls.length ? <SetChallenge set={set} /> : <p className="faint">Once it has a pull request.</p>)}
+          {tab === 'review' && (pulls.length ? (may || set.challenge ? <SetChallenge set={set} /> : <p className="faint">No Challenge has been asked for yet.</p>) : <p className="faint">Once it has a pull request.</p>)}
         </div>
+        {/* Well away from Approve. */}
+        {may && <footer className="set-foot">
+          <ConfirmButton className="text-button delete-set" question={`Delete change set #${set.number}? Press again`} detail={deleteWarning(set, pulls, state.environments)} onConfirm={() => { setDeleted(set.id); void attempt(() => store.deleteSet(set.id)) }}>Delete change set</ConfirmButton>
+        </footer>}
       </div>
     </div>
   )
 }
 
-/** Diff lines a set may have and still start open; lines a file shows before "Show the rest". */
-const diffOpenLines = 1500
-const fileLines = 300
+/** Changed lines a set may have and still start open. */
+const diffOpenLines = 800
 
 function PullSection({ pull, order, startOpen }: { pull: PullRequest; order: number; startOpen: boolean }) {
+  const may = useMayChangeBinder()
   const [open, setOpen] = useState(startOpen)
   const { state } = useStore()
   const agent = state.agents.find((a) => a.id === pull.agentId)
@@ -258,7 +286,7 @@ function PullSection({ pull, order, startOpen }: { pull: PullRequest; order: num
           {pull.mergeable === 'conflicts' ? (
             <>
               <span>{card?.stage === 'ready' && card.meantFor ? `Back with ${nameFor(state, card.meantFor)} to resolve.` : card?.stage === 'working' ? `${nameFor(state, card.agentId ?? '')} is resolving it.` : 'Its changes clash with what’s on its base now.'}</span>
-              {card && card.stage !== 'working' && !(card.stage === 'ready' && card.meantFor) && (
+              {may && card && card.stage !== 'working' && !(card.stage === 'ready' && card.meantFor) && (
                 <button className="button" onClick={() => void attempt(() => call('POST', `/api/pulls/${encodeURIComponent(pull.repo)}/${pull.number}/resolve`))}>Send back to {agent?.name ?? 'its agent'} to resolve</button>
               )}
               <a className="text-button" href={`${pull.url}/conflicts`} target="_blank" rel="noreferrer">Resolve on GitHub</a>
@@ -266,39 +294,14 @@ function PullSection({ pull, order, startOpen }: { pull: PullRequest; order: num
           ) : (
             <>
               <span>Its base has moved on; nothing clashes.</span>
-              <button className="button" onClick={() => void attempt(() => call('POST', `/api/pulls/${encodeURIComponent(pull.repo)}/${pull.number}/update-branch`))}>Update the branch</button>
+              {may && <button className="button" onClick={() => void attempt(() => call('POST', `/api/pulls/${encodeURIComponent(pull.repo)}/${pull.number}/update-branch`))}>Update the branch</button>}
             </>
           )}
         </div>
       )}
-      {open && pull.files.map((file) => <FileDiff key={file.path} file={file} />)}
+      {open && <PullDiffs pull={pull} />}
       {open && !pull.files.length && <div className="file-empty">Changes load from GitHub when you open them.</div>}
     </section>
-  )
-}
-
-/** A file's diff: its first lines, and the rest when asked for. */
-function FileDiff({ file }: { file: PullRequest['files'][number] }) {
-  const [all, setAll] = useState(false)
-  const lines = all ? file.lines : file.lines.slice(0, fileLines)
-  return (
-    <div className="file">
-      <div className="file-head mono">
-        <span>{file.path}</span>
-        <span className="num"><span className="plus">+{file.added}</span> <span className="minus">−{file.removed}</span></span>
-      </div>
-      <div className="diff mono">
-        {lines.map((line, i) => (
-          <div key={i} className={`d-line ${line.kind === '+' ? 'add' : line.kind === '-' ? 'del' : line.kind === '@' ? 'hunk' : ''}`}>
-            <span className="d-sign">{line.kind === '@' ? '' : line.kind}</span>
-            <span className="d-text">{line.text || ' '}</span>
-          </div>
-        ))}
-      </div>
-      {lines.length < file.lines.length && (
-        <button type="button" className="file-more" onClick={() => setAll(true)}>Show the other {file.lines.length - lines.length} lines</button>
-      )}
-    </div>
   )
 }
 
@@ -321,6 +324,8 @@ function TestsLine({ set }: { set: ChangeSet }) {
 function debriefNote(set: ChangeSet) {
   const d = set.debrief
   if (!d) return ''
+  // Asked and nothing came of it for long enough: the card's page says the same.
+  if (unpicked(d)) return d.state === 'asked' ? 'not started' : 'went quiet'
   if (d.state === 'asked' || d.state === 'writing') return 'writing…'
   if (d.state === 'failed' && !d.against) return 'couldn’t'
   const met = d.against?.filter((p) => p.mark === 'met').length ?? 0
@@ -328,10 +333,11 @@ function debriefNote(set: ChangeSet) {
   return d.against ? `${met} of ${d.against.length} met${tests.total ? ` · tests ${tests.passed} of ${tests.total}` : ''}` : ''
 }
 
-/** How its review stands, for its tab: findings and the worst, or what the blast radius found. */
+/** How its Challenge stands, for its tab: findings and the worst, or what else it touches. */
 function reviewNote(set: ChangeSet) {
   const c = set.challenge
   if (!c) return ''
+  if (unpicked(c)) return c.state === 'asked' ? 'not started' : 'went quiet'
   if (c.state === 'asked' || c.state === 'reviewing') return 'reviewing…'
   if (c.state === 'failed') return 'couldn’t'
   const findings = c.findings ?? []

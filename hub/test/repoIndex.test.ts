@@ -20,6 +20,49 @@ function organization(count: number, fail = new Set<number>()) {
 const quick = { pauseMs: 0, retryMs: 0 }
 
 describe('the list of repos an installation reaches', () => {
+  it('keeps what GitHub says of each repo through a restart: its description, topics, properties and archiving', async () => {
+    const kv = new MemoryKV()
+    const repo: IndexedRepo = { fullName: 'acme/api', private: true, description: 'The API', archived: true, topics: ['backend'], properties: { team: ['payments'] } }
+    const first = new RepoIndex(kv, async () => ({ repos: [repo, { fullName: 'acme/web', private: false }] }), quick)
+    await first.ensure([1])
+    await first.settled([1])
+    const again = new RepoIndex(kv, organization(0).list, quick)
+    const { items } = await again.all([1])
+    assert.deepEqual(items.map((i) => i.item), [repo, { fullName: 'acme/web', private: false }])
+  })
+
+  it('answers from a list kept before it said more of each repo, and reads it again at once', async () => {
+    const kv = new MemoryKV()
+    await kv.set('repo-index:1', JSON.stringify({ at: new Date().toISOString(), done: true, repos: [['acme/old', 1]] }))
+    let release = () => {}
+    const held = new Promise<void>((done) => { release = done })
+    const index = new RepoIndex(kv, async () => {
+      await held
+      return { repos: [{ fullName: 'acme/old', private: true, topics: ['backend'] }] }
+    }, quick)
+    await index.ensure([1])
+    assert.deepEqual((await index.search([1], 'old', 5)).repos, [{ fullName: 'acme/old', private: true }], 'the old list answers meanwhile')
+    release()
+    await index.settled([1])
+    assert.deepEqual((await index.search([1], 'old', 5)).repos[0].topics, ['backend'])
+  })
+
+  it('keeps what was found once the list was read through, and runs that again each time it is', async () => {
+    let runs = 0
+    const index = new RepoIndex(new MemoryKV(), organization(150).list, { ...quick, staleMs: 0 }, async (_installation, repos) => {
+      runs++
+      repos.set('acme/repo-0', { ...repos.get('acme/repo-0')!, properties: { team: ['payments'] } })
+      return { properties: 'organization' }
+    })
+    await index.ensure([1])
+    await index.settled([1])
+    assert.deepEqual((await index.status(1)).meta, { properties: 'organization' })
+    assert.deepEqual((await index.search([1], 'repo-0', 1)).repos[0].properties, { team: ['payments'] })
+    await index.ensure([1])
+    await index.settled([1])
+    assert.equal(runs, 2)
+  })
+
   it('reads every page of a large organization, and finds a repo by name among them', async () => {
     const org = organization(2345)
     const index = new RepoIndex(new MemoryKV(), org.list, quick)

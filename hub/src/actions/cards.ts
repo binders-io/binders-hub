@@ -3,7 +3,8 @@ import type { Change } from '../../../shared/state.ts'
 import { isBlank, titleOf } from '../../../shared/notes.ts'
 import { checkTimeZone, defaultStaleHours, describeCron, parseCron, type Schedule, type ScheduleRun } from '../../../shared/schedule.ts'
 import { parseDiff } from '../../../shared/changeSet.ts'
-import { agentNamed, goesBy, outsideBinders, worksIn, type Agent, type Card, type PlanStep, type Stage, type PullRequest } from '../../../shared/work.ts'
+import { agentNamed, goesBy, handMove, outsideBinders, worksIn, type Agent, type Card, type PlanStep, type Stage, type PullRequest } from '../../../shared/work.ts'
+import { pullOf } from '../../../shared/changeSet.ts'
 import { parsePullRef } from '../github.ts'
 import { Refused, type Actor } from '../hub.ts'
 import { ActionsBase, checkedRunner } from './base.ts'
@@ -235,12 +236,61 @@ export abstract class CardService extends ActionsBase {
   }
 
   /** A person's answer to an agent's question, or a comment. */
+  /**
+   * A person stops a card: its runner sees it's gone and ends the run, and it waits in Proposed, where nothing picks it
+   * up. Ready would have an agent take it straight back.
+   */
+  async stopCard(login: string, cardId: string) {
+    const card = this.card(cardId)
+    const fields = card.stage === 'working' || card.stage === 'blocked' || card.stage === 'ready' ? handMove(card, 'proposed') : undefined
+    if (!fields) throw new Refused(`“${card.title}” isn’t being worked on.`)
+    const holder = this.hub.state.agents.find((a) => a.id === card.agentId)?.name
+    await this.hub.record({ kind: 'user', login }, { type: 'card.update', id: card.id, fields, activity: { at: this.now(), by: login, kind: 'moved', text: holder ? `Stopped ${holder}: Proposed` : 'Moved it to Proposed' } })
+    return this.card(card.id)
+  }
+
   async comment(login: string, cardId: string, text: string) {
     const card = this.card(cardId)
     const answering = !!card.needsYou
     // A person writing on a card an agent holds, blocked, unblocks it: the agent carries on with what they wrote.
     const unblock = card.stage === 'blocked' && !!card.agentId
-    await this.hub.record({ kind: 'user', login }, { type: 'card.update', id: card.id, fields: { needsYou: undefined, ...(unblock ? { stage: 'working' as const } : {}) }, activity: { at: this.now(), by: login, kind: answering ? 'answer' : 'comment', text } })
+    // On one no agent holds (one that stopped, or that was put there by hand), it goes back to Ready for any agent to take.
+    const reopen = card.stage === 'blocked' && !card.agentId
+    await this.hub.record({ kind: 'user', login }, { type: 'card.update', id: card.id, fields: { needsYou: undefined, ...(unblock ? { stage: 'working' as const } : {}), ...(reopen ? { stage: 'ready' as const, stopped: undefined } : {}) }, activity: { at: this.now(), by: login, kind: answering ? 'answer' : 'comment', text } })
+  }
+
+  /** The agent that wrote a card's work, if it's still set up: the one holding the card, or the one whose pull request it is. */
+  protected authorOfWork(card: Card) {
+    const live = (id?: string) => (id && this.hub.state.agents.some((a) => a.id === id && !a.revoked) ? id : undefined)
+    return live(card.agentId) ?? live(pullOf(this.hub.state, card)?.agentId)
+  }
+
+  /**
+   * Back to the agent that wrote the work: the card goes to In progress with a person's words as its last, so its runner
+   * carries on with them (resumeFor). What's said comes in order; `fields` go in with the move.
+   */
+  protected async sendBack(login: string, card: Card, author: string, said: string[], fields: Partial<Card> = {}) {
+    const at = this.now()
+    const line = (text: string): Card['activity'][number] => ({ at, by: login, kind: 'comment', text })
+    await this.hub.recordAll({ kind: 'user', login }, [
+      ...said.slice(0, -1).map((text): Change => ({ type: 'card.activity', id: card.id, activity: line(text) })),
+      { type: 'card.update', id: card.id, fields: { stage: 'working', agentId: author, ...fields }, activity: line(said[said.length - 1]) },
+    ])
+  }
+
+  /** A person sends a card in review back to its agent, with what to change when they say it: its runner carries on with the same card. */
+  async sendBackFromReview(login: string, cardId: string, text?: string) {
+    const card = this.card(cardId)
+    if (card.stage !== 'review') throw new Refused(`“${card.title}” isn’t in review, so there’s nothing to send back.`)
+    if (!card.agentId) throw new Refused('No agent holds this card, so there’s no one to send it back to: move it to Ready for another agent to take.')
+    const author = this.authorOfWork(card) === card.agentId ? card.agentId : undefined
+    if (!author) throw new Refused('The agent that wrote this was removed: move the card to Ready for another agent to take.')
+    const pull = pullOf(this.hub.state, card)
+    if (!pull || pull.state !== 'open') throw new Refused(pull ? `${pull.repo.split('/')[1]}#${pull.number} isn’t open, so there’s nothing to send back.` : 'This card has no pull request to send back.')
+    const words = (text ?? '').trim().slice(0, 4000)
+    const name = this.hub.state.agents.find((a) => a.id === author)?.name ?? 'its agent'
+    await this.sendBack(login, card, author, [...(words ? [words] : []), `@${login} sent it back to ${name}${words ? '' : ' to take another look'}.`], { needsYou: undefined, doing: undefined })
+    return this.card(card.id)
   }
 
   /** A person's message to an agent about a note: one chat for each note and agent. */
@@ -299,16 +349,28 @@ export abstract class CardService extends ActionsBase {
     return this.card(card.id)
   }
 
-  /** The diff of a card's worktree, from its runner: kept on the card until the work has a pull request. */
+  /** The diff of a card's worktree, from its runner: kept on the card until the work has a pull request, or is done. */
   async reportDiff(agentId: string, cardId: string, report: { branch: string; base: string; diff: string }) {
     const card = this.held(agentId, cardId)
     const { files, cut } = parseDiff(report.diff)
     const was = card.worktree
+    // Its pull request has the diff (or it's done): kept there, not here too.
+    if (this.pullHasDiff(card)) return { branch: report.branch.slice(0, 200), base: report.base.slice(0, 80), files, at: this.now(), ...(cut ? { cut } : {}) }
     // The same diff again changes nothing, so the log doesn't grow while an agent reads.
     if (was && was.branch === report.branch && was.base === report.base && !!was.cut === cut && JSON.stringify(was.files) === JSON.stringify(files)) return was
     const worktree = { branch: report.branch.slice(0, 200), base: report.base.slice(0, 80), files, at: this.now(), ...(cut ? { cut } : {}) }
     await this.hub.record({ kind: 'agent', id: agentId }, { type: 'card.update', id: card.id, fields: { worktree } })
     return worktree
+  }
+
+  /**
+   * Whether what a card's work changed is held somewhere else: it's done, or its pull request has the files (their lines
+   * may have been dropped since, but not their names). Its worktree's copy is then of no use.
+   */
+  protected pullHasDiff(card: Card) {
+    if (card.stage === 'live') return true
+    const pull = pullOf(this.hub.state, card)
+    return !!pull && pull.files.length > 0
   }
 
   async ask(agentId: string, cardId: string, question: string) {
@@ -351,12 +413,20 @@ export abstract class CardService extends ActionsBase {
     await this.hub.record({ kind: 'agent', id: agentId }, { type: 'card.activity', id: cardId, activity: { at: this.now(), by: agentId, kind: 'comment', text: text.slice(0, 4000) } })
   }
 
-  async release(agentId: string, cardId: string, why: string) {
+  /** `failed`: the run itself failed, which counts toward stopping the card; handed back for another reason, it doesn't. */
+  async release(agentId: string, cardId: string, why: string, failed = false) {
     this.held(agentId, cardId)
     // Not offered to it again for a while: a runner that can't start it (no worktree, no tool) would take it and give
     // it back every few seconds, filling the card's activity.
     this.turnedAway.set(`${agentId}/${cardId}`, Date.now() + 5 * 60_000)
-    await this.hub.record({ kind: 'agent', id: agentId }, { type: 'card.release', id: cardId, agentId, at: this.now(), why: why.slice(0, 1000) || 'Let it go' })
+    await this.hub.record({ kind: 'agent', id: agentId }, { type: 'card.release', id: cardId, agentId, at: this.now(), why: why.slice(0, 1000) || 'Let it go', ...(failed ? { failed: true } : {}) })
+  }
+
+  /** The hub takes a card back from an agent it hasn't heard from: not a failed run, and it asks nothing of the agent. */
+  async releaseUnheard(agentId: string, cardId: string, why: string) {
+    const card = this.card(cardId)
+    if (card.agentId !== agentId || card.stage !== 'working') return
+    await this.hub.record({ kind: 'hub' }, { type: 'card.release', id: cardId, agentId, at: this.now(), why: why.slice(0, 1000) })
   }
 
   /** Finished: with a pull request, the card goes to review and its pull request into a change set; without, it's done. */
@@ -367,13 +437,13 @@ export abstract class CardService extends ActionsBase {
     // Finished: so is its plan.
     const plan = card.plan?.map((step) => ({ ...step, done: true }))
     if (!pullRef) {
-      await this.hub.record(actor, { type: 'card.update', id: card.id, fields: { stage: 'live', doing: undefined, progress: 1, plan }, activity: { at, by: agentId, kind: 'completed', text: summary.slice(0, 4000) } })
+      await this.hub.record(actor, { type: 'card.update', id: card.id, fields: { stage: 'live', doing: undefined, progress: 1, plan, stopped: undefined, worktree: undefined }, activity: { at, by: agentId, kind: 'completed', text: summary.slice(0, 4000) } })
       return this.card(card.id)
     }
     const ref = parsePullRef(pullRef)
     if (!ref) throw new Refused('Give the pull request as owner/repo#12 or its address on GitHub.')
     const pull = await this.linkPull(ref.repo, ref.number, { cardId: card.id, agentId })
-    await this.hub.record(actor, { type: 'card.update', id: card.id, fields: { stage: 'review', prId: pull.id, doing: undefined, progress: 1, plan }, activity: { at, by: agentId, kind: 'completed', text: summary.slice(0, 4000) } })
+    await this.hub.record(actor, { type: 'card.update', id: card.id, fields: { stage: 'review', prId: pull.id, doing: undefined, progress: 1, plan, stopped: undefined, ...(this.card(card.id).worktree && this.pullHasDiff({ ...card, prId: pull.id }) ? { worktree: undefined } : {}) }, activity: { at, by: agentId, kind: 'completed', text: summary.slice(0, 4000) } })
     await this.hub.record(actor, { type: 'card.activity', id: card.id, activity: { at, by: agentId, kind: 'pr', text: `Opened ${pull.repo.split('/')[1]}#${pull.number}` } })
     return this.card(card.id)
   }

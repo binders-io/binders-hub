@@ -3,6 +3,8 @@ import { Refusal, type Auth } from '../auth.ts'
 import { GitHubError } from '../github.ts'
 import { Refused } from '../hub.ts'
 import type { OptionsStore } from '../options.ts'
+import type { BrainSettingsStore } from '../brain/settings.ts'
+import type { BrainMachines } from '../brain/machines.ts'
 import { readBody } from '../schemas.ts'
 import type { ServerOptions } from '../server.ts'
 import type { Spaces } from '../spaces.ts'
@@ -13,9 +15,11 @@ import { Terminals } from '../terminals.ts'
 
 export type Context = ReturnType<typeof makeContext>
 
-export function makeContext(spaces: Spaces, deps: { auth: Auth; options?: OptionsStore }, options: ServerOptions) {
+export function makeContext(spaces: Spaces, deps: { auth: Auth; options?: OptionsStore; brain?: BrainSettingsStore; machines?: BrainMachines }, options: ServerOptions) {
   const { auth } = deps
   const hubOptions = deps.options
+  const brainSettings = deps.brain
+  const brainMachines = deps.machines
   const secure = options.publicUrl.startsWith('https:')
   const callback = new URL('/auth/github/callback', options.publicUrl).toString()
   const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(options.publicUrl)
@@ -39,10 +43,12 @@ export function makeContext(spaces: Spaces, deps: { auth: Auth; options?: Option
     const admins = [...(firstGitHub()?.admins() ?? []), ...(options.admins ?? []), ...(hubOptions?.get().admins ?? [])].map((a) => a.toLowerCase())
     return admins.length ? admins.includes(login.toLowerCase()) : true
   }
-  /** Who may change how a Binder reaches GitHub: its owners and admins, and the hub's admins. */
+  /** Someone named as one of the hub's admins: not the "whoever can sign in" of a hub that has named nobody yet. */
+  const namedAdmin = (login: string) => [...(firstGitHub()?.admins() ?? []), ...(options.admins ?? []), ...(hubOptions?.get().admins ?? [])].some((a) => a.toLowerCase() === login.toLowerCase())
+  /** Who may change how a Binder reaches GitHub: its owners and admins (the hub's admins, while it has no owner). */
   // A Binder on the hub's app (a personal one too) reaches GitHub through its home Binder's: changed there, by that
   // Binder's owners, not from here.
-  const mayManageGitHub = (request: FastifyRequest) => !spaces.info(request.space?.id ?? '')?.personal && (isAdmin(request.user!.login) || request.role === 'owner' || request.role === 'admin')
+  const mayManageGitHub = (request: FastifyRequest) => !spaces.info(request.space?.id ?? '')?.personal && (request.role === 'owner' || request.role === 'admin')
 
   /** The Binder to sign in through: the one named, when it has a GitHub App, else the first that has one. */
   const signInSpace = (named?: string) => {
@@ -102,12 +108,16 @@ export function makeContext(spaces: Spaces, deps: { auth: Auth; options?: Option
     if (access === 'read') throw new Refused(`As ${as}, GitHub lets you read ${repo} but not push to it, so it can’t be linked here. ${other}`)
     if (access === 'none') throw new Refused(`As ${as}, GitHub doesn’t let you reach ${repo}. ${other}`)
   }
-  /** The repos in `repos` that aren't in `before`, each checked as above. */
+  /** The repos in `repos` that aren't in `before`, each checked as above: a few at a time, as many can be added at once. */
   const mayLinkAll = async (request: FastifyRequest, repos: unknown, before: string[] = []) => {
     if (!Array.isArray(repos)) return
     const known = new Set(before.map((r) => r.toLowerCase()))
-    for (const repo of repos) if (typeof repo === 'string' && !known.has(repo.toLowerCase())) await mayLink(request, repo)
+    const fresh = repos.filter((repo): repo is string => typeof repo === 'string' && !known.has(repo.toLowerCase()))
+    for (let at = 0; at < fresh.length; at += 8) await Promise.all(fresh.slice(at, at + 8).map((repo) => mayLink(request, repo)))
   }
 
-  return { spaces, auth, hubOptions, options, secure, callback, isLocal, terminals, backFor, sp, login, param, firstGitHub, isAdmin, mayManageGitHub, signInSpace, fail, act, bodyOf, mayLink, mayLinkAll }
+  /** A note's or card's address in the web app: the first Binder's at the hub's own, as its links have always been. */
+  const webUrl = (space: string, kind: 'note' | 'card', id: string) => `${options.publicUrl}${space === spaces.list()[0]?.id ? '' : `/${space}`}/#/${kind === 'note' ? 'notes' : 'work'}/${encodeURIComponent(id)}`
+
+  return { spaces, auth, hubOptions, brainSettings, brainMachines, webUrl, options, secure, callback, isLocal, terminals, backFor, sp, login, param, firstGitHub, isAdmin, namedAdmin, mayManageGitHub, signInSpace, fail, act, bodyOf, mayLink, mayLinkAll }
 }

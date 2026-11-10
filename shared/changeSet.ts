@@ -326,6 +326,8 @@ export interface BlastRadius {
   /** The repo searched; a change set's files in other repos are in elsewhere. */
   repo?: string
   symbols: BlastSymbol[]
+  /** How many symbols it has, when they were left out for a browser, which asks for them when a Challenge is opened. */
+  symbolCount?: number
   /** Uses outside the change, in all. */
   outside: number
   /** Symbols the change removed that are still used. */

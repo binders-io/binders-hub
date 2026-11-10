@@ -32,7 +32,41 @@ const opened = async (text: string) => {
   return live
 }
 
+describe('a note’s lists', () => {
+  it('hangs each item’s wrapped lines under its words, a step in for each level, whatever the note has for spaces', () => {
+    const view = open('- top\n    - inner\n        - deepest\n\n1. one\n10. ten\n\n- [ ] a task\n\nwords', () => {})
+    const lines = [...view.contentDOM.querySelectorAll<HTMLElement>('.cm-list-line')]
+    expect(lines.map((line) => line.textContent?.trim())).toEqual(['top', 'inner', 'deepest', '1. one', '10. ten', 'a task'])
+    const style = (at: number, name: string) => lines[at].style.getPropertyValue(name)
+    expect([0, 1, 2].map((at) => style(at, '--depth'))).toEqual(['0', '1', '2'])
+    expect(style(1, '--hang')).toBe('22px')
+    expect(style(3, '--hang')).toBe('24px')
+    expect(style(4, '--hang')).toBe('33px')
+    expect(style(5, '--hang')).toBe('25px')
+    expect(view.contentDOM.querySelectorAll('.cm-list-indent').length).toBe(2)
+    expect(view.contentDOM.querySelectorAll('.cm-line:not(.cm-list-line)').length).toBe(4)
+  })
+
+  it('shows the mark on the line being written, keeping its place', () => {
+    const view = open('- first\n- second', () => {})
+    view.focus()
+    view.dispatch({ selection: { anchor: 3 } })
+    const lines = view.contentDOM.querySelectorAll('.cm-list-line')
+    if (view.hasFocus) expect(lines[0].querySelector('.cm-list-mark')?.textContent).toBe('- ')
+    expect(lines[1].querySelector('.cm-bullet')).toBeTruthy()
+  })
+})
+
 describe('the editor', () => {
+  it('says when someone starts and stops writing in it, and when it goes', () => {
+    const focused = vi.fn()
+    const ref = createRef<EditorHandle>()
+    const page = render(<MarkdownEditor ref={ref} text="# Hi\n\nWords" onChange={() => {}} links={links} marks={marks} raw={false} noteId="n1" onFocusChange={focused} />)
+    expect(focused).not.toHaveBeenCalled()
+    page.unmount()
+    expect(focused).toHaveBeenCalledWith(false)
+  })
+
   it('sends the whole text until the note’s document is here', () => {
     const onChange = vi.fn()
     const view = open('# Hi', onChange)

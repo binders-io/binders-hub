@@ -3,6 +3,7 @@ import { LoaderCircle, Lock } from 'lucide-react'
 import { Github } from './Github'
 import { call } from '../data/api'
 import { signInHref, space } from '../data/space'
+import { sectionHref } from '../screens/settings/sections'
 
 // A personal binder's repo: <login>/binders-notes, private, in their own GitHub account, where its notes sync. With the
 // hub's OAuth App, they connect their GitHub account once (it asks for access to their repos), and the hub makes the
@@ -52,7 +53,7 @@ export function PersonalRepo() {
           <b>Keep your notes in your own GitHub</b>
           <p>Your personal binder is yours alone. Set up your own OAuth App and connect your GitHub, and its notes are kept in a private {status.suggested} in your account.</p>
         </div>
-        <a className="button primary" href="#/settings" onClick={() => { try { window.localStorage.setItem('binders-settings-part', 'github') } catch { /* only a convenience */ } }}>Set it up</a>
+        <a className="button primary" href={sectionHref('github')}>Set it up</a>
       </section>
     )
   }

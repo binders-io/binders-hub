@@ -10,7 +10,7 @@ import type { Context } from './context.ts'
 // What machines reach: the runner and its installer, agents and people over MCP, and GitHub's webhooks.
 
 export async function machineRoutes(app: FastifyInstance, context: Context) {
-  const { spaces, auth, options, backFor, isAdmin } = context
+  const { spaces, auth, options, backFor, isAdmin, namedAdmin } = context
   // The runner, as one file to download: code, no secrets, so no sign-in needed.
   app.get('/runner/binders-runner.mjs', async (_request, reply) => {
     try {
@@ -22,7 +22,8 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
   })
 
   // The installer: the runner and its `binders` command on this machine, then `binders` with what's passed, so one line
-  // sets an agent up in the background: curl -fsSL <hub>/install | sh -s -- add --token bnd_… --workspace ~/code/app
+  // sets an agent up in the background: curl -fsSL <hub>/install | sh -s -- add --token bnd_… --workspace ~/code/app, or
+  // a whole machine from the Agents page's line: curl -fsSL <hub>/install | sh -s -- join bnj_…
   app.get('/install', async (_request, reply) => reply.type('text/plain; charset=utf-8').header('cache-control', 'no-cache').send(installer(options.publicUrl)))
   app.get('/install.ps1', async (_request, reply) => reply.type('text/plain; charset=utf-8').header('cache-control', 'no-cache').send(windowsInstaller(options.publicUrl)))
 
@@ -63,9 +64,16 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
     // An agent's token: the runner's, for work it takes. A token made before the hub held several Binders is the first's.
     const agent = await auth.agentFor(token)
     if (agent) {
-      const space = spaces.get(agent.space ?? spaces.list()[0]?.id ?? '')
+      // The agent's token is proof enough to start its Binder, if it's a personal one nothing has needed yet.
+      const space = await spaces.start(agent.space ?? spaces.list()[0]?.id ?? '')
       if (space && named && named !== space.id) return setByHand(reply, 'This agent’s token is for another binder.')
-      if (!space || !space.hub.state.agents.some((a) => a.id === agent.id && !a.revoked)) return setByHand(reply, agentStale)
+      const there = space?.hub.state.agents.find((a) => a.id === agent.id && !a.revoked)
+      if (!space || !there) return setByHand(reply, agentStale)
+      // An agent acts with its owner's reach, which for a reader is none that changes anything.
+      if (spaces.roleOf(space.id, there.owner) === 'reader') return setByHand(reply, `@${there.owner} can only read this binder, so ${there.name} can’t work in it. Ask one of its owners to let them change it, or set the agent up again under someone who can.`)
+      // Its token speaks as its owner's agent, so only while its owner is in the Binder (one with no members is open to
+      // everyone), or is one of the hub's named admins and it has no owner.
+      if (!spaces.roleFor(space.id, there.owner, namedAdmin(there.owner))) return setByHand(reply, `@${there.owner} isn’t in this binder any more, so ${there.name} can’t work in it. Ask one of its owners to add them back, or set the agent up again under someone who is in it.`)
       return serve(request, reply, mcpServer(space.hub, space.actions, agent.id, { issueToken: (id) => auth.issueAgentToken(id, space.id), publicUrl: options.publicUrl }, space.jira))
     }
     if (token?.startsWith('bnd_')) return setByHand(reply, agentStale)
@@ -84,12 +92,14 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
     if (named && !allowed.includes(named)) return refused(`This connection is for another binder. To use ${named}, connect to its address and allow it.`)
     const reached = mine.filter((s) => (named ? s.info.id === named : allowed.includes(s.info.id)))
     if (!reached.length) return refused(`@${person.user.login} isn’t in ${allowed.length > 1 ? 'any of the binders' : 'the binder'} this connection is for.`)
-    const places = reached.flatMap((s) => {
-      const space = spaces.get(s.info.id)
-      return space ? [{ id: s.info.id, name: s.info.name, role: s.role, hub: space.hub, actions: space.actions }] : []
+    // Started now, those of theirs that nothing has needed yet: the connection is theirs and for these Binders.
+    const started = await Promise.all(reached.map((s) => spaces.start(s.info.id)))
+    const places = reached.flatMap((s, i) => {
+      const space = started[i]
+      return space ? [{ id: s.info.id, name: s.info.name, role: s.role, hub: space.hub, actions: space.actions, brain: space.brain }] : []
     })
     if (!places.length) return unauthorized(reply, request)
-    return serve(request, reply, personServer(places, { login: person.user.login, name: person.user.name }))
+    return serve(request, reply, personServer(places, { login: person.user.login, name: person.user.name }, context.brainSettings ? { settings: context.brainSettings, url: context.webUrl } : undefined))
   }
   // The hub's own, for an agent's token and a person's; and a binder's, for a person connecting to one binder.
   app.post('/mcp', mcp)
@@ -134,6 +144,8 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
       const payload = JSON.parse(raw.toString('utf8'))
       // Repos added to or removed from one of its app's installations: the list its pickers search follows.
       if (event === 'installation_repositories' || event === 'installation') await space.github.heardInstallation(event, payload).catch(() => undefined)
+      // People joining or leaving an organization it's installed on: the list its people pickers search follows.
+      if (event === 'organization') await space.github.heardOrganization(payload).catch(() => undefined)
       const result = await space.webhooks.handle(event, payload)
       // Binders that use this one's app hear what it hears: each acts on its own repos.
       for (const other of spaces.all()) {
@@ -153,12 +165,13 @@ export function windowsInstaller(publicUrl: string) {
   const hub = publicUrl.replace(/\/$/, '').replace(/[^\w:/.@%+~-]/g, '')
   return `# Binders: installs (or updates) the runner and its binders command for ${hub}, then runs binders with what was passed.
 #   & ([scriptblock]::Create((irm ${hub}/install.ps1))) add --token bnd_... --workspace C:\\code\\app
+#   & ([scriptblock]::Create((irm ${hub}/install.ps1))) join bnj_...
 $ErrorActionPreference = 'Stop'
 $Hub = '${hub}'
 $Dir = Join-Path $HOME '.binders'
 $Node = Get-Command node -ErrorAction SilentlyContinue
-if (-not $Node) { throw 'Binders needs Node 20 or newer: https://nodejs.org, or: winget install OpenJS.NodeJS' }
-if ([int](& node -p "process.versions.node.split('.')[0]") -lt 20) { throw "Binders needs Node 20 or newer; this is $(& node -v). https://nodejs.org" }
+if (-not $Node) { throw 'Binders needs Node 22 or newer: https://nodejs.org, or: winget install OpenJS.NodeJS' }
+if ([int](& node -p "process.versions.node.split('.')[0]") -lt 22) { throw "Binders needs Node 22 or newer; this is $(& node -v). https://nodejs.org" }
 New-Item -ItemType Directory -Force -Path (Join-Path $Dir 'bin') | Out-Null
 $Runner = Join-Path $Dir 'binders-runner.mjs'
 Invoke-WebRequest -UseBasicParsing -Uri "$Hub/runner/binders-runner.mjs" -OutFile "$Runner.new"
@@ -180,12 +193,13 @@ export function installer(publicUrl: string) {
   return `#!/bin/sh
 # Binders: installs (or updates) the runner and its \`binders\` command for ${hub}, then runs binders with what was passed.
 #   curl -fsSL ${hub}/install | sh -s -- add --token bnd_… --workspace ~/code/app
+#   curl -fsSL ${hub}/install | sh -s -- join bnj_…
 set -e
 HUB="${hub}"
 DIR="$HOME/.binders"
-command -v node >/dev/null 2>&1 || { echo "Binders needs Node 20 or newer: https://nodejs.org, or: brew install node"; exit 1; }
+command -v node >/dev/null 2>&1 || { echo "Binders needs Node 22 or newer: https://nodejs.org, or: brew install node"; exit 1; }
 MAJOR=$(node -p 'process.versions.node.split(".")[0]')
-[ "$MAJOR" -ge 20 ] || { echo "Binders needs Node 20 or newer; this is $(node -v). brew upgrade node, or https://nodejs.org"; exit 1; }
+[ "$MAJOR" -ge 22 ] || { echo "Binders needs Node 22 or newer; this is $(node -v). brew upgrade node, or https://nodejs.org"; exit 1; }
 mkdir -p "$DIR/bin"
 curl -fsSL "$HUB/runner/binders-runner.mjs" -o "$DIR/binders-runner.mjs.new"
 mv "$DIR/binders-runner.mjs.new" "$DIR/binders-runner.mjs"

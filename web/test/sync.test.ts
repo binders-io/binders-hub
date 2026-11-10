@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyState, type Change, type Entry, type HubState } from '../../shared/state.ts'
-import { clientId, HubConnection, keys, queue, receive, remember, rememberCache, rememberOutbox, settled, shown, snapshot, startingSync, type Sync } from '../src/data/sync'
+import { lightNote } from '../../shared/notes.ts'
+import { leftCard, type Card } from '../../shared/work.ts'
+import { clientId, heard, HubConnection, hold, holdCard, keys, queue, receive, remember, rememberCache, rememberOutbox, settled, shown, snapshot, startingSync, type Sync } from '../src/data/sync'
 
 // What the rest of the web app stands on: your changes stay on top of what the hub confirmed, whatever arrives and in
 // whatever order, and what's waiting survives a reload.
@@ -256,6 +258,37 @@ describe('what’s kept in the browser', () => {
     expect(JSON.parse(window.localStorage.getItem(keys.cache)!).version).toBe(1)
   })
 
+  it('clears each Binder’s cache of the old shape, leaving waiting changes alone', () => {
+    window.localStorage.setItem('binders-hub-cache-v3:other', '{}')
+    window.localStorage.setItem('binders-hub-outbox-v3:other:tab', '[]')
+    startingSync(emptyState())
+    expect(window.localStorage.getItem('binders-hub-cache-v3:other')).toBeNull()
+    expect(window.localStorage.getItem('binders-hub-outbox-v3:other:tab')).toBe('[]')
+  })
+
+  it('gives the Binder you’re in the room when there’s none left, at the cost of other Binders’ caches and nothing else', () => {
+    const storage = window.localStorage
+    const set = storage.setItem.bind(storage)
+    storage.setItem('binders-hub-cache-v4:other', 'x'.repeat(10))
+    storage.setItem('binders-hub-outbox-v3:other:tab', '[]')
+    // A browser with room only once the other Binder's cache has gone.
+    const full = vi.spyOn(Object.getPrototypeOf(storage) as Storage, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+      if (storage.getItem('binders-hub-cache-v4:other') !== null) throw new DOMException('Full', 'QuotaExceededError')
+      set(key, value)
+    })
+    rememberCache(start({ version: 12 }))
+    full.mockRestore()
+    expect(JSON.parse(storage.getItem(keys.cache)!).version).toBe(12)
+    expect(storage.getItem('binders-hub-cache-v4:other')).toBeNull()
+    expect(storage.getItem('binders-hub-outbox-v3:other:tab')).toBe('[]')
+  })
+
+  it('carries on when even that isn’t enough', () => {
+    const full = vi.spyOn(Object.getPrototypeOf(window.localStorage) as Storage, 'setItem').mockImplementation(() => { throw new DOMException('Full', 'QuotaExceededError') })
+    expect(() => rememberCache(start())).not.toThrow()
+    full.mockRestore()
+  })
+
   it('brings back waiting changes and the last state after a reload', () => {
     remember(queue(start({ version: 7 }), edit('n1', 'offline'), new Set()))
     const back = startingSync(emptyState())
@@ -271,5 +304,262 @@ describe('what’s kept in the browser', () => {
     const back = startingSync(seed)
     expect(back.confirmed).toBe(seed)
     expect(back.version).toBe(0)
+  })
+})
+
+describe('whether the hub has answered yet', () => {
+  it('is no until its state or a copy kept from last time is here, or its live feed is open', () => {
+    expect(heard(start({ version: 0, connection: 'connecting' }))).toBe(false)
+    expect(heard(start({ version: 0, connection: 'offline' }))).toBe(false)
+    expect(heard(start({ version: 4, connection: 'connecting' }))).toBe(true)
+    expect(heard(start({ version: 0, connection: 'live' }))).toBe(true)
+  })
+})
+
+// A note a browser holds without its text has `left` and an empty `text`: the hub's light state. Its text is asked for
+// when the note is opened, and taken in here (`hold`) only if it's the text of the note as the state has it.
+describe('a note’s text taken in', () => {
+  const light = (id: string, text = 'words', editedAt = 'then') => lightNote({ ...note(id, text), editedAt })
+  const lightSync = (over: Partial<Sync> = {}) => start({ confirmed: hubState({ notes: [light('n1'), light('n2', 'other')] }), ...over })
+
+  it('takes the text of a note that has none, and the note stops standing in for it', () => {
+    const sync = lightSync()
+    const held = hold(sync, 'n1', 'words', 'then')
+    expect(held).not.toBe(sync)
+    expect(held.confirmed.notes[0]).toMatchObject({ id: 'n1', text: 'words' })
+    expect(held.confirmed.notes[0].left).toBeUndefined()
+    expect(held.confirmed.notes[1]).toBe(sync.confirmed.notes[1])
+    expect(sync.confirmed.notes[0].left).toBeDefined()
+  })
+
+  it('refuses a text of another version of the note: it changed meanwhile, or the feed is behind', () => {
+    const sync = lightSync()
+    expect(hold(sync, 'n1', 'newer words', 'later')).toBe(sync)
+  })
+
+  it('refuses a note that is whole already, and one that isn’t there', () => {
+    const sync = start()
+    expect(hold(sync, 'n1', 'something else', 'then')).toBe(sync)
+    expect(sync.confirmed.notes[0].text).toBe('words')
+    expect(hold(lightSync(), 'missing', 'words', 'then').confirmed.notes).toHaveLength(2)
+  })
+
+  it('shows the held text, with a change waiting on top of it', () => {
+    const held = hold(lightSync(), 'n1', 'words', 'then')
+    expect(shown(queue(held, edit('n1', 'mine'), new Set())).notes[0].text).toBe('mine')
+  })
+
+  it('keeps a light note light through the live feed, and a whole one whole', () => {
+    const sync = hold(lightSync(), 'n1', 'words', 'then')
+    const next = receive(sync, [entry(2, edit('n1', 'both')), entry(3, edit('n2', 'also'))], new Set())
+    expect(next.confirmed.notes[0]).toMatchObject({ text: 'both' })
+    expect(next.confirmed.notes[0].left).toBeUndefined()
+    expect(next.confirmed.notes[1]).toMatchObject({ text: '', left: { size: 4 } })
+  })
+
+  it('keeps a text this tab holds through a snapshot of the same version of the note, and takes the rest as they come', () => {
+    const sync = hold(lightSync(), 'n1', 'words', 'then')
+    const next = snapshot(sync, 5, hubState({ notes: [light('n1'), light('n2', 'other'), light('n3')] }))
+    expect(next.version).toBe(5)
+    expect(next.confirmed.notes[0]).toMatchObject({ id: 'n1', text: 'words' })
+    expect(next.confirmed.notes[0].left).toBeUndefined()
+    expect(next.confirmed.notes[1]).toMatchObject({ text: '', left: { size: 5 } })
+    expect(next.confirmed.notes[2].left).toBeDefined()
+  })
+
+  it('doesn’t keep a text through a snapshot of a note that was written since', () => {
+    const sync = hold(lightSync(), 'n1', 'words', 'then')
+    const next = snapshot(sync, 5, hubState({ notes: [light('n1', 'rewritten', 'later')] }))
+    expect(next.confirmed.notes[0]).toMatchObject({ text: '', left: { size: 9 } })
+  })
+
+  it('keeps a note this tab made and the hub hasn’t confirmed whole when the snapshot has it', () => {
+    const made = { ...note('n9', '# new'), editedAt: 'just now' }
+    const sync = queue(lightSync(), { type: 'note.put', note: made }, new Set())
+    const next = snapshot(sync, 5, hubState({ notes: [lightNote(made)] }))
+    expect(next.confirmed.notes[0]).toMatchObject({ id: 'n9', text: '# new' })
+    expect(next.confirmed.notes[0].left).toBeUndefined()
+    expect(shown(next).notes[0].left).toBeUndefined()
+  })
+
+  it('hands a snapshot with no light notes over as it is', () => {
+    const state = hubState()
+    expect(snapshot(start(), 5, state).confirmed).toBe(state)
+  })
+})
+
+describe('what a note’s text costs the copy kept for next time', () => {
+  const stored = () => JSON.parse(window.localStorage.getItem(keys.cache)!).confirmed.notes as { id: string; text: string; left?: { size: number } }[]
+  const many = (count: number) => start({ confirmed: hubState({ notes: Array.from({ length: count }, (_, index) => note(`n${index}`, `words ${index}`)) }) })
+
+  it('is the text of the last 20 notes opened, and the rest without theirs', () => {
+    const sync = many(30)
+    rememberCache(sync, Array.from({ length: 25 }, (_, index) => `n${index}`))
+    const notes = stored()
+    expect(notes.filter((n) => !n.left)).toHaveLength(20)
+    expect(notes.filter((n) => !n.left).map((n) => n.id)).toEqual(Array.from({ length: 20 }, (_, index) => `n${index}`))
+    expect(notes[25]).toMatchObject({ id: 'n25', text: '', left: { size: 'words 25'.length } })
+  })
+
+  it('leaves what’s in memory as it was', () => {
+    const sync = many(3)
+    const before = JSON.stringify(sync.confirmed)
+    rememberCache(sync, [])
+    expect(JSON.stringify(sync.confirmed)).toBe(before)
+    expect(stored().every((n) => n.left && n.text === '')).toBe(true)
+  })
+
+  it('writes a note with changes waiting whole as well', () => {
+    rememberCache(queue(many(3), edit('n1', 'typed'), new Set()), [])
+    expect(stored().map((n) => !n.left)).toEqual([false, true, false])
+  })
+
+  it('writes a note light that it was given light, and doesn’t write every note again when none has a text to leave out', () => {
+    const sync = start({ confirmed: hubState({ notes: [lightNote(note('n1'))] }) })
+    rememberCache(sync, ['n1'])
+    expect(stored()[0]).toMatchObject({ id: 'n1', text: '', left: { size: 5 } })
+  })
+
+  it('is read back after a reload: the light notes and the ones kept', () => {
+    rememberCache(many(3), ['n2'])
+    const back = startingSync(emptyState())
+    expect(back.confirmed.notes.map((n) => !n.left)).toEqual([false, false, true])
+    expect(back.version).toBe(1)
+  })
+
+  it('leaves the caches of older shapes behind', () => {
+    window.localStorage.setItem('binders-hub-cache-v3:x', '{}')
+    window.localStorage.setItem('binders-hub-cache-v4:x', '{}')
+    window.localStorage.setItem('binders-hub-cache-v5:x', '{}')
+    startingSync(emptyState())
+    expect(window.localStorage.getItem('binders-hub-cache-v3:x')).toBeNull()
+    expect(window.localStorage.getItem('binders-hub-cache-v4:x')).toBeNull()
+    expect(window.localStorage.getItem('binders-hub-cache-v5:x')).toBeNull()
+    expect(keys.cache).toContain('cache-v6:')
+  })
+})
+
+// A card that finished a while ago is held without its detail (shared/work.ts leftCard): its brief, done-when, plan, debrief,
+// Challenge and activity are asked for when it's opened.
+
+const longAgo = '2026-10-01T00:00:00.000Z'
+const rightNow = Date.parse('2026-11-09T12:00:00.000Z')
+const wholeCard = (id: string, over: Partial<Card> = {}): Card => ({
+  id, binderId: 'b1', title: id, brief: `brief of ${id}`, doneWhen: `done when ${id}`, size: 'M', stage: 'live', createdAt: longAgo, createdBy: 'you', updatedAt: longAgo, waitsFor: [],
+  plan: [{ text: 'step', done: true }], debrief: { state: 'done', askedBy: 'you', askedAt: longAgo, agentId: 'a1' } as Card['debrief'],
+  activity: [{ at: longAgo, by: 'you', kind: 'comment', text: `said on ${id}` }], ...over,
+})
+const heldCards = (...cards: Card[]) => start({ confirmed: hubState({ notes: [], cards: cards.map((c) => leftCard(c)) }) })
+
+describe('taking in a card’s detail', () => {
+  it('takes the card as the hub has it when it’s the same version of the card, and nothing else changes', () => {
+    const sync = heldCards(wholeCard('c1'), wholeCard('c2'))
+    const next = holdCard(sync, wholeCard('c1'))
+    expect(next.confirmed.cards[0]).toMatchObject({ id: 'c1', brief: 'brief of c1', doneWhen: 'done when c1', plan: [{ text: 'step', done: true }] })
+    expect(next.confirmed.cards[0].left).toBeUndefined()
+    expect(next.confirmed.cards[0].activity).toHaveLength(1)
+    expect(next.confirmed.cards[1]).toBe(sync.confirmed.cards[1])
+  })
+
+  it('refuses a card of another version: it changed meanwhile, or the feed is behind', () => {
+    const sync = heldCards(wholeCard('c1'))
+    expect(holdCard(sync, wholeCard('c1', { updatedAt: '2026-11-01T00:00:00.000Z' }))).toBe(sync)
+    expect(sync.confirmed.cards[0].brief).toBe('')
+  })
+
+  it('refuses a card that is whole already, one that isn’t there, and one that is itself held without its detail', () => {
+    const whole = start({ confirmed: hubState({ notes: [], cards: [wholeCard('c1')] }) })
+    expect(holdCard(whole, wholeCard('c1', { brief: 'something else' }))).toBe(whole)
+    const sync = heldCards(wholeCard('c1'))
+    expect(holdCard(sync, wholeCard('missing'))).toBe(sync)
+    expect(holdCard(sync, leftCard(wholeCard('c1')))).toBe(sync)
+  })
+
+  it('shows the held card with a change waiting on top of it, and keeps it held through the live feed', () => {
+    const held = holdCard(heldCards(wholeCard('c1')), wholeCard('c1'))
+    const moved = queue(held, { type: 'card.update', id: 'c1', fields: { stage: 'ready' }, activity: { at: 'now', by: 'you', kind: 'moved', text: 'Moved it to Ready' } }, new Set())
+    expect(shown(moved).cards[0]).toMatchObject({ stage: 'ready', brief: 'brief of c1' })
+    const next = receive(held, [entry(2, { type: 'card.update', id: 'c1', fields: { doing: 'Reading' } })], new Set())
+    expect(next.confirmed.cards[0]).toMatchObject({ doing: 'Reading', brief: 'brief of c1' })
+    expect(next.confirmed.cards[0].left).toBeUndefined()
+  })
+
+  it('keeps a card held without its detail through the live feed, so a change never lands on it as if it had it', () => {
+    const next = receive(heldCards(wholeCard('c1')), [entry(2, { type: 'card.update', id: 'c1', fields: { brief: 'new words' } })], new Set())
+    expect(next.confirmed.cards[0]).toMatchObject({ brief: '', doneWhen: '' })
+    expect(next.confirmed.cards[0].left).toBeDefined()
+  })
+})
+
+describe('a snapshot, for a card whose detail this tab holds', () => {
+  it('keeps the detail through a snapshot of the same version of the card, and takes the rest as it comes', () => {
+    const sync = holdCard(heldCards(wholeCard('c1'), wholeCard('c2')), wholeCard('c1'))
+    const next = snapshot(sync, 5, hubState({ notes: [], cards: [leftCard(wholeCard('c1', { title: 'Renamed' })), leftCard(wholeCard('c2')), leftCard(wholeCard('c3'))] }))
+    expect(next.version).toBe(5)
+    expect(next.confirmed.cards[0]).toMatchObject({ id: 'c1', title: 'Renamed', brief: 'brief of c1', doneWhen: 'done when c1', plan: [{ text: 'step', done: true }] })
+    expect(next.confirmed.cards[0].left).toBeUndefined()
+    expect(next.confirmed.cards[0].activity).toHaveLength(1)
+    expect(next.confirmed.cards[0].debrief).toMatchObject({ state: 'done' })
+    expect(next.confirmed.cards[1]).toMatchObject({ brief: '', left: { debrief: 'done' } })
+    expect(next.confirmed.cards[2].left).toBeDefined()
+  })
+
+  it('doesn’t keep the detail through a snapshot of a card that changed since', () => {
+    const sync = holdCard(heldCards(wholeCard('c1')), wholeCard('c1'))
+    const next = snapshot(sync, 5, hubState({ notes: [], cards: [leftCard(wholeCard('c1', { updatedAt: '2026-11-02T00:00:00.000Z' }))] }))
+    expect(next.confirmed.cards[0]).toMatchObject({ brief: '', doneWhen: '' })
+    expect(next.confirmed.cards[0].left).toBeDefined()
+  })
+
+  it('takes a card that comes whole as it comes, and hands a snapshot with no held cards over as it is', () => {
+    const state = hubState({ notes: [], cards: [wholeCard('c1', { stage: 'ready', updatedAt: 'now' })] })
+    expect(snapshot(heldCards(wholeCard('c1')), 5, state).confirmed).toBe(state)
+  })
+})
+
+describe('what an old card’s detail costs the copy kept for next time', () => {
+  const stored = () => JSON.parse(window.localStorage.getItem(keys.cache)!).confirmed.cards as Card[]
+  const many = (count: number, over: Partial<Card> = {}) => start({ confirmed: hubState({ notes: [], cards: Array.from({ length: count }, (_, index) => wholeCard(`c${index}`, over)) }) })
+
+  it('is the detail of the last 20 old cards opened, and the rest without it', () => {
+    rememberCache(many(30), [], Array.from({ length: 25 }, (_, index) => `c${index}`), rightNow)
+    const cards = stored()
+    expect(cards.filter((c) => !c.left).map((c) => c.id)).toEqual(Array.from({ length: 20 }, (_, index) => `c${index}`))
+    expect(cards[25]).toMatchObject({ id: 'c25', brief: '', doneWhen: '', activity: [], activityMore: 1, left: { debrief: 'done' } })
+    expect(cards[25].plan).toBeUndefined()
+    expect(cards[25].debrief).toBeUndefined()
+  })
+
+  it('leaves what’s in memory as it was', () => {
+    const sync = many(3)
+    const before = JSON.stringify(sync.confirmed)
+    rememberCache(sync, [], [], rightNow)
+    expect(JSON.stringify(sync.confirmed)).toBe(before)
+    expect(stored().every((c) => c.left && c.brief === '')).toBe(true)
+  })
+
+  it('writes a card with changes waiting whole as well', () => {
+    const change: Change = { type: 'card.update', id: 'c1', fields: { size: 'L' } }
+    rememberCache(queue(many(3), change, new Set()), [], [], rightNow)
+    expect(stored().map((c) => !c.left)).toEqual([false, true, false])
+  })
+
+  it('writes a card that finished lately, or isn’t done, whole, as the hub sends it so', () => {
+    const sync = start({ confirmed: hubState({ notes: [], cards: [wholeCard('lately', { updatedAt: '2026-11-08T00:00:00.000Z' }), wholeCard('working', { stage: 'working' }), wholeCard('asks', { needsYou: 'which?' })] }) })
+    rememberCache(sync, [], [], rightNow)
+    expect(stored().map((c) => !c.left)).toEqual([true, true, true])
+  })
+
+  it('writes a card it was given held as it is, and doesn’t write every card again when none has detail to leave out', () => {
+    const sync = heldCards(wholeCard('c1'))
+    rememberCache(sync, [], ['c1'], rightNow)
+    expect(stored()[0]).toMatchObject({ id: 'c1', brief: '', left: { debrief: 'done' } })
+  })
+
+  it('is read back after a reload: the held cards and the ones kept', () => {
+    rememberCache(many(3), [], ['c2'], rightNow)
+    const back = startingSync(emptyState())
+    expect(back.confirmed.cards.map((c) => !c.left)).toEqual([false, false, true])
+    expect(back.confirmed.cards[2]).toMatchObject({ brief: 'brief of c2', plan: [{ text: 'step', done: true }] })
   })
 })

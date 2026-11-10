@@ -37,7 +37,7 @@ export function RunnerSteps({ agent, token: given }: { agent: Agent; token?: str
   return (
     <ol className="runner-steps">
       <li>
-        <h3>Paste this in {windows ? 'PowerShell' : 'Terminal'} <span className="faint">needs Node 20 or newer</span></h3>
+        <h3>Paste this in {windows ? 'PowerShell' : 'Terminal'} <span className="faint">needs Node 22 or newer</span></h3>
         <div className="segmented runner-how" role="radiogroup" aria-label="What it runs on">
           <button type="button" role="radio" aria-checked={!windows} className={!windows ? 'on' : ''} onClick={() => setWindows(false)}>macOS or Linux</button>
           <button type="button" role="radio" aria-checked={windows} className={windows ? 'on' : ''} onClick={() => setWindows(true)}>Windows</button>
@@ -46,6 +46,8 @@ export function RunnerSteps({ agent, token: given }: { agent: Agent; token?: str
           <button type="button" role="radio" aria-checked={how === 'background'} className={how === 'background' ? 'on' : ''} onClick={() => setHow('background')}>In the background</button>
           <button type="button" role="radio" aria-checked={how === 'terminal'} className={how === 'terminal' ? 'on' : ''} onClick={() => setHow('terminal')}>In this terminal</button>
         </div>
+        {/* With no folder set, the command is run where the code is: `binders add` works in the folder it's run from. */}
+        {!where && <p>Run this in the folder with the code.</p>}
         {token ? (
           <Command text={command} copied={copied} onCopy={() => void copy()} />
         ) : (
@@ -55,7 +57,7 @@ export function RunnerSteps({ agent, token: given }: { agent: Agent; token?: str
           </div>
         )}
         <p className="faint">
-          {where ? <>It works in <span className="mono">{where}</span>, as set for this agent. </> : 'Change ~/path/to/your/code to the folder with the code, or set it once in this agent’s settings. '}
+          {where && <>It works in <span className="mono">{where}</span>, as set for this agent. </>}
           {how === 'background'
             ? <>It installs the <span className="mono">binders</span> command and keeps the agent running in the background: at login, and again after a crash. Then <span className="mono">binders list</span> shows your agents, and <span className="mono">binders logs</span>, <span className="mono">restart</span>, <span className="mono">stop</span> and <span className="mono">remove</span> do what they say. It takes each card as it comes, and updates itself.</>
             : 'Leave it running: it takes each card as it comes, and updates itself. Restarting? Stop the old one first with Ctrl-C.'}
@@ -69,29 +71,33 @@ export function RunnerSteps({ agent, token: given }: { agent: Agent; token?: str
   )
 }
 
-/** The command to paste, for where it's going to run. */
+/**
+ * The command to paste, for where it's going to run. With no folder set it has no `--workspace`: the runner works in the
+ * folder the command is run in, and the page says so above it.
+ */
 export function runnerCommand({ windows, how, origin, token, where }: { windows: boolean; how: 'background' | 'terminal'; origin: string; token: string; where?: string }) {
-  const folder = where ? (where.includes(' ') ? `'${where}'` : where) : windows ? '$HOME/path/to/your/code' : '~/path/to/your/code'
+  const folder = where && (where.includes(' ') ? `'${where}'` : where)
+  const workspace = folder ? ` --workspace ${folder}` : ''
   if (windows) {
     const file = '$HOME/.binders/binders-runner.mjs'
     return how === 'background'
-      ? `& ([scriptblock]::Create((irm ${origin}/install.ps1))) add --token ${token} --workspace ${folder}`
+      ? `& ([scriptblock]::Create((irm ${origin}/install.ps1))) add --token ${token}${workspace}`
       : [
-          ...(where ? [`cd ${folder}`] : []),
+          ...(folder ? [`cd ${folder}`] : []),
           `New-Item -ItemType Directory -Force $HOME/.binders | Out-Null`,
           `irm ${origin}/runner/binders-runner.mjs -OutFile ${file}`,
           `$env:BINDERS_TOKEN='${token}'`,
-          `node ${file} --hub ${origin}${where ? '' : ` --workspace ${folder}`}`,
+          `node ${file} --hub ${origin}`,
         ].join('; ')
   }
   const file = '~/.binders/binders-runner.mjs'
   return how === 'background'
-    ? `curl -fsSL ${origin}/install | sh -s -- add --token ${token} --workspace ${folder}`
+    ? `curl -fsSL ${origin}/install | sh -s -- add --token ${token}${workspace}`
     : [
-        ...(where ? [`cd ${folder}`] : []),
+        ...(folder ? [`cd ${folder}`] : []),
         `mkdir -p ~/.binders`,
         `curl -fsSL ${origin}/runner/binders-runner.mjs -o ${file}`,
-        `BINDERS_TOKEN=${token} node ${file} --hub ${origin}${where ? '' : ' --workspace ~/path/to/your/code'}`,
+        `BINDERS_TOKEN=${token} node ${file} --hub ${origin}`,
       ].join(' && ')
 }
 

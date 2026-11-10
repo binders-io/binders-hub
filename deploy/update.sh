@@ -43,7 +43,8 @@ fi
 # With a tunnel's settings, the tunnel; without, the hub on a port of this machine for Caddy or nginx.
 compose=(-f deploy/compose.yml)
 if [ -f "$etc/tunnel.env" ]; then compose+=(--profile tunnel); else compose+=(-f deploy/compose.port.yml); fi
-docker compose "${compose[@]}" up -d --build --remove-orphans --wait --wait-timeout 180
+# --wait ends when the hub says it's ready, once every Binder has started: up to ten minutes, as compose.yml allows.
+docker compose "${compose[@]}" up -d --build --remove-orphans --wait --wait-timeout 660
 echo "$next" >"$data/deployed"
 rm -f "$data/failed" "$data/hub/update-failed.txt"
 docker image prune -f >/dev/null

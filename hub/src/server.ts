@@ -8,6 +8,7 @@ import { RedisLog } from './log.ts'
 import type { OptionsStore } from './options.ts'
 import { agentRoutes } from './routes/agents.ts'
 import { binderRoutes } from './routes/binders.ts'
+import { copyRoutes } from './routes/copies.ts'
 import { makeContext } from './routes/context.ts'
 import { githubRoutes } from './routes/github.ts'
 import { jiraRoutes } from './routes/jira.ts'
@@ -16,9 +17,15 @@ import { oauthRoutes } from './routes/oauth.ts'
 import { personalRoutes } from './routes/personal.ts'
 import { signInRoutes } from './routes/signIn.ts'
 import { stateRoutes } from './routes/state.ts'
+import { tellRoutes } from './routes/tell.ts'
 import { webRoutes } from './routes/web.ts'
 import { workRoutes } from './routes/work.ts'
-import type { Role, Space, Spaces } from './spaces.ts'
+import { brainRoutes } from './routes/brain.ts'
+import { appLinkRoutes } from './routes/appLink.ts'
+import type { BrainSettingsStore } from './brain/settings.ts'
+import type { BrainMachines } from './brain/machines.ts'
+import { readerMaySend } from './reader.ts'
+import { readerWords, type Role, type Space, type Spaces } from './spaces.ts'
 
 export { installer } from './routes/machines.ts'
 
@@ -61,12 +68,24 @@ declare module 'fastify' {
  *
  * A hub holds one or more Binders (spaces, in the code), each a team's own board. Most of /api is about one of them:
  * the one a request names with x-binders-space, or the first the person may open. Who may open which is the
- * Binder's members; the hub's admins make Binders and may open all of them.
+ * Binder's members; the hub's admins make Binders and look after those that have no owner.
  */
-export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: OptionsStore }, options: ServerOptions) {
+export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: OptionsStore; brain?: BrainSettingsStore; machines?: BrainMachines }, options: ServerOptions) {
   const context = makeContext(spaces, deps, options)
   const { auth, isAdmin, secure, signInSpace } = context
+  // A Binder with no owner is looked after by the hub's admins: the Binders' roles ask who they are.
+  spaces.hubAdmin = isAdmin
   const app = Fastify({ ...(options.logger ? { loggerInstance: options.logger } : { logger: false }), logController: new LogController({ disableRequestLogging: !options.logRequests }), bodyLimit: 4 * 1024 * 1024, trustProxy: trustedProxies() })
+  // The hub listens before its Binders have started, which takes a while with many of them: a server that watches
+  // /health then sees a hub that's busy, not one that's gone. Until they're up, it's all that's answered besides /ready.
+  app.addHook('onRequest', async (request, reply) => {
+    if (spaces.ready) return
+    const path = request.url.split('?')[0]
+    if (path === '/health' || path === '/ready') return
+    const error = 'The hub is still starting. Try again in a moment.'
+    reply.code(503).header('retry-after', '5')
+    return path.startsWith('/api/') ? reply.send({ error }) : reply.type('text/plain; charset=utf-8').send(error)
+  })
   await app.register(websocket)
   await app.register(cookie)
   // OAuth's token, registration and revocation requests are form-encoded, as the spec says. A field sent more than once
@@ -118,8 +137,9 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
   // Who's asking, for everything under /api.
   app.addHook('onRequest', async (request, reply) => {
     if (!request.url.startsWith('/api/')) return
-    // A runner's live link says who it is in its first message: its agent's token.
-    if (request.url.split('?')[0] === '/api/runner/live') return
+    // A runner's live link says who it is in its first message: its agent's token. So does a brain machine's, and its
+    // who-am-I takes the machine's own token.
+    if (['/api/runner/live', '/api/brain/machine', '/api/brain/machine/me', '/api/brain/machines/join', '/api/machines/join'].includes(request.url.split('?')[0])) return
     // An app's person token. A browser only sends this header when a page sets it, and no other site's page may (no
     // CORS here), so it needs no x-binders header.
     const bearer = /^Bearer\s+(.+)$/i.exec(request.headers.authorization ?? '')?.[1]
@@ -148,7 +168,8 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
     const mine = spaces.forPerson(request.user.login, isAdmin(request.user.login))
     const found = named ? mine.find((s) => s.info.id === named) : mine[0]
     if (found) {
-      request.space = spaces.get(found.info.id)
+      // Started now if it's a personal Binder nobody has needed since the hub started.
+      request.space = await spaces.start(found.info.id)
       request.role = found.role
       // Their GitHub for this Binder: their sign-in to its own app (signed in before the hub kept one per Binder, the
       // token they signed in with, which is the first Binder's).
@@ -159,12 +180,25 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
     if (!request.space && !hubWide.test(request.url)) {
       return reply.code(403).send({ error: named ? 'You’re not in that Binder. Ask one of its owners to add you.' : 'You’re not in a Binder on this hub yet. Ask one of its admins to add you.' })
     }
+    // A reader changes nothing in a Binder: this is the one place that says so, for every route, so one added later is
+    // refused too until reader.ts lets it through. The Binders' own routes are about the Binder in their path.
+    const about = /^\/api\/spaces\/([^/?]+)/.exec(request.url)
+    let role = request.role
+    if (about) {
+      try {
+        role = mine.find((s) => s.info.id === decodeURIComponent(about[1]))?.role
+      } catch {
+        role = undefined
+      }
+    }
+    if (role === 'reader' && !readerMaySend(request.method, request.url, request.user.login)) return reply.code(403).send({ error: readerWords })
   })
 
-  /** What's the hub's rather than one Binder's: who you are, your tokens, its options, GitHub, and its Binders. */
-  const hubWide = /^\/api\/(me|tokens|options|spaces)(\/|\?|$)/
+  /** What's the hub's rather than one Binder's: who you are, your tokens, its options, GitHub, and its Binders (the list of them, too). */
+  const hubWide = /^\/api\/(me|tokens|options|spaces|hub)(\/|\?|$)/
   app.get('/health', async () => ({ ok: true }))
   app.get('/ready', async (_request, reply) => {
+    if (!spaces.ready) return reply.code(503).send({ ok: false, message: 'The hub is still starting its Binders.' })
     const log = spaces.all()[0]?.hub.log
     const ready = log instanceof RedisLog ? await log.ping().catch(() => false) : !!log
     return reply.code(ready ? 200 : 503).send({ ok: ready, log: log?.kind, binders: spaces.list().length })
@@ -173,12 +207,16 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
   await signInRoutes(app, context)
   await stateRoutes(app, context)
   await binderRoutes(app, context)
+  await copyRoutes(app, context)
   await workRoutes(app, context)
   await agentRoutes(app, context)
   await githubRoutes(app, context)
   await personalRoutes(app, context)
   await machineRoutes(app, context)
   await jiraRoutes(app, context)
+  await tellRoutes(app, context)
+  await brainRoutes(app, context)
+  await appLinkRoutes(app, context)
   await oauthRoutes(app, context)
   await webRoutes(app, context)
 

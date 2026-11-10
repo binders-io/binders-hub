@@ -98,6 +98,17 @@ serviceAccount:
   annotations: {}
   automount: false
 
+# How long the hub has to start before Kubernetes gives up on it and starts it again (periodSeconds times
+# failureThreshold: ten minutes). Starting reads each Binder's saved state and the end of its change log, which takes
+# longer the more the hub holds. The liveness check only begins once the hub has started.
+startupProbe:
+  periodSeconds: 10
+  failureThreshold: 60
+
+# How long the hub has to save its state when it's stopped (an upgrade, a node drain) before Kubernetes ends it.
+# Kubernetes' own default is 30 seconds.
+terminationGracePeriodSeconds: 90
+
 resources: {}
 nodeSelector: {}
 tolerations: []

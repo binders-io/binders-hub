@@ -1,4 +1,5 @@
 import { tools, type AgentTool } from './agents.ts'
+import { trashKept } from './notes.ts'
 import { withTestResult, type Challenge, type Debrief, type TestResult, type WorktreeDiff } from './changeSet.ts'
 import { runsKept, type Schedule, type ScheduleRun } from './schedule.ts'
 // The work: cards on a binder's board, the agents that take them, their pull requests, the change sets those are
@@ -178,9 +179,22 @@ export interface Card {
   plan?: PlanStep[]
   /** A question waiting for a person. */
   needsYou?: string
+  /**
+   * The last time its work stopped without finishing: why, when, and how many times running. Twice running and it
+   * waits in Blocked for a person, with why as its question. Gone once it's finished or a person moves it on.
+   */
+  stopped?: { why: string; at: string; times: number }
   /** A live run waiting on a permission: what it wants to do, until its agent's owner answers or the run moves on. */
   permission?: { request: string; agent: string; tool: string; what: string; at: string; answer?: 'allow' | 'deny'; by?: string }
   activity: Activity[]
+  /** In a browser's light state: how many older lines of its activity were left out, which the card's page asks for when it opens. */
+  activityMore?: number
+  /**
+   * On a browser only: this card finished a while ago and its detail isn't here (its brief and done-when are empty, and it
+   * has no plan, debrief, Challenge or activity), until the card is opened. This says how its debrief and Challenge stood.
+   * The hub never keeps one, and refuses a card sent with one.
+   */
+  left?: CardLeft
   cost?: number
   /** Tokens its runs used, all told. */
   tokens?: number
@@ -295,6 +309,12 @@ export interface PullRequest {
    * without help), with conflicts someone has to resolve, blocked by the repo's rules, or not known yet.
    */
   mergeable?: 'clean' | 'behind' | 'conflicts' | 'blocked' | 'unknown'
+  /** The commit it made on its base when it merged, as GitHub says: what an environment's deployed commit is compared with. Missing from before it was kept. */
+  mergeSha?: string
+  /** When the hub first saw it merged or closed, if its card didn't say: what the weeks its diff is kept for are counted from. */
+  endedAt?: string
+  /** The lines of its files were dropped from the state, once it had been over for a while: GitHub has them, and the hub asks when they're opened. */
+  linesDropped?: boolean
 }
 
 export type ChangeSetState = 'assembling' | 'review' | 'merging' | 'merged' | 'shipped'
@@ -323,17 +343,75 @@ export interface ChangeSet {
 export type EnvState = 'healthy' | 'deploying' | 'waiting' | 'failed'
 
 export interface Environment {
+  /** `<owner/name>#<name>`, in lower case (`environmentId`). */
   id: string
+  /** The repo it's an environment of, as owner/name. One without is from before environments were per repo, and is dropped. */
+  repo?: string
+  /** As GitHub names it. */
   name: string
+  /** Where it's served, when GitHub or a person says: an http or https address, else empty. */
   url: string
+  /** What's on it: the version its deploy named, else the tag or branch, else the commit's first seven. Empty until GitHub reports a deployment to it. */
   version: string
+  /** The commit that's on it. */
+  sha?: string
+  /** The pull requests of its repo that are on it. */
+  pullIds?: string[]
+  /** The change sets with a pull request on it. */
   changeSetIds: string[]
   state: EnvState
+  /** When it was deployed, as GitHub says; empty until it has been. */
   deployedAt: string
+  /** The run that deployed it, on GitHub. */
+  logUrl?: string
+  /** A person presses Promote before the hub deploys to it. Only with `deploy`. */
   needsApproval: boolean
   progress?: number
-  /** How a promotion is carried out: a GitHub Actions workflow run with the version. None: the hub records it. */
+  /** How the hub deploys to it: a workflow run with the version. None: the hub only follows what GitHub deploys there. */
   deploy?: { repo: string; workflow: string; ref: string }
+  /** Its place among its repo's environments: lower is deployed to first. */
+  order?: number
+  /** Found on GitHub, or set up by a person. */
+  by?: 'github' | 'person'
+}
+
+/** An environment's id: its repo and its name, in lower case, so GitHub's capitals and a person's are the same one. */
+export const environmentId = (repo: string, name: string) => `${repo.trim().toLowerCase()}#${name.trim().toLowerCase()}`
+
+/** A repo's environments, in the order they're deployed to. One with no place yet comes after those that have one. */
+export function repoEnvironments(state: Pick<WorkState, 'environments'>, repo: string | undefined): Environment[] {
+  if (!repo) return []
+  return state.environments
+    .map((env, at) => ({ env, at }))
+    .filter(({ env }) => sameRepo(env.repo, repo))
+    .sort((a, b) => (a.env.order ?? Infinity) - (b.env.order ?? Infinity) || a.at - b.at)
+    .map(({ env }) => env)
+}
+
+/** The environment a deploy to this one comes from: the one before it in its repo. */
+export function environmentBefore(state: Pick<WorkState, 'environments'>, env: Pick<Environment, 'id' | 'repo'>): Environment | undefined {
+  const all = repoEnvironments(state, env.repo)
+  return all[all.findIndex((e) => e.id === env.id) - 1]
+}
+
+/** What Promote would put on an environment: the one before it's version, when it has a deploy workflow and differs. */
+export function promotion(state: Pick<WorkState, 'environments'>, env: Environment): { from: Environment; version: string } | undefined {
+  const from = environmentBefore(state, env)
+  if (!env.deploy || !from || !from.version || from.version === env.version || env.state === 'deploying') return undefined
+  return { from, version: from.version }
+}
+
+/**
+ * The repos a binder's delivery follows: its own, those its agents work in, its agents' own, and those its pull requests
+ * are in. Each once, as it was first written.
+ */
+export function deliveryRepos(state: Pick<WorkState, 'agents' | 'pulls'> & { binders: { repo?: string; repos?: string[] }[] }): string[] {
+  const all = [
+    ...state.binders.flatMap((b) => binderRepos(b)),
+    ...state.agents.filter((a) => !a.revoked).flatMap((a) => a.repos),
+    ...state.pulls.map((p) => p.repo),
+  ].filter(Boolean)
+  return all.filter((r, i) => all.findIndex((x) => sameRepo(x, r)) === i)
 }
 
 export interface Run {
@@ -460,6 +538,22 @@ export interface WorkState {
   briefs?: RepoBrief[]
   folderRules?: FolderRule[]
   noteWork?: NoteWork[]
+  /** Cards deleted in the last 30 days, oldest first: the hub's, never in what a browser holds (shared/light.ts). */
+  trashedCards?: TrashedCard[]
+}
+
+/** A card deleted, whole with its activity, with who deleted it and when: it can be put back until it's emptied from the trash. */
+export interface TrashedCard {
+  card: Card
+  /** A person's login, an agent's name, or "hub". */
+  by: string
+  at: string
+}
+
+/** The card as it's put back: in its stage, held by no agent, and a card that was being worked waiting in Ready. */
+export function cardPutBack(card: Card, by: string, at: string): Card {
+  const { agentId: _holder, permission: _permission, doing: _doing, progress: _progress, ...rest } = card
+  return withActivity({ ...rest, stage: card.stage === 'working' ? 'ready' : card.stage }, { at, by, kind: 'moved', text: 'Put back from the trash' })
 }
 
 export const emptyWork = (): WorkState => ({ agents: [], cards: [], proposals: [], pulls: [], changeSets: [], environments: [], runs: [], chats: [], schedules: [], briefs: [], folderRules: [], noteWork: [] })
@@ -471,13 +565,15 @@ export type WorkChange =
   | { type: 'agent.put'; agent: Agent }
   | { type: 'agent.seen'; id: string; at: string }
   | { type: 'agent.revoke'; id: string }
-  | { type: 'card.put'; card: Card }
+  /** `restored`: the hub put it back from the trash, which only it says, so the trash lets go of it. */
+  | { type: 'card.put'; card: Card; restored?: { by: string; at: string } }
   | { type: 'card.update'; id: string; fields: Partial<Omit<Card, 'id' | 'activity'>>; activity?: Activity }
   /** An agent taking a card: only the first one applied gets it, so two agents asking at once never both do. */
   | { type: 'card.claim'; id: string; agentId: string; at: string }
-  | { type: 'card.release'; id: string; agentId: string; at: string; why: string }
+  | { type: 'card.release'; id: string; agentId: string; at: string; why: string; failed?: boolean }
   | { type: 'card.activity'; id: string; activity: Activity }
-  | { type: 'card.delete'; id: string }
+  /** `by` and `at` are the hub's, stamped on as it's written: with them, the card goes to the trash instead of nowhere. */
+  | { type: 'card.delete'; id: string; by?: string; at?: string }
   | { type: 'proposal.put'; proposal: Proposal }
   | { type: 'proposal.update'; id: string; fields: Partial<Pick<Proposal, 'state' | 'cardId' | 'meantFor' | 'claim' | 'rule'>> }
   /** A proposal accepted: only the first counts, and under a rule, only up to its limit for the note. */
@@ -534,9 +630,85 @@ export function forWire<C extends { type: string }>(change: C): C {
 
 const upsert = <T extends { id: string }>(list: T[], item: T) => (list.some((x) => x.id === item.id) ? list.map((x) => (x.id === item.id ? item : x)) : [...list, item])
 const patch = <T extends { id: string }>(list: T[], id: string, fields: object): T[] => list.map((x) => (x.id === id ? merge(x, fields) : x))
+/** How many runs in a row may fail before the card waits for a person instead of going back to Ready. */
+export const stoppedTwice = 2
+
+/** What a card stopped by failing runs asks, in Blocked: why, and that any answer puts it back in Ready. */
+export const stoppedQuestion = (why: string) => {
+  const reason = why.trim().slice(0, 600)
+  return `It stopped twice without finishing: ${/[.!?]$/.test(reason) ? reason : `${reason}.`} Fix what’s wrong, then answer here and it goes back to Ready.`
+}
+
 const withActivity = (card: Card, activity: Activity): Card => ({ ...card, activity: [...card.activity, activity].slice(-activityKept), updatedAt: activity.at })
 
+/** What stands in for a finished card's detail on a browser that hasn't opened it: how its debrief and Challenge stood. */
+export interface CardLeft {
+  debrief?: Debrief['state']
+  challenge?: Challenge['state']
+}
+
+/** How long after it finished a card's detail stops being sent with a browser's first load. */
+export const oldAfterMs = 14 * 86_400_000
+
+const underWay = (state: 'asked' | 'writing' | 'reviewing' | 'done' | 'failed' | undefined) => state === 'asked' || state === 'writing' || state === 'reviewing'
+
+/**
+ * A card whose detail a list no longer needs: it's live, it was last changed more than two weeks ago, and nothing in it
+ * waits on a person or is under way (no question, no permission, no finding still open, no debrief or Challenge being
+ * written). A date that isn't one, as in sample data, is never old.
+ */
+export const isOld = (card: Card, now: number) =>
+  card.stage === 'live' && now - Date.parse(card.updatedAt) > oldAfterMs && !card.needsYou && !card.permission &&
+  !card.challenge?.findings?.some((finding) => !finding.outcome) && !underWay(card.debrief?.state) && !underWay(card.challenge?.state)
+
+/** A card as a browser holds it before it's opened: what a list shows of it, and what stands in for the rest. */
+export function leftCard(card: Card): Card {
+  if (card.left) return card
+  const { plan: _plan, worktree: _worktree, debrief, challenge, permission: _permission, ...rest } = card
+  return {
+    ...rest,
+    brief: '',
+    doneWhen: '',
+    activity: [],
+    activityMore: (card.activityMore ?? 0) + card.activity.length,
+    left: { ...(debrief ? { debrief: debrief.state } : {}), ...(challenge ? { challenge: challenge.state } : {}) },
+  }
+}
+
+/**
+ * A card a browser holds without its detail, after a change to it: still without, what stands in following the change.
+ * A card written whole says how its debrief and Challenge stand by itself; a change to some of it leaves the rest of what
+ * stands in as it was, and takes away what the change took away.
+ */
+function keptLeft(was: Card, now: Card, change: WorkChange): Card {
+  const light = leftCard({ ...now, left: undefined })
+  if (change.type === 'card.put') return light
+  const left = { ...was.left, ...light.left }
+  const said: object = change.type === 'card.update' ? change.fields : {}
+  if ('debrief' in said && !now.debrief) delete left.debrief
+  if ('challenge' in said && !now.challenge) delete left.challenge
+  return { ...light, left }
+}
+
+/**
+ * A change applied. On a browser, a card held without its detail stays that way whatever the change brings (a brief, a
+ * debrief, a line of activity): its detail is asked for when the card is opened. The hub's cards are never held so.
+ */
 export function applyWork<S extends WorkState>(state: S, change: WorkChange): S {
+  const next = applyWhole(state, change)
+  if (next.cards === state.cards) return next
+  let before: Map<string, Card> | undefined
+  let cards: Card[] | undefined
+  next.cards.forEach((card, at) => {
+    const was = state.cards[at]?.id === card.id ? state.cards[at] : (before ??= new Map(state.cards.map((c) => [c.id, c]))).get(card.id)
+    if (!was?.left || was === card) return
+    cards ??= next.cards.slice()
+    cards[at] = keptLeft(was, card, change)
+  })
+  return cards ? { ...next, cards } : next
+}
+
+function applyWhole<S extends WorkState>(state: S, change: WorkChange): S {
   switch (change.type) {
     case 'agent.put':
       return { ...state, agents: upsert(state.agents, change.agent) }
@@ -549,8 +721,10 @@ export function applyWork<S extends WorkState>(state: S, change: WorkChange): S 
         // What it held goes back on the board.
         cards: state.cards.map((c) => (c.agentId === change.id && c.stage === 'working' ? { ...c, permission: undefined, agentId: undefined, stage: 'ready', doing: undefined, progress: undefined } : c)),
       }
-    case 'card.put':
-      return { ...state, cards: upsert(state.cards, { ...change.card, stage: current(change.card.stage) }) }
+    case 'card.put': {
+      const trashed = change.restored ? state.trashedCards?.filter((t) => t.card.id !== change.card.id) : state.trashedCards
+      return { ...state, cards: upsert(state.cards, { ...change.card, stage: current(change.card.stage) }), ...(trashed ? { trashedCards: trashed } : {}) }
+    }
     case 'card.update':
       return {
         ...state,
@@ -581,14 +755,26 @@ export function applyWork<S extends WorkState>(state: S, change: WorkChange): S 
     case 'card.release':
       return {
         ...state,
-        cards: state.cards.map((c) => (c.id === change.id && c.agentId === change.agentId
-          ? withActivity({ ...c, agentId: undefined, stage: 'ready', doing: undefined, progress: undefined, permission: undefined }, { at: change.at, by: change.agentId, kind: 'released', text: change.why })
-          : c)),
+        cards: state.cards.map((c) => {
+          if (c.id !== change.id || c.agentId !== change.agentId) return c
+          // A run that failed is counted; the second one in a row stops the card, in Blocked, for a person to look at.
+          const times = change.failed ? (c.stopped?.times ?? 0) + 1 : 0
+          const stopped = change.failed ? { why: change.why, at: change.at, times } : c.stopped
+          const waits = times >= stoppedTwice
+          const back = { ...c, agentId: undefined, stage: waits ? 'blocked' as const : 'ready' as const, doing: undefined, progress: undefined, permission: undefined, ...(stopped ? { stopped } : {}), ...(waits ? { needsYou: stoppedQuestion(change.why) } : {}) }
+          return withActivity(back, { at: change.at, by: change.agentId, kind: 'released', text: change.why })
+        }),
       }
     case 'card.activity':
       return { ...state, cards: state.cards.map((c) => (c.id === change.id ? withActivity(c, change.activity) : c)) }
-    case 'card.delete':
-      return { ...state, cards: state.cards.filter((c) => c.id !== change.id) }
+    case 'card.delete': {
+      const card = state.cards.find((c) => c.id === change.id)
+      if (!card) return state
+      // Stamped by the hub, it goes to the trash, whole; without a stamp (from before there was a trash, or a client's own
+      // copy of the change) it's just removed, so a log read again from its start doesn't fill the trash.
+      const trashed = change.at ? [...(state.trashedCards ?? []).filter((t) => t.card.id !== card.id), { card, by: change.by ?? 'hub', at: change.at }].slice(-trashKept) : state.trashedCards
+      return { ...state, cards: state.cards.filter((c) => c.id !== change.id), ...(trashed ? { trashedCards: trashed } : {}) }
+    }
     case 'proposal.put':
       return { ...state, proposals: upsert(state.proposals, change.proposal) }
     case 'proposal.update':
@@ -752,8 +938,10 @@ export function resumeFor(state: WorkState, agent: Agent, busy: string[] = []): 
   const people = (by: string) => by !== 'hub' && !state.agents.some((a) => a.id === by)
   return state.cards.find((c) => {
     if (c.agentId !== agent.id || c.stage !== 'working' || c.needsYou || busy.includes(c.id)) return false
-    // Someone asking for its debrief or a Challenge isn't talking to the agent working it.
-    const last = c.activity.filter((a) => a.kind !== 'debrief' && a.kind !== 'challenge' && a.kind !== 'message').at(-1)
+    // Someone asking for its debrief or a Challenge isn't talking to the agent working it. Read from the end, as the last
+    // line is the one wanted and a card keeps hundreds.
+    let last: Activity | undefined
+    for (let i = c.activity.length - 1; i >= 0 && !last; i--) if (c.activity[i].kind !== 'debrief' && c.activity[i].kind !== 'challenge' && c.activity[i].kind !== 'message') last = c.activity[i]
     return !!last && (last.kind === 'answer' || last.kind === 'comment' || last.kind === 'moved') && people(last.by)
   })
 }
@@ -771,7 +959,7 @@ export function handMove(card: Pick<Card, 'stage' | 'agentId'>, stage: Stage): P
   if (card.stage === stage) return undefined
   if (stage === 'working' && !(card.stage === 'blocked' && card.agentId)) return undefined
   const keep = stage === 'review' || stage === 'live' || stage === 'blocked' || stage === 'working'
-  return { stage, needsYou: undefined, permission: undefined, doing: undefined, ...(keep ? {} : { agentId: undefined, progress: undefined }) }
+  return { stage, needsYou: undefined, permission: undefined, doing: undefined, stopped: undefined, ...(keep ? {} : { agentId: undefined, progress: undefined }) }
 }
 
 /** What a card is waiting on from a person, in a line: an agent's question, or a permission nobody has answered yet. */
@@ -779,16 +967,29 @@ export const asksOf = (card: Pick<Card, 'needsYou' | 'permission'>) =>
   card.needsYou ?? (card.permission && !card.permission.answer ? `Allow ${card.permission.tool}: ${card.permission.what}` : undefined)
 
 export function nextFor(state: WorkState & { binders: { id: string; repo?: string }[] }, agent: Agent, busy: string[] = []): Card | undefined {
-  const done = new Set(state.cards.filter((c) => c.stage === 'review' || c.stage === 'live').map((c) => c.id))
-  // A wait for a card that isn't on the board (deleted, or never a card's id) holds nothing up.
-  const there = new Set(state.cards.map((c) => c.id))
-  // A card split into parts isn't offered whole, however far along the parts are: it follows them.
-  const split = new Set(state.cards.flatMap((c) => (c.parent ? [c.parent] : [])))
-  return state.cards
-    .filter((c) => c.stage === 'ready' && !c.agentId && !busy.includes(c.id) && !split.has(c.id))
-    .filter((c) => mayTake(state, agent, c))
-    .filter((c) => c.waitsFor.every((w) => done.has(w) || !there.has(w)))
-    .sort((a, b) => Number(b.meantFor === agent.id) - Number(a.meantFor === agent.id) || a.createdAt.localeCompare(b.createdAt))[0]
+  // The cards it could take, found first and on their own: on a board of thousands few are ready, and everything else
+  // the board has to say is looked up only for these.
+  const open = state.cards.filter((c) => c.stage === 'ready' && !c.agentId && !busy.includes(c.id) && mayTake(state, agent, c))
+  if (!open.length) return undefined
+  const names = new Set(open.map((c) => c.id))
+  const waitedOn = new Set(open.flatMap((c) => c.waitsFor))
+  // One pass over the board for the two things asked of the rest of it: which of these were split into parts, and where
+  // the cards they wait on stand.
+  const split = new Set<string>()
+  const finished = new Map<string, boolean>()
+  for (const c of state.cards) {
+    if (c.parent && names.has(c.parent)) split.add(c.parent)
+    if (waitedOn.has(c.id)) finished.set(c.id, !!finished.get(c.id) || c.stage === 'review' || c.stage === 'live')
+  }
+  // A card split into parts isn't offered whole, however far along the parts are: it follows them. A wait for a card that
+  // isn't on the board (deleted, or never a card's id) holds nothing up.
+  const meant = (c: Card) => Number(c.meantFor === agent.id)
+  let best: Card | undefined
+  for (const c of open) {
+    if (split.has(c.id) || !c.waitsFor.every((w) => finished.get(w) ?? true)) continue
+    if (!best || meant(c) > meant(best) || (meant(c) === meant(best) && c.createdAt.localeCompare(best.createdAt) < 0)) best = c
+  }
+  return best
 }
 
 /**
@@ -831,7 +1032,7 @@ export function outsideBinders(repos: string[], agent: Pick<Agent, 'binders'>, b
   if (!scope.length) return undefined
   const outside = repos.filter((r) => !scope.some((s) => sameRepo(s, r)))
   if (!outside.length) return undefined
-  return `${outside.join(', ')} ${outside.length === 1 ? 'isn’t' : 'aren’t'} among its binder’s repos: add ${outside.length === 1 ? 'it' : 'them'} to the binder in Settings first, or pick from ${scope.length === 1 ? scope[0] : 'its repos'}.`
+  return `${outside.join(', ')} ${outside.length === 1 ? 'isn’t' : 'aren’t'} among its binder’s repos: add ${outside.length === 1 ? 'it' : 'them'} to the binder in Settings → GitHub first, or pick from ${scope.length === 1 ? scope[0] : 'its repos'}.`
 }
 
 /**

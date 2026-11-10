@@ -38,6 +38,7 @@ const kinds: Record<'site' | 'film', Kind> = {
     shots: [
       { name: 'hub-flow', hash: '#/flow', ready: '.columns .card.working' },
       { name: 'hub-card', hash: `#/work/${demoIds.card}`, ready: '.sdlc .now' },
+      // A change set's tabs keep their ids: `changes` is called Pull requests on screen, and `review` is called Challenge.
       { name: 'hub-change-set', hash: `#/changes/${demoIds.set}`, ready: '.stack .pull .diff', tab: 'set-tab-changes' },
       { name: 'hub-challenge', hash: `#/changes/${demoIds.set}`, ready: '.findings .finding', tab: 'set-tab-review' },
       { name: 'hub-delivery', hash: '#/delivery', ready: '.envs .env' },

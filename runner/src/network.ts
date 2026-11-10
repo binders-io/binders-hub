@@ -2,7 +2,7 @@
 // on its own, and a background service doesn't get the settings a person's shell has.
 
 /** What a service is given from the shell that sets it up: its proxy and certificate settings, for the runner and its agents. */
-const carried = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'NO_PROXY', 'no_proxy', 'ALL_PROXY', 'all_proxy', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR']
+const carried = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'NO_PROXY', 'no_proxy', 'ALL_PROXY', 'all_proxy', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'HF_HOME', 'HF_HUB_CACHE']
 
 export function serviceEnv(env: NodeJS.ProcessEnv = process.env) {
   return Object.fromEntries(carried.flatMap((name) => (env[name] ? [[name, env[name]!]] : []))) as Record<string, string>

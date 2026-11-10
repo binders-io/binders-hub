@@ -11,7 +11,7 @@ name: binders
 services:
   redis:
     image: redis:8.8-alpine
-    # Every change is appended to disk; the change log is the only copy of a change until GitHub has it.
+    # Every change is appended to disk: the change log holds the last seconds of changes, until the hub saves its state.
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--save", "", "--dir", "/data"]
     volumes:
       - ${BINDERS_DATA:-/var/lib/binders}/redis:/data
@@ -38,6 +38,14 @@ services:
     depends_on:
       - redis
     restart: unless-stopped
+    # Time to save its state when it's stopped (Docker's default is 10 seconds).
+    stop_grace_period: 90s
+    # Time to start: the hub says it's ready once every Binder has started, which a hub with many takes a while to. The image's own check gives it about a minute.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4400/ready').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 600s
 
   tunnel:
     image: cloudflare/cloudflared:2026.5.2

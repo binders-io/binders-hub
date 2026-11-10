@@ -3,10 +3,12 @@ import { ReasoningPicker, reasoningWords } from './Reasoning'
 import { ArrowUpRight, Ban, CornerUpLeft, MessageSquareReply, SquarePlus, Swords, Undo2 } from 'lucide-react'
 import { authorOf, authorsOf, byWorst, cardsOfSet, challengeable, openFindings, pullOf, repliable, replying, setOfCard, type BlastRadius, type Challenge, type Finding } from '../../../shared/changeSet.ts'
 import type { Card, ChangeSet, PullRequest } from '../data/model'
-import { nameFor, useStore } from '../data/store'
-import { ago } from './bits'
+import { nameFor, useBlastSymbols, useClock, useStore } from '../data/store'
+import { ago, quietWords, unpicked } from './bits'
 import { attempt } from './Toast'
 import { href } from '../route'
+import { useMayChangeBinder } from '../screens/settings/access'
+import { challengeStateOf } from '../data/cardDetail'
 
 // A Challenge: an adversarial review by an agent that didn't write the work, which gets the diff, the brief and the
 // done-when but never the authors' plan or log. Of a whole change set, all its pull requests together, so what goes
@@ -14,7 +16,8 @@ import { href } from '../route'
 // its set's. Each card then has the findings on its own pull request, worst first, each to be sent back to the agent
 // that wrote it, dismissed, or made a card of.
 
-const pending = (challenge?: Challenge) => !!challenge && (challenge.state === 'asked' || challenge.state === 'reviewing')
+// Asked, and nothing came of it for half an hour (nobody started, or it started and went quiet), is not pending: the hub takes a new ask then, so the page does too.
+const pending = (challenge?: Challenge) => !!challenge && (challenge.state === 'asked' || challenge.state === 'reviewing') && !unpicked(challenge)
 
 /** Whether there's anything to challenge: a card being built or in review, with a pull request or a worktree diff. */
 const canChallenge = (state: Parameters<typeof pullOf>[0], card: Card) => challengeable(card.stage) && (!!card.worktree || !!pullOf(state, card))
@@ -26,8 +29,10 @@ const canChallenge = (state: Parameters<typeof pullOf>[0], card: Card) => challe
 export function ChallengeButton({ card, inline = false, pick = false, className = 'button' }: { card: Card; inline?: boolean; pick?: boolean; className?: string }) {
   const store = useStore()
   const { state } = store
+  // Asking an agent to review changes the Binder: a reader has the findings that are there, and no button for more.
+  const may = useMayChangeBinder()
   const [reviewer, setReviewer] = useState('')
-  if (!canChallenge(state, card)) return null
+  if (!may || !canChallenge(state, card)) return null
   // In a change set, the set's: all its pull requests, all their authors. A new one waits for replies to the last.
   const set = setOfCard(state, card)
   const cards = set ? cardsOfSet(state, set) : [card]
@@ -53,7 +58,8 @@ export function ChallengeButton({ card, inline = false, pick = false, className 
       </button>
     )
   }
-  const label = busy ? 'Challenging…' : live?.state === 'done' ? 'Challenge again' : 'Challenge'
+  // A card held without its detail still says how its Challenge stood.
+  const label = busy ? 'Challenging…' : (live ? live.state : challengeStateOf(card)) === 'done' ? 'Challenge again' : 'Challenge'
   const button = <button type="button" className={className} disabled={busy || !reviewers.length} title={title} onClick={ask}><Swords size={13} /> {label}</button>
   if (busy || !reviewers.length) return button
   if (!pick) return <span className="challenge-ask"><ReasoningPicker />{button}</span>
@@ -81,7 +87,8 @@ function lineUrl(pull: PullRequest | undefined, finding: Finding) {
 /** Asks the author to reply to the findings: one round, so the button goes once it's answered. */
 function RepliesButton({ card, challenge }: { card: Card; challenge: Challenge }) {
   const store = useStore()
-  if (!repliable(challenge)) return null
+  const may = useMayChangeBinder()
+  if (!may || !repliable(challenge)) return null
   const author = authorOf(store.state, card, challenge)
   if (!author) return null
   const name = nameFor(store.state, author)
@@ -94,7 +101,11 @@ function RepliesButton({ card, challenge }: { card: Card; challenge: Challenge }
 
 /** The Challenge on the card's full screen: who's reviewing, or its findings worst first. */
 export function ChallengeView({ card, under = false }: { card: Card; under?: boolean }) {
-  const { state } = useStore()
+  const store = useStore()
+  const { state } = store
+  const may = useMayChangeBinder()
+  // Whether it has waited long enough to be asked again changes with the time alone.
+  useClock()
   const challenge = card.challenge
   if (!challenge) return null
   const agent = nameFor(state, challenge.agentId)
@@ -120,10 +131,16 @@ export function ChallengeView({ card, under = false }: { card: Card; under?: boo
           <span className="debrief-actions"><RepliesButton card={card} challenge={challenge} /><ChallengeButton card={card} pick className="text-button" /></span>
         </h2>
       )}
-      {!under && !set && challenge.blast && <BlastView blast={challenge.blast} />}
+      {!under && !set && challenge.blast && <BlastView blast={challenge.blast} of={{ kind: 'card', id: card.id }} />}
       {set && !under && <p className="faint small">From change set #{set.number}’s Challenge of all its pull requests together: these are the findings on this one. <a href={href({ screen: 'changes', id: set.id })} onClick={() => { try { window.localStorage.setItem('binders-set-tab', 'review') } catch { /* only a convenience */ } }}>All of them</a>.</p>}
       {again && <p className="debrief-status working">{nameFor(state, again.agentId)} is challenging change set #{set!.number} again. The last findings are below.</p>}
       {pending(challenge) && <p className="debrief-status working">{agent} {challenge.state === 'asked' ? 'will review it as soon as its runner is listening' : `is reviewing it${challenge.doing ? `: ${challenge.doing}` : ''}`}.{reviewed ? ' The last findings are below.' : ''}</p>}
+      {unpicked(challenge) && !again && !under && (
+        <p className="debrief-status moved">
+          {quietWords(agent, challenge)}{reviewed ? ' The last findings are below.' : ''}{' '}
+          {may && <button type="button" className="text-button" onClick={() => void attempt(() => store.challenge(card.id))}>Ask again</button>}
+        </p>
+      )}
       {challenge.state === 'failed' && <p className="debrief-status failed">{agent} couldn’t review it: {challenge.failed}{reviewed ? ' The last findings are below.' : ''}</p>}
       {replies && challenge.state === 'done' && (replies.state === 'asked' || replies.state === 'replying') && <p className="debrief-status working">{nameFor(state, replies.agentId)} {replies.state === 'asked' ? 'will reply to the findings as soon as its runner is listening' : `is replying to the findings${replies.doing ? `: ${replies.doing}` : ''}`}.</p>}
       {replies && challenge.state === 'done' && replies.state === 'failed' && <p className="debrief-status failed">{nameFor(state, replies.agentId)} couldn’t reply to the findings: {replies.failed}</p>}
@@ -174,6 +191,8 @@ export function ChallengeView({ card, under = false }: { card: Card; under?: boo
 function FindingActions({ card, finding }: { card: Card; finding: Finding }) {
   const store = useStore()
   const { state } = store
+  // A reader sees what was done with a finding, and has nothing to do with one.
+  const may = useMayChangeBinder()
   const act = (action: Parameters<typeof store.finding>[2]) => void attempt(() => store.finding(card.id, finding.id, action))
   const outcome = finding.outcome
   if (outcome) {
@@ -183,10 +202,11 @@ function FindingActions({ card, finding }: { card: Card; finding: Finding }) {
       <div className="finding-actions done">
         {outcome.kind === 'sent back' && <span>Sent back to {nameFor(state, outcome.agentId ?? '')} by {who}, {ago(outcome.at)}</span>}
         {outcome.kind === 'card' && <span>Made a card by {who}: {made ? <a href={href({ screen: 'work', id: made.id })}>{made.title}</a> : 'since deleted'}</span>}
-        {outcome.kind === 'dismissed' && <><span>Dismissed by {who}, {ago(outcome.at)}</span> <button type="button" className="text-button" onClick={() => act('reopen')}><Undo2 size={12} /> Open again</button></>}
+        {outcome.kind === 'dismissed' && <><span>Dismissed by {who}, {ago(outcome.at)}</span> {may && <button type="button" className="text-button" onClick={() => act('reopen')}><Undo2 size={12} /> Open again</button>}</>}
       </div>
     )
   }
+  if (!may) return null
   // As the hub picks it: the card's holder, or its pull request's agent when the holder is gone or revoked.
   const live = (id?: string) => (id && state.agents.some((a) => a.id === id && !a.revoked) ? id : undefined)
   const author = live(card.agentId) ?? live(pullOf(state, card)?.agentId)
@@ -205,6 +225,8 @@ function FindingActions({ card, finding }: { card: Card; finding: Finding }) {
 
 /** On the Change sets screen: how many of the card's last Challenge's findings are still open, linking to them. */
 export function FindingsLink({ card }: { card: Card }) {
+  // A card held without its detail has no findings open (one with some is sent whole), and its count isn't here.
+  if (card.left) return card.left.challenge === 'done' ? <a className="findings-link" href={href({ screen: 'work', id: card.id })} onClick={(e) => e.stopPropagation()}>No open findings</a> : null
   const findings = card.challenge?.findings
   if (!findings) return null
   const open = openFindings(card.challenge)
@@ -220,10 +242,14 @@ export function FindingsLink({ card }: { card: Card }) {
 export function SetChallenge({ set }: { set: ChangeSet }) {
   const store = useStore()
   const { state } = store
+  const may = useMayChangeBinder()
+  useClock()
   const [reviewer, setReviewer] = useState('')
   const cards = cardsOfSet(state, set)
   if (!cards.length) return null
   const challenge = set.challenge
+  // Nothing has been asked, and a reader can't ask: nothing to show.
+  if (!may && !challenge) return null
   const authors = [...new Set(cards.flatMap((c) => authorsOf(state, c)))]
   const reviewers = state.agents.filter((a) => !a.revoked && (!a.binders.length || a.binders.includes(set.binderId)))
   const answering = cards.map((c) => c.challenge?.replies).find((r) => replying(r))
@@ -238,8 +264,8 @@ export function SetChallenge({ set }: { set: ChangeSet }) {
         Challenge
         {done && <span className="num faint">{total ? `${total} finding${total === 1 ? '' : 's'}` : 'nothing found'}</span>}
         <span className="debrief-actions">
-          {canReply && <button type="button" className="text-button" title="Each card’s author answers the findings on its pull request once: fixed, or disagrees and why." onClick={() => void attempt(() => store.setReplies(set.id))}><MessageSquareReply size={13} /> Ask the authors to reply</button>}
-          {!busy && reviewers.length > 0 && (
+          {may && canReply && <button type="button" className="text-button" title="Each card’s author answers the findings on its pull request once: fixed, or disagrees and why." onClick={() => void attempt(() => store.setReplies(set.id))}><MessageSquareReply size={13} /> Ask the authors to reply</button>}
+          {may && !busy && reviewers.length > 0 && (
             <span className="challenge-ask">
               <ReasoningPicker />
               <select aria-label="Who challenges it" value={reviewer} onChange={(e) => setReviewer(e.target.value)}>
@@ -251,13 +277,21 @@ export function SetChallenge({ set }: { set: ChangeSet }) {
           )}
         </span>
       </h2>
-      {!challenge && <p className="faint">An agent with a reviewer’s instructions and a fresh session reviews all {cards.length === 1 ? 'its pull request' : `${cards.length} pull requests`} together against their briefs and done-when, without the authors’ log, so what goes wrong between them shows too.{!reviewers.length ? ' No agent works in this project yet: set one up in Agents.' : ''}</p>}
+      {!challenge && <p className="faint">An agent with a reviewer’s instructions and a fresh session reviews all {cards.length === 1 ? 'its pull request' : `${cards.length} pull requests`} together against their briefs and done-when, without the authors’ log, so what goes wrong between them shows too.{!reviewers.length ? ' No agent works in this part yet: set one up in Agents.' : ''}</p>}
       {pending(challenge) && <p className="debrief-status working">{nameFor(state, challenge!.agentId)} {challenge!.state === 'asked' ? 'will review it as soon as its runner is listening' : `is reviewing it${challenge!.doing ? `: ${challenge!.doing}` : ''}`}.</p>}
+      {unpicked(challenge) && (
+        <p className="debrief-status moved">
+          {quietWords(nameFor(state, challenge!.agentId), challenge!)}{' '}
+          {may && <button type="button" className="text-button" onClick={() => void attempt(() => store.setChallenge(set.id, reviewer || undefined))}>Ask again</button>}
+        </p>
+      )}
       {challenge?.state === 'failed' && <p className="debrief-status failed">{nameFor(state, challenge.agentId)} couldn’t review it: {challenge.failed}</p>}
       {answering && <p className="debrief-status working">{nameFor(state, answering.agentId)} is replying to the findings.</p>}
-      {challenge?.blast && <BlastView blast={challenge.blast} />}
+      {challenge?.blast && <BlastView blast={challenge.blast} of={{ kind: 'set', id: set.id }} />}
       {done && challenge!.summary && <p className="debrief-does">{challenge!.summary}</p>}
       {withFindings.map((card) => <ChallengeView key={card.id} card={card} under />)}
+      {/* A card that finished a while ago is held without its findings, which are all settled: its page has them. */}
+      {cards.filter((c) => c.left?.challenge).map((card) => <p key={card.id} className="faint small"><a href={href({ screen: 'work', id: card.id })}>{card.title}</a> has a Challenge with nothing open. Open it to read it.</p>)}
     </section>
   )
 }
@@ -267,14 +301,17 @@ export function SetChallenge({ set }: { set: ChangeSet }) {
  * often they're used elsewhere, which removed ones are still used, and which no test mentions; each symbol's uses on
  * asking. Found by name with git grep, so a first look and not a proof, which it says.
  */
-export function BlastView({ blast }: { blast: BlastRadius }) {
+export function BlastView({ blast, of }: { blast: BlastRadius; of: { kind: 'card' | 'set'; id: string } }) {
   const [open, setOpen] = useState(false)
-  const worth = blast.symbols.filter((s) => s.uses.length > 0 || s.change === 'removed' || !s.tests.length)
+  // The state a browser holds leaves the symbols out and counts them: they're asked for when the list is opened.
+  const { symbols, loading, failed, again } = useBlastSymbols(of, blast, open)
+  const count = blast.symbolCount ?? blast.symbols.length
+  const worth = symbols.filter((s) => s.uses.length > 0 || s.change === 'removed' || !s.tests.length)
   return (
     <div className="blast">
       <button type="button" className="blast-head" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <b>Blast radius</b>
-        <span className="blast-chip">{blast.symbols.length} changed symbol{blast.symbols.length === 1 ? '' : 's'}</span>
+        <b>What else this touches</b>
+        <span className="blast-chip">{count} changed symbol{count === 1 ? '' : 's'}</span>
         <span className="blast-chip">{blast.outside} use{blast.outside === 1 ? '' : 's'} outside the change</span>
         {blast.stillUsed > 0 && <span className="blast-chip bad">{blast.stillUsed} removed but still used</span>}
         {blast.untested > 0 && <span className="blast-chip warn">{blast.untested} with no test</span>}
@@ -283,7 +320,9 @@ export function BlastView({ blast }: { blast: BlastRadius }) {
       {open && (
         <>
           <p className="faint small">Found by name with git grep in {blast.repo ?? 'the reviewer’s folder'}, so a first look rather than a proof: a name used for two things counts both.{blast.elsewhere?.length ? ` Not searched: ${blast.elsewhere.join(', ')} (not on the reviewer’s machine).` : ''}{blast.cut ? ` ${blast.cut} more symbols weren’t followed.` : ''}</p>
-          <ul className="blast-list">
+          {loading && <p className="faint small">Loading…</p>}
+          {failed && <p className="faint small">The symbols couldn’t be loaded. <button type="button" className="text-button" onClick={again}>Try again</button></p>}
+          {!loading && !failed && <ul className="blast-list">
             {worth.map((sym) => (
               <li key={`${sym.file}:${sym.name}`} className={sym.change === 'removed' && sym.uses.length ? 'bad' : ''}>
                 <div><code>{sym.name}</code> <span className="faint">{sym.change} in {sym.file}</span>{!sym.tests.length && sym.change !== 'removed' && <span className="blast-chip warn">no test</span>}</div>
@@ -296,7 +335,7 @@ export function BlastView({ blast }: { blast: BlastRadius }) {
               </li>
             ))}
             {!worth.length && <li className="faint">Nothing it changed is used elsewhere, and every change has a test that mentions it.</li>}
-          </ul>
+          </ul>}
         </>
       )}
     </div>

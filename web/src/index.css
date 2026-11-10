@@ -179,6 +179,8 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 html, body, #root { height: 100%; }
+/* iPhones otherwise enlarge some long lines and not others: a diff comes out in several sizes. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
   margin: 0;
   background: var(--bg);

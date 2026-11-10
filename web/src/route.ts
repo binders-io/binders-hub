@@ -10,7 +10,10 @@ export type Route =
   | { screen: 'agents' }
   /** An agent's tool in a terminal: one of its terminals open now, or a new one. */
   | { screen: 'terminal'; id: string; sid?: string }
-  | { screen: 'settings' }
+  /** A section of Settings, each with an address of its own; none is the one this browser last had open. */
+  | { screen: 'settings'; id?: string }
+  /** A question answered from the binders' notes and cards. */
+  | { screen: 'ask' }
   /** You: who you're signed in as, your GitHub and your apps, the same in every binder. */
   | { screen: 'account' }
 
@@ -19,7 +22,8 @@ export function parse(hash: string): Route {
   if (screen === 'terminal' && id) return { screen, id, sid: sid || undefined }
   if (screen === 'notes') return { screen, id: id ?? '' }
   if (screen === 'changes') return { screen, id: id ?? '' }
-  if (screen === 'agents' || screen === 'settings' || screen === 'account') return { screen }
+  if (screen === 'settings') return { screen, id: id ?? '' }
+  if (screen === 'agents' || screen === 'account' || screen === 'ask') return { screen }
   if (screen === 'delivery') return { screen }
   if (screen === 'work' && id) return { screen, id }
   if (screen === 'flow') return { screen }

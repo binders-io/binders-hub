@@ -5,6 +5,7 @@ import { useStore } from '../data/store'
 import { atLeast, briefsSince } from '../../../shared/agents.ts'
 import { briefId, briefOf, lessonMost, type Agent, type RepoBrief } from '../../../shared/work.ts'
 import { briefText, docsFolderName, repoDocs } from '../../../shared/briefs.ts'
+import { headOf } from '../data/noteText'
 import { href } from '../route'
 import { ago } from './bits'
 import { attempt } from './Toast'
@@ -15,6 +16,16 @@ function reposOf(state: { binders: { repo?: string }[]; agents: Agent[]; pulls: 
   const seen = new Map<string, string>()
   for (const repo of all) if (repo && /^[\w.-]+\/[\w.-]+$/.test(repo) && !seen.has(briefId(repo))) seen.set(briefId(repo), repo)
   return [...seen.values()].sort((a, b) => a.localeCompare(b))
+}
+
+/**
+ * A brief's words, for showing it has some. A brief kept in a note whose text this browser doesn't hold has how the note
+ * starts, which is as much as a row says of it: its words are in the note, which is a click away.
+ */
+function briefWords(state: Parameters<typeof briefText>[0], brief: RepoBrief | undefined) {
+  const note = brief?.noteId ? state.notes.find((n) => n.id === brief.noteId) : undefined
+  if (!note?.left) return briefText(state, brief)
+  return headOf(note).replace(/^\s*#\s+[^\n]*\n+/, '').trim() || undefined
 }
 
 /** "3h ago", "just now", "on Nov 1". */
@@ -38,7 +49,7 @@ export function RepoBriefs() {
     <ul className="binder-cards">
       {repos.map((repo) => {
         const brief = briefOf(state, repo)
-        return <BriefRow key={briefId(repo)} repo={repo} brief={brief} text={briefText(state, brief)} docs={repoDocs(state, repo, brief).length} agents={state.agents} />
+        return <BriefRow key={briefId(repo)} repo={repo} brief={brief} text={briefWords(state, brief)} docs={repoDocs(state, repo, brief).length} agents={state.agents} />
       })}
     </ul>
   )

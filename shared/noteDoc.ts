@@ -120,6 +120,44 @@ export function check(doc: NoteDoc, noteId: string, changes: string[]): CheckedC
  */
 export class NoteDocs {
   private docs = new Map<string, NoteDoc>()
+  /** Notes whose document changed, or went, since `takeChanged` was last asked: what there is to save. */
+  private changed = new Set<string>()
+
+  /** A document kept from before, put back as it was saved. */
+  put(noteId: string, doc: NoteDoc) {
+    this.docs.set(noteId, doc)
+  }
+
+  /** The note's document if it has one already: none is made. */
+  peek(noteId: string): NoteDoc | undefined {
+    return this.docs.get(noteId)
+  }
+
+  /** Sets a note's document aside: the next one starts from the note's text. */
+  drop(noteId: string) {
+    if (this.docs.delete(noteId)) this.changed.add(noteId)
+  }
+
+  /** Every document counts as changed: for the first time they're saved. */
+  changeAll() {
+    for (const id of this.docs.keys()) this.changed.add(id)
+  }
+
+  /**
+   * What changed since this was last asked: each note's document as it is now, or undefined where it has none any
+   * more. A document made from a note's text and not edited since isn't among them: it's made again the same.
+   */
+  takeChanged(): Map<string, NoteDoc | undefined> {
+    const out = new Map<string, NoteDoc | undefined>()
+    for (const id of this.changed) out.set(id, this.docs.get(id))
+    this.changed.clear()
+    return out
+  }
+
+  /** Counts these as changed again: saving them failed, so they're tried with the next save. */
+  changedAgain(ids: Iterable<string>) {
+    for (const id of ids) this.changed.add(id)
+  }
 
   /** The note's document, made from its text now if it has none yet; undefined for a note that isn't there. */
   get(state: NotesState, noteId: string): NoteDoc | undefined {
@@ -143,21 +181,22 @@ export class NoteDocs {
     switch (change.type) {
       case 'note.edit': {
         if (!change.changes) {
-          this.docs.delete(change.id)
+          this.drop(change.id)
           return given
         }
         const doc = this.get(state, change.id)
         if (!doc) return given
         const next = applyChanges(doc, change.changes)
         this.docs.set(change.id, next)
+        this.changed.add(change.id)
         const text = textOf(next)
         return { ...given, text, title: titleOf(text) }
       }
       case 'note.put':
-        this.docs.delete(change.note.id)
+        this.drop(change.note.id)
         return given
       case 'note.delete':
-        this.docs.delete(change.id)
+        this.drop(change.id)
         return given
       default:
         return given

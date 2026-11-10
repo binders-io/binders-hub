@@ -20,6 +20,7 @@
     "postinstall": "npm install --prefix ../shared --no-audit --no-fund --silent"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.6.0",
     "@fastify/cookie": "^11.1.5",
     "@fastify/helmet": "^13.2.0",
     "@fastify/rate-limit": "^11.2.1",

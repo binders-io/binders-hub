@@ -158,7 +158,8 @@ export function AgentActivity({ agents, cards, chats }: { agents: Agent[]; cards
                 </g>
               )
             })}
-            {hours.map((t) => <text key={t} x={x(t)} y={height + 16} className="activity-hour" textAnchor="middle">{new Date(t).toLocaleTimeString([], { hour: 'numeric' })}</text>)}
+            {/* Now has the right-hand end: an hour too near it would run into it. */}
+            {hours.filter((t) => x(t) < width - pad.right - 44).map((t) => <text key={t} x={x(t)} y={height + 16} className="activity-hour" textAnchor="middle">{new Date(t).toLocaleTimeString([], { hour: 'numeric' })}</text>)}
             <text x={width - pad.right} y={height + 16} className="activity-hour now" textAnchor="end">Now</text>
           </svg>
         ) : (

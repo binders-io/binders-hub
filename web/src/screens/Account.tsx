@@ -2,10 +2,13 @@ import { useEffect, useState } from 'react'
 import { AppWindow, Check, Copy, LogOut, SquareTerminal } from 'lucide-react'
 import { call } from '../data/api'
 import { useStore } from '../data/store'
+import { useUI } from '../ui'
 import { PersonAvatar, ago } from '../components/bits'
-import { attempt } from '../components/Toast'
+import { attempt, toast } from '../components/Toast'
 import { YourGitHub } from '../components/YourGitHub'
 import { BinderTag } from '../components/BinderTag'
+import { NotifySwitch } from '../components/NotifySwitch'
+import { SettingsLink } from '../components/SettingsLink'
 
 /**
  * You, wherever you are on the hub: who you're signed in as, your GitHub connections, and the apps signed in as you.
@@ -31,11 +34,47 @@ export function Account() {
           </div>
           <button className="button" onClick={() => void store.signOut()}><LogOut size={14} /> Sign out</button>
         </div>
+        <section className="app-tokens">
+          <h3>Notifications</h3>
+          <NotifySwitch id="notify-account" explain />
+          <p className="faint">When an agent asks you something, or work is ready to approve, and this page isn’t in front, this browser tells you. It’s remembered here only.</p>
+        </section>
+        <CaptureHome />
         <YourGitHub />
         <Apps />
         <McpConnections />
       </div>
     </div>
+  )
+}
+
+/**
+ * Where what your phone and Mac capture goes: your own Binder, or a team's you're in. Kept on the hub, so it holds on
+ * every device. If it names a Binder you've left, captures go to your own again, and this says so.
+ */
+function CaptureHome() {
+  const [now, setNow] = useState<{ home: string; binders: { id: string; name: string; personal: boolean }[] }>()
+  useEffect(() => {
+    void call<typeof now>('GET', '/api/personal/captures').then(setNow, () => {})
+  }, [])
+  if (!now?.binders?.length) return null
+  const choose = (binder: string) => void attempt(() => call<NonNullable<typeof now>>('PUT', '/api/personal/captures', { binder })).then((saved) => {
+    if (!saved) return
+    setNow(saved)
+    const where = saved.binders.find((b) => b.id === saved.home)
+    toast(`Your captures go to ${where?.personal ? 'your own Binder' : where?.name} now.`)
+  })
+  return (
+    <section className="app-tokens">
+      <h3 id="capture-home-title">Where what your phone and Mac capture goes</h3>
+      <label className="field capture-home">
+        <span className="field-label">Binder</span>
+        <select id="capture-home" aria-labelledby="capture-home-title" value={now.home} onChange={(event) => choose(event.target.value)}>
+          {now.binders.map((b) => <option key={b.id} value={b.id}>{b.personal ? 'Your own Binder' : b.name}</option>)}
+        </select>
+      </label>
+      <p className="faint">Conversations, meetings and dictations arrive there as notes, and what they offer to do goes on its board. Your own Binder is yours alone.</p>
+    </section>
   )
 }
 
@@ -88,10 +127,11 @@ function Apps() {
  */
 function McpConnections() {
   const { tokens, revoke, refresh } = useTokens()
+  const { connectClaudeCode } = useUI()
   const [made, setMade] = useState<string>()
   const me = useStore().state.me
-  const here = me?.spaces.find((s) => s.id === me.space)
-  if (!tokens) return null
+  if (!tokens || !me) return null
+  const here = me.spaces.find((s) => s.id === me.space)
   const mcp = tokens.filter((t) => t.kind === 'mcp')
   // A client that can't sign in with OAuth gets a token of its own, shown once, as a person's: not an agent's pad.
   const create = () => void attempt(() => call<{ token: string }>('POST', '/api/tokens', { app: 'A terminal' })).then((r) => {
@@ -116,7 +156,13 @@ function McpConnections() {
           ))}
         </ul>
       ) : (
-        <p className="faint">None. A binder’s Settings → Agents has the address to add to Claude Code or another MCP client; it opens a browser to sign in with GitHub.</p>
+        <p className="faint">None. Add to Claude Code, below, has the command for Claude Code, and <SettingsLink section="status" /> the address for another MCP client. Either opens a browser to sign in.</p>
+      )}
+      {connectClaudeCode && (
+        <div className="mcp-create">
+          <button className="button" onClick={connectClaudeCode}><SquareTerminal size={14} /> Add to Claude Code</button>
+          <span className="faint">The command that connects a terminal running Claude Code. It signs in through the browser.</span>
+        </div>
       )}
       <div className="mcp-create">
         <button className="button" onClick={create} disabled={!here}>Create a token</button>

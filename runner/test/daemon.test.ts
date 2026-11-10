@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { bootstrap, plistFor, refusedAsRoot, refusedDomain, unitFor } from '../src/daemon.ts'
+import { bootstrap, folderWarning, keepRunningAfterLogout, plistFor, refusedAsRoot, refusedDomain, unitFor } from '../src/daemon.ts'
 
 // The `binders` command's parts that install nothing: what it lists, how it finds an agent, and what it says without
 // one. (add, start, stop and restart reach launchd or systemd, so they're tried by hand on a machine.)
@@ -65,7 +65,7 @@ describe('the binders command', () => {
     const { installer } = await import('../../hub/src/server.ts')
     const script = installer('https://hub.test/')
     assert.match(script, /^HUB="https:\/\/hub\.test"$/m)
-    assert.match(script, /Binders needs Node 20 or newer/)
+    assert.match(script, /Binders needs Node \d+ or newer/)
     assert.match(script, /exec "\$DIR\/bin\/binders" "\$@"/)
     const file = join(await mkdtemp(join(tmpdir(), 'binders-install-')), 'install.sh')
     await writeFile(file, script)
@@ -93,5 +93,44 @@ describe('agents in the background on a Mac', () => {
     await assert.rejects(bootstrap('/x.plist', async () => { throw other }, ['gui/501', 'user/501']), /failed/)
     assert.ok(refusedDomain(refused))
     assert.ok(!refusedDomain(other))
+  })
+})
+
+describe('a service on Linux when its person logs out', () => {
+  it('turns lingering on so it keeps running, and gives the line to run when the system won’t let it', async () => {
+    const calls: string[] = []
+    const answering = (known: string, enable: boolean) => async (command: string, args: string[]) => {
+      calls.push(`${command} ${args.join(' ')}`)
+      if (args[0] === 'show-user') return { stdout: `Linger=${known}\n` }
+      if (!enable) throw new Error('Interactive authentication required.')
+      return { stdout: '' }
+    }
+    assert.equal(await keepRunningAfterLogout(answering('yes', true), 'sam'), undefined, 'already on: nothing to say')
+    assert.deepEqual(calls, ['loginctl show-user sam --property=Linger'])
+    assert.match((await keepRunningAfterLogout(answering('no', true), 'sam'))!, /^It keeps running after you log out: lingering is now on for sam\.$/)
+    assert.ok(calls.includes('loginctl enable-linger sam'))
+    assert.equal(await keepRunningAfterLogout(answering('no', false), 'sam'), 'It stops when you log out of this machine, until you log in again. To keep it running, run once: sudo loginctl enable-linger sam')
+  })
+})
+
+describe('binders add in a folder', () => {
+  const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { stdio: 'ignore' })
+
+  it('warns when it isn’t a git repo and holds none, and says nothing for a repo, a folder in one, or a folder of repos', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'binders-folders-'))
+    const plain = join(root, 'plain')
+    await mkdir(join(plain, 'notes'), { recursive: true })
+    assert.match((await folderWarning(plain))!, /plain isn’t a git repo and has no repo in it, so the agent will work straight in that folder, with no branch of its own for each card/)
+
+    const repo = join(root, 'repo')
+    await mkdir(join(repo, 'src'), { recursive: true })
+    git(repo, 'init', '-q', '-b', 'main')
+    assert.equal(await folderWarning(repo), undefined)
+    assert.equal(await folderWarning(join(repo, 'src')), undefined, 'a folder inside a repo gets that repo’s worktree')
+
+    const many = join(root, 'many')
+    await mkdir(join(many, 'one'), { recursive: true })
+    git(join(many, 'one'), 'init', '-q', '-b', 'main')
+    assert.equal(await folderWarning(many), undefined, 'a folder of repos')
   })
 })

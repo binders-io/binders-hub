@@ -37,12 +37,10 @@ async function start() {
   )
 }
 
-/** This browser's cache and waiting changes from before Binders had addresses, now the first Binder's. */
+/** This browser's waiting changes from before Binders had addresses, now the first Binder's. Its cache is only a head start. */
 function adopt(id: string) {
   try {
     const storage = window.localStorage
-    const cache = storage.getItem('binders-hub-cache-v3')
-    if (cache && !storage.getItem(`binders-hub-cache-v3:${id}`)) storage.setItem(`binders-hub-cache-v3:${id}`, cache)
     storage.removeItem('binders-hub-cache-v3')
     for (const key of Object.keys(storage)) {
       const client = /^binders-hub-outbox-v3:([0-9a-f]{24})$/.exec(key)?.[1]

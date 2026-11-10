@@ -24,6 +24,8 @@ export interface Binder {
   notesBranch?: string
   /** Whether a Challenge's findings are posted as a review on its card's pull request: off unless turned on. */
   reviewComments?: boolean
+  /** Whether a daily copy of the whole binder is pushed to that repo, on a branch of its own (binders-copies): off unless turned on. */
+  copies?: boolean
   createdBy?: string
   /** The note every agent in this binder reads first (shared/guide.ts). */
   guideNoteId?: string
@@ -53,13 +55,36 @@ export interface Note {
   text: string
   /** The work items that came from it. */
   work?: WorkLink[]
+  /**
+   * What a phone or Mac captured it from, when it was: a dictation (the person's own words), or a conversation or meeting
+   * (anyone's words, heard in a room). Work that comes of a conversation or meeting is always read by a person first.
+   */
+  captured?: 'dictation' | 'conversation' | 'meeting' | 'note'
   /** The commit that saved it last, and its file in the notes repo. */
   commit?: string
   path?: string
+  /**
+   * On a browser only: the note's text isn't here (`text` is empty), and this stands in for it until the note is opened.
+   * The hub never keeps one, and refuses a note sent with one.
+   */
+  left?: NoteLeft
   /** On a client only: edits are on their way to the hub. */
   saving?: boolean
   /** On a client only: the hub has the edits, and commits them when typing pauses. */
   committing?: boolean
+}
+
+/** How much of a note's start a browser keeps while its text isn't there: enough for a preview, and for when it was heard. */
+export const headChars = 600
+
+/**
+ * What stands in for a note's text on a browser that hasn't asked for it: how long it is, how it starts, and the notes
+ * its [[links]] name, in lower case and each once.
+ */
+export interface NoteLeft {
+  size: number
+  head: string
+  links: string[]
 }
 
 export interface NotesState {
@@ -67,7 +92,23 @@ export interface NotesState {
   folders: Folder[]
   notes: Note[]
   noteProposals: NoteProposal[]
+  /** Notes deleted in the last 30 days, oldest first: the hub's, never in what a browser holds (shared/light.ts). */
+  trashedNotes?: TrashedNote[]
 }
+
+/** A note deleted, as it was, with who deleted it and when: it can be put back until it's emptied from the trash. */
+export interface TrashedNote {
+  note: Note
+  /** A person's login, an agent's name, or "hub". */
+  by: string
+  at: string
+  /** Its proposed cards that were still new, which went with it and open again when it's put back. */
+  dismissed?: string[]
+}
+
+/** How long a deleted note or card stays in the trash, and how many of each: past either, the oldest go. */
+export const trashDays = 30
+export const trashKept = 200
 
 /** A change to a locked note, for someone who may change it to accept or turn down. */
 export interface NoteProposal {
@@ -97,7 +138,8 @@ export type Change =
   | { type: 'binder.delete'; id: string }
   | { type: 'folder.put'; folder: Folder }
   | { type: 'folder.delete'; id: string }
-  | { type: 'note.put'; note: Note }
+  /** `restored`: the hub put it back from the trash, which only it says, so the trash lets go of it. */
+  | { type: 'note.put'; note: Note; restored?: { by: string; at: string } }
   /**
    * `changes` are Automerge changes to the note's document (base64, in order; see noteDoc.ts), and what the edit is.
    * The hub applies them, and the edit it sends on has `text` and `title` as they are merged, so `apply` here needs
@@ -106,7 +148,8 @@ export type Change =
   | { type: 'note.edit'; id: string; text: string; title: string; by: string; at: string; changes?: string[] }
   | { type: 'note.link'; id: string; link: WorkLink }
   | { type: 'note.move'; id: string; binderId: string; folderId?: string }
-  | { type: 'note.delete'; id: string }
+  /** `by` and `at` are the hub's, stamped on as it's written: with them, the note goes to the trash instead of nowhere. */
+  | { type: 'note.delete'; id: string; by?: string; at?: string }
   /** Written by the hub, once it's checked who's asking. */
   | { type: 'note.lock'; id: string; locked?: { by: string; at: string } }
   | { type: 'noteProposal.put'; proposal: NoteProposal }
@@ -136,10 +179,15 @@ export function apply<S extends NotesState>(state: S, change: Change): S {
       }
     }
     case 'note.put': {
-      // A note's lock is the hub's to change: writing the note whole neither takes one off nor puts one on.
-      const { locked: _given, ...note } = change.note
-      const locked = state.notes.find((n) => n.id === note.id)?.locked
-      return { ...state, notes: upsert(state.notes, locked ? { ...note, locked } : note) }
+      // A note's lock is the hub's to change: writing the note whole neither takes one off nor puts one on. One put back
+      // from the trash is the hub's own copy, so it keeps the lock it had.
+      const { locked: _given, ...given } = change.note
+      const was = state.notes.find((n) => n.id === given.id)
+      // On a browser that holds this note without its text, it stays that way: only what stands in for the text follows.
+      const note = was?.left ? lightNote(given) : given
+      const locked = change.restored ? change.note.locked : was?.locked
+      const trashed = change.restored ? state.trashedNotes?.filter((t) => t.note.id !== note.id) : state.trashedNotes
+      return { ...state, notes: upsert(state.notes, locked ? { ...note, locked } : note), ...(trashed ? { trashedNotes: trashed } : {}) }
     }
     case 'note.lock':
       return {
@@ -162,7 +210,8 @@ export function apply<S extends NotesState>(state: S, change: Change): S {
         ...state,
         notes: state.notes.map((n) =>
           n.id === change.id
-            ? { ...n, text: change.text, title: change.title, editedAt: change.at, editedBy: change.by, editors: n.editors.includes(change.by) ? n.editors : [...n.editors, change.by] }
+            // A browser that holds the note without its text keeps it so: what stands in for the text follows the edit.
+            ? { ...n, ...(n.left ? { text: '', left: leftOf(change.text) } : { text: change.text }), title: change.title, editedAt: change.at, editedBy: change.by, editors: n.editors.includes(change.by) ? n.editors : [...n.editors, change.by] }
             : n),
       }
     case 'note.link':
@@ -173,8 +222,14 @@ export function apply<S extends NotesState>(state: S, change: Change): S {
       }
     case 'note.move':
       return { ...state, notes: state.notes.map((n) => (n.id === change.id ? { ...n, binderId: change.binderId, folderId: change.folderId } : n)) }
-    case 'note.delete':
-      return { ...state, notes: without(state.notes, change.id) }
+    case 'note.delete': {
+      const note = state.notes.find((n) => n.id === change.id)
+      if (!note) return state
+      // Stamped by the hub, it goes to the trash: whole, as it was. A change without a stamp (from before there was a trash,
+      // or a client's own copy of the change) just removes it, so a log read again from its start doesn't fill the trash.
+      const trashed = change.at ? [...(state.trashedNotes ?? []).filter((t) => t.note.id !== note.id), { note, by: change.by ?? 'hub', at: change.at }].slice(-trashKept) : state.trashedNotes
+      return { ...state, notes: without(state.notes, change.id), ...(trashed ? { trashedNotes: trashed } : {}) }
+    }
     case 'note.saved':
       return { ...state, notes: state.notes.map((n) => (n.id === change.id ? { ...n, commit: change.commit, path: change.path } : n)) }
   }
@@ -195,6 +250,12 @@ export const isBlank = (text: string) => !text.replace(/^#+\s*$/gm, '').trim()
 export function linksIn(text: string) {
   return [...text.matchAll(/\[\[([^\]|#^]+)(?:[#^][^\]|]*)?(?:\|[^\]]*)?\]\]/g)].map((m) => m[1].trim())
 }
+
+/** What stands in for a text on a browser that hasn't asked for it. */
+export const leftOf = (text: string): NoteLeft => ({ size: text.length, head: text.slice(0, headChars), links: [...new Set(linksIn(text).map((title) => title.toLowerCase()))] })
+
+/** A note as a browser holds it before its text is asked for: everything but the text, and what stands in for it. */
+export const lightNote = (note: Note): Note => (note.left ? note : { ...note, text: '', left: leftOf(note.text) })
 
 /** [[Links]] as words, for somewhere they don't link: what they show, or the note they name. */
 export const linksAsWords = (text: string) => text.replace(/\[\[([^\]|#^]+)(?:[#^][^\]|]*)?(?:\|([^\]]*))?\]\]/g, (_, title: string, shown?: string) => (shown?.trim() || title).trim())

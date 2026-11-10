@@ -5,6 +5,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { Runner } from './runner.ts'
 import { daemonCommand, pidFileOf, stopFileOf, subcommands, usage } from './daemon.ts'
+import { brainCommand, machineIdentity } from './brain.ts'
 import { agentCommand } from './desk.ts'
 import { nodeNetwork, reasonOf, settleNetwork, workerCommand } from './network.ts'
 
@@ -20,21 +21,24 @@ settleNetwork()
 // An agent's own binders command, from the small script its run has on its PATH (desk.ts).
 if (process.argv[2] === 'agent') process.exit(await agentCommand(process.argv.slice(3)))
 
-// binders add / list / logs / start / stop / restart / remove: agents in the background (daemon.ts).
+// The daemon that serves this machine's model servers to the hub's brain (brain.ts), as binders add runs it.
+if (process.argv[2] === 'brain') process.exit(await brainCommand(process.argv.slice(3)))
+
+// binders add / join / list / logs / start / stop / restart / remove: agents in the background (daemon.ts).
 const sub = process.argv[2]
 if (sub && (subcommands.has(sub) || sub === 'help')) {
   if (sub === 'help') {
     console.log(usage)
     process.exit(0)
   }
-  // binders add and remove talk to the hub from here, not from a worker: this process starts itself again to do it.
-  if (['add', 'remove', 'rm'].includes(sub) && !process.env.BINDERS_RUNNER_WORKER) {
+  // binders add, join and remove talk to the hub from here, not from a worker: this process starts itself again to do it.
+  if (['add', 'join', 'remove', 'rm'].includes(sub) && !process.env.BINDERS_RUNNER_WORKER) {
     const network = nodeNetwork()
     const again = spawnSync(process.execPath, [...network.args, process.argv[1], ...process.argv.slice(2)], { stdio: 'inherit', env: { ...process.env, ...network.env, BINDERS_RUNNER_WORKER: '1' } })
     process.exit(again.status ?? 1)
   }
   try {
-    process.exit(await daemonCommand(process.argv.slice(2), (hub, token) => new Runner({ hubUrl: hub, token, workspace: process.cwd(), log: () => {} }).identity(), (hub, token, cards, why) => new Runner({ hubUrl: hub, token, workspace: process.cwd(), log: () => {} }).handBack(cards, why)))
+    process.exit(await daemonCommand(process.argv.slice(2), (hub, token) => (token.startsWith('bnw_') ? machineIdentity(hub, token) : new Runner({ hubUrl: hub, token, workspace: process.cwd(), log: () => {} }).identity()), (hub, token, cards, why) => new Runner({ hubUrl: hub, token, workspace: process.cwd(), log: () => {} }).handBack(cards, why)))
   } catch (error) {
     console.error(reasonOf(error))
     process.exit(1)

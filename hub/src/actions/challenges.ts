@@ -307,16 +307,11 @@ export abstract class ChallengeService extends DebriefService {
     }
     // Back to the agent that wrote it: the one holding the card, or the one whose pull request it is.
     if (card.stage !== 'working' && card.stage !== 'review') throw new Refused('The card is past review: make a card of the finding instead.')
-    const live = (id?: string) => (id && this.hub.state.agents.some((a) => a.id === id && !a.revoked) ? id : undefined)
-    const author = live(card.agentId) ?? live(pullOf(this.hub.state, card)?.agentId)
+    const author = this.authorOfWork(card)
     if (!author) throw new Refused('No agent wrote this work to send it back to: make a card of the finding instead.')
     const reviewer = this.hub.state.agents.find((a) => a.id === challenge.agentId)?.name ?? 'An agent'
     // The comment is the card's last word from a person, so the author's runner carries on with it (resumeFor).
-    await this.hub.record(actor, {
-      type: 'card.update', id: card.id,
-      fields: { stage: 'working', agentId: author, challenge: settled({ kind: 'sent back', by: login, at, agentId: author }) },
-      activity: { at, by: login, kind: 'comment', text: findingComment(finding, reviewer) },
-    })
+    await this.sendBack(login, card, author, [findingComment(finding, reviewer)], { challenge: settled({ kind: 'sent back', by: login, at, agentId: author }) })
     return this.card(card.id)
   }
 }

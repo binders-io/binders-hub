@@ -7,6 +7,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react'
 // own menu (copy, paste, spelling).
 
 export type MenuItem =
+  /** `confirm` is what it says once pressed, worded as ConfirmButton's: a question ending "Press again". */
   | { label: string; icon?: ReactNode; onSelect: () => void; danger?: boolean; disabled?: boolean; confirm?: string }
   /** A long list of its own, opened in place of the menu, so it never pushes the rest of the menu out of reach. */
   | { label: string; icon?: ReactNode; submenu: MenuItem[] }
@@ -79,12 +80,17 @@ export function ContextMenuHost() {
       const now = buttons.indexOf(document.activeElement as HTMLButtonElement)
       buttons[(now + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus()
     }
+    // A tap on nothing in particular has no mousedown on an iPhone, and a menu doesn't outlive its screen.
+    window.addEventListener('pointerdown', away)
     window.addEventListener('mousedown', away)
+    window.addEventListener('hashchange', close)
     window.addEventListener('scroll', scrolled, true)
     window.addEventListener('resize', close)
     window.addEventListener('keydown', keys)
     return () => {
+      window.removeEventListener('pointerdown', away)
       window.removeEventListener('mousedown', away)
+      window.removeEventListener('hashchange', close)
       window.removeEventListener('scroll', scrolled, true)
       window.removeEventListener('resize', close)
       window.removeEventListener('keydown', keys)

@@ -80,6 +80,10 @@ export async function fakeGitHub(options: {
     runs: [] as Record<string, unknown>[],
     deployments: [] as Record<string, unknown>[],
     statuses: {} as Record<number, string>,
+    /** What else a deployment's latest status carries, by deployment: where it's served, the run that made it, when. */
+    statusFields: {} as Record<number, { environment_url?: string; log_url?: string; target_url?: string; created_at?: string }>,
+    /** The merge commit of each pull request that's merged on GitHub, by number. */
+    mergedPulls: {} as Record<number, string>,
     /** Review comments on lines are refused, as when new commits moved them out of the diff. */
     linesGone: false,
     /** What the signed-in person may do in each repo (push unless set); none answers as if it weren't there. */
@@ -90,7 +94,7 @@ export async function fakeGitHub(options: {
     /** The commit at the head of each pull request, by number: tests move it to land new commits. */
     heads: {} as Record<number, string>,
     /** What `compare` answers, by "from...to". */
-    compares: {} as Record<string, { commits: { sha: string; commit: { message: string; author?: { name?: string; date?: string } } }[]; files?: { filename: string; additions: number; deletions: number; patch?: string }[]; additions?: number; deletions?: number }>,
+    compares: {} as Record<string, { status?: 'ahead' | 'behind' | 'identical' | 'diverged'; commits: { sha: string; commit: { message: string; author?: { name?: string; date?: string } } }[]; files?: { filename: string; additions: number; deletions: number; patch?: string }[]; additions?: number; deletions?: number }>,
     /** The branch each pull request is aimed at, by number (main unless set). */
     bases: {} as Record<number, string>,
     /** Whether each pull request merges, by number: GitHub's mergeable_state (clean unless set). */
@@ -98,6 +102,24 @@ export async function fakeGitHub(options: {
     /** How many repos the app's installation reaches (acme/repo-0 onward), and how many of them it lists before the rest. */
     installationRepos: 0,
     listedRepos: undefined as number | undefined,
+    /** The repos the app's installations reach, as GitHub gives them, in place of acme/repo-0 onward when set. */
+    installed: undefined as Record<string, unknown>[] | undefined,
+    /** Each person's own repos, by the token they signed in with. A token not here, GitHub won't list them for. */
+    mine: {} as Record<string, Record<string, unknown>[]>,
+    /** The organization's list of its repos' custom properties. Unset, GitHub refuses it, as to an app without the permission. */
+    orgProperties: undefined as { repository_full_name: string; properties: { property_name: string; value: unknown }[] }[] | undefined,
+    /** The page of `installed` GitHub fails on, if any. */
+    installedFailsOn: 0,
+    /** How long GitHub takes to say what someone may do in a repo, in milliseconds, and the most it's been asked at once. */
+    accessPause: 0,
+    accessPeak: 0,
+    /** An organization's members, as GitHub lists them. */
+    members: [{ login: 'ana', avatar_url: 'https://github.test/ana.png' }, { login: 'ben', avatar_url: '' }] as { login: string; avatar_url?: string }[],
+  }
+  let accessAsked = 0
+  const pageOf = <T>(items: T[], query: unknown, size = 30) => {
+    const { page = '1', per_page: per = String(size) } = query as { page?: string; per_page?: string }
+    return items.slice((Number(page) - 1) * Number(per), Number(page) * Number(per))
   }
   let notModified = 0
   const app = Fastify()
@@ -118,7 +140,8 @@ export async function fakeGitHub(options: {
   app.get('/repos/:owner/:repo/deployments', async () => world.deployments)
   app.get('/repos/:owner/:repo/deployments/:id/statuses', async (request) => {
     const state = world.statuses[Number((request.params as { id: string }).id)]
-    return state ? [{ state }] : []
+    const id = Number((request.params as { id: string }).id)
+    return state ? [{ state, ...world.statusFields[id] }] : []
   })
   let issues = 100
   app.addHook('preHandler', async (request) => {
@@ -182,7 +205,7 @@ export async function fakeGitHub(options: {
   app.get('/repos/:owner/:repo/pulls/:n', async (request) => {
     const { owner, repo, n } = request.params as { owner: string; repo: string; n: string }
     const merging = world.mergeable[Number(n)] ?? 'clean'
-    return { number: Number(n), title: `Pull ${n}`, body: '', head: { ref: `agent/${n}-work`, sha: world.heads[Number(n)] ?? `sha${n}` }, html_url: `https://github.test/${owner}/${repo}/pull/${n}`, state: 'open', merged: false, additions: 12, deletions: 3, mergeable: merging !== 'dirty', mergeable_state: merging, base: { ref: world.bases[Number(n)] ?? 'main' } }
+    return { number: Number(n), title: `Pull ${n}`, body: '', head: { ref: `agent/${n}-work`, sha: world.heads[Number(n)] ?? `sha${n}` }, html_url: `https://github.test/${owner}/${repo}/pull/${n}`, state: world.mergedPulls[Number(n)] ? 'closed' : 'open', merged: !!world.mergedPulls[Number(n)], merge_commit_sha: world.mergedPulls[Number(n)] ?? null, additions: 12, deletions: 3, mergeable: merging !== 'dirty', mergeable_state: merging, base: { ref: world.bases[Number(n)] ?? 'main' } }
   })
   app.get('/repos/:owner/:repo/compare/:range', async (request, reply) => {
     const answer = world.compares[(request.params as { range: string }).range]
@@ -191,11 +214,18 @@ export async function fakeGitHub(options: {
   })
   app.get('/repos/:owner/:repo', async (request, reply) => {
     const { owner, repo } = request.params as { owner: string; repo: string }
+    world.accessPeak = Math.max(world.accessPeak, ++accessAsked)
+    if (world.accessPause) await new Promise((done) => setTimeout(done, world.accessPause))
+    accessAsked--
     const access = world.access[`${owner}/${repo}`] ?? 'push'
     if (access === 'none') return reply.code(404).send({ message: 'Not Found' })
     return { full_name: `${owner}/${repo}`, private: true, default_branch: 'main', permissions: { pull: true, push: access === 'push' } }
   })
-  app.get('/installation/repositories', async (request) => {
+  app.get('/installation/repositories', async (request, reply) => {
+    if (world.installed) {
+      if (Number((request.query as { page?: string }).page ?? 1) === world.installedFailsOn) return reply.code(502).send({ message: 'Bad Gateway' })
+      return { total_count: world.installed.length, repositories: pageOf(world.installed, request.query) }
+    }
     const page = Number((request.query as { page?: string }).page ?? 1)
     const listed = Math.min(world.installationRepos, world.listedRepos ?? world.installationRepos)
     const repositories = []
@@ -248,7 +278,12 @@ export async function fakeGitHub(options: {
   })
   app.get('/user', async () => ({ login: options.login ?? 'octo', name: 'Octo Person', avatar_url: 'https://github.test/a.png' }))
   app.get('/user/orgs', async () => (options.orgs ?? []).map((login) => ({ login })))
-  app.get('/orgs/:org/members', async () => [{ login: 'ana', avatar_url: 'https://github.test/ana.png' }, { login: 'ben', avatar_url: '' }])
+  app.get('/orgs/:org/members', async (request) => pageOf(world.members, request.query))
+  app.get('/orgs/:org/properties/values', async (request, reply) => (world.orgProperties ? pageOf(world.orgProperties, request.query) : reply.code(403).send({ message: 'Resource not accessible by integration' })))
+  app.get('/user/repos', async (request, reply) => {
+    const mine = world.mine[(request.headers.authorization ?? '').replace(/^(Bearer|token) /, '')]
+    return mine ? pageOf(mine, request.query) : reply.code(403).send({ message: 'Forbidden' })
+  })
   // Only the app may make repos in an organization: its people's accounts may not, as in one of managed users.
   app.post('/orgs/:org/repos', async (request, reply) => {
     const { org } = request.params as { org: string }

@@ -57,7 +57,9 @@ describe('setting GitHub up from Settings', () => {
     assert.deepEqual(manifest.callback_urls, ['https://hub.test/auth/github/callback'])
     assert.equal(manifest.redirect_url, 'https://hub.test/setup/github/created')
     assert.equal(manifest.default_permissions.issues, 'write')
-    assert.deepEqual(manifest.default_events, ['issues', 'pull_request', 'check_run', 'workflow_run', 'deployment_status'])
+    // People joining and leaving the organization too, for the list its people pickers search (Members: read covers it).
+    assert.deepEqual(manifest.default_events, ['issues', 'pull_request', 'check_run', 'workflow_run', 'deployment_status', 'organization'])
+    assert.equal(manifest.default_permissions.members, 'read')
 
     const forged = await fetch(`${url}/setup/github/created?code=made&state=not-ours`, { redirect: 'manual' })
     assert.equal(forged.status, 400, 'a state the hub didn’t make is refused')

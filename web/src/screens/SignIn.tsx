@@ -1,5 +1,6 @@
 import { signInHref } from '../data/space'
 import { useEffect, useState, type FormEvent } from 'react'
+import { RotateCw } from 'lucide-react'
 import { Github } from '../components/Github'
 import { Logo } from '../components/Logo'
 import { useStore } from '../data/store'
@@ -7,6 +8,33 @@ import { attempt } from '../components/Toast'
 
 /** Signing in: with GitHub, or, on a hub run on this machine with no GitHub app, with a name. */
 export function SignIn() {
+  const store = useStore()
+  if (store.state.unreachable) return <Unreachable />
+  return <Options />
+}
+
+/** The hub gave no answer, which isn't the same as being signed out: nothing to sign in to until it does. */
+function Unreachable() {
+  const store = useStore()
+  const [trying, setTrying] = useState(false)
+  const again = async () => {
+    setTrying(true)
+    await store.reconnect()
+    setTrying(false)
+  }
+  return (
+    <div className="sign-in">
+      <div className="sign-in-card">
+        <Logo size={56} />
+        <h1>Binders</h1>
+        <p role="alert">Couldn’t reach the hub.</p>
+        <button type="button" className="button primary big" disabled={trying} onClick={() => void again()}><RotateCw size={15} className={trying ? 'spin' : undefined} /> {trying ? 'Trying…' : 'Try again'}</button>
+      </div>
+    </div>
+  )
+}
+
+function Options() {
   const store = useStore()
   const [options, setOptions] = useState<{ github: boolean; dev: boolean }>()
   const [name, setName] = useState('')

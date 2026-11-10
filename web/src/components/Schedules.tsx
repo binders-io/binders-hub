@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { CalendarClock, Pause, Play, Trash2, TriangleAlert, Zap } from 'lucide-react'
 import { cronPreset, defaultStaleHours, describeCron, nextRun, presetCron, weekdays, type Preset, type Schedule } from '../../../shared/schedule.ts'
-import { titleOf } from '../../../shared/notes.ts'
 import { call } from '../data/api'
 import { nameFor, useStore } from '../data/store'
 import { href } from '../route'
+import { ConfirmButton } from './ConfirmButton'
 import { Dialog, Field } from './Dialog'
 import { attempt, toast } from './Toast'
 import { ago } from './bits'
+import { useMayChangeBinder } from '../screens/settings/access'
 
 // Scheduled runs: a note run as a card on a timer, for an agent. Set from the note (its Schedule button), and listed
 // with every other schedule on the Agents page.
@@ -42,7 +43,7 @@ export function ScheduleDialog({ noteId, onClose }: { noteId: string; onClose: (
   const mine = (state.schedules ?? []).filter((s) => s.noteId === noteId)
   const [editing, setEditing] = useState<Schedule | 'new' | undefined>(mine.length ? undefined : 'new')
   return (
-    <Dialog title={`Schedule “${note ? titleOf(note.text) || note.title : 'note'}”`} onClose={onClose} wide>
+    <Dialog title={`Schedule “${note ? note.title : 'note'}”`} onClose={onClose} wide>
       <p className="schedule-intro">Each time it runs, the hub puts this note on the board as a card, the note’s words as they are then its instructions, for the agent you pick. A run that isn’t done yet when the next is due makes that one skip.</p>
       {mine.length > 0 && <ScheduleList schedules={mine} onEdit={(s) => setEditing(s)} showNote={false} />}
       {editing ? (
@@ -101,7 +102,7 @@ function ScheduleForm({ noteId, schedule, onDone }: { noteId: string; schedule?:
             <option value="daily">Every day</option>
             <option value="weekdays">Weekdays</option>
             <option value="weekly">Every week</option>
-            <option value="cron">Custom (cron)</option>
+            <option value="cron">Custom times</option>
           </select>
         </Field>
         {preset.kind === 'hourly' && (
@@ -166,6 +167,8 @@ function ScheduleForm({ noteId, schedule, onDone }: { noteId: string; schedule?:
 /** Schedules as rows: when, for whom, what came of the last run, and what can be done to each. */
 export function ScheduleList({ schedules, onEdit, showNote = true }: { schedules: Schedule[]; onEdit?: (schedule: Schedule) => void; showNote?: boolean }) {
   const { state } = useStore()
+  // Running, pausing, editing and deleting a schedule change the Binder: a reader reads when each one runs.
+  const may = useMayChangeBinder()
   return (
     <ul className="schedule-list">
       {schedules.map((s) => {
@@ -181,7 +184,7 @@ export function ScheduleList({ schedules, onEdit, showNote = true }: { schedules
           <li key={s.id} className={s.enabled ? '' : 'off'}>
             <CalendarClock size={16} />
             <div className="schedule-text">
-              {showNote && <a href={href({ screen: 'notes', id: s.noteId })}>{note ? titleOf(note.text) || note.title : 'A deleted note'}</a>}
+              {showNote && <a href={href({ screen: 'notes', id: s.noteId })}>{note ? note.title : 'A deleted note'}</a>}
               <b>{describeCron(s.cron)} <span className="faint">({s.tz})</span> · {s.agentId ? nameFor(state, s.agentId) : 'any agent'}</b>
               <span className="faint">
                 {s.enabled ? (next ? `Next ${when(next, s.tz)}` : 'Never comes round') : 'Off'}
@@ -211,12 +214,12 @@ export function ScheduleList({ schedules, onEdit, showNote = true }: { schedules
                 </details>
               )}
             </div>
-            <div className="schedule-buttons">
+            {may && <div className="schedule-buttons">
               <button type="button" className="icon-button" title="Run now" aria-label="Run now" onClick={() => void attempt(() => call('POST', `/api/schedules/${s.id}/run`)).then((card) => { if (card) toast('On the board.') })}><Zap size={15} /></button>
               <button type="button" className="icon-button" title={s.enabled ? 'Turn off' : 'Turn on'} aria-label={s.enabled ? 'Turn off' : 'Turn on'} onClick={() => void attempt(() => call('PATCH', `/api/schedules/${s.id}`, { enabled: !s.enabled }))}>{s.enabled ? <Pause size={15} /> : <Play size={15} />}</button>
               {onEdit && <button type="button" className="text-button" onClick={() => onEdit(s)}>Edit</button>}
-              <button type="button" className="icon-button" title="Delete" aria-label="Delete the schedule" onClick={() => void attempt(() => call('DELETE', `/api/schedules/${s.id}`))}><Trash2 size={15} /></button>
-            </div>
+              <ConfirmButton className="icon-button" question="Delete it? Press again" title="Delete" label="Delete the schedule" onConfirm={() => void attempt(() => call('DELETE', `/api/schedules/${s.id}`))}><Trash2 size={15} /></ConfirmButton>
+            </div>}
           </li>
         )
       })}

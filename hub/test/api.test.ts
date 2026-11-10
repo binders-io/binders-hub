@@ -9,7 +9,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { Entry, Change } from '../../shared/state.ts'
 import { cardChangeSet } from '../../shared/changeSet.ts'
 import { changesTo, load, textOf } from '../../shared/noteDoc.ts'
-import { defaultRunner } from '../../shared/work.ts'
+import { defaultRunner, leftCard } from '../../shared/work.ts'
 import { Actions } from '../src/actions.ts'
 import { Auth } from '../src/auth.ts'
 import { GitHubConnection } from '../src/githubConnection.ts'
@@ -21,6 +21,7 @@ import { IssuesSaver } from '../src/savers/issues.ts'
 import { ReviewsSaver } from '../src/savers/reviews.ts'
 import { buildServer } from '../src/server.ts'
 import { Webhooks } from '../src/webhooks.ts'
+import { canCatchUp } from '../src/routes/state.ts'
 import { Spaces, type Member } from '../src/spaces.ts'
 import type { OwnerAccess } from '../src/reach.ts'
 import { fakeGitHub, oneSpace, seed, tempDir, until } from './helpers.ts'
@@ -29,14 +30,9 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Merger, keepBothAdditions } from '../src/merger.ts'
 
-const envs: Change[] = [
-  { type: 'env.put', environment: { id: 'staging', name: 'Staging', url: '', version: '0.1.0', changeSetIds: [], state: 'healthy', deployedAt: '', needsApproval: false } },
-  { type: 'env.put', environment: { id: 'production', name: 'Production', url: '', version: '0.1.0', changeSetIds: [], state: 'healthy', deployedAt: '', needsApproval: true } },
-]
-
 async function setUp(options: { github?: Awaited<ReturnType<typeof fakeGitHub>>; devLogin?: boolean; allowedUsers?: string[]; webhookSecret?: string; filesDir?: string; merger?: Merger; webDir?: string; updateFailedFile?: string; admins?: string[]; members?: Member[] } = {}) {
   const hub = new Hub(new MemoryLog())
-  await hub.start([...seed(), ...envs])
+  await hub.start(seed())
   const kv = new MemoryKV()
   const sealer = new Sealer('test-secret')
   const github = new GitHubConnection(kv, sealer, { webUrl: options.github?.url ?? 'http://unused', apiUrl: options.github?.url ?? 'http://unused' },
@@ -390,14 +386,21 @@ describe('each person’s GitHub', () => {
     const octo = api(url, await viaGitHub(url))
     const link = await octo('GET', '/api/github/me')
     assert.equal(link.body.connected, true)
-    assert.equal(github.world.renewals, 1)
+    // A minute left isn't out yet: the call goes on with the token it has, and it's renewed beside the call.
+    await until(() => github.world.renewals >= 1)
     const used = () => github.calls.filter((c) => c.path === '/user/repos').map((c) => c.auth)
+    // Once the renewed one is kept, calls go out with it.
+    await until(async () => {
+      await octo('GET', '/api/github/repos')
+      return !!used().at(-1)?.startsWith('Bearer gho_renewed_')
+    })
+    const before = used().length
     const answers = await Promise.all([octo('GET', '/api/github/repos'), octo('GET', '/api/github/repos?q=a'), octo('GET', '/api/me')])
     assert.deepEqual(answers.map((a) => a.status), [200, 200, 200])
     assert.equal(answers[2].body.github.token, true)
-    // Renewed again (still a minute each time), each refresh token used once.
-    assert.ok(github.world.renewals >= 2)
-    assert.ok(used().every((auth) => auth?.startsWith('Bearer gho_renewed_')))
+    // Renewed again (still a minute each time), each refresh token used once, and never back to the first token.
+    await until(() => github.world.renewals >= 2)
+    assert.ok(used().slice(before).every((auth) => auth?.startsWith('Bearer gho_renewed_')))
     await close()
     await github.close()
   })
@@ -727,17 +730,104 @@ describe('the live feed', () => {
       if (message.type === 'presence') presence = message.presence
     })
     await new Promise((done) => socket.once('open', done))
-    await until(() => received.length === 4)
+    await until(() => received.length === 2)
     assert.deepEqual(presence, {}, 'agents’ presence comes first, live and out of the log')
     await api(url, cookie)('POST', '/api/changes', { client: 'tab-1234', changes: [{ id: 'b2', change: { type: 'binder.put', binder: { id: 'b2', name: 'Design' } } }] })
-    await until(() => received.length === 5)
-    assert.equal(received[4].client, 'user:you:tab-1234')
+    await until(() => received.length === 3)
+    assert.equal(received[2].client, 'user:you:tab-1234')
     socket.close()
     const anonymous = new WebSocket(`${url.replace('http', 'ws')}/api/live`)
     const code = await new Promise((done) => anonymous.once('unexpected-response', (_request, response) => done(response.statusCode)))
     assert.equal(code, 401)
     await close()
   })
+  /** A socket on the live feed from a version, with everything it's sent. */
+  async function following(url: string, cookie: string, since: number) {
+    const received: Entry[] = []
+    const told: { type: string; version?: number }[] = []
+    const socket = new WebSocket(`${url.replace('http', 'ws')}/api/live?since=${since}`, { headers: { cookie } })
+    socket.on('message', (data) => {
+      const message = JSON.parse(String(data)) as { type: string; entries?: Entry[]; version?: number }
+      if (message.type === 'entries') received.push(...message.entries!)
+      else if (message.type !== 'presence' && message.type !== 'terminals') told.push(message)
+    })
+    await new Promise((done) => socket.once('open', done))
+    return { received, told, socket }
+  }
+  const versions = (entries: Entry[]) => entries.map((e) => e.version)
+  const run = (from: number, to: number) => Array.from({ length: to - from }, (_, n) => from + 1 + n)
+  const line = (n: number): Change => ({ type: 'card.activity', id: 'c1', activity: { at: 'now', by: 'you', kind: 'comment', text: `Line ${n}` } })
+
+  it('brings a client that’s thousands of changes behind every one of them, in order', async () => {
+    const { url, hub, close } = await setUp()
+    const cookie = await signIn(url)
+    const from = hub.version
+    for (let n = 0; n < 4500; n++) await hub.record({ kind: 'hub' }, line(n))
+    const { received, told, socket } = await following(url, cookie, from)
+    await until(() => received.length === 4500)
+    assert.deepEqual(versions(received), run(from, hub.version), 'none left out, none twice, none out of turn')
+    assert.deepEqual(told, [])
+    socket.close()
+    await close()
+  })
+
+  it('holds what happens while a client is catching up, so nothing goes ahead of what came before it', async () => {
+    const { url, hub, close } = await setUp()
+    const cookie = await signIn(url)
+    const from = hub.version
+    for (let n = 0; n < 5; n++) await hub.record({ kind: 'hub' }, line(n))
+    // The log takes a moment to read back, and changes land meanwhile.
+    const read = hub.read.bind(hub)
+    let reads = 0
+    hub.read = async (after, limit) => {
+      const found = await read(after, limit)
+      if (reads++ < 2) {
+        await hub.record({ kind: 'hub' }, line(100 + reads))
+        await new Promise((done) => setTimeout(done, 60))
+      }
+      return found
+    }
+    const { received, socket } = await following(url, cookie, from)
+    await until(() => received.length === hub.version - from)
+    await hub.record({ kind: 'hub' }, line(200))
+    await until(() => received.length === hub.version - from)
+    assert.deepEqual(versions(received), run(from, hub.version))
+    socket.close()
+    await close()
+  })
+
+  it('tells a client the log doesn’t go back to, or one ahead of it, that it’s behind, and sends what happens from now', async () => {
+    const { url, hub, close } = await setUp()
+    const cookie = await signIn(url)
+    const from = hub.version
+    for (let n = 0; n < 10; n++) await hub.record({ kind: 'hub' }, line(n))
+    // The log was cut short of where this client is: the change after its own is gone.
+    await hub.log.trim?.(from + 5)
+    const behind = await following(url, cookie, from)
+    await until(() => behind.told.length === 1)
+    assert.deepEqual(behind.told, [{ type: 'behind', version: hub.version }])
+    assert.deepEqual(behind.received, [], 'nothing from the middle of what it missed')
+    await hub.record({ kind: 'hub' }, line(50))
+    await until(() => behind.received.length === 1)
+    assert.deepEqual(versions(behind.received), [hub.version])
+    behind.socket.close()
+    // One that says it's further on than the hub is: its version isn't of this log.
+    const ahead = await following(url, cookie, hub.version + 100)
+    await until(() => ahead.told.length === 1)
+    assert.deepEqual(ahead.told, [{ type: 'behind', version: hub.version }])
+    await hub.record({ kind: 'hub' }, line(51))
+    await until(() => ahead.received.length === 1)
+    assert.deepEqual(versions(ahead.received), [hub.version])
+    ahead.socket.close()
+    // One that's where the hub is gets neither: there's nothing to catch up on.
+    const here = await following(url, cookie, hub.version)
+    await hub.record({ kind: 'hub' }, line(52))
+    await until(() => here.received.length === 1)
+    assert.deepEqual(here.told, [])
+    here.socket.close()
+    await close()
+  })
+
   it('gives a note’s Automerge document to edit from, and sends the edits on with the text merged', async () => {
     const { url, hub, close } = await setUp()
     const cookie = await signIn(url)
@@ -991,7 +1081,7 @@ describe('an agent giving a card up', () => {
 describe('agents over MCP', () => {
   it('finds work, takes it, reports, asks, finishes with a pull request, and ships it', async () => {
     const github = await fakeGitHub()
-    const { url, hub, close } = await setUp({ github })
+    const { url, hub, actions, close } = await setUp({ github })
     const you = api(url, await signIn(url))
     await you('POST', '/api/changes', { client: 'tab-1234', changes: [{ id: 'r', change: { type: 'binder.put', binder: { id: 'b1', name: 'Server', repo: 'acme/web' } } }] })
     const made = await you('POST', '/api/cards', { binderId: 'b1', title: 'Add a health check', brief: 'GET /health answers 200.', doneWhen: 'It does.' })
@@ -1050,14 +1140,18 @@ describe('agents over MCP', () => {
     const merges = github.calls.filter((c) => c.path.endsWith('/merge') || c.path.endsWith('/reviews')).map((c) => `${c.method} ${c.path}`)
     assert.deepEqual(merges, ['POST /repos/acme/web/pulls/7/reviews', 'PUT /repos/acme/web/pulls/7/merge'])
     assert.equal(hub.state.pulls.find((p) => p.id === pull.id)!.state, 'merged')
-    assert.equal(hub.state.environments.find((e) => e.id === 'staging')!.version, '0.2.0')
+    assert.equal(hub.state.pulls.find((p) => p.id === pull.id)!.mergeSha, 'merged7', 'the merge commit GitHub made is kept')
     assert.equal(hub.state.cards.find((c) => c.id === cardId)!.stage, 'live', 'merged is done')
-
-    const promoted = await you('POST', '/api/environments/production/promote')
-    assert.equal(promoted.status, 200, JSON.stringify(promoted.body))
-    assert.equal(hub.state.cards.find((c) => c.id === cardId)!.stage, 'live')
+    // Merged is as far as the hub takes it: nothing is deployed, or made up, until GitHub says so.
+    assert.equal(hub.state.environments.length, 0)
+    assert.equal(hub.state.changeSets.find((s) => s.id === set.id)!.state, 'merged')
     assert.equal((await builder.call('get_task', { id: cardId })).value.stage, 'done', 'agents read it as done')
     assert.equal((await builder.call('list_tasks', { stage: 'done' })).value.length, 1)
+
+    // GitHub deploys it: the environment is found, the pull request is on it, and the change set has shipped.
+    github.world.compares['merged7...abc1234def'] = { commits: [], status: 'ahead' }
+    await actions.deploymentSeen('acme/web', { environment: 'production', ref: 'v1.0.0', sha: 'abc1234def', state: 'success' })
+    assert.deepEqual(hub.state.environments.map((e) => [e.id, e.version, e.pullIds]), [['acme/web#production', 'v1.0.0', ['acme/web#7']]])
     assert.equal(hub.state.changeSets.find((s) => s.id === set.id)!.state, 'shipped')
 
     // Deleted, though shipped: gone from the hub and its environments, with its card kept and nothing asked of GitHub.
@@ -1889,8 +1983,8 @@ describe('GitHub’s webhooks', () => {
     await deliver('check_run', { check_run: { name: 'lint', status: 'completed', conclusion: 'failure', pull_requests: [{ number: 9 }] }, repository: { full_name: 'acme/web' } })
     assert.equal(hub.state.pulls.find((p) => p.id === 'acme/web#9')!.checks.find((c) => c.name === 'lint')?.state, 'failed')
 
-    await deliver('deployment_status', { deployment_status: { state: 'success' }, deployment: { environment: 'staging', ref: 'main', sha: 'abcdef123', payload: { version: '0.3.0' } } })
-    assert.equal(hub.state.environments.find((e) => e.id === 'staging')!.version, '0.3.0')
+    await deliver('deployment_status', { deployment_status: { state: 'success' }, deployment: { environment: 'staging', ref: 'main', sha: 'abcdef123', payload: { version: '0.3.0' } }, repository: { full_name: 'acme/web' } })
+    assert.equal(hub.state.environments.find((e) => e.id === 'acme/web#staging')!.version, '0.3.0')
 
     await deliver('issues', { action: 'closed', issue: { number: issue.number, title: 'New title', body: '', state: 'closed', html_url: '' }, repository: { full_name: 'acme/web' } })
     assert.equal(hub.state.cards.find((c) => c.id === card.id)!.stage, 'live')
@@ -2189,6 +2283,316 @@ describe('repo briefs from before they were notes', () => {
     assert.equal(note.text, '# Brief\n\n## Map\nsrc/hub.ts: the log.\n')
     await actions.moveBriefsToNotes()
     assert.equal(hub.state.notes.filter((n) => n.title === 'Brief').length, 1, 'once')
+    await close()
+  })
+})
+
+describe('a browser’s state', () => {
+  const diff = [{ path: 'src/a.ts', added: 1, removed: 0, lines: [{ kind: '+' as const, text: 'a new line', n: 1 }] }]
+  const pull = { id: 'acme/web#7', repo: 'acme/web', number: 7, title: 'A page', branch: 'b', url: '', state: 'open' as const, checks: [], files: diff }
+  const card = { id: 'c-light', binderId: 'b1', title: 'A card', brief: '', doneWhen: '', size: 'S' as const, stage: 'working' as const, createdAt: 'now', createdBy: 'you', updatedAt: 'now', waitsFor: [], activity: [], worktree: { branch: 'b', base: 'main', files: diff, at: 'now' } }
+  const withWork = async () => {
+    const set = await setUp()
+    await set.hub.record({ kind: 'hub' }, { type: 'pr.put', pull })
+    await set.hub.record({ kind: 'hub' }, { type: 'card.put', card })
+    return { ...set, as: api(set.url, await signIn(set.url)) }
+  }
+
+  it('leaves out diffs’ lines, and gives a pull request’s when it’s opened', async () => {
+    const { as, close } = await withWork()
+    const whole = (await as('GET', '/api/state')).body.state
+    assert.equal(whole.pulls[0].files[0].lines.length, 1, 'the apps still get all of it')
+    const light = (await as('GET', '/api/state?light=1')).body.state
+    assert.deepEqual(light.pulls[0].files, [{ path: 'src/a.ts', added: 1, removed: 0, lines: [] }])
+    assert.deepEqual(light.cards.find((c: { id: string }) => c.id === 'c-light').worktree.files[0].lines, [])
+
+    assert.deepEqual((await as('GET', '/api/pulls/acme%2Fweb/7/files')).body.files, diff)
+    assert.equal((await as('GET', '/api/pulls/acme%2Fweb/8/files')).status, 404)
+    await close()
+  })
+
+  it('sends no state to a page that’s current, or that’s been following and can catch up from the feed', async () => {
+    const { hub, as, close } = await withWork()
+    const now = hub.version
+    assert.equal((await as('GET', `/api/state?light=1&have=${now}`)).body.state, undefined)
+    assert.equal((await as('GET', `/api/state?light=1&have=${now}`)).body.version, now)
+    assert.ok((await as('GET', `/api/state?light=1&have=${now - 1}`)).body.state, 'a page just loaded starts from the whole state')
+    assert.equal((await as('GET', `/api/state?light=1&have=${now - 1}&replay=1`)).body.state, undefined)
+    assert.ok((await as('GET', `/api/state?light=1&have=${now + 5}&replay=1`)).body.state, 'ahead of the hub: it started over')
+    assert.ok((await as('GET', '/api/state?light=1&have=0&replay=1')).body.state)
+    await close()
+  })
+
+  it('isn’t told to catch up from changes a rebuilt log no longer has, or from too far back', async () => {
+    const log = new MemoryLog()
+    const hub = new Hub(log)
+    await hub.start(undefined, { version: 3000, state: new Hub(new MemoryLog()).state })
+    await hub.record({ kind: 'hub' }, { type: 'binder.put', binder: { id: 'b9', name: 'After' } })
+    assert.equal(hub.version, 3001)
+    assert.equal(await canCatchUp(hub, 3000), true)
+    assert.equal(await canCatchUp(hub, 2999), false, 'what came before the rebuild isn’t in the log')
+    assert.equal(await canCatchUp(hub, 500), false, 'more than the feed should replay')
+  })
+
+  it('leaves them out of the live feed too, for a browser', async () => {
+    const { hub, url, close } = await withWork()
+    const cookie = await signIn(url)
+    const listen = async (query: string) => {
+      const received: Entry[] = []
+      const socket = new WebSocket(`${url.replace('http', 'ws')}/api/live?since=${hub.version}${query}`, { headers: { cookie } })
+      socket.on('message', (data) => {
+        const message = JSON.parse(String(data)) as { type: string; entries?: Entry[] }
+        if (message.type === 'entries') received.push(...message.entries!)
+      })
+      await new Promise((done) => socket.once('open', done))
+      return { received, socket }
+    }
+    const light = await listen('&light=1')
+    const whole = await listen('')
+    await hub.record({ kind: 'hub' }, { type: 'pr.update', id: pull.id, fields: { files: diff } })
+    await hub.record({ kind: 'hub' }, { type: 'card.update', id: card.id, fields: { worktree: card.worktree } })
+    await until(() => light.received.length === 2 && whole.received.length === 2)
+    const files = (entries: Entry[]) => entries.map((e) => (e.change.type === 'pr.update' ? e.change.fields.files : e.change.type === 'card.update' ? e.change.fields.worktree?.files : undefined)?.[0].lines.length)
+    assert.deepEqual(files(light.received), [0, 0])
+    assert.deepEqual(files(whole.received), [1, 1])
+    assert.deepEqual((light.received[0].change as { fields: { files: unknown[] } }).fields.files, [{ path: 'src/a.ts', added: 1, removed: 0, lines: [] }])
+    light.socket.close()
+    whole.socket.close()
+    await close()
+  })
+})
+
+describe('a note’s text, asked for when it’s opened', () => {
+  const put = (id: string, title: string, text: string, extra: Record<string, unknown> = {}) => ({ type: 'note.put' as const, note: { id, title, binderId: 'b1', editedAt: '2026-11-10T08:00:00.000Z', editors: ['you'], text, ...extra } })
+  const withNotes = async () => {
+    const set = await setUp()
+    // A deeper folder, to see a place from the outermost in.
+    await set.hub.record({ kind: 'hub' }, { type: 'folder.put', folder: { id: 'f2', binderId: 'b1', name: 'Quarterly', parentId: 'f1' } })
+    await set.hub.record({ kind: 'hub' }, put('t1', 'Target', '# Target\n\nWhat the others point at.\n'))
+    await set.hub.record({ kind: 'hub' }, put('l1', 'Links once', '# Links once\n\nIntro line.\n- first, see [[Target]] for more\n- and again [[target]]\n'))
+    await set.hub.record({ kind: 'hub' }, put('l2', 'Links in a heading', '# Links in a heading\n\n## [[Target|The target]] again\n'))
+    await set.hub.record({ kind: 'hub' }, put('l3', 'Links elsewhere', '# Links elsewhere\n\nOnly [[Something else]].\n'))
+    await set.hub.record({ kind: 'hub' }, put('d1', 'Deep', '# Deep\n\nThe rollout needs a zebra crossing.\n', { folderId: 'f2' }))
+    return { ...set, as: api(set.url, await signIn(set.url)) }
+  }
+
+  it('answers a note’s text and when it was edited, from the hub’s own copy', async () => {
+    const { as, close } = await withNotes()
+    const got = await as('GET', '/api/notes/t1/text')
+    assert.equal(got.status, 200)
+    assert.deepEqual(got.body, { text: '# Target\n\nWhat the others point at.\n', editedAt: '2026-11-10T08:00:00.000Z' })
+    const missing = await as('GET', '/api/notes/nope/text')
+    assert.equal(missing.status, 404)
+    assert.deepEqual(missing.body, { error: 'No such note' })
+    await close()
+  })
+
+  it('names the other notes that link to a note, in lower case, with the first line that does', async () => {
+    const { as, close } = await withNotes()
+    const got = await as('GET', '/api/notes/t1/backlinks')
+    assert.equal(got.status, 200)
+    assert.deepEqual(got.body.notes, [
+      { id: 'l1', title: 'Links once', line: 'first, see [[Target]] for more' },
+      { id: 'l2', title: 'Links in a heading', line: '[[Target|The target]] again' },
+    ])
+    assert.deepEqual((await as('GET', '/api/notes/l3/backlinks')).body, { notes: [] })
+    assert.deepEqual((await as('GET', '/api/notes/n1/backlinks')).body, { notes: [] })
+    assert.equal((await as('GET', '/api/notes/nope/backlinks')).status, 404)
+    await close()
+  })
+
+  it('leaves out a note that links to itself', async () => {
+    const { hub, as, close } = await withNotes()
+    await hub.record({ kind: 'hub' }, put('t1', 'Target', '# Target\n\nSee [[target]].\n'))
+    assert.deepEqual((await as('GET', '/api/notes/t1/backlinks')).body.notes.map((n: { id: string }) => n.id), ['l1', 'l2'])
+    await close()
+  })
+
+  it('searches titles, places and text, each word anywhere among them, in the state’s order', async () => {
+    const { as, close } = await withNotes()
+    const ids = async (q: string) => (await as('GET', `/api/notes/search?q=${encodeURIComponent(q)}`)).body.ids
+    assert.deepEqual(await ids('zebra'), ['d1'], 'only in the text')
+    assert.deepEqual(await ids('ZEBRA Crossing'), ['d1'], 'in lower case, every word')
+    assert.deepEqual(await ids('quarterly'), ['d1'], 'a folder’s name')
+    assert.deepEqual(await ids('server planning quarterly'), ['d1'], 'the Binder’s name, then the folders’ from the outermost in')
+    assert.deepEqual(await ids('deep zebra'), ['d1'], 'one word in the title and one in the text')
+    assert.deepEqual(await ids('deep rubbish'), [], 'every word has to be there')
+    assert.deepEqual(await ids('links'), ['l1', 'l2', 'l3'])
+    assert.deepEqual(await ids('planning'), ['n1', 'd1'], 'the folder’s own notes and the ones inside it')
+    await close()
+  })
+
+  it('answers nothing to a search that’s too short or too long, and at most 200 ids', async () => {
+    const { hub, as, close } = await withNotes()
+    assert.deepEqual((await as('GET', '/api/notes/search?q=z')).body, { ids: [] })
+    assert.deepEqual((await as('GET', '/api/notes/search?q=')).body, { ids: [] })
+    assert.deepEqual((await as('GET', '/api/notes/search')).body, { ids: [] })
+    assert.deepEqual((await as('GET', '/api/notes/search?q=%20%20')).body, { ids: [] }, 'spaces are no words')
+    assert.deepEqual((await as('GET', `/api/notes/search?q=${'a'.repeat(201)}`)).body, { ids: [] })
+    assert.equal((await as('GET', `/api/notes/search?q=${'a'.repeat(200)}`)).status, 200)
+    for (let i = 0; i < 210; i++) await hub.record({ kind: 'hub' }, put(`m${i}`, `Many ${i}`, `# Many ${i}\n\nsame words\n`))
+    const ids = (await as('GET', '/api/notes/search?q=same%20words')).body.ids
+    assert.equal(ids.length, 200)
+    assert.equal(ids[0], 'm0')
+    await close()
+  })
+
+  it('finds a note in a folder that loops back on itself without going round for ever', async () => {
+    const { hub, as, close } = await withNotes()
+    await hub.record({ kind: 'hub' }, { type: 'folder.put', folder: { id: 'fa', binderId: 'b1', name: 'Alpha', parentId: 'fb' } })
+    await hub.record({ kind: 'hub' }, { type: 'folder.put', folder: { id: 'fb', binderId: 'b1', name: 'Beta', parentId: 'fa' } })
+    await hub.record({ kind: 'hub' }, put('c1', 'Circular', '# Circular\n', { folderId: 'fa' }))
+    assert.deepEqual((await as('GET', '/api/notes/search?q=beta%20alpha')).body.ids, ['c1'])
+    await close()
+  })
+
+  it('refuses a note put from a browser that holds it without its text, and the Binder keeps the note', async () => {
+    const { hub, url, close } = await withNotes()
+    const you = api(url, await signIn(url))
+    const before = hub.version
+    const refused = await you('POST', '/api/changes', { client: 'tab-1234', changes: [{ id: 'light', change: put('t1', 'Target', '', { left: { size: 40, head: '# Target', links: [] } }) }] })
+    assert.equal(refused.status, 422)
+    assert.equal(refused.body.error, 'This note’s text isn’t loaded in this browser, so it can’t be saved from it.')
+    assert.equal(hub.version, before, 'nothing went in the log')
+    assert.equal(hub.state.notes.find((n) => n.id === 't1')?.text, '# Target\n\nWhat the others point at.\n')
+    // A whole note goes in as before.
+    const fine = await you('POST', '/api/changes', { client: 'tab-1234', changes: [{ id: 'whole', change: put('t1', 'Target', '# Target\n\nChanged.\n') }] })
+    assert.equal(fine.status, 200)
+    assert.equal(hub.state.notes.find((n) => n.id === 't1')?.text, '# Target\n\nChanged.\n')
+    await close()
+  })
+
+  it('has /api/state whole, and /api/state?light=1 without any note’s text', async () => {
+    const { as, close } = await withNotes()
+    const whole = (await as('GET', '/api/state')).body.state
+    const t1 = whole.notes.find((n: { id: string }) => n.id === 't1')
+    assert.equal(t1.text, '# Target\n\nWhat the others point at.\n')
+    assert.equal(t1.left, undefined)
+    const light = (await as('GET', '/api/state?light=1')).body.state
+    assert.ok(light.notes.length > 1)
+    for (const n of light.notes) {
+      assert.equal(n.text, '', n.id)
+      assert.equal(typeof n.left.size, 'number', n.id)
+    }
+    assert.deepEqual(light.notes.find((n: { id: string }) => n.id === 'l1').left.links, ['target'])
+    await close()
+  })
+
+  it('sends a note’s change whole on the live feed to a browser holding the light state', async () => {
+    const { hub, url, close } = await withNotes()
+    const cookie = await signIn(url)
+    const received: Entry[] = []
+    const socket = new WebSocket(`${url.replace('http', 'ws')}/api/live?since=${hub.version}&light=1`, { headers: { cookie } })
+    socket.on('message', (data) => {
+      const message = JSON.parse(String(data)) as { type: string; entries?: Entry[] }
+      if (message.type === 'entries') received.push(...message.entries!)
+    })
+    await new Promise((done) => socket.once('open', done))
+    await hub.record({ kind: 'hub' }, put('t1', 'Target', '# Target\n\nLive words.\n'))
+    await until(() => received.length === 1)
+    const got = received[0].change
+    assert.equal(got.type === 'note.put' && got.note.text, '# Target\n\nLive words.\n')
+    socket.close()
+    await close()
+  })
+})
+
+describe('a finished card’s detail, asked for when it’s opened', () => {
+  const day = 86_400_000
+  const ago = (days: number) => new Date(Date.now() - days * day).toISOString()
+  const line = (n: number) => ({ at: ago(30 - n / 10), by: 'builder', kind: 'step' as const, tool: 'Bash', text: `step ${n}`, result: 'ok' })
+  const finished = (id: string, extra: Record<string, unknown> = {}) => ({
+    id, binderId: 'b1', title: `Card ${id}`, brief: `Brief of ${id}.`, doneWhen: 'It works.', size: 'M' as const, stage: 'live' as const, createdAt: ago(40), createdBy: 'you', updatedAt: ago(20), waitsFor: [], activity: Array.from({ length: 30 }, (_, n) => line(n)),
+    debrief: { state: 'done' as const, askedBy: 'you', askedAt: ago(21), agentId: 'builder' }, ...extra,
+  })
+  const withCards = async () => {
+    const set = await setUp()
+    await set.hub.record({ kind: 'hub' }, { type: 'card.put', card: finished('old') })
+    await set.hub.record({ kind: 'hub' }, { type: 'card.put', card: finished('yesterday', { updatedAt: ago(1) }) })
+    return { ...set, as: api(set.url, await signIn(set.url)) }
+  }
+
+  it('answers a card as the hub has it, detail and every line of its activity', async () => {
+    const { hub, as, close } = await withCards()
+    const got = await as('GET', '/api/cards/old/whole')
+    assert.equal(got.status, 200)
+    assert.deepEqual(Object.keys(got.body), ['card'])
+    assert.deepEqual(got.body.card, JSON.parse(JSON.stringify(hub.state.cards.find((c) => c.id === 'old'))))
+    assert.equal(got.body.card.brief, 'Brief of old.')
+    assert.equal(got.body.card.activity.length, 30)
+    assert.equal(got.body.card.left, undefined)
+    assert.equal(got.body.card.debrief.state, 'done')
+    await close()
+  })
+
+  it('answers 404 for a card that isn’t there', async () => {
+    const { as, close } = await withCards()
+    const missing = await as('GET', '/api/cards/nope/whole')
+    assert.equal(missing.status, 404)
+    assert.deepEqual(missing.body, { error: 'No such card.' })
+    await close()
+  })
+
+  it('has /api/state give every card whole, and /api/state?light=1 give the old one without its detail', async () => {
+    const { as, close } = await withCards()
+    const whole = (await as('GET', '/api/state')).body.state.cards as { id: string; brief: string; activity: unknown[]; left?: unknown; debrief?: unknown }[]
+    for (const id of ['old', 'yesterday']) {
+      const c = whole.find((x) => x.id === id)!
+      assert.equal(c.brief, `Brief of ${id}.`, id)
+      assert.equal(c.activity.length, 30, id)
+      assert.equal(c.left, undefined, id)
+      assert.ok(c.debrief, id)
+    }
+    const light = (await as('GET', '/api/state?light=1')).body.state.cards as typeof whole
+    const old = light.find((x) => x.id === 'old')!
+    assert.equal(old.brief, '')
+    assert.deepEqual(old.activity, [])
+    assert.deepEqual(old.left, { debrief: 'done' })
+    assert.equal(old.debrief, undefined)
+    const recent = light.find((x) => x.id === 'yesterday')!
+    assert.equal(recent.brief, 'Brief of yesterday.')
+    assert.equal(recent.left, undefined)
+    assert.ok(recent.debrief)
+    await close()
+  })
+
+  it('refuses a card put from a browser that holds it without its detail, and the Binder keeps the card', async () => {
+    const { hub, url, close } = await withCards()
+    const you = api(url, await signIn(url))
+    const before = hub.version
+    const shell = leftCard(finished('old', { title: 'Overwritten' }))
+    const refused = await you('POST', '/api/changes', { client: 'tab-1234', changes: [{ id: 'light', change: { type: 'card.put', card: shell } }] })
+    assert.equal(refused.status, 422)
+    assert.equal(refused.body.error, 'This card isn’t loaded in this browser, so it can’t be saved from it.')
+    assert.equal(hub.version, before, 'nothing went in the log')
+    const kept = hub.state.cards.find((c) => c.id === 'old')!
+    assert.equal(kept.title, 'Card old')
+    assert.equal(kept.brief, 'Brief of old.')
+    assert.equal(kept.activity.length, 30)
+    // A whole card goes in as before.
+    const fine = await you('POST', '/api/changes', { client: 'tab-1234', changes: [{ id: 'whole', change: { type: 'card.put', card: finished('old', { title: 'Renamed' }) } }] })
+    assert.equal(fine.status, 200)
+    assert.equal(hub.state.cards.find((c) => c.id === 'old')?.title, 'Renamed')
+    assert.equal(hub.state.cards.find((c) => c.id === 'old')?.left, undefined)
+    await close()
+  })
+
+  it('sends a card’s change whole on the live feed to a browser holding the light state', async () => {
+    const { hub, url, close } = await withCards()
+    const cookie = await signIn(url)
+    const received: Entry[] = []
+    const socket = new WebSocket(`${url.replace('http', 'ws')}/api/live?since=${hub.version}&light=1`, { headers: { cookie } })
+    socket.on('message', (data) => {
+      const message = JSON.parse(String(data)) as { type: string; entries?: Entry[] }
+      if (message.type === 'entries') received.push(...message.entries!)
+    })
+    await new Promise((done) => socket.once('open', done))
+    await hub.record({ kind: 'hub' }, { type: 'card.put', card: finished('old', { brief: 'Changed.' }) })
+    await until(() => received.length === 1)
+    const got = received[0].change
+    assert.equal(got.type === 'card.put' && got.card.brief, 'Changed.')
+    assert.equal(got.type === 'card.put' && got.card.left, undefined)
+    socket.close()
     await close()
   })
 })

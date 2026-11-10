@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import axe from 'axe-core'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { card, hubState, me, mount, note, settle, standInHub } from './harness'
+import { card, hubState, me, mount, note, settle, standInHub, standInRepos } from './harness'
 import App from '../src/App'
 import { phoneQuery } from '../src/components/bits'
 
@@ -39,8 +39,30 @@ afterEach(() => {
 })
 
 describe('axe', () => {
-  it.each(['#/home', '#/flow', '#/notes/n1', '#/changes', '#/delivery', '#/agents', '#/settings', '#/account', '#/work/c3'])('finds nothing on %s', async (hash) => {
+  it.each(['#/home', '#/flow', '#/notes/n1', '#/changes', '#/delivery', '#/agents', '#/settings', '#/account', '#/ask', '#/work/c3'])('finds nothing on %s', async (hash) => {
     await open(hash)
+    expect(await violations()).toEqual([])
+  })
+
+  it('finds nothing in the repo picker, filters and all', async () => {
+    standInRepos(() => ({
+      repos: [
+        { fullName: 'acme/web', private: true, description: 'The site', linkable: true },
+        { fullName: 'acme/docs', private: false, linkable: false, why: 'You can only read it, so it can’t be linked' },
+      ],
+      total: 2,
+      more: 0,
+      topics: [{ name: 'backend', count: 1 }],
+      properties: [{ name: 'team', values: [{ value: 'payments', count: 1 }] }],
+      failed: true,
+    }))
+    await open('#/agents')
+    fireEvent.click(screen.getByRole('button', { name: 'Set one up by hand' }))
+    const box = await screen.findByRole('combobox', { name: 'Repos it works in' })
+    act(() => box.focus())
+    await screen.findByRole('option', { name: /acme\/docs/ })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Filter by topic' }), { target: { value: 'backend' } })
+    await screen.findByRole('button', { name: 'Add all 1' })
     expect(await violations()).toEqual([])
   })
 
@@ -48,6 +70,14 @@ describe('axe', () => {
     await open('#/home')
     fireEvent.keyDown(window, { key: 'k', metaKey: true })
     await screen.findByRole('combobox')
+    expect(await violations()).toEqual([])
+  })
+
+  it('finds nothing in the Claude Code dialog, which has the command with the hub in it', async () => {
+    await open('#/agents')
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Claude Code' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Add the hub to Claude Code' })
+    expect(dialog.querySelector('pre')?.textContent).toBe(`claude mcp add --transport http --scope user binders-hub ${window.location.origin}/mcp`)
     expect(await violations()).toEqual([])
   })
 
@@ -75,8 +105,100 @@ describe('the palette', () => {
   const opened = async () => {
     await open('#/home')
     fireEvent.keyDown(window, { key: 'k', metaKey: true })
-    return screen.findByRole('combobox', { name: 'Search notes, cards and actions' })
+    return screen.findByRole('combobox', { name: 'Search or ask your binders' })
   }
+
+  /** A hub whose search finds this passage, and which records what it was asked. */
+  const answering = () => {
+    const stand = vi.mocked(fetch).getMockImplementation()!
+    const asked: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } })
+      if (url === '/api/brain/search') return json({ sources: [{ n: 1, kind: 'note', id: 'n1', title: 'A note', text: '# Heading\n\nWords that mean the same.' }], searchedBy: 'words and meaning' })
+      if (url === '/api/brain/ask') {
+        asked.push((JSON.parse(String(init?.body)) as { question: string }).question)
+        return json({ sources: [], searchedBy: 'words' })
+      }
+      return stand(url, init)
+    }))
+    return asked
+  }
+
+  it('finds passages by what they mean, with their words under the title', async () => {
+    answering()
+    const box = await opened()
+    fireEvent.change(box, { target: { value: 'same meaning' } })
+    const option = await screen.findByRole('option', { name: /Words that mean the same/ })
+    expect(option.textContent).toContain('A note')
+    expect(option.textContent).not.toContain('#')
+    expect(await violations()).toEqual([])
+  })
+
+  it('puts Ask first for a question, and Enter asks it on the Ask screen', async () => {
+    const asked = answering()
+    const box = await opened()
+    fireEvent.change(box, { target: { value: 'why did we pick Redis?' } })
+    expect((await screen.findAllByRole('option'))[0].textContent).toContain('Ask: why did we pick Redis?')
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(asked).toEqual(['why did we pick Redis?']))
+    expect(window.location.hash).toBe('#/ask')
+  })
+
+  it('answers on the Ask screen with its Markdown shown, its citations in place and its sources one row each', async () => {
+    const stand = vi.mocked(fetch).getMockImplementation()!
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } })
+      const source = (n: number) => ({ n, binder: 'b', binderName: 'Binder', kind: 'note', id: 'n1', title: 'A note', context: 'Plans', text: `Passage ${n} with **bold**.`, url: '#/notes/n1' })
+      if (url === '/api/brain/ask') return json({ answer: { text: '', parts: [{ text: 'It is **decided**', sources: [1] }, { text: ':\n\n- First\n', sources: [2] }] }, sources: [source(1), source(2)], searchedBy: 'words and meaning', model: 'stand-in' })
+      return stand(url, init)
+    }))
+    const box = await opened()
+    fireEvent.change(box, { target: { value: 'what was decided?' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    const heading = await screen.findByRole('heading', { name: 'what was decided?' })
+    const page = heading.closest('.ask-result') as HTMLElement
+    // The question shows at once and its answer when the hub has given it.
+    await waitFor(() => expect(page.querySelector('.ask-answer strong')?.textContent).toBe('decided'))
+    expect(page.querySelector('.ask-answer')?.textContent).not.toContain('**')
+    expect(within(page).getAllByRole('button', { name: /^Source / }).map((b) => b.textContent)).toEqual(['1', '2'])
+    expect(page.querySelectorAll('.ask-sources > li').length).toBe(1)
+    expect(page.querySelectorAll('.ask-passage strong').length).toBe(2)
+    expect(await violations()).toEqual([])
+  })
+
+  it('says what something would do in the hub’s words, and does it only on the button', async () => {
+    const stand = vi.mocked(fetch).getMockImplementation()!
+    const answered: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } })
+      if (url === '/api/brain/ask') return json({ answer: { text: 'Stop “Fix login”.', parts: [{ text: 'Stop “Fix login”.', sources: [] }] }, sources: [], searchedBy: 'words', model: 'stand-in', proposal: { id: 'p1', what: 'Stop “Fix login”.', button: 'Stop it' } })
+      if (url === '/api/brain/do') {
+        answered.push(JSON.parse(String(init?.body)))
+        return json({ said: 'Stopped “Fix login”.' })
+      }
+      return stand(url, init)
+    }))
+    const box = await opened()
+    fireEvent.change(box, { target: { value: 'stop the login work' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    const go = await screen.findByRole('button', { name: 'Stop it' })
+    expect(screen.getByRole('button', { name: 'Not now' })).toBeTruthy()
+    expect(answered).toEqual([])
+    expect(await violations()).toEqual([])
+    fireEvent.click(go)
+    expect(await screen.findByText('Stopped “Fix login”.')).toBeTruthy()
+    expect(answered).toEqual([{ id: 'p1', go: true }])
+    expect(screen.queryByRole('button', { name: 'Stop it' })).toBeNull()
+  })
+
+  it('keeps a title first for words that aren’t a question', async () => {
+    answering()
+    const box = await opened()
+    fireEvent.change(box, { target: { value: 'login' } })
+    const options = await screen.findAllByRole('option')
+    expect(options[0].textContent).toContain('Fix the login')
+    expect(options.some((o) => o.textContent?.includes('Ask: login'))).toBe(true)
+  })
 
   it('says which option is chosen while focus stays in the box', async () => {
     const box = await opened()
@@ -100,11 +222,13 @@ describe('the palette', () => {
     expect(box.getAttribute('aria-expanded')).toBe('true')
   })
 
-  it('says how many it found, and when it found none', async () => {
+  it('says how many it found, and offers to ask when no title matches', async () => {
     const box = await opened()
     fireEvent.change(box, { target: { value: 'nothing like this' } })
-    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Nothing matches “nothing like this”.'))
-    expect(box.hasAttribute('aria-activedescendant')).toBe(false)
+    // The page's toast has a polite region of its own, always there.
+    await waitFor(() => expect(screen.getAllByRole('status').map((region) => region.textContent)).toContain('1 result'))
+    expect(screen.getByRole('option').textContent).toContain('Ask: nothing like this')
+    expect(box.getAttribute('aria-activedescendant')).toBe('palette-option-0')
   })
 
   it('closes on Escape', async () => {
@@ -118,7 +242,7 @@ describe('on a phone', () => {
   it('has search in the top bar, as the sidebar is behind a menu', async () => {
     vi.stubGlobal('matchMedia', (query: string) => ({ matches: query === phoneQuery, media: query, addEventListener() {}, removeEventListener() {} }))
     await open('#/home')
-    fireEvent.click(within(document.querySelector('.topbar') as HTMLElement).getByRole('button', { name: 'Search or run' }))
+    fireEvent.click(within(document.querySelector('.topbar') as HTMLElement).getByRole('button', { name: 'Search or ask' }))
     expect(await screen.findByRole('combobox')).toBeTruthy()
   })
 })

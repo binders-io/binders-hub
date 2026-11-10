@@ -5,10 +5,12 @@ are taken from, so they never come from a real hub.
 
 - `data.ts`: what it holds. Harbor and its people are the same made-up team as the Mac app's demo. One piece of work runs
   through every screen: the note on annual plans, its cards, change set #11 on staging waiting for production, and change
-  set #12 in review with its Challenge and debrief. Dates are counted back from when it runs.
+  set #12 in review with its Challenge and debrief. Delivery is per repo: the api repo has Staging (everything merged)
+  and Production (a version behind, with a deploy workflow, so Promote shows between them); the other repos have no
+  environments yet. Dates are counted back from when it runs.
 - `hub.ts`: starts it. It keeps everything in this process and reads no settings from the environment, so it can't open a
   real hub's Redis, notes or keys. It listens on 127.0.0.1 only, and its GitHub is a port nothing answers on. The screens
-  are told GitHub is connected, so they read as a set-up hub's, and what you approve or promote is only recorded.
+  are told GitHub is connected, so they read as a set-up hub's, and nothing you approve or promote reaches a repo. It can't add machines: Add a machine on the Agents page says so.
 - `shoot.ts`: takes the pictures.
 
 ## Set up
@@ -41,15 +43,15 @@ a `-dark` suffix in dark:
 
 | Picture | Screen |
 |---|---|
-| `hub-flow` | Work: the board |
+| `hub-flow` | Board: the cards in their columns |
 | `hub-card` | A card an agent is working on |
 | `hub-change-set` | Change set #12, its pull requests in merge order |
 | `hub-challenge` | Change set #12's Challenge |
-| `hub-delivery` | Delivery: staging, production and the runs |
+| `hub-delivery` | Delivery: the api repo's staging and production, with Promote between them, and the runs |
 
-The Hub film's pictures are larger (a 1440×900 window at 2×, so 2880×1800) and of more screens: Home, Work, the note on
+The Hub film's pictures are larger (a 1440×900 window at 2×, so 2880×1800) and of more screens: Home, Board, the note on
 Distill, the card and its steps, the blocked card's question, change set #12's debrief, Challenge and functional test plan, Delivery, Agents
-and Settings → Repo briefs, as `shot-<screen>-light.webp` and `shot-<screen>-dark.webp`:
+and the repo briefs in Settings → GitHub, as `shot-<screen>-light.webp` and `shot-<screen>-dark.webp`:
 
 ```sh
 npm run shots -- ~/Documents/reelkit/films/hub-flow/assets film

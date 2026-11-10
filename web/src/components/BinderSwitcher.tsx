@@ -3,14 +3,34 @@ import { AnimatePresence } from 'motion/react'
 import { Check, ChevronsUpDown, Layers, Plus, Users } from 'lucide-react'
 import { useHub } from '../data/store'
 import { space, spaceHref } from '../data/space'
+import { call } from '../data/api'
 import { go } from '../route'
 import { Logo } from './Logo'
 import { Dialog } from './Dialog'
 import { NewSpace } from './SpacePanel'
 
-const toSettings = (part: string) => {
-  try { window.localStorage.setItem('binders-settings-part', part) } catch { /* only a convenience */ }
-  go({ screen: 'settings' })
+/** How often the numbers beside the other binders are asked for again while the page is in view. */
+export const waitingEveryMs = 120_000
+
+/**
+ * What waits for you, or for anyone, in each binder you're in, by binder's address. Asked when the page opens, each time
+ * the list is opened and every two minutes while the page is visible; a failed ask shows nothing, and the last answer stays.
+ */
+function useWaitingElsewhere(open: boolean) {
+  const [counts, setCounts] = useState<Record<string, number>>({})
+  const ask = () => {
+    void call<{ binders?: { id: string; count: number }[] }>('GET', '/api/me/waiting').then((answer) => {
+      if (!Array.isArray(answer?.binders)) return
+      setCounts(Object.fromEntries(answer.binders.filter((b) => b.count > 0).map((b) => [b.id, b.count])))
+    }).catch(() => undefined)
+  }
+  useEffect(() => {
+    const timer = window.setInterval(() => { if (document.visibilityState !== 'hidden') ask() }, waitingEveryMs)
+    return () => window.clearInterval(timer)
+  }, [])
+  useEffect(ask, [])
+  useEffect(() => { if (open) ask() }, [open])
+  return counts
 }
 
 /**
@@ -28,15 +48,19 @@ export function BinderSwitcher({ binder, onPick }: { binder: string; onPick: (id
   const spaces = me?.spaces ?? []
   const here = spaces.find((s) => s.id === (me?.space ?? space))
   const several = binders.length > 1
+  const waiting = useWaitingElsewhere(open)
+  const elsewhere = Object.entries(waiting).filter(([id]) => id !== (me?.space ?? space)).reduce((sum, [, count]) => sum + count, 0)
   const repo = binders.length === 1 ? binders[0].repo : undefined
 
   useEffect(() => {
     if (!open) return
     const away = (event: MouseEvent) => { if (!box.current?.contains(event.target as Node)) setOpen(false) }
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false) }
+    // pointerdown too: a tap on nothing in particular has no mousedown on an iPhone.
+    window.addEventListener('pointerdown', away)
     window.addEventListener('mousedown', away)
     window.addEventListener('keydown', escape)
-    return () => { window.removeEventListener('mousedown', away); window.removeEventListener('keydown', escape) }
+    return () => { window.removeEventListener('pointerdown', away); window.removeEventListener('mousedown', away); window.removeEventListener('keydown', escape) }
   }, [open])
 
   const pick = (id: string) => {
@@ -53,6 +77,8 @@ export function BinderSwitcher({ binder, onPick }: { binder: string; onPick: (id
           <b>{here?.name ?? 'Binders'}</b>
           <span className="mono">{several ? (current ? current.name : `All ${binders.length} parts`) : repo ?? (here ? `/${here.id}` : '')}</span>
         </div>
+        {elsewhere > 0 && <span className="binder-dot" />}
+        {elsewhere > 0 && <span className="sr-only">{elsewhere === 1 ? '1 thing is waiting in your other binders' : `${elsewhere} things are waiting in your other binders`}</span>}
         <ChevronsUpDown size={14} className="faint" />
       </button>
       {open && (
@@ -70,6 +96,7 @@ export function BinderSwitcher({ binder, onPick }: { binder: string; onPick: (id
                 <a href={spaceHref(s.id, '#/home')}>
                   <span className="binder-initial">{s.name.charAt(0).toUpperCase()}</span>
                   <span className="binder-menu-name"><b>{label(s)}</b><em className="mono">/{s.id}</em></span>
+                  {waiting[s.id] > 0 && <span className="count binder-waiting"><span aria-hidden="true">{waiting[s.id]}</span><span className="sr-only">{waiting[s.id]} waiting</span></span>}
                 </a>
               )}
             </li>
@@ -100,7 +127,7 @@ export function BinderSwitcher({ binder, onPick }: { binder: string; onPick: (id
             </li>
           </>}
           <li className="binder-menu-sep">
-            <button type="button" onClick={() => { setOpen(false); toSettings('binder') }}>
+            <button type="button" onClick={() => { setOpen(false); go({ screen: 'settings', id: 'people' }) }}>
               <span className="binder-initial"><Users size={13} /></span>
               <span className="binder-menu-name"><b>Members, repo and settings…</b></span>
             </button>

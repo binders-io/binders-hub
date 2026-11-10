@@ -1,15 +1,19 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence } from 'motion/react'
-import { AlertTriangle, Bot, FileText, LayoutDashboard, GitPullRequestArrow, Menu, Monitor, Moon, Rocket, Search, Settings as SettingsIcon, Sun, Workflow, X } from 'lucide-react'
+import { AlertTriangle, Bot, Brain, FileText, LayoutDashboard, GitPullRequestArrow, Menu, Monitor, Moon, Rocket, Search, Settings as SettingsIcon, Sun, Workflow, X } from 'lucide-react'
 import { isOnline, sameValues, useActions, useClock, useHub, type State } from './data/store'
-import { Kbd, PersonAvatar, usePhone } from './components/bits'
+import { Kbd, PersonAvatar, leaveCard, usePhone } from './components/bits'
 import { Github } from './components/Github'
 import { BinderSwitcher } from './components/BinderSwitcher'
+import { useBinderName } from './components/useBinderName'
 import { poppedOut } from './components/notesLayout'
 import { Palette } from './components/Palette'
+import { ReaderLine } from './components/ReaderLine'
+import { useMayChangeBinder } from './screens/settings/access'
 import { Toast } from './components/Toast'
 import { SideAgents } from './components/SideAgents'
-import { Account, AgentTerminal, Agents, ChangeSets, Delivery, Flow, Home, Notes, prefetchScreens, Settings, Work } from './lazyScreens'
+import { openRow, useNotifications, useWaiting, waitingFor } from './data/notify'
+import { Account, AgentTerminal, Agents, Ask, ChangeSets, Delivery, Flow, Home, Notes, prefetchScreens, Settings, Work } from './lazyScreens'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { UIContext, type UI } from './ui'
 import { SignIn } from './screens/SignIn'
@@ -17,6 +21,8 @@ import { go, href, useRoute, type Route } from './route'
 import { ContextMenuHost } from './components/ContextMenu'
 import { useModal } from './components/useModal'
 import { SwarmDialog } from './components/SwarmDialog'
+import { ClaudeCodeDialog } from './components/ClaudeCode'
+import { forAttention, screenOf } from '../../shared/waiting.ts'
 
 /** The binder you're in, remembered in this browser; one that's gone falls back to the first. */
 function useBinder(ids: string[]) {
@@ -31,20 +37,22 @@ function useBinder(ids: string[]) {
   return [binder, setBinder] as const
 }
 
+// In the order the work runs: a question, a note, the board, what the board made, where it went. The number keys follow.
 const nav: { route: Route; label: string; icon: typeof Workflow; key: string }[] = [
   { route: { screen: 'home' }, label: 'Home', icon: LayoutDashboard, key: '1' },
-  { route: { screen: 'flow' }, label: 'Work', icon: Workflow, key: '2' },
+  { route: { screen: 'ask' }, label: 'Ask', icon: Brain, key: '2' },
   { route: { screen: 'notes', id: '' }, label: 'Notes', icon: FileText, key: '3' },
-  { route: { screen: 'changes', id: '' }, label: 'Change sets', icon: GitPullRequestArrow, key: '4' },
-  { route: { screen: 'delivery' }, label: 'Delivery', icon: Rocket, key: '5' },
-  { route: { screen: 'agents' }, label: 'Agents', icon: Bot, key: '6' },
-  { route: { screen: 'settings' }, label: 'Settings', icon: SettingsIcon, key: '7' },
+  { route: { screen: 'flow' }, label: 'Board', icon: Workflow, key: '4' },
+  { route: { screen: 'changes', id: '' }, label: 'Change sets', icon: GitPullRequestArrow, key: '5' },
+  { route: { screen: 'delivery' }, label: 'Delivery', icon: Rocket, key: '6' },
+  { route: { screen: 'agents' }, label: 'Agents', icon: Bot, key: '7' },
+  { route: { screen: 'settings' }, label: 'Settings', icon: SettingsIcon, key: '8' },
 ]
 
-/** A phone's tab bar: the screens used most, by a short name. The rest are in the menu. */
-const tabs: { screen: Route['screen']; label: string }[] = [{ screen: 'home', label: 'Home' }, { screen: 'flow', label: 'Work' }, { screen: 'notes', label: 'Notes' }, { screen: 'changes', label: 'Changes' }, { screen: 'agents', label: 'Agents' }]
+/** A phone's tab bar: the screens used most, by a short name. The rest, Ask among them, are in the menu. */
+const tabs: { screen: Route['screen']; label: string }[] = [{ screen: 'home', label: 'Home' }, { screen: 'notes', label: 'Notes' }, { screen: 'flow', label: 'Board' }, { screen: 'changes', label: 'Changes' }, { screen: 'agents', label: 'Agents' }]
 
-const titles: Record<Route['screen'], string> = { home: 'Home', flow: 'Work', notes: 'Notes', changes: 'Change sets', delivery: 'Delivery', work: 'Card', agents: 'Agents', terminal: 'Terminal', settings: 'Settings', account: 'Your account' }
+const titles: Record<Route['screen'], string> = { home: 'Home', flow: 'Board', notes: 'Notes', changes: 'Change sets', delivery: 'Delivery', work: 'Card', agents: 'Agents', terminal: 'Terminal', settings: 'Settings', account: 'Your account', ask: 'Ask' }
 
 type Theme = 'system' | 'light' | 'dark'
 
@@ -72,11 +80,12 @@ function useTheme() {
   return [theme, setTheme] as const
 }
 
-/** The tab's title: the screen, or the card or note that's open. */
-function usePageTitle(route: Route, signedOut: boolean) {
+/** The tab's title: the screen, or the card or note that's open, with how many things wait on you in front of it. */
+function usePageTitle(route: Route, signedOut: boolean, waiting: number) {
   const open = useHub((state) => (route.screen === 'work' ? state.cards.find((c) => c.id === route.id)?.title : route.screen === 'notes' ? state.notes.find((n) => n.id === route.id)?.title : undefined))
   const name = signedOut ? '' : open || titles[route.screen]
-  useEffect(() => { document.title = name ? `${name} · Binders Hub` : 'Binders Hub' }, [name])
+  const count = signedOut || !waiting ? '' : `(${waiting}) `
+  useEffect(() => { document.title = `${count}${name ? `${name} · Binders Hub` : 'Binders Hub'}` }, [name, count])
 }
 
 /**
@@ -96,17 +105,23 @@ function useFocusOnScreenChange(screen: Route['screen']) {
   return heading
 }
 
-/** The counts beside the screens' names. */
+/**
+ * The counts beside the screens' names. A badge means something here waits on you (or on anyone, which includes you):
+ * Board has questions, stopped cards, permissions and findings, Notes proposed cards and changes, Change sets what's to
+ * approve, Delivery what's to promote. Agents is the one that isn't a call for attention: how many are online.
+ */
 function countsIn(state: State, binder: string): Partial<Record<Route['screen'], number>> {
-  const here = (binderId: string) => binder === 'all' || binderId === binder
-  return {
-    flow: state.cards.filter((c) => c.stage === 'working' && here(c.binderId)).length || undefined,
-    notes: state.proposals.filter((p) => p.state === 'new' && here(p.binderId)).length || undefined,
-    changes: state.changeSets.filter((c) => c.state === 'review' && here(c.binderId)).length || undefined,
-    delivery: state.environments.filter((e) => e.state === 'waiting' && e.needsApproval).length || undefined,
-    agents: state.agents.filter((a) => !a.revoked && isOnline(a)).length || undefined,
+  const counts: Partial<Record<Route['screen'], number>> = {}
+  for (const row of forAttention(waitingFor(state, binder))) {
+    const screen = screenOf[row.kind]
+    counts[screen] = (counts[screen] ?? 0) + 1
   }
+  counts.agents = state.agents.filter((a) => !a.revoked && isOnline(a)).length || undefined
+  return counts
 }
+
+/** What a badge counts, for a hover. */
+const countTitle = (screen: Route['screen'], n: number) => (screen === 'agents' ? `${n} online` : `${n} waiting on you`)
 
 export default function App() {
   const [route, moving] = useRoute()
@@ -121,6 +136,7 @@ export default function App() {
   // On a phone the sidebar is a menu, opened from the top bar and closed by going anywhere.
   const [menu, setMenu] = useState(false)
   const [theme, setTheme] = useTheme()
+  const binderName = useBinderName()
   // Whoever is signed in, large in the top bar: as big as the bar comfortably holds, a little less on a phone's shorter bar.
   const phone = usePhone()
   const menuOpen = menu && phone
@@ -128,22 +144,31 @@ export default function App() {
   const sidebar = useModal<HTMLElement>(() => setMenu(false), { active: menuOpen, returnTo: menuButton })
   const heading = useFocusOnScreenChange(route.screen)
   const content = useRef<HTMLDivElement>(null)
-  usePageTitle(route, signedOut)
+  // Everything that waits on you, in every binder you're in: for the tab's title, the app's icon and notifications, which
+  // are for when you're not looking at any one of them.
+  const waitingAll = useWaiting()
+  useNotifications(waitingAll, openRow)
+  usePageTitle(route, signedOut, forAttention(waitingAll).length)
   const [binder, setBinder] = useBinder(useMemo(() => binders.map((b) => b.id), [binders]))
   const [splitting, setSplitting] = useState<string>()
+  const [claudeCode, setClaudeCode] = useState(false)
+  // What ⌘K asked, for Ask to answer: not in the address, so a question stays out of the browser's history.
+  const [asked, setAsked] = useState<{ question: string; at: number }>()
   // An agent going quiet changes the count with nothing else changing.
   useClock()
   const counts = useHub((state) => countsIn(state, binder), sameValues)
   const agents = useMemo(() => allAgents.filter((a) => !a.revoked), [allAgents])
 
   // A card opens full screen, with its whole way from the note to production.
-  const ui = useMemo<UI>(() => ({ openItem: (id: string) => go({ screen: 'work', id }), openPalette: () => setPalette(true), binder, setBinder, splitCard: (id: string) => setSplitting(id) }), [binder, setBinder])
+  const ui = useMemo<UI>(() => ({ openItem: (id: string) => go({ screen: 'work', id }), openPalette: () => setPalette(true), binder, setBinder, splitCard: (id: string) => setSplitting(id), connectClaudeCode: () => setClaudeCode(true), askQuestion: (question: string) => { setAsked({ question, at: Date.now() }); go({ screen: 'ask' }) } }), [binder, setBinder])
 
   // A new note in the binder you're looking at, opened.
+  const mayChange = useMayChangeBinder()
   const newNote = useCallback(() => {
+    if (!mayChange) return
     const target = binder !== 'all' ? binder : binders[0]?.id
     go({ screen: 'notes', id: target ? store.addNote(target) : '' })
-  }, [binder, binders, store])
+  }, [binder, binders, store, mayChange])
 
   const onKey = useCallback((event: KeyboardEvent) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
@@ -168,7 +193,9 @@ export default function App() {
     }
     const target = nav.find((n) => n.key === event.key)
     if (target && !palette) go(target.route)
-    if (event.key === 'Escape' && route.screen === 'work') window.history.back()
+    // Escape leaves a card only when nothing else is open to take it: a menu, a picker or a dialog (the palette, the
+    // phone's menu) closes first, as does a field being edited, which is typing above, and a toast with focus in it.
+    if (event.key === 'Escape' && route.screen === 'work' && !palette && !event.defaultPrevented && !(event.target instanceof Element && event.target.closest('.toast')) && !document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')) leaveCard()
   }, [palette, route.screen, newNote])
 
   useEffect(() => {
@@ -215,7 +242,7 @@ export default function App() {
         <aside ref={sidebar} className="sidebar" aria-label="Sidebar" {...(menuOpen ? { role: 'dialog', 'aria-modal': true, 'aria-label': 'Menu', tabIndex: -1 } : {})} onClick={(e) => { if ((e.target as HTMLElement).closest('a')) setMenu(false) }}>
           <BinderSwitcher binder={binder} onPick={setBinder} />
           <button className="search-button" onClick={() => setPalette(true)}>
-            <Search size={14} /> <span>Search or run</span> <Kbd>⌘K</Kbd>
+            <Search size={14} /> <span>Search or ask</span> <Kbd>⌘K</Kbd>
           </button>
           <nav className="nav" aria-label="Screens">
             {nav.map((n) => {
@@ -225,7 +252,7 @@ export default function App() {
                 <a key={n.label} href={href(n.route)} className={on ? 'on' : undefined} aria-current={on ? 'page' : undefined}>
                   <Icon size={16} strokeWidth={2.2} />
                   <span>{n.label}</span>
-                  {counts[n.route.screen] ? <em className={`count count-${n.route.screen}`}>{counts[n.route.screen]}</em> : <Kbd>{n.key}</Kbd>}
+                  {counts[n.route.screen] ? <em className={`count count-${n.route.screen}`} title={countTitle(n.route.screen, counts[n.route.screen]!)}>{counts[n.route.screen]}</em> : <Kbd>{n.key}</Kbd>}
                 </a>
               )
             })}
@@ -250,15 +277,21 @@ export default function App() {
         <main className="main" inert={menuOpen}>
           <header className="topbar">
             <button type="button" ref={menuButton} className="icon-button menu-button" onClick={() => setMenu(true)} aria-label="Menu" aria-expanded={menuOpen}><Menu size={19} /></button>
-            <Title key={Title} className="topbar-title" ref={heading} tabIndex={-1}>{titles[route.screen]}</Title>
+            <div className="topbar-heading">
+              {/* The switcher is in the menu, three taps away: the binder's name says where you are, and opens it. */}
+              {phone && <button type="button" className="topbar-binder" onClick={() => setMenu(true)} aria-haspopup="dialog" aria-expanded={menuOpen} aria-label={`${binderName}: open the menu`}>{binderName}</button>}
+              <Title key={Title} className="topbar-title" ref={heading} tabIndex={-1}>{titles[route.screen]}</Title>
+            </div>
             <span className={`live-pill ${connection === 'signed-out' ? 'offline' : connection}`}><i /> {connection === 'live' ? 'Live' : connection === 'connecting' ? 'Connecting' : 'Offline'}</span>
-            <button type="button" className="icon-button topbar-search" onClick={() => setPalette(true)} aria-label="Search or run"><Search size={18} /></button>
+            <button type="button" className="icon-button topbar-search" onClick={() => setPalette(true)} aria-label="Search or ask"><Search size={18} /></button>
             <div className="presence">
               {unlinked && <a className="gh-pill" href={href({ screen: 'account' })} aria-label="GitHub not connected" title="This binder’s GitHub App is set up, but you haven’t connected to it: you can’t link repos to agents, approve or merge as yourself until you do."><Github size={13} /> <span>GitHub not connected</span></a>}
               {me && <a className={`me${route.screen === 'account' ? ' on' : ''}${unlinked ? ' unlinked' : ''}`} href={href({ screen: 'account' })} aria-current={route.screen === 'account' ? 'page' : undefined} title={`Your account: signed in as ${me.user.login}${unlinked ? ', not connected to this binder’s GitHub' : me.github.token ? ', connected to this binder’s GitHub' : ''}`} aria-label="Your account"><PersonAvatar id={me.user.login} size={phone ? 34 : 38} /></a>}
             </div>
           </header>
           <UpdateFailed />
+          <NewVersion />
+          <ReaderLine />
           <div ref={content} tabIndex={-1} className={`screen${moving ? ' moving' : ''}`}>
             <ErrorBoundary resetOn={routeKey}>
               <Suspense fallback={<ScreenLoading />}>
@@ -272,6 +305,7 @@ export default function App() {
                 {route.screen === 'terminal' && <AgentTerminal key={route.id} id={route.id} sid={route.sid} />}
                 {route.screen === 'settings' && <Settings />}
                 {route.screen === 'account' && <Account />}
+                {route.screen === 'ask' && <Ask asked={asked} />}
               </Suspense>
             </ErrorBoundary>
           </div>
@@ -286,13 +320,14 @@ export default function App() {
               <a key={t.screen} href={href(item.route)} className={on ? 'on' : undefined} aria-current={on ? 'page' : undefined}>
                 <Icon size={20} strokeWidth={on ? 2.4 : 2} />
                 <span>{t.label}</span>
-                {counts[t.screen] ? <em className={`count count-${t.screen}`}>{counts[t.screen]}</em> : null}
+                {counts[t.screen] ? <em className={`count count-${t.screen}`} title={countTitle(t.screen, counts[t.screen]!)}>{counts[t.screen]}</em> : null}
               </a>
             )
           })}
         </nav>
 
         <AnimatePresence>{palette && <Palette key="palette" onClose={() => setPalette(false)} />}</AnimatePresence>
+        <AnimatePresence>{claudeCode && <ClaudeCodeDialog key="claude-code" onClose={() => setClaudeCode(false)} />}</AnimatePresence>
         {splitting && <SwarmDialog key={splitting} cardId={splitting} onClose={() => setSplitting(undefined)} />}
         <Toast />
         <ContextMenuHost />
@@ -307,6 +342,41 @@ function ScreenLoading() {
 }
 
 /** For the hub's admins: a newer commit didn't go in because its tests failed. Hidden for that commit once dismissed. */
+/**
+ * The page as it was when it was opened: when the hub has a newer one (it was updated since, and the page it serves
+ * changed), a word and a reload. Looked at every two minutes, and on coming back to the tab.
+ */
+function NewVersion() {
+  const [newer, setNewer] = useState(false)
+  useEffect(() => {
+    let first: string | undefined
+    const look = async () => {
+      try {
+        const response = await fetch('/', { method: 'HEAD', cache: 'no-store' })
+        const tag = response.headers.get('etag') ?? response.headers.get('last-modified')
+        if (!tag) return
+        if (first === undefined) first = tag
+        else if (tag !== first) setNewer(true)
+      } catch { /* the hub is away for a moment: looked at again later */ }
+    }
+    void look()
+    const again = window.setInterval(() => void look(), 120_000)
+    const back = () => void look()
+    window.addEventListener('focus', back)
+    return () => {
+      window.clearInterval(again)
+      window.removeEventListener('focus', back)
+    }
+  }, [])
+  if (!newer) return null
+  return (
+    <div className="new-version" role="status">
+      <span>A newer version of this page is ready.</span>
+      <button type="button" className="button" onClick={() => window.location.reload()}>Reload</button>
+    </div>
+  )
+}
+
 function UpdateFailed() {
   const me = useHub((state) => state.me)
   const failed = me?.updateFailed
@@ -326,7 +396,7 @@ function UpdateFailed() {
   return (
     <div className="update-failed" role="status">
       <AlertTriangle size={15} />
-      <span>The hub didn’t update: <span className="mono">{failed.commit.slice(0, 7)}</span>{failed.subject ? ` (${failed.subject})` : ''} failed its tests, so it’s still on {me?.version ? <span className="mono">{me.version.commit.slice(0, 7)}</span> : 'the last good version'}. <a href={href({ screen: 'settings' })}>Settings → This hub</a> shows why.</span>
+      <span>The hub didn’t update: <span className="mono">{failed.commit.slice(0, 7)}</span>{failed.subject ? ` (${failed.subject})` : ''} failed its tests, so it’s still on {me?.version ? <span className="mono">{me.version.commit.slice(0, 7)}</span> : 'the last good version'}. <a href={href({ screen: 'settings', id: 'status' })}>Settings → Status</a> shows why.</span>
       <button type="button" className="icon-button" onClick={dismiss} aria-label="Dismiss"><X size={14} /></button>
     </div>
   )

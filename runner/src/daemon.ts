@@ -1,8 +1,11 @@
 import { execFile, spawn } from 'node:child_process'
-import { chmod, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { chmod, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { homedir, hostname, userInfo } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
+import { detect, diskLines, foundLines, joinAgent, joinMachine, lookOnDisk, type Server } from './brain.ts'
+import { toolsHere } from './engines.ts'
+import { findable, toolInfo, type AgentTool } from '../../shared/agents.ts'
 import { heldIn } from './held.ts'
 import { serviceEnv } from './network.ts'
 import { launcherFor, stopTreeArgs, taskName, taskXml } from './windows.ts'
@@ -17,7 +20,7 @@ import { launcherFor, stopTreeArgs, taskName, taskXml } from './windows.ts'
 
 const run = promisify(execFile)
 
-export const subcommands = new Set(['add', 'list', 'ls', 'logs', 'start', 'stop', 'restart', 'remove', 'rm'])
+export const subcommands = new Set(['add', 'join', 'list', 'ls', 'logs', 'start', 'stop', 'restart', 'remove', 'rm'])
 
 const base = () => process.env.BINDERS_HOME ?? join(homedir(), '.binders')
 const agentsDir = () => join(base(), 'agents')
@@ -43,6 +46,10 @@ export interface Saved {
   addedAt: string
   /** The proxy and certificate settings of the shell that set it up, which a service doesn't otherwise get. */
   network?: Record<string, string>
+  /** A brain machine (a bnw_ token): it serves this machine's model servers to the hub, and has no workspace. */
+  kind?: 'brain'
+  /** The model servers it was told of, besides the usual places it looks. */
+  serve?: string[]
 }
 
 /**
@@ -117,6 +124,7 @@ const bootout = (name: string) => Promise.all(domains().map((d) => run('launchct
 
 /** What the service runs: this Node, the runner file, and where to find the agent's token. */
 function command(s: Saved) {
+  if (s.kind === 'brain') return [process.execPath, runnerFile(), 'brain', '--hub', s.hub, '--token-file', tokenOf(s.name), '--name', s.name, ...(s.serve?.length ? ['--serve', s.serve.join(',')] : [])]
   return [process.execPath, runnerFile(), '--hub', s.hub, '--workspace', s.workspace, '--token-file', tokenOf(s.name), '--name', s.name]
 }
 
@@ -159,6 +167,64 @@ async function writeUnit(s: Saved) {
   await mkdir(join(homedir(), '.config', 'systemd', 'user'), { recursive: true })
   await writeService(unitOf(s.name), unitFor(s), s)
   await run('systemctl', ['--user', 'daemon-reload'])
+}
+
+/**
+ * A systemd user service stops when its person logs out of the machine (an SSH session ending, say), unless the user
+ * is allowed to linger. Turned on here when the system lets this user do it; when it doesn't, the line to run instead.
+ * Nothing when it was on already.
+ */
+export async function keepRunningAfterLogout(call: (command: string, args: string[]) => Promise<{ stdout: string }> = (command, args) => run(command, args), user = userInfo().username) {
+  const on = await call('loginctl', ['show-user', user, '--property=Linger']).then((r) => /Linger=yes/.test(r.stdout), () => false)
+  if (on) return undefined
+  const turned = await call('loginctl', ['enable-linger', user]).then(() => true, () => false)
+  return turned
+    ? `It keeps running after you log out: lingering is now on for ${user}.`
+    : `It stops when you log out of this machine, until you log in again. To keep it running, run once: sudo loginctl enable-linger ${user}`
+}
+
+/**
+ * What to say when a folder an agent is set up in isn't a git repo and holds none: its cards are worked straight in that
+ * folder, with no branch or worktree of their own. A folder inside a repo, or one with repos directly in it, is fine.
+ */
+export async function folderWarning(folder: string) {
+  const top = (dir: string) => run('git', ['-C', dir, 'rev-parse', '--show-toplevel']).then((r) => r.stdout.trim(), () => '')
+  if (await top(folder)) return undefined
+  const entries = await readdir(folder, { withFileTypes: true }).catch(() => [])
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+    const dir = join(folder, entry.name)
+    const found = await top(dir)
+    if (found && (await realpath(found).catch(() => found)) === (await realpath(dir).catch(() => dir))) return undefined
+  }
+  return `${folder} isn’t a git repo and has no repo in it, so the agent will work straight in that folder, with no branch of its own for each card. Point --workspace at a repo, or a folder of repos, to give each card its own branch.`
+}
+
+/** The GitHub repo a folder is a clone of (owner/name, from its origin), if it is one: as the runner reads it for its cards. */
+async function repoOf(dir: string) {
+  const origin = await run('git', ['-C', dir, 'remote', 'get-url', 'origin']).then((r) => r.stdout.trim(), () => '')
+  return /^(?:https?:\/\/[^/]+\/|[\w.-]+@[^:]+:|ssh:\/\/[\w.-]+@[^/]+\/)([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/.exec(origin)?.[1]
+}
+
+/**
+ * The GitHub repos a folder holds: the repo it is, or is inside, or those directly inside it (a dozen at most), each as
+ * owner/name from its origin. A repo with no GitHub origin isn't one.
+ */
+export async function reposHere(folder: string) {
+  const top = (dir: string) => run('git', ['-C', dir, 'rev-parse', '--show-toplevel']).then((r) => r.stdout.trim(), () => '')
+  if (await top(folder)) return [await repoOf(folder)].filter((r): r is string => !!r)
+  const repos: string[] = []
+  const entries = await readdir(folder, { withFileTypes: true }).catch(() => [])
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+    const dir = join(folder, entry.name)
+    const found = await top(dir)
+    if (!found || (await realpath(found).catch(() => found)) !== (await realpath(dir).catch(() => dir))) continue
+    const repo = await repoOf(dir)
+    if (repo && !repos.some((r) => r.toLowerCase() === repo.toLowerCase())) repos.push(repo)
+    if (repos.length >= 12) break
+  }
+  return repos
 }
 
 /** Its LaunchAgent. */
@@ -374,6 +440,50 @@ async function tailLog(file: string, lines: number, follow: boolean) {
   }
 }
 
+/** What setting an agent up touches on this machine: its service, and what it looks at. A test puts stand-ins here. */
+export interface Ports {
+  /** Puts the service in place and starts it. */
+  install: (s: Saved) => Promise<void>
+  /** Keeps a Linux user's services running after they log out: what it says of that, if anything. */
+  keepRunning: () => Promise<string | undefined>
+  /** What's on this machine: the agent tools installed, and the GitHub repos a folder holds. */
+  look: (folder: string) => Promise<{ tools: AgentTool[]; repos: string[] }>
+  /** The model servers here, for a machine that lends its models. */
+  detect: (serve: string[]) => Promise<Server[]>
+  /** The models downloaded here and where they were looked for: what binders add says of them. */
+  disk: () => ReturnType<typeof lookOnDisk>
+  host: () => string
+}
+
+const here: Ports = {
+  install,
+  keepRunning: () => (platform === 'linux' ? keepRunningAfterLogout().catch(() => undefined) : Promise.resolve(undefined)),
+  look: async (folder) => ({ tools: toolsHere(), repos: await reposHere(folder).catch(() => []) }),
+  detect: (serve) => detect(serve),
+  disk: () => lookOnDisk(),
+  host: () => hostname(),
+}
+
+/**
+ * Saves an agent (or a machine that serves models) as it is on this machine and starts its service: what `binders add`
+ * and `binders join` both do with a token. The same agent again is the same service, with the new token.
+ */
+async function setUp(input: { hub: string; token: string; workspace: string; me: { name: string; id?: string }; named?: string; brain?: boolean; serve?: string[] }, put: Ports['install']) {
+  const { hub, token, workspace, me, brain, serve = [] } = input
+  const existing = (await saved()).find((s) => (me.id && s.agentId === me.id) || (s.agent === me.name && s.hub === hub))
+  let name = existing?.name ?? (input.named !== undefined ? slug(input.named) : slug(me.name))
+  if (!existing) for (let n = 2; (await saved()).some((s) => s.name === name); n++) name = `${slug(me.name)}-${n}`
+  const network = serviceEnv()
+  const carried = Object.keys(network)
+  const s: Saved = { name, agent: me.name, ...(me.id ? { agentId: me.id } : {}), hub, workspace, addedAt: existing?.addedAt ?? new Date().toISOString(), ...(carried.length ? { network } : {}), ...(brain ? { kind: 'brain' as const, ...(serve.length ? { serve } : {}) } : {}) }
+  await mkdir(agentsDir(), { recursive: true, mode: 0o700 })
+  await writeFile(tokenOf(name), token, { mode: 0o600 })
+  await chmod(tokenOf(name), 0o600)
+  await writeFile(join(agentsDir(), `${name}.json`), JSON.stringify(s, null, 2))
+  await put(s)
+  return { s, existing, carried }
+}
+
 // The commands --------------------------------------------------------------------------------------------------------
 
 function flags(args: string[]) {
@@ -399,35 +509,90 @@ const ago = (ms: number) => {
 type WhoAmI = (hub: string, token: string) => Promise<{ name: string; id?: string }>
 type HandBack = (hub: string, token: string, cards: string[], why: string) => Promise<unknown>
 
-export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: HandBack = async () => undefined): Promise<number> {
+export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: HandBack = async () => undefined, given: Partial<Ports> = {}): Promise<number> {
+  const ports: Ports = { ...here, ...given }
   const [sub, ...args] = argv
-  const root = ['add', 'start', 'restart'].includes(sub) ? refusedAsRoot(process.getuid?.()) : undefined
+  const root = ['add', 'join', 'start', 'restart'].includes(sub) ? refusedAsRoot(process.getuid?.()) : undefined
   if (root) throw new Error(root)
   const { flags: f, rest } = flags(args)
   const all = f.all === true
   switch (sub) {
     case 'add': {
-      const token = String(f.token ?? process.env.BINDERS_TOKEN ?? '')
-      if (!/^bnd_/.test(token)) throw new Error('binders add needs the agent’s token: --token bnd_… (from its Start the runner on the Agents page).')
+      let token = String(f.token ?? process.env.BINDERS_TOKEN ?? '')
+      if (!/^bn[dwj]_/.test(token)) throw new Error('binders add needs the agent’s token: --token bnd_… (from its Start the runner on the Agents page), or the line from Settings → Brain → Your machines.')
       const hub = String(f.hub ?? process.env.BINDERS_URL ?? '').replace(/\/$/, '')
       if (!/^https?:\/\//.test(hub)) throw new Error('binders add needs the hub: --hub https://…')
+      // A brain machine: no workspace, and the servers it was told of besides the usual places.
+      const brain = token.startsWith('bnw_') || token.startsWith('bnj_')
+      // It links with Node's own WebSocket, from Node 22.
+      if (brain && typeof WebSocket === 'undefined') throw new Error(`Serving models to the hub needs Node 22 or newer; this is ${process.version}. brew upgrade node, or https://nodejs.org`)
+      // The line from Settings → Brain: this machine joins, under its own name, with a token of its own.
+      const joined = token.startsWith('bnj_') ? await joinMachine(hub, token) : undefined
+      if (joined) token = joined.token
+      const serve = typeof f.serve === 'string' ? f.serve.split(',').map((u) => u.trim()).filter(Boolean) : []
+      const workspace = brain ? homedir() : home(String(f.workspace ?? process.cwd()))
+      if (!(await stat(workspace).then((x) => x.isDirectory(), () => false))) throw new Error(`${workspace} isn’t a folder.`)
+      const me = joined ? { name: joined.name, ...(joined.id ? { id: joined.id } : {}) } : await whoami(hub, token)
+      const { s, existing, carried } = await setUp({ hub, token, workspace, me, named: typeof f.name === 'string' ? f.name : undefined, brain, serve }, ports.install)
+      const name = s.name
+      const logout = await ports.keepRunning()
+      const wrongFolder = brain ? undefined : await folderWarning(workspace).catch(() => undefined)
+      if (brain) {
+        console.log(`✓ ${me.name} ${existing ? 'is serving this machine’s models to the hub again' : 'is serving this machine’s models to the hub'}, in the background.`)
+        for (const line of foundLines(await ports.detect(serve))) console.log(line)
+        for (const line of diskLines(await ports.disk())) console.log(line)
+        console.log('  Your hub uses the best of them for each job you haven’t set yourself: see Settings → Brain.')
+      }
+      else console.log(`✓ ${me.name} ${existing ? 'restarted' : 'is running'} in the background, in ${workspace}.`)
+      console.log(`  binders list · binders logs ${name} -f · binders restart ${name} · binders remove ${name}`)
+      if (wrongFolder) console.log(`  Warning: ${wrongFolder}`)
+      if (logout) console.log(`  ${logout}`)
+      if (carried.length) console.log(`  It keeps this shell's ${carried.join(', ')}. To change them, run binders add again.`)
+      if (platform === 'windows') console.log('  It starts each time you log in to Windows, not before.')
+      if (!brain && platform === 'mac' && workspace.startsWith(join(homedir(), 'Documents'))) console.log('  macOS may ask once whether node may use your Documents folder: allow it, or the agent can’t read its code.')
+      return 0
+    }
+    case 'join': {
+      // The line from the Agents page: this machine looks at itself, the hub chooses its tool and makes its agent, and
+      // it's set up here as binders add does; for a hub admin's line, its models are lent to the hub's brain as well.
+      const line = String(rest[0] ?? f.token ?? '')
+      if (!/^bnj_/.test(line)) throw new Error('binders join needs the line from the Agents page: binders join bnj_… (Add a machine makes one).')
+      const hub = String(f.hub ?? process.env.BINDERS_URL ?? '').replace(/\/$/, '')
+      if (!/^https?:\/\//.test(hub)) throw new Error('binders join needs the hub: --hub https://…')
       const workspace = home(String(f.workspace ?? process.cwd()))
       if (!(await stat(workspace).then((x) => x.isDirectory(), () => false))) throw new Error(`${workspace} isn’t a folder.`)
-      const me = await whoami(hub, token)
-      const existing = (await saved()).find((s) => (me.id && s.agentId === me.id) || (s.agent === me.name && s.hub === hub))
-      let name = existing?.name ?? (typeof f.name === 'string' ? slug(f.name) : slug(me.name))
-      if (!existing) for (let n = 2; (await saved()).some((s) => s.name === name); n++) name = `${slug(me.name)}-${n}`
-      const network = serviceEnv()
-      const carried = Object.keys(network)
-      const s: Saved = { name, agent: me.name, ...(me.id ? { agentId: me.id } : {}), hub, workspace, addedAt: existing?.addedAt ?? new Date().toISOString(), ...(carried.length ? { network } : {}) }
-      await mkdir(agentsDir(), { recursive: true, mode: 0o700 })
-      await writeFile(tokenOf(name), token, { mode: 0o600 })
-      await chmod(tokenOf(name), 0o600)
-      await writeFile(join(agentsDir(), `${name}.json`), JSON.stringify(s, null, 2))
-      await install(s)
-      console.log(`✓ ${me.name} ${existing ? 'restarted' : 'is running'} in the background, in ${workspace}.`)
-      console.log(`  binders list · binders logs ${name} -f · binders restart ${name} · binders remove ${name}`)
-      if (carried.length) console.log(`  It keeps this shell's ${carried.join(', ')}. To change them, run binders add again.`)
+      const found = await ports.look(workspace)
+      const names = (ids: AgentTool[]) => ids.map((id) => toolInfo(id).name).join(', ')
+      if (!found.tools.length) {
+        console.log('No agent tool found on this machine.')
+        console.log(`  Binders looked for ${findable.map((t) => `${t.name} (${t.command})`).join(', ')}.`)
+        console.log('  Install one of them, then run the same line again: that’s all it takes.')
+        return 1
+      }
+      console.log('Looking at this machine')
+      console.log(`  Agent tools: ${names(found.tools)}`)
+      console.log(found.repos.length ? `  GitHub repos in ${workspace.replace(homedir(), '~')}: ${found.repos.join(', ')}` : `  No GitHub repos in ${workspace.replace(homedir(), '~')}.`)
+      const joined = await joinAgent(hub, line, { host: ports.host(), tools: found.tools, folder: workspace, repos: found.repos })
+      const tool = toolInfo(joined.agent.tool as AgentTool).name
+      console.log(found.tools.length === 1 ? `Binders chose ${tool}, as it’s installed here.` : `Binders chose ${tool}, the one it prefers of those installed here.`)
+      const { s, existing, carried } = await setUp({ hub, token: joined.agent.token, workspace, me: { name: joined.agent.name, id: joined.agent.id }, named: typeof f.name === 'string' ? f.name : undefined }, ports.install)
+      console.log(`✓ ${joined.agent.name}${joined.binder ? `, in ${joined.binder.name},` : ''} is running in the background${existing ? ' again' : ''}.`)
+      console.log(`  binders list shows it · binders logs ${s.name} -f follows it · binders stop ${s.name} stops it`)
+      if (joined.machine) {
+        const serve = typeof f.serve === 'string' ? f.serve.split(',').map((u) => u.trim()).filter(Boolean) : []
+        if (typeof WebSocket === 'undefined') console.log(`  This machine’s models aren’t lent to the hub: that needs Node 22 or newer, and this is ${process.version}.`)
+        else {
+          await setUp({ hub, token: joined.machine.token, workspace: homedir(), me: { name: joined.machine.name, ...(joined.machine.id ? { id: joined.machine.id } : {}) }, brain: true, serve }, ports.install)
+          // Voices aren't models the hub chooses among; the rest are.
+          const count = (await ports.detect(serve)).filter((x) => x.kind !== 'say').reduce((sum, x) => sum + x.models.length, 0)
+          console.log(count ? `  Also lending this machine’s models to the hub: ${count} found.` : '  Also lending this machine’s models to the hub: none found yet. Any you start are offered within five minutes.')
+        }
+      } else if (joined.machineWhy) console.log(`  This machine’s models aren’t lent to the hub: ${joined.machineWhy}`)
+      const wrongFolder = found.repos.length ? undefined : await folderWarning(workspace).catch(() => undefined)
+      const logout = await ports.keepRunning()
+      if (wrongFolder) console.log(`  Warning: ${wrongFolder}`)
+      if (logout) console.log(`  ${logout}`)
+      if (carried.length) console.log(`  It keeps this shell's ${carried.join(', ')}. To change them, run the line again.`)
       if (platform === 'windows') console.log('  It starts each time you log in to Windows, not before.')
       if (platform === 'mac' && workspace.startsWith(join(homedir(), 'Documents'))) console.log('  macOS may ask once whether node may use your Documents folder: allow it, or the agent can’t read its code.')
       return 0
@@ -443,7 +608,7 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
         const st = await status(s)
         const since = st.pid ? await run('ps', ['-o', 'etime=', '-p', String(st.pid)]).then((r) => r.stdout.trim(), () => '') : ''
         const log = await stat(logOf(s.name)).then((x) => ago(Date.now() - x.mtimeMs), () => '')
-        return [s.name, st.running ? 'running' : st.loaded ? 'stopped' : 'off', st.pid ? String(st.pid) : '-', since || '-', log ? `${log} ago` : '-', s.workspace.replace(homedir(), '~'), s.agent]
+        return [s.name, st.running ? 'running' : st.loaded ? 'stopped' : 'off', st.pid ? String(st.pid) : '-', since || '-', log ? `${log} ago` : '-', s.kind === 'brain' ? '(serves models)' : s.workspace.replace(homedir(), '~'), s.agent]
       }))
       const head = ['NAME', 'STATE', 'PID', 'UP', 'LAST LOG', 'WORKSPACE', 'AGENT']
       const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)))
@@ -481,6 +646,14 @@ export const usage = `binders: Binders agents on this machine. Cards kept runnin
   binders add --token bnd_… [--workspace DIR] [--hub URL] [--name NAME]
                          set an agent up and keep it running in the background (at login, after a crash), with
                          the proxy and certificate settings of this shell
+  binders join bnj_… [--workspace DIR] [--serve URL,URL]
+                         one line for a machine with code on it, from Add a machine on the Agents page: it looks at
+                         what's here, the hub chooses the agent tool and makes its agent, and it's kept running in
+                         the background. A hub admin's line also lends this machine's models to the hub
+  binders add --token bnj_… [--serve URL,URL]
+                         give the hub's brain this machine's models (Ollama, LM Studio, vLLM or NIM, MLX, whisper,
+                         Kokoro and, on a Mac, its voices), in the background; the line is in Settings → Brain →
+                         Your machines. --serve adds servers it doesn't find on its own
   binders list           every agent here: running or not, its process, how long up, its last log, its folder
   binders logs NAME [-f] what it's been doing (-f: follow)
   binders restart NAME   stop and start it (--all: every one)

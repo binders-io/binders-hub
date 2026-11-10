@@ -28,6 +28,7 @@ spec:
         runAsGroup: 1000
         fsGroup: 1000
       {{- with include "hub.imagePullSecrets" . }}{{ . | nindent 6 }}{{ end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       containers:
         - name: hub
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -66,6 +67,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /app/hub/.data
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: {{ .Values.startupProbe.periodSeconds }}
+            failureThreshold: {{ .Values.startupProbe.failureThreshold }}
           livenessProbe:
             httpGet: { path: /health, port: http }
             periodSeconds: 20

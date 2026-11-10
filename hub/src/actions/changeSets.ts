@@ -2,16 +2,18 @@ import type { Merger } from '../merger.ts'
 import type { Change } from '../../../shared/state.ts'
 import { titleOf } from '../../../shared/notes.ts'
 import { cardChangeSet, cardsOfSet, setChangeSet, pullOf } from '../../../shared/changeSet.ts'
-import type { Activity, ChangeSet, PullRequest } from '../../../shared/work.ts'
+import type { ChangeSet, FileDiff, PullRequest } from '../../../shared/work.ts'
 import { GitHubError } from '../github.ts'
 import { Refused, type Actor } from '../hub.ts'
-import { RuleService } from './rules.ts'
-import { mergeableOf, bump } from './base.ts'
+import { noted } from '../history.ts'
+import { EnvironmentService } from './environments.ts'
+import { mergeableOf } from './base.ts'
 import { sameRepo } from '../../../shared/work.ts'
 
-// Change sets: a card's work as one thing, pull requests in order, approving and merging them, and promoting a version.
+// Change sets: a card's work as one thing, pull requests in order, and approving and merging them. Delivery, what GitHub
+// then deploys, is the environments' (environments.ts).
 
-export abstract class ChangeSetService extends RuleService {
+export abstract class ChangeSetService extends EnvironmentService {
   /**
    * A card's Change Set: its pull request's diff (read from GitHub if the hub has none of its files yet) or its
    * worktree's, its brief and done-when, and the agent's log.
@@ -89,16 +91,79 @@ export abstract class ChangeSetService extends RuleService {
       try {
         const info = await github.pull(repo, number)
         const [files, checks] = await Promise.all([github.files(repo, number).catch(() => pull.files), github.checks(repo, info.headSha).catch(() => pull.checks)])
-        pull = { ...pull, title: info.title, branch: info.branch, url: info.url, head: info.headSha, state: info.merged ? 'merged' : info.state === 'closed' ? 'closed' : pull.state, additions: info.additions, deletions: info.deletions, files, checks }
+        pull = { ...pull, title: info.title, branch: info.branch, url: info.url, head: info.headSha, state: info.merged ? 'merged' : info.state === 'closed' ? 'closed' : pull.state, ...(info.merged && info.mergeSha ? { mergeSha: info.mergeSha } : {}), additions: info.additions, deletions: info.deletions, files, checks }
       } catch (error) {
         if (!(error instanceof GitHubError)) throw error
       }
     }
-    pull = { ...pull, cardId: link.cardId ?? pull.cardId, agentId: link.agentId ?? pull.agentId }
+    // Read again with its lines: they're back in the state, so it isn't one whose lines were dropped.
+    const { linesDropped, ...kept } = pull
+    pull = { ...kept, cardId: link.cardId ?? pull.cardId, agentId: link.agentId ?? pull.agentId, ...(linesDropped && !pull.files.some((f) => f.lines.length) ? { linesDropped } : {}) }
     await this.hub.record({ kind: 'hub' }, { type: 'pr.put', pull })
     const card = pull.cardId ? this.hub.state.cards.find((c) => c.id === pull.cardId) : undefined
+    // The pull request has the diff now, so the card needn't carry its worktree's too.
+    if (card?.worktree && pull.files.length) await this.hub.record({ kind: 'hub' }, { type: 'card.update', id: card.id, fields: { worktree: undefined } })
     if (card && !this.hub.state.changeSets.some((s) => s.prIds.includes(pull.id))) await this.addToSet(card.binderId, pull.id, card.noteId)
     return this.hub.state.pulls.find((p) => p.id === id)!
+  }
+
+  /**
+   * A pull request's diff with its lines. The state has them until the pull request has been over for a while; after
+   * that GitHub does, and they're read from it each time and not put back.
+   */
+  async pullFiles(pull: PullRequest): Promise<FileDiff[]> {
+    if (!pull.linesDropped) return pull.files
+    const github = await this.github.forRepo(pull.repo).catch(() => undefined)
+    if (!github) throw new Refused('This pull request is old, so its changes are kept on GitHub, and the hub can’t reach GitHub right now. Try again in a moment.')
+    try {
+      return await github.files(pull.repo, pull.number)
+    } catch {
+      throw new Refused('This pull request is old, so its changes are kept on GitHub, and GitHub didn’t answer. Try again in a moment.')
+    }
+  }
+
+  /**
+   * When a pull request ended: what its card says (it merged then), else what the hub noted the first time it saw it
+   * over. Not known until then.
+   */
+  private endedOf(pull: PullRequest): number | undefined {
+    const card = pull.cardId ? this.hub.state.cards.find((c) => c.id === pull.cardId) : undefined
+    const merged = pull.state === 'merged' ? card?.activity.findLast((a) => a.kind === 'merged')?.at : undefined
+    const at = Date.parse(pull.endedAt ?? merged ?? '')
+    return Number.isFinite(at) ? at : undefined
+  }
+
+  /**
+   * A pull request that's been merged or closed for longer than `keptMs` keeps its files' names and counts but not
+   * their lines: GitHub has those, and the hub asks it when they're opened (`pullFiles`). A pull request over with no
+   * date to count from is dated now. At most `batch` pull requests at a time, so one pass never writes a huge change.
+   * Gives how many were changed.
+   */
+  async dropOldDiffs(now: number, keptMs: number, batch = 20): Promise<number> {
+    const changes: Change[] = []
+    for (const pull of this.hub.state.pulls) {
+      if (changes.length >= batch) break
+      if ((pull.state !== 'merged' && pull.state !== 'closed') || pull.linesDropped || !pull.files.some((f) => f.lines?.length)) continue
+      const ended = this.endedOf(pull)
+      if (ended === undefined) changes.push({ type: 'pr.update', id: pull.id, fields: { endedAt: new Date(now).toISOString() } })
+      else if (now - ended > keptMs) changes.push({ type: 'pr.update', id: pull.id, fields: { files: pull.files.map((f) => ({ ...f, lines: [] })), linesDropped: true } })
+    }
+    if (changes.length) await this.hub.recordAll({ kind: 'hub' }, changes)
+    return changes.length
+  }
+
+  /**
+   * A card done, or with a pull request that has its files, needn't carry its worktree's diff too: cleared where it's
+   * still there (cards from before it was cleared as they went, and ones a person or GitHub moved on). At most `batch`.
+   */
+  async clearDoneWorktrees(batch = 20): Promise<number> {
+    const changes: Change[] = []
+    for (const card of this.hub.state.cards) {
+      if (changes.length >= batch) break
+      if (card.worktree && this.pullHasDiff(card)) changes.push({ type: 'card.update', id: card.id, fields: { worktree: undefined } })
+    }
+    if (changes.length) await this.hub.recordAll({ kind: 'hub' }, changes)
+    return changes.length
   }
 
   /** The binder's change set that's taking pull requests, made when there isn't one. */
@@ -116,7 +181,7 @@ export abstract class ChangeSetService extends RuleService {
     await this.hub.record({ kind: 'hub' }, { type: 'set.put', set })
   }
 
-  // Change sets and environments -----------------------------------------------------------------------------------
+  // Change sets -----------------------------------------------------------------------------------------------------
 
   async sendForReview(login: string, setId: string) {
     const set = this.hub.state.changeSets.find((s) => s.id === setId)
@@ -144,6 +209,7 @@ export abstract class ChangeSetService extends RuleService {
         { type: 'set.delete', id: setId },
       ]
       await this.hub.recordAll({ kind: 'user', login }, changes)
+      await noted(this.hub, { kind: 'user', login }, `Deleted change set #${set.number} “${set.title}”.`)
     })
   }
 
@@ -153,7 +219,6 @@ export abstract class ChangeSetService extends RuleService {
     await this.hub.record({ kind: 'user', login }, { type: 'set.update', id: set.id, fields: { prIds } })
   }
 
-  /** One approval for the set: each pull request approved and merged on GitHub in order, then staging. */
   /**
    * Whether a pull request merges into its base as things are now. GitHub works it out after each push or merge, so a
    * "not yet" is asked again a few times.
@@ -238,9 +303,10 @@ export abstract class ChangeSetService extends RuleService {
     if (!set) throw new Refused(`No change set ${setId}.`)
     if (set.state !== 'review' && set.state !== 'assembling') throw new Refused('That change set was already approved.')
     const pulls = set.prIds.map((id) => this.hub.state.pulls.find((p) => p.id === id)).filter((p): p is PullRequest => !!p)
-    const failing = pulls.filter((p) => p.state !== 'merged').flatMap((p) => p.checks.filter((c) => c.state === 'failed').map((c) => `${p.repo.split('/')[1]}#${p.number} ${c.name}`))
+    const failing = pulls.filter((p) => p.state !== 'merged' && p.state !== 'closed').flatMap((p) => p.checks.filter((c) => c.state === 'failed').map((c) => `${p.repo.split('/')[1]}#${p.number} ${c.name}`))
     if (failing.length) throw new Refused(`Some checks failed: ${failing.join(', ')}.`)
     await this.hub.record({ kind: 'user', login }, { type: 'set.update', id: set.id, fields: { state: 'merging', approvedBy: login, waiting: undefined } })
+    await noted(this.hub, { kind: 'user', login }, `Approved change set #${set.number} “${set.title}”.`)
     await this.runTrain(set.id, login, token)
     return this.hub.state.changeSets.find((s) => s.id === set.id)!
   }
@@ -330,8 +396,8 @@ export abstract class ChangeSetService extends RuleService {
           if (error.status !== 422) throw error
         })
         await this.hub.record(actor, { type: 'pr.update', id, fields: { state: 'queued' } })
-        await github.merge(pull.repo, pull.number, this.mergeMethod())
-        await this.recordMerged(actor, set, pull, by)
+        const merged = await github.merge(pull.repo, pull.number, this.mergeMethod())
+        await this.recordMerged(actor, set, pull, by, merged?.sha)
       } catch (error) {
         const status = (error as GitHubError).status
         await this.hub.record(actor, { type: 'pr.update', id, fields: { state: 'open', ...(status === 405 || status === 409 ? { mergeable: 'conflicts' as const } : {}) } })
@@ -339,21 +405,20 @@ export abstract class ChangeSetService extends RuleService {
         waiting.push({ prId: id, why: `${short}: ${mergeable === 'conflicts' ? 'conflicts with what merged before it; settling it next' : `GitHub didn’t merge it (${(error as Error).message})`}` })
       }
     }
-    const now = this.hub.state.changeSets.find((s) => s.id === setId)!
     if (waiting.length) {
       await this.hub.record(actor, { type: 'set.update', id: setId, fields: { waiting } })
       return
     }
     await this.hub.record(actor, { type: 'set.update', id: setId, fields: { state: 'merged', waiting: undefined } })
-    // Without a deploy workflow, the hub records staging having it; with one, GitHub's deployment says so.
-    const staging = this.hub.state.environments.find((e) => !e.needsApproval && e.id !== 'preview')
-    if (staging && !staging.deploy) await this.recordDeployed(actor, staging.id, [now.id, ...staging.changeSetIds.filter((s) => s !== now.id)], bump(staging.version))
+    // Merged is as far as the hub takes it: what ships is what GitHub says is deployed.
+    await this.settleSets()
   }
 
-  protected async recordMerged(actor: Actor, set: ChangeSet, pull: PullRequest, by: string) {
+  /** A pull request merged: its card is live, and its merge commit is kept for what's deployed to be compared with. */
+  protected async recordMerged(actor: Actor, set: ChangeSet, pull: PullRequest, by: string, mergeSha?: string) {
     await this.hub.recordAll(actor, [
-      { type: 'pr.update', id: pull.id, fields: { state: 'merged', mergeable: undefined } },
-      ...(pull.cardId ? [{ type: 'card.update', id: pull.cardId, fields: { stage: 'live' }, activity: { at: this.now(), by, kind: 'merged', text: `Merged with change set #${set.number}` } } satisfies Change] : []),
+      { type: 'pr.update', id: pull.id, fields: { state: 'merged', mergeable: undefined, ...(mergeSha ? { mergeSha } : {}) } },
+      ...(pull.cardId ? [{ type: 'card.update', id: pull.cardId, fields: { stage: 'live', worktree: undefined }, activity: { at: this.now(), by, kind: 'merged', text: `Merged with change set #${set.number}` } } satisfies Change] : []),
     ])
   }
 
@@ -385,48 +450,4 @@ export abstract class ChangeSetService extends RuleService {
     if (card) await this.sendBackToResolve('hub', pull.id).catch(() => undefined)
     return 'with its agent to resolve'
   }
-
-  /** Promote what's on the environment before this one: GitHub's workflow when there is one, else recorded here. */
-  async promote(login: string, envId: string, token?: string) {
-    const envs = this.hub.state.environments
-    const index = envs.findIndex((e) => e.id === envId)
-    const env = envs[index]
-    const from = envs[index - 1]
-    if (!env || !from) throw new Refused('Nothing comes before that environment.')
-    if (env.state === 'deploying') throw new Refused(`${env.name} is already deploying.`)
-    if (env.version === from.version) throw new Refused(`${env.name} already has ${from.version}.`)
-    const actor: Actor = { kind: 'user', login }
-    if (env.deploy) {
-      const github = await this.githubAs(env.deploy.repo, token)
-      if (!github) throw new Refused('GitHub isn’t set up on this hub, so its workflow can’t run.')
-      await github.dispatch(env.deploy.repo, env.deploy.workflow, env.deploy.ref, { version: from.version, environment: env.id })
-      await this.hub.record(actor, { type: 'env.update', id: env.id, fields: { state: 'deploying', progress: 0.05 } })
-      return
-    }
-    await this.recordDeployed(actor, env.id, from.changeSetIds, from.version)
-  }
-
-  /** An environment now has these change sets at this version: their cards are live there when it's the last one. */
-  async recordDeployed(actor: Actor, envId: string, changeSetIds: string[], version: string) {
-    const env = this.hub.state.environments.find((e) => e.id === envId)
-    if (!env) return
-    const last = this.hub.state.environments[this.hub.state.environments.length - 1]?.id === envId
-    const fresh = changeSetIds.filter((s) => !env.changeSetIds.includes(s))
-    const changes: Change[] = [{ type: 'env.update', id: env.id, fields: { state: 'healthy', progress: undefined, version, changeSetIds, deployedAt: this.now() } }]
-    const next = this.hub.state.environments.find((_e, i, all) => all[i - 1]?.id === env.id)
-    if (next?.needsApproval && next.version !== version) changes.push({ type: 'env.update', id: next.id, fields: { state: 'waiting' } })
-    for (const setId of fresh) {
-      const set = this.hub.state.changeSets.find((s) => s.id === setId)
-      if (!set) continue
-      if (last) changes.push({ type: 'set.update', id: set.id, fields: { state: 'shipped' } })
-      for (const prId of set.prIds) {
-        const cardId = this.hub.state.pulls.find((p) => p.id === prId)?.cardId
-        if (!cardId) continue
-        const activity: Activity = { at: this.now(), by: 'hub', kind: 'deployed', text: `On ${env.name.toLowerCase()} in ${version}` }
-        changes.push(last ? { type: 'card.update', id: cardId, fields: { stage: 'live' }, activity } : { type: 'card.activity', id: cardId, activity })
-      }
-    }
-    await this.hub.recordAll(actor, changes)
-  }
-
 }

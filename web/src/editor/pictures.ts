@@ -4,8 +4,8 @@ import { Facet } from '@codemirror/state'
 
 /** The note an editor shows, so its pictures are kept with its binder. */
 export const noteOf = Facet.define<string, string | undefined>({ combine: (values) => values[0] })
-import { HubError } from '../data/api'
-import { toast } from '../components/Toast'
+import { HubError, isNetworkFailure, unreachable } from '../data/api'
+import { failure } from '../components/Toast'
 
 // Pictures in notes: pasted, dropped or picked, sent to the hub, and written into the note as Markdown where they land.
 
@@ -32,7 +32,8 @@ export async function insertPictures(view: EditorView, files: File[], at: number
     try {
       replacement = `![${describe(file)}](${await uploadPicture(file, view.state.facet(noteOf) || undefined)})`
     } catch (error) {
-      toast((error as Error).message)
+      // The browser's own words for a request that got no answer say nothing a person can use.
+      failure(isNetworkFailure(error) ? unreachable : (error as Error).message)
     }
     // Found again by its text: the note may have changed while it sent.
     const from = view.state.doc.toString().indexOf(waiting[i])

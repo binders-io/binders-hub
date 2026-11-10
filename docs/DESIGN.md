@@ -1,6 +1,6 @@
 # Binders Hub: design
 
-Status (2026-10-30): built end to end. Notes, binders, cards, agents, pull requests, change sets and environments all
+Status: built end to end. Notes, binders, cards, agents, pull requests, change sets and environments all
 live in the hub's change log; people sign in with GitHub; agents work over MCP; GitHub keeps cards as issues and
 reports back through webhooks. A fresh hub starts with one binder and a welcome note.
 
@@ -11,51 +11,91 @@ One pipeline from a line in a note to production, for people and agents together
 1. **Note.** Written and edited together, live.
 2. **Distill.** An agent reads the note and proposes work items. Nothing reaches the board until someone accepts it.
 3. **Work items.** Agents claim them, work, report progress and ask questions.
-4. **Pull requests.** Each item gets a branch and a pull request, opened through the Binders GitHub App, so agents
-   never push to the default branch.
-5. **Change sets.** Pull requests that belong together, across repos, are reviewed and approved as one, then merged in
-   the order their items wait for.
-6. **CI.** Checks show live on every pull request. A failed check goes back to the agent that owns it.
-7. **CD.** Each environment shows what's in it. Promotion that needs approval is approved from the app.
+4. **Pull requests.** Each item is worked on a branch of its own, and its pull request is opened as the agent's owner
+   or through the Binders GitHub App, as the hub's settings say.
+5. **Change sets.** Pull requests that belong together, across repos, are reviewed and approved as one, then merged as
+   each is ready, in the set's order where that can be kept.
+6. **CI.** Checks show live on every pull request. A change set with a failed check can't be approved, and once it's
+   approved a pull request with a failed check waits while the rest merge. A conflict the hub can't settle goes back to
+   the agent that made the pull request.
+7. **CD.** Environments follow what GitHub deploys, repo by repo, and each shows what's on it. Promote runs a deploy
+   workflow, for an environment that has been given one.
 
-Every step links back: a line in a note shows the card, the pull request, the change set and where it's deployed.
+Every step links back: a line in a note shows its card's number and stage, and the card opens to its pull request, its
+change set and the environments it has reached.
 
 ## Where things are kept
 
-The hub keeps no data of its own. Redis holds what's being worked on now, and each kind of thing is kept in the tool
-the team already uses. GitHub first, with Jira and Confluence as the next adapters.
+Redis holds what's being worked on now, and each kind of thing is kept in the tool the team already uses, with what no
+tool has a place for in files on the hub's disk. GitHub first, with Jira next for cards (built, below) and Confluence for notes (not built).
 
 | What | GitHub (first) | Next |
 |---|---|---|
-| Work items | Issues, sub-issues and their blocked-by links, a Projects field for the column | Jira |
+| Work items | Issues in the binder's repo, labelled `binders`, `stage: …` and `size: …`, and closed when the card is done | Jira mirrors the cards |
 | Notes | Markdown files in a repo, one commit per batch of edits | Confluence |
+| Embeddings | A file per note or card on a `binders-embeddings` branch of the repo, with no history | |
 | Pull requests, CI, CD | Pull requests, check runs, workflow runs, Deployments and Environments | GitHub stays, for Jira teams too |
-| Change sets | A tracking issue labelled `change-set` that lists its pull requests in merge order | |
-| Agents | The hub's registry, in Redis | |
+| Change sets | The hub's own state, with each pull request on GitHub | |
+| Agents | The hub's registry, in its state | |
 
-Three boundaries from day one, so Jira is one more adapter: **WorkItems**, **Notes** and **CodeHost**. Each adapter
-reads, writes, watches (webhooks or polling) and maps fields, and keeps the outside id and version.
+Each destination has a saver in the hub (`hub/src/savers/`): cards to GitHub Issues, notes to Git, a mirror of cards
+to Jira, and a Challenge's findings to a pull request as a review. A saver follows the log, combines edits and writes.
+What's changed on GitHub or in Jira comes back by webhook, or by the hub asking where webhooks don't arrive.
 
-Fields the outside tool has no place for (the agent, waits-for, approvals, the note a card came from) go in the outside
-tool itself: a hidden block at the end of the issue body, Jira custom fields, Confluence page properties. If Binders
-is switched off, everything is still in GitHub or Jira.
+A card's own fields (the agent, what it waits for, the note it came from) ride in a hidden block at the end of the
+issue body, so the issue alone can rebuild the card. A card mirrored to Jira is found again there by a label naming it.
 
-What you can see comes from the outside tool: the hub acts with each person's own token, so a repo you can't see is
-a board you can't see.
+Who sees a binder is its members, kept by the hub. What a person may do on a repo is GitHub's word, asked with their own
+sign-in: linking a repo to a binder or an agent takes push access to it, and approving and merging happen as them.
+
+### A binder's copies
+
+A copy is one gzip file of JSON (`format: 1`): a header (which binder, when, at what version and hub commit, how many
+notes, cards, change sets and agents, who's in it), the binder's whole state with its history and trash, and each note's
+Automerge document in base64. Named `<binder address>-<YYYY-MM-DD>.binder-copy.json.gz`. It holds no connection (the
+binder's GitHub App, Jira, the channel it tells) and no token, since those are in the hub's own store, which a copy never
+reads: the state is only the log applied. Pictures and files in notes stay with the notes in their repo.
+
+`hub/src/copies.ts` makes and reads copies, so all four uses agree:
+
+- **Download.** `GET /api/spaces/:id/copy`, for a binder's owners and admins. The state and documents are taken in one
+  step and packed with the async gzip, so the hub isn't held up longer than `JSON.stringify` takes. The binder's history
+  says who took it.
+- **Seven days on the disk.** The scheduler's tick asks each binder's `CopyKeeper` whether a copy is due: one for each day
+  the state changed in, a day turning at 03:00 in the hub's own time, and a binder's first at once. It writes
+  `copies/copy-<mon..sun>.binder-copy.json.gz` in the binder's data folder, over last week's, and `copies/latest.json`
+  (which file, when, how big, at what version). One copy is written at a time across the hub, a failure is logged and
+  tried again an hour later, and nothing it does stops or waits on the hub. `GET /api/copies` says what's there.
+- **In GitHub.** With `copies` on in the binder (owners' and admins' to change, as where its notes and cards go), the
+  `copies/` folder is committed in a throwaway Git folder as one commit and force-pushed to a `binders-copies` branch of
+  its repo, with the push target and token handling of the notes saver (the token goes in Git's environment, never on its
+  command line). A push that fails is kept in words for `GET /api/copies` and tried again an hour later.
+- **A new binder from a copy.** `POST /api/hub/binders/from-copy?name=…`, for the hub's admins, with the file as the body
+  (at most 200 MB). The file is read and checked before anything is made. The new binder gets a new address and is owned by
+  the one who sent it. Its state, documents and the `.saved` mark are written into its data folder as a `StateFile` would,
+  and it starts the way a hub does with an empty log and a saved state. It starts paused: `notes`, `issues`,
+  `reviewComments` and `copies` are off, every agent is revoked, and it has no Jira or channel, so it can sit beside the
+  original without writing over it. Its repo stays named, so its cards still link to their pull requests.
 
 ## The hub
 
 - **Change log.** Every write appends to a Redis Stream per binder with a version, and goes out live over WebSocket.
   A client that reconnects asks for everything after the version it had.
-- **Savers.** One consumer group per destination reads the log and writes to it, combining edits first (a note being
-  typed is one commit when the typing pauses, not one per keystroke). A change stays on the log until the destination
-  confirms it, so an outage is a queue.
-- **Webhooks in.** Issues, pull requests, reviews, checks, workflow runs and deployments become changes on the log.
+- **Savers.** Each destination follows the log inside the hub and writes to it, combining edits first (a note being
+  typed is one commit when the typing pauses, not one per keystroke). A write GitHub refuses is said in the binder's
+  Settings → How work flows, and tried again on the next change or with Sync now.
+- **Webhooks in.** Issues, pull requests, checks, workflow runs and deployments become changes on the log.
   Events the hub caused itself are dropped.
-- **Agents.** Remote MCP over HTTP with OAuth. An agent registers with its name, repos and skills; presence comes from
-  a heartbeat. Work goes out through a consumer group, one agent per card, and a card an agent went quiet on comes
-  back after ten minutes (`XAUTOCLAIM`).
-- **Redis durability.** Disk persistence on, and the log is the only copy of a change until its destination confirms it.
+- **Agents.** Remote MCP over HTTP: an agent connects with its token, a person's client through OAuth. A person sets an
+  agent up with its name, tool, repos and skills; presence comes from its calls and from its runner listening for
+  work. An agent waits with `wait_for_work` and is handed a card it may take; a claim is a change in the log, so of two
+  claims the first applied wins. A card whose agent hasn't been heard from for 20 minutes goes back on the board
+  (`hub/src/scheduler.ts`), and one whose run fails twice in a row waits in Blocked, with why, for a person.
+- **Redis is a working copy.** Disk persistence is on, but nothing that lasts depends on it. Each Binder's whole state is saved to a file on the hub's disk within 15 seconds of a change and when the hub stops (`state.json`), with each note's shared-editing document in a `note-docs` folder beside it, and the hub's settings, keys and tokens' hashes in files of their own (`hub/src/kept.ts`). A Binder starts from its saved state and reads only what its log has after it, so how long a hub takes to start doesn't grow with how long its Binders have been going, and whoever is editing a note goes on from the document they have, across a restart. Once the state is saved, the log forgets what's well behind it: it keeps the last 5,000 changes and everything since the state kept from a day before, so Redis holds recent changes and not every one ever made (`hub/src/log.ts`). That older state is `state.prev.json`: the state file as it was at the last start, and again once a day while the hub runs. If `state.json` can't be read, the Binder starts from `state.prev.json` and what the log has since. A Binder that was saved before and has neither isn't started: its log no longer holds its whole history, so the hub says so in its log and stops, until the file is put back from a backup. A Binder saved before its notes' documents were kept reads its whole log once more to make them. A hub whose log is behind the state file, or has a hole in it (its beginning lost when Redis was emptied, or its middle when an older copy was put back), or reads back less than the file holds, carries on from the file, in the versions it had, and reads only what follows. That holds on every start after, as the log that's left is the same. A hub whose Redis is emptied while it runs numbers new changes on from the last version it saw. A state too large to write is logged and tried again with the next change. Only sign-ins, one-time codes and what the hub can read again (its lists of repos and people from GitHub, the brain's index) are in Redis alone.
+- **Many Binders.** Every Binder's log shares one pair of Redis connections, one for commands and one for hearing of new changes, so a hub with thousands of Binders doesn't use up Redis's, and finding the Binders a person is in doesn't read through all of them. The hub listens before its Binders have started: `/health` answers at once, `/ready` answers 503 until every Binder has started and then 200 once Redis answers, and every other request gets a 503 saying the hub is still starting. A hub starts its team Binders and the personal ones with work that goes on without their person: an agent that isn't revoked, a schedule, a card being worked on, a repo it follows, its own Jira or a capture waiting for a summary. Every other personal Binder starts the first time something of its person's needs it (their request, their live feed, their phone's link, their MCP connection, their agent's token or runner, or a line that adds a machine to it) and then runs until the hub restarts, so a hub with thousands of people keeps in memory the Binders in use. Nothing another person does starts it. Each personal Binder's entry in the hub's list says whether it wakes with the hub (`wakes`), said again each minute and as the hub stops. An entry from before that was kept starts with the hub once and says (`hub/src/spaces.ts`). Only one hub may use a Redis. It holds a key there (`HUB_LEASE_SECONDS`, 30 by default, renewed a third of that often), and a second hub on the same Redis waits up to `HUB_LEASE_WAIT_SECONDS` (40) for it to lapse, then says another hub is running and stops. A hub that finds its hold taken over stops too. Stopping lets go of it, so the next hub starts at once (`hub/src/main.ts`, `hub/src/kv.ts`).
+- **A browser holds less than the state.** Most of a Binder's state is its notes' text, the lines of its diffs and the older lines of its cards' activity, so `GET /api/state?light=1` and `/api/live?light=1` (`shared/light.ts`) leave those out. Each file keeps its name and counts. A card keeps every line of its last two days and an hour, and its newest twelve beyond that, with a count of what was left out. A screen asks `GET /api/cards/:id/activity` for the rest when a card is opened, and `GET /api/pulls/:repo/:number/files` when a pull request is. A note keeps its title, when it was edited, how it starts (600 characters), how long it is and the titles it links to (`left` on the note), and no text. The text comes from `GET /api/notes/:id/text` when the note is opened. Which notes link to it, each with the line that does, comes from `GET /api/notes/:id/backlinks`, and the notes whose title, place or text have every word typed in the tree's filter come from `GET /api/notes/search?q=`. A note's changes on the live feed are sent whole: a browser holding the text takes it, and one holding the note without it keeps it that way, with `left` following the edit. The hub refuses a `note.put` from a browser for a note that has `left`, as it would replace the note with nothing. A card that finished more than two weeks ago (`isOld` in `shared/work.ts`: live, with nothing waiting on a person and nothing under way) keeps what a list shows of it and none of its detail: its brief, done-when, plan, debrief, Challenge and activity are left out, and `left` on the card says how its debrief and Challenge stood. `GET /api/cards/:id/whole` gives the card as the hub has it when it is opened, and a card with `left` stays that way through any change a browser applies to it. The hub refuses a `card.put` from a browser for a card that has `left`, as it would replace the card with a shell. A card stops carrying the diff of its worktree once its pull request has the files. A pull request merged or closed 14 days ago keeps its files' names and counts in the state and not their lines, which are read from GitHub each time they're asked for and not put back (`hub/src/actions/changeSets.ts`). A page that's been following and lost its connection sends `have` and `replay=1`: if the log still has every change since, it gets no state and the live feed brings it the rest. A page just loaded takes the whole light state, unless it has this very version, as what it kept from last time may not match what this version of the code would have made of the log. The apps and agents that ask without `light` get all of it. The Binder's history and trash are left out of both, and asked for in Settings.
+- **The live feed leaves nothing out.** `/api/live?since=<version>` sends every change after that version, a couple of thousand at a time however far behind the client is, and holds what happens meanwhile until those have gone, so nothing is sent ahead of what came before it. When the log no longer goes back to the client's version (the hub keeps its log short), or the client is ahead of a log that started over, the hub says `{ type: 'behind', version }` and sends what happens from then on: a client that hears it asks for the state whole and opens the feed again from that version, as the web app does.
+- **History and trash.** A binder keeps a history of what people and agents did that others would want to know of later, one plain sentence each, the last thousand, in its state (`hub/src/history.ts`): notes, cards and folders deleted, people added, taken out or given another role, where its cards and notes go changed, agents set up or revoked, change sets approved, environments promoted. Settings → History shows it a page at a time, by person. A deleted note or card goes whole to the binder's trash, with who deleted it and when, for 30 days (`trashDays` in `shared/notes.ts`), and is put back from Settings → History or from the Undo that follows deleting. A note comes back to its folder, or to the top of its binder when the folder is gone; a card to its stage with no agent holding it, and one that was being worked waits in Ready. A deleted note's proposed cards are set aside with it and come back with it. A deleted card's GitHub issue is closed, with a comment saying who deleted it, and opens again if the card is put back (`hub/src/savers/issues.ts`).
 
 ## Binders for Mac
 
@@ -72,7 +112,7 @@ Code runs in a repo.
 - A browser shows the hub's notes with its own waiting changes on top. Waiting changes are kept per tab in the browser,
   so an edit made offline goes when the hub is back, and a teammate's change arriving first never loses yours.
 - The Git saver writes `binder/folder/title.md` with Binders' fields in front matter, commits when a note's edits pause
-  for 1.5 s, moves the file when the note moves or is renamed, and records `note.saved` with the commit. A note's history
+  (60 seconds by default, and at most 5 minutes while the typing goes on), moves the file when the note moves or is renamed, and records `note.saved` with the commit. A note's history
   and any old version come from Git (`/api/notes/:id/history`, `/api/notes/:id/at/:sha`).
 - Two people in the same note both keep their words: the hub keeps an Automerge document per note
   (`shared/noteDoc.ts`, laid out as Binders for Mac's NoteDocument: `text` and `props`). A `note.edit` carries Automerge
@@ -83,7 +123,8 @@ Code runs in a repo.
   note's own actor at time 0, so every hub and client makes the same two changes from the same id and text. Notes
   written before Automerge start that way from their current text. An edit sent as the whole text (MCP's `edit_note`
   and `append_to_note`, a web app from before) becomes the changes that take the note there before it goes in the log;
-  a note put again whole starts its document over.
+  a note put again whole starts its document over. The hub saves each note's document beside the Binder's state
+  (`note-docs/`), and a Binder starts from them, so an editor goes on from its own document across a restart.
 
 ## Notes in the web app (built)
 
@@ -106,8 +147,8 @@ on the lines being edited (or everywhere with Show Markdown).
 
 ## A story, full screen (built)
 
-Opening a card shows its whole way from the note to production: a rail of every step (written, distilled, on the
-board, claimed, built, pull request, checks, approved, merged, staging, production) with where it is now, the agent's
+Opening a card shows its whole way from the note onward: a rail of every step (written, on the board, claimed, built,
+pull request, checks, approved, merged, then each environment its repo is deployed to) with where it is now, the agent's
 plan, every step it took (files read, edits, commands and what came back), the session, the pull request's changes,
 and beside it the brief, the note's words, what it waits for and holds up, its checks, its change set, where it's
 deployed, and its activity.
@@ -115,11 +156,26 @@ deployed, and its activity.
 ## The web app
 
 - Every interaction under 100 ms: the client keeps a local copy and applies changes before the server answers.
+- What waits on a person is one function, `waitingOn` in `shared/waiting.ts`, which Home, ⌘K, the sidebar's badges, the
+  tab's title and the browser's notifications all ask, so they can't disagree. A row is a question, a card that
+  stopped, a permission, a Challenge's findings, a change set to approve, cards Distill proposed, a suggested change to a
+  locked note or an environment to promote; each is for you, for anyone in the binder, or waiting on others. The count
+  goes in the tab's title, and a switch turns on browser notifications for what starts waiting while the page is hidden.
+  The binder switcher shows how many things wait in each of a person's other binders (`GET /api/me/waiting`).
+- A binder can tell a channel (`hub/src/tell.ts`). Its owners and admins give it an address in Settings → How work flows:
+  a Slack incoming webhook, or anything that takes a JSON post. Every 30 seconds the hub looks for what has begun
+  waiting, from the same `waitingOn` list, and posts each row once: what it is, who it's for and a link, with at most ten
+  rows in a pass and one more post saying how many others wait. What was waiting when the address was set isn't posted. The
+  address is a secret, so it's kept sealed in the binder's own store and a browser is only ever told its host. The hub
+  posts only over https to a public address, checks where a name points as well as the name, and follows no redirects. A
+  post that fails is tried again after a minute, then five, then every thirty, with the rows still waiting.
+- A card's words (title, brief, done-when, size) can be changed while it's proposed or ready, or blocked with nobody on
+  it. What Distill proposed opens in place on the board, and Edit first puts it in Proposed as a card to change.
 - Keyboard first: ⌘K for everything, number keys for the screens.
-- A phone is a full client. A tab bar for the main screens, the sidebar as a menu, the board a column a screen with a
-  row of stages over it, and 44px to press wherever there's a touchscreen (a mouse keeps the denser sizes). Nothing
-  needs a hover, a right-click or a drag: what's on a right-click is on a ⋯ too, and what's moved by dragging can be
-  moved from that menu.
+- It works on a phone. A tab bar for the main screens, the sidebar as a menu, the board a column a screen with a
+  row of stages over it, a note with Note, Chat and Distill each filling the screen, one at a time, and 44px to press
+  wherever there's a touchscreen (a mouse keeps the denser sizes). What's on a right-click is on a ⋯ too, and what's
+  moved by dragging can be moved from that menu.
 - Anyone can follow along on a keyboard or a screen reader. Focus goes into what opens, stays there and comes back
   (`useModal`), going to another screen moves it to the heading and names the tab, and a control is never inside
   another. axe runs over every screen in `web/test/a11y.test.tsx`, beside a check of every text tone on every surface.
@@ -133,8 +189,9 @@ deployed, and its activity.
 - Notes: binders and folders as a tree (each folder a folder in the notes repo), a block editor that saves as Markdown,
   one commit when the typing pauses, and a note's path in the repo shown under its title.
 
-Stack: TypeScript end to end. React and Vite for the web app; Node or Bun for the hub, with MCP's TypeScript SDK.
-Hosting: Docker Compose (hub and Redis) for self-hosting first.
+Stack: TypeScript end to end. React and Vite for the web app; Node (23.6 or newer) for the hub, with MCP's TypeScript SDK.
+Hosting: self-hosted, with Docker Compose (hub and Redis), plain Docker, Kubernetes with Helm, AWS ECS or Node with
+systemd; see [DEPLOY.md](DEPLOY.md).
 
 ## First slice
 
@@ -152,14 +209,41 @@ with the Mac.
 
 - A person sets an agent up in Agents: name, tool, repos, binders, skills. The hub gives a token (`bnd_…`), shown once;
   only its hash is kept. A new token replaces the old; revoking stops it at once and puts what it held back on the board.
-- A binder can name the repos its agents work in (Settings). Each agent then works in all of them, or picks some among
-  them on the Agents page; one it's limited to outside them is refused. A binder that names none leaves its agents to
-  any repo, as before.
-- Repos are picked by typing. The hub keeps a list of each GitHub App installation's repos in its store, read a hundred
-  at a time in the background the first time a picker asks, and again every six hours, the old list answering
-  meanwhile; a hub that restarts goes on from the page it stopped at. GitHub's word that repos were added to or removed
-  from an installation changes it at once. A name the list doesn't have yet (still being read, or made since) is looked
-  up on GitHub by name, and kept when found. An organization of tens of thousands of repos is a lookup in memory.
+- **Add a machine** (`hub/src/routes/agents.ts`, `runner/src/daemon.ts`) is the usual way to set one up. Anyone in a binder
+  makes one line on the Agents page (`POST /api/agents/join-line`): `curl -fsSL <hub>/install | sh -s -- join bnj_…`, or
+  its PowerShell form, good for 24 hours on any number of machines. Run in the folder with the code, `binders join` looks
+  at the machine: which of the agent tools in `shared/agents.ts` are installed, and which GitHub repos the folder holds. It
+  sends that to `POST /api/machines/join`, which takes no sign-in, as the line is the proof; the line stops working when
+  its maker is no longer in the binder. The hub chooses the tool, the first installed in its own order, and makes the
+  agent: named for the tool and the machine ("Claude Code on <host>"), owned by whoever made the line, with the repos
+  found (only those the binder's own list allows, when it has one). It answers with the agent's own token, and the machine
+  sets it up as `binders add` does, running in the background. The same machine running the line again is the same agent,
+  with a fresh token. With no tool found, it says which it looked for, and that installing one and running the line
+  again is all it takes. A line made by a hub admin also lends the machine's models to the hub's brain, as a line from
+  Settings → Brain does. Setting an agent up by hand stays, for a tool or a name the hub wouldn't have chosen.
+- A binder can name the repos its agents work in (Settings → GitHub). Each agent then works in all of them, or picks
+  some among them on the Agents page; one it's limited to outside them is refused. A binder that names none leaves its
+  agents to any repo, as before.
+- Repos are picked by typing, or by a GitHub topic or custom property. The hub keeps a list of each GitHub App
+  installation's repos in its store (listIndex.ts), with each one's description, topics, custom properties and whether
+  it's archived, read a hundred at a time in the background the first time a picker asks, and again every six hours,
+  the old list answering meanwhile; a hub that restarts goes on from the page it stopped at, and a list kept in an
+  older shape answers while it's read again. GitHub's word that repos were added to or removed from an installation
+  changes it at once. A name the list doesn't have yet (still being read, or made since) is looked up on GitHub by
+  name, and kept when found, without replacing what the list says of one it has. An organization of tens of thousands
+  of repos is a lookup in memory, filters and counts included.
+- Custom properties come with the installation's list when GitHub gives them there. When it gives none at all, the hub
+  reads the organization's own list of them once the repos are read through, which takes the app's Custom properties
+  (read) permission; refused, Settings → GitHub says so with a link to the app's permissions.
+- A filter picks repos now; it isn't a live rule. `agent.repos` and a binder's repos stay lists of names, so a later
+  change on GitHub never widens what an agent may touch without the push check in `mayLink`. Adding every match of a
+  filter (200 at most) checks each with GitHub as saving will, a few at a time, and leaves out those refused, with why.
+- What a person sees of a private repo's topics and properties: only if GitHub lists the repo for them, they run the
+  binder's GitHub, or the binder named the repo itself. Its name and description were shown already.
+- People are suggested the same way: each organization's members, kept as a list (peopleIndex.ts), read in the
+  background and every two hours, the accounts of people who left an enterprise of managed users left out, and kept
+  up to date by the `organization` webhook on apps made since it was added. The first keystroke never waits for GitHub
+  to page through thousands of people.
 - The agent connects to `/mcp` (Streamable HTTP, stateless, Bearer token). Its tools: `whoami`, `update_profile`,
   `list_binders`, `list_notes`, `get_note`, `create_note`, `append_to_note`, `list_tasks`, `get_task`, `wait_for_work`
   (waits up to 50 s for a card it could take), `claim_task`, `report_progress` (doing, progress, plan, steps, said),
@@ -168,7 +252,14 @@ with the Mac.
   runner: its worktree's diff), `get_change_set`, `send_debrief` and `get_debrief` (a card's debrief), and
   `get_challenge_set`, `send_challenge` and `get_challenge` (a card's Challenge), and `reply_to_findings` (the author's
   one round of replies to its findings).
-- A claim is a change in the log, so when two agents claim at once the first one applied gets it.
+- A claim is a change in the log, so when two agents claim at once the first one applied gets it. An agent waiting for work looks over the board only when a change could have made some for it (`mayMakeWork` in `hub/src/mcp.ts`), and then at the few cards ready to take: not at every change, such as a pause in someone's typing in a note, a pull request's checks or a run's progress.
+- Work that fails stops being retried. A runner says whether handing a card back was the run failing (`card.release`
+  with `failed`, in `shared/work.ts`); a card whose run fails twice in a row waits in Blocked with why as its question,
+  and any answer puts it back in Ready. Handing a card back because its runner stopped, restarted or was removed isn't
+  counted. A runner that starts, or reaches the hub again, gives back the cards the hub says its agent holds and it
+  isn't running, unless another runner works as the same agent. A person can stop a card from the web (it waits in
+  Proposed) and send a card in review back to its agent with what to change. A pull request closed on GitHub without
+  merging comes out of its change set, and its card waits in Proposed.
 - A card's Change Set (`shared/changeSet.ts`, `GET /api/cards/:id/change-set`) gathers what its work proposes: the pull
   request's diff, or before there is one, the diff of the card's worktree that its runner sends every minute and when
   the agent stops (against where the branch left the workspace, uncommitted and new files too, cut to 200 files and
@@ -217,7 +308,7 @@ with the Mac.
   author has replied (`challenge.replies.state` done) the hub refuses another round for those findings. A round that
   failed, or that the author left for half an hour, may be asked again; a new Challenge brings new findings without
   replies, and isn't started while a round is under way.
-- A binder can post its Challenges to GitHub (Settings → Binders, "Post a Challenge's findings as review comments";
+- A binder can post its Challenges to GitHub (Settings → How work flows, "Post a Challenge's findings as review comments";
   `binder.reviewComments`, off unless turned on). When findings come in for a card with a pull request, the hub's
   `ReviewsSaver` posts one review through the GitHub App, `event: COMMENT` (it neither approves nor asks for changes):
   each finding a line comment at its file and line, on the new file's side, or the old file's when only a removed line
@@ -240,7 +331,7 @@ with the Mac.
 
 ## People and GitHub (built)
 
-- GitHub is connected from Settings with GitHub's App manifest flow: the hub posts a manifest (callback, webhook with
+- GitHub is connected from Settings → GitHub with GitHub's App manifest flow: the hub posts a manifest (callback, webhook with
   its events, permissions), GitHub makes the app and returns its id, keys and webhook secret, which the hub keeps sealed.
   Installing the app picks repos; the hub signs a JWT with the app's key and mints installation tokens per repo. The
   maker (or the first GitHub sign-in, if they set it up signed in by name) is the admin; the owner's organization is let in.
@@ -260,6 +351,53 @@ with the Mac.
   or `12-` in its branch, and joins its binder's open change set with its files and checks.
 - Approving a set approves and merges each pull request on GitHub in order; a failed merge stops there and the set goes
   back to review.
+- A binder's members are owners, admins, members and readers, set at `PUT /api/spaces/:id/members/:login` with a `role`
+  by its owners and admins (only an owner makes or unmakes owners, and the last owner can't become a reader). A reader
+  (`hub/src/reader.ts`) sees everything in a binder
+  and can ask its brain about it, and changes nothing. One hook in `hub/src/server.ts` refuses every request from a
+  reader that isn't a read, except asking, their own tokens and account, and leaving, so a route added later is refused
+  for readers until it's listed. The person-level MCP tools that change something, the iPhone's link, captures and
+  sending a note refuse a reader in the same words, and the brain tells a reader how things stand and never offers them
+  a change. Nothing waits on a reader, and a reader isn't offered an agent's terminal. Making someone a reader revokes the
+  agents they own there, an agent whose owner can only read isn't accepted, and a line made by a reader can't add a
+  machine. Everyone in a binder sees who runs it. A binder's settings are its owners' and admins': its people, GitHub,
+  Jira, folder rules, environments, the channel it tells, its locked notes, its agents and its name, and where its cards
+  and notes go (its repo, its agents' repos, whether notes are pushed, whether cards are kept as issues, whether a
+  Challenge's findings are posted). A binder with no members is open to all, as members. A person can leave a binder, the
+  last owner can't, and taking someone out, or their leaving, revokes the agents they own there
+  (`hub/src/routes/binders.ts`). An agent whose owner is no longer in its binder is refused, with a 403 in words. An
+  owner can take a binder off the hub by typing its name: it stops and isn't listed or opened, nothing is destroyed, and
+  its address stays taken. The hub's first binder and personal binders can't be taken off (`hub/src/spaces.ts`).
+- The hub's admins run the hub: who gets in, the brain, its options, and making a binder for someone else. Being one
+  gives no place in a binder: they open the binders they're in and the open ones, like anyone. A binder with no owner,
+  which is one with no members or one whose owners have gone, is looked after by the hub's admins until it has one: there
+  they are admins (`Spaces.roleFor`, kept to hand in an index beside the open binders, as `forPerson` runs on every
+  request), and may name its first owner. `GET /api/hub/binders` lists every team binder with its owners, for the hub's
+  admins, and `PUT /api/hub/binders/:id/owners/:login` makes someone an owner of any of them, one they aren't in too,
+  and writes that in the binder's history. On a hub where no one is named an admin, everyone counts as one, so everyone
+  looks after a binder with no owner.
+
+## Delivery (built)
+
+Environments follow what GitHub deploys, repo by repo (`hub/src/actions/environments.ts`). The hub makes one the first
+time GitHub reports a deployment from a repo a binder works in, by webhook or by asking (the repo's newest thirty
+deployments, grouped by environment), or a person sets one up. GitHub's states become the environment's: queued, in
+progress and pending are deploying, waiting is waiting, failure and error are failed, success is healthy. A deployment
+GitHub marks transient (a preview for one pull request) is passed over, and the hub takes at most twelve environments
+from GitHub in one repo, a person adding more by hand.
+
+An environment shows its version (the one the deploy named in its payload, else the tag or branch, else the commit's
+first seven), where it's served (GitHub's address, or one a person gave, which stays theirs), the run that deployed
+it, and the merged pull requests on it. Those are found by asking GitHub whether the deployed commit is the pull
+request's merge commit or ahead of it, for the newest fifty not already there; where GitHub can't be asked, they count
+as there. A change set is shipped once each of its merged pull requests, in a repo that has environments, is on that
+repo's last one. The hub records no deploy GitHub didn't report, and a new hub starts with no environments.
+
+A person sets what GitHub can't say: the address, the order within the repo, and a deploy workflow (a repo, a workflow
+file and a ref). Promote runs that workflow with the version on the environment before it, and is refused for an
+environment with none. Owners and admins change environments; anyone in the binder promotes. The hub also looks for
+itself, a repo at a time: every ten minutes at a repo with environments while webhooks aren't arriving, and every hour
+at a repo with none, for one to turn up.
 
 
 ## People's terminals (built)
@@ -279,7 +417,7 @@ token and runner. Replacing an agent's token doesn't touch a person's connection
 
 ## Jira, and swarms (built)
 
-**Jira** is the first adapter past GitHub, on the boundaries the design names: the binder's own connection (a Jira Cloud address, service account, project, the status each stage is) in the hub's store, sealed; a saver that mirrors cards still going into issues as edits settle, finds them again by a label naming the card, and tries again when Jira won't take a write; a webhook that hears only about issues the saver made. A status moves the card only when someone other than the service account changed it, and by the same rules as moving it on the board. The hub keeps the words: Jira's description is written, never read back, so nothing loops. Changing the address needs the token again and starts a new mirror, since issue ids mean nothing at another address.
+**Jira** is the first adapter past GitHub: the binder's own connection (a Jira Cloud address, service account, project, the status each stage is) in the hub's store, sealed; a saver that mirrors cards still going into issues as edits settle, finds them again by a label naming the card, and tries again when Jira won't take a write; a webhook that hears only about issues the saver made. A status moves the card only when someone other than the service account changed it, and by the same rules as moving it on the board. The hub keeps the words: Jira's description is written, never read back, so nothing loops. Changing the address needs the token again and starts a new mirror, since issue ids mean nothing at another address.
 
 **The mapping fills itself in.** Connecting reads the service account's projects, then the chosen project's issue types and each type's workflow, and nothing is kept until it's saved. A note's type is one Stories can sit under (hierarchy level 1, Epic before Feature), a card's is level 0 (Story before Task). Each stage goes to one status: its usual name when the workflow has it, otherwise by the category Jira sorts the status into. Every other status counts as a stage when someone moves an issue there, except ones that ended without being done (Won't Do, Cancelled), which count as nothing.
 
@@ -360,6 +498,116 @@ never wakes a stopped agent, doesn't count as a person's last word, and can't an
 waits on a person, another agent's words aren't passed on. Two agents get
 20 messages an hour between them before they're told to ask a person. An agent reaches only agents working in binders it works
 in, and a Challenge's reviewer and the author it's judging can't message each other.
+
+## The brain (built)
+
+The hub's own model, for what needs no agent: summing up what a phone or Mac captured, and answering a question from the
+binders. Distill and every other piece of work stay with agents on runners; the brain reads, sums up, and can ask a person
+whether to do something on the board.
+
+- **Models** (`hub/src/brain/models.ts`). Claude through Anthropic's SDK by default (`claude-opus-5-5`, with Anthropic's
+  server-side fallback for a declined request), or any server that speaks OpenAI's chat API. Summaries come back in a
+  fixed shape (title, summary, points, decisions, follow-ups); answers cite their passages, through Claude's document
+  citations or `[n]` markers from other models. Embeddings from any server that speaks OpenAI's embeddings API. What's
+  sent is material, never instructions: transcripts are of people in a room, notes are anyone's in a binder.
+- **The index** (`hub/src/brain/index.ts`). Each binder's notes and cards, cut into passages at paragraph ends under
+  their headings, found by BM25 and, with an embeddings model, by vectors, the two lists joined by rank. It's held in
+  memory and kept in the binder's own store a source at a time, so one binder's never reaches another's.
+- **Keeping up** (`hub/src/brain/brain.ts`). Each binder's brain reads everything once, then follows its log, debounced;
+  a source whose words didn't change isn't read again, and a passage whose words didn't change keeps its vector. An
+  embeddings model that's down leaves the words indexed and tries again later.
+- **Captures.** A note in the binder's folder for its kind, with the transcript under its own heading and the summary
+  above it under another, so the hub writes the summary again without touching what people added. Its id comes from
+  the device's own id for it, so an outbox sending twice makes one note.
+  - A capture that arrives while no model answers is remembered, and summed up once one does: a few at a time, the oldest
+    first, without writing over what anyone added since. One that has waited a week is let go. Any note with enough in it
+    can be summed up from its menu (`POST /api/notes/:id/sum-up`); the summary goes in beside its words, as the hub's, and
+    a locked note is changed only by whom its lock lets.
+  - A person chooses which binder their captures land in, on Your account (`GET` and `PUT /api/personal/captures`, kept in
+    their own binder's store): their own unless they say, and their own again if they leave the one they chose. It holds
+    for the iPhone's conversations, the Mac's captures, `POST /api/captures` and the MCP tool `capture`, whenever the
+    capture names no binder.
+  - A note is sent to another binder its person is in from its menu (`POST /api/notes/:id/send`): a copy goes there, with
+    its pictures, in the folder that binder keeps conversations in when it has one. Each says where the other is; the
+    original is left as it is when it's locked against the person sending it. A folder of captures lists the newest
+    first.
+- **Ask follows a conversation** (`hub/src/brain/brain.ts`). A question is answered knowing what came before it: the page
+  sends the last six questions and answers, each cut short, as context and never as instructions. The hub keeps a
+  person's conversation on Ask for them, in the binder's store under their own name and given to no one else: the last 20
+  questions with their answers, until 30 days after the last (`GET` and `DELETE /api/brain/conversation`). It's there on
+  opening Ask again or on another device, until they start a new one. An offer to do something isn't kept, as it can't be
+  taken up later, and a turn that drew on a binder the person has since left isn't shown.
+- **A note's Chat** answers from the hub's own model when no agent is listening, or when it's picked, with the note in
+  front of it in full and the rest of the binder to draw on (`POST /api/notes/:id/ask`). It reads and can't change the
+  note, and says that an agent can.
+- **How the work stands, and what's done about it** (`hub/src/brain/board.ts`). Ask and Talk get one more document: the
+  person's agents, what's waiting on them, what's being worked on, their change sets and environments, read from the state
+  for that reply. A document rather than tools, so any model can answer "what are my agents working on?", on the first try,
+  with no extra round trip while someone waits to hear it. What the model can have done is one plain line (`DO stop c1`),
+  which only proposes: everything a model reads was written by anyone in a binder, so the hub works out what the line would
+  mean, says so in its own words, and does it only on the person's answer, read by the hub from what they said, or a button
+  on Ask. What merges, deploys or lets an agent use a tool takes that word itself ("approve"), and anything else they say
+  drops it. It's checked again when it's carried out. A release is a change set, so "put release 18 into motion" approves
+  #18. Stopping a card puts it in Proposed: its runner ends the run, and Ready would have an agent take it straight back.
+- **Settings** (`hub/src/brain/settings.ts`). The hub's, an admin's, with the keys sealed; environment variables fix
+  them, as with the hub's options. A hosted brain, for people without a hub of their own, would be this same hub run
+  for them.
+
+## The hub as an iPhone's brain (phase 1, building)
+
+An iPhone chooses its brain: its Mac, or the hub. With the hub, it sends the very calls it sends a Mac over their link
+(the tools, the binders/* methods, binders/changed back), the same JSON-RPC in the same shapes, over a WebSocket at
+`/api/app/link` signed in with its app token (`hub/src/appLink.ts`). So every screen works with no Mac.
+
+- **Its binders** are every binder of every Binder the person is in, by name, each with an id of its Binder and its own
+  (`team/b1`), so a call always lands in the right one and nothing crosses between them.
+- **What it captures** goes to the Binder the person chose for their captures, their own unless they chose another: a
+  conversation is kept once as a note there, summed up, and what came of it (Filed in …) and its follow-ups (offered as
+  cards) are kept in that Binder's store for the iPhone to ask. A follow-up accepted on the iPhone is a card in Proposed
+  with its note, its words and a brief, for a person to look at, as with Distill; handed to an agent by name, it's the
+  agent's to start.
+  A moment is sorted by the hub's model and done at once: a card, a note, or an answer from the binders.
+- **Audio, when the hub has a transcription model** (it lists `transcribes`): the iPhone sends a conversation's audio to
+  `POST /api/app/audio`, described in the X-Binders-Capture header with the voices it told apart. The hub writes it down
+  one recording at a time, names each stretch for the voice whose turns overlap it most, and files it as a
+  conversation; when the iPhone's own transcript was filed first, the hub's goes in its place under the note's
+  Transcript heading and the summary is written again. An outcome that only says "Writing it down on your hub…" never
+  stops the iPhone's own transcript from being filed. The audio isn't kept.
+- **Speech, when it has a speech model** (it lists `speaks`): `binders/speak` gives the answer's audio, base64, for the
+  iPhone to play.
+- **Models are per job** (`hub/src/brain/settings.ts`): the chat model, embeddings, transcription and speech each have
+  their own server and sealed key, or are served by one of your machines (`hub/src/brain/machines.ts`,
+  `runner/src/brain.ts`).
+  - The machine's daemon links over `/api/brain/machine`, saying who it is first with its `bnw_` token, as a runner
+    does.
+  - It says which servers it found, and the hub's model classes use a fetch that goes through it.
+  - It reaches only the servers it found (and only on its own network) and passes nothing else on. macOS's voices
+    are `say:`.
+  - A machine that's away, removed or not linked says so in the job's needs.
+  - The daemon finds servers by the machine's own list of listening ports (`/proc/net/tcp` on Linux, `lsof` on a Mac),
+    asking each for its models at `/v1/models` and `/models`. The hub's welcome says which daemon it hands out
+    (`runnerVersion`), and an older one replaces its file and exits for its service to start it again.
+  - A machine joins with a 24-hour command token (`bnj_`) and gets a token of its own (`bnw_`), named by its host. The
+    same host joining again is the same machine.
+  - Each job no admin set is chosen by the hub from the machines linked now (`hub/src/brain/autoPick.ts`), by model
+    name: `autoJobs` are the hub's choices, chosen again when a better model appears or their machine is removed;
+    `ownJobs` are an admin's, never chosen for them until handed back.
+  - Downloaded models are served on demand (`runner/src/engines.ts`). The daemon lists them as one server at
+    `http://models.binders/v1` (kind `binders`). It routes each request by the `model` its JSON or multipart form
+    names, starting the engine that runs it (TensorFold, mlx-lm, mlx-audio, vLLM) on a free port from 8941. Engines it
+    started run one big model at a time, are stopped after twenty idle minutes, and are never found again by the port
+    scan.
+  - Offers come in order. First, a runtime to start for models already on a machine (`serve`): mlx-audio for Hugging
+    Face audio models on a Mac, or LM Studio's server. The daemon lists Hugging Face's cache by folder name only. Then
+    downloads (`pull`).
+  - Downloads: `offers()` picks, for each open job no machine serves, a model and the machine with Ollama to pull it
+    on. The daemon pulls through Ollama's `/api/pull` (a checked model name only), sends progress, then what it serves
+    now, so the job is chosen with the new model. **Local AI only** refuses any of them that isn't on the hub's own network (loopback,
+  private and VPN ranges, `.local`, `.internal` and one-word names) and Claude with it.
+- **What the hub can't do yet** (the Manager, agents' sessions on a Mac, Auto) isn't in the features it lists, so the
+  iPhone hides those screens rather than half-work.
+- Times go without fractions of a second, writes the outbox may send twice are done once by their request id, and the
+  notices the iPhone reloads on (tasks, notes, meetings…) follow the logs of the Binders it reaches.
 
 ## The knowledge base
 

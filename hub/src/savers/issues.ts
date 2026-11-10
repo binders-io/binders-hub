@@ -58,6 +58,8 @@ export class IssuesSaver {
   /** What was last written to each issue, so a webhook echo of it is recognised. */
   private written = new Map<string, string>()
   private states = new Map<string, string>()
+  /** Issues of cards deleted, to close: each with the words for who deleted it, until GitHub has been told. */
+  private closing = new Map<string, { issue: NonNullable<Card['issue']>; binderId: string; who: string; closed?: boolean }>()
   private quietMs: number
   private publicUrl?: string
 
@@ -74,7 +76,11 @@ export class IssuesSaver {
 
   private follow(entries: Entry[]) {
     for (const { change } of entries) {
-      if (change.type === 'card.put') this.later(change.card.id)
+      if (change.type === 'card.put') {
+        // Put back from the trash: what wasn't closed yet is left open, and what was is opened again by its save.
+        this.closing.delete(change.card.id)
+        this.later(change.card.id)
+      } else if (change.type === 'card.delete') this.closeLater(change.id)
       // A card.update that only records its issue is this saver's own (but its debrief may be waiting for it); one that
       // only brings its worktree's diff, its Challenge or its Jira key isn't in the issue; one that only brings its debrief is, when it's
       // newly written.
@@ -88,12 +94,22 @@ export class IssuesSaver {
     }
   }
 
+  /** A card was deleted: its issue is closed, with a word on who deleted it, so it isn't left open for work that's gone. */
+  private closeLater(cardId: string) {
+    const trashed = this.hub.state.trashedCards?.find((t) => t.card.id === cardId)
+    if (!trashed?.card.issue) return
+    // An agent is named, a person is @named, and the hub is the hub.
+    const who = trashed.by === 'hub' ? 'the hub' : this.hub.state.agents.some((a) => a.name === trashed.by) ? trashed.by : `@${trashed.by}`
+    this.closing.set(cardId, { issue: trashed.card.issue, binderId: trashed.card.binderId, who })
+    this.later(cardId)
+  }
+
   private later(cardId: string) {
     clearTimeout(this.timers.get(cardId))
     this.timers.set(cardId, setTimeout(() => {
       this.timers.delete(cardId)
       this.queue = this.queue.then(() => this.save(cardId)).catch((error) => {
-        const binderId = this.hub.state.cards.find((c) => c.id === cardId)?.binderId
+        const binderId = this.hub.state.cards.find((c) => c.id === cardId)?.binderId ?? this.closing.get(cardId)?.binderId
         if (binderId) this.problems.set(binderId, `GitHub said: ${(error as Error).message}`)
         log.error({ err: error }, 'Saving a card to GitHub failed')
       })
@@ -129,9 +145,36 @@ export class IssuesSaver {
     for (const card of this.hub.state.cards) if (card.binderId === binderId) this.later(card.id)
   }
 
+  /** Closes a deleted card's issue, and says so on it: what GitHub couldn't be told stays for the next save. */
+  private async closeDeleted(cardId: string) {
+    const pending = this.closing.get(cardId)
+    if (!pending) return
+    const { issue } = pending
+    const binder = this.hub.state.binders.find((b) => b.id === pending.binderId)
+    // Not kept as issues any more: it isn't Binders' to close.
+    if (!binder || binder.issues === false) {
+      this.closing.delete(cardId)
+      return
+    }
+    const github = await this.github.forRepo(issue.repo)
+    if (!github) {
+      this.problems.set(binder.id, `The hub can’t reach ${issue.repo}: install the GitHub App on it, or check the name.`)
+      return
+    }
+    if (!pending.closed) {
+      await github.updateIssue(issue.repo, issue.number, { state: 'closed' })
+      pending.closed = true
+      this.states.set(`${issue.repo}#${issue.number}`, 'closed')
+    }
+    await github.createComment(issue.repo, issue.number, `This card was deleted on Binders by ${pending.who}. If it’s put back within 30 days, this issue opens again.`)
+    this.closing.delete(cardId)
+  }
+
   private async save(cardId: string) {
+    // What an earlier save couldn't tell GitHub of a card that was deleted is tried again with this one.
+    for (const id of [...this.closing.keys()]) if (id !== cardId) await this.closeDeleted(id).catch((error) => log.warn({ err: error }, 'Closing a deleted card’s issue failed'))
     const card = this.hub.state.cards.find((c) => c.id === cardId)
-    if (!card) return
+    if (!card) return this.closeDeleted(cardId)
     const binder = this.hub.state.binders.find((b) => b.id === card.binderId)
     const repo = binder?.repo
     if (!binder || !repo || binder.issues === false) return

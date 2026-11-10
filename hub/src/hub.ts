@@ -2,11 +2,13 @@ import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import { applyChange, emptyState, type Change, type Entry, type HubState, type Outgoing } from '../../shared/state.ts'
 import type { ChangeLog } from './log.ts'
+import type { SavedState } from './kept.ts'
 import type { Presence } from '../../shared/work.ts'
-import { changesTo, check, NoteDocs, type NoteDoc } from '../../shared/noteDoc.ts'
+import { changesTo, check, load as loadDoc, NoteDocs, save as saveDoc, textOf, type NoteDoc } from '../../shared/noteDoc.ts'
 import { log } from './logger.ts'
 import { lockStops } from '../../shared/notes.ts'
 import { whatsWrong } from './schemas.ts'
+import { describe, noted, stamped, whoIs } from './history.ts'
 
 /** Who's sending a change. */
 export type Actor = { kind: 'user'; login: string } | { kind: 'agent'; id: string } | { kind: 'hub' }
@@ -41,6 +43,8 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
   private skipped = new Set<number>()
   /** Agents' presence: live, so not in the log. How many waits each has open says whether it's listening. */
   private seen = new Map<string, { at: number; waiting: number }>()
+  /** When this hub started: what it hasn't heard since then, it hasn't heard at all, as `seen` begins empty. */
+  readonly startedAt = Date.now()
   /** Each agent's runners heard from, by the id each gives itself, with where it runs. */
   private runners = new Map<string, Map<string, { at: number; on?: string }>>()
 
@@ -50,14 +54,108 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
     log.onAppend(() => void this.catchUp())
   }
 
-  /** Reads the whole log; a hub whose log is empty starts with what `seed` gives. */
-  async start(seed?: Change[]) {
-    await this.catchUp()
+  /**
+   * The state saved before this start, while the log is first read: where the log turns out to have a hole in it, the
+   * hub carries on from here. A log loses its beginning when its Redis is emptied, and its middle when an older copy of
+   * Redis is put back; either way every later start reads that same holed log.
+   */
+  private fallback?: SavedState
+
+  /**
+   * Starts from the state saved before, with each note's document as it was saved beside it (`docs`), and reads only
+   * what the log has after that: how long a Binder takes to start doesn't grow with how long it has been going, and the
+   * log needn't hold its whole history. A hub with no saved state reads its whole log, and one whose log is empty
+   * starts with what `seed` gives.
+   *
+   * With a saved state and no documents saved yet (a Binder from before they were), the whole log is read once more, so
+   * every note's document is as it was and whoever is editing goes on from theirs: where that log has a hole in it, at
+   * its start or in its middle, the saved state stands for what's before the hole.
+   */
+  async start(seed?: Change[], saved?: SavedState, docs?: Map<string, Uint8Array>) {
+    // Listening first, then reading: a change made between the two would otherwise wait for the next one to be heard of.
+    await this.log.listening?.()
+    const latest = saved ? await this.log.latest().catch(() => undefined) : undefined
+    const behind = !!saved && latest !== undefined && latest < saved.version
+    if (saved && (docs || behind)) {
+      this.take(saved)
+      const kept: string[] = []
+      for (const [noteId, bytes] of docs ?? []) {
+        try {
+          this.docs.put(noteId, loadDoc(bytes))
+          kept.push(noteId)
+        } catch (err) {
+          log.warn({ err, note: noteId }, 'Couldn’t read a note’s saved document: it starts again from the note’s text')
+        }
+      }
+      if (behind) {
+        log.warn({ log: this.log.kind, latest, saved: saved.version }, 'The change log is behind this Binder’s saved state: carrying on from the saved state')
+        await this.log.startAt(saved.version)
+      }
+      await this.catchUp()
+      // A document that doesn't say what its note says would put its own words back at the note's next edit: set aside.
+      for (const noteId of kept) {
+        const doc = this.docs.peek(noteId)
+        const note = this.state.notes.find((n) => n.id === noteId)
+        if (doc && (!note || textOf(doc) !== note.text)) {
+          if (note) log.warn({ note: noteId }, 'A note’s saved document didn’t match its text: it starts again from the text')
+          this.docs.drop(noteId)
+        }
+      }
+    } else {
+      this.fallback = saved
+      await this.catchUp()
+      this.fallback = undefined
+      // Read through, and short of what was saved: with none of the binders it had, or, with nothing in the log since
+      // the state was saved, fewer binders, notes or cards than it held. The log didn't give what it should have, and
+      // the saved state stands, with whatever the log has after it.
+      const fewer = !!saved && this.version === saved.version && (
+        this.state.binders.length < saved.state.binders.length || this.state.notes.length < saved.state.notes.length || this.state.cards.length < saved.state.cards.length)
+      if (saved && (this.version < saved.version || (saved.state.binders.length > 0 && !this.state.binders.length) || fewer)) {
+        log.error({ log: this.log.kind, read: this.version, saved: saved.version }, 'The change log gave less than this Binder’s saved state holds: carrying on from the saved state')
+        const further = this.version
+        this.take(saved)
+        await this.log.startAt(Math.max(saved.version, further))
+        await this.catchUp()
+      }
+      // Every document it now has is saved with the state, for the starts after this one.
+      this.docs.changeAll()
+    }
     if (this.version === 0 && seed?.length) {
       const at = new Date().toISOString()
       for (const [index, change] of seed.entries()) await this.log.append({ id: `seed-${index}`, client: 'hub', at, change })
       await this.catchUp()
     }
+  }
+
+  /**
+   * The notes' documents that changed since this was last asked, as they're saved (undefined: the note has none any
+   * more), for keeping beside the state. `again` puts back ones that couldn't be saved.
+   */
+  changedDocs(): Map<string, Uint8Array | undefined> {
+    return new Map([...this.docs.takeChanged()].map(([noteId, doc]) => [noteId, doc ? saveDoc(doc) : undefined]))
+  }
+
+  /** Every note's document the hub holds now, as it's saved: for a copy of the whole Binder. A note with none is made again from its text. */
+  heldDocs(): Map<string, Uint8Array> {
+    const held = new Map<string, Uint8Array>()
+    for (const note of this.state.notes) {
+      const doc = this.docs.peek(note.id)
+      if (doc) held.set(note.id, saveDoc(doc))
+    }
+    return held
+  }
+
+  docsChangedAgain(noteIds: Iterable<string>) {
+    this.docs.changedAgain(noteIds)
+  }
+
+  /** Carries on from a saved state: its notes' documents are made again from their text as they're next edited. */
+  private take(saved: SavedState) {
+    this.state = saved.state
+    this.version = saved.version
+    this.docs = new NoteDocs()
+    this.merged.clear()
+    this.skipped.clear()
   }
 
   catchUp() {
@@ -66,7 +164,24 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
         const read = await this.log.read(this.version)
         if (!read.length) return
         const entries: Entry[] = []
+        let at = this.version
         for (const entry of read) {
+          // A hole: the log goes on from further than the change after the last one read.
+          if (entry.version > at + 1) {
+            const saved = this.fallback
+            this.fallback = undefined
+            if (saved && saved.version > at) {
+              const lost = entry.version - 1 - saved.version
+              log.warn({ log: this.log.kind, after: at, next: entry.version, saved: saved.version, ...(lost > 0 ? { lost } : {}) }, 'The change log has a hole in it: carrying on from this Binder’s saved state')
+              this.take(saved)
+              at = saved.version
+              // What was read so far is of a history the saved state replaces, and the rest is read again from there.
+              entries.length = 0
+              break
+            }
+            log.error({ log: this.log.kind, after: at, next: entry.version }, 'The change log has a hole in it, and no saved state covers it')
+          }
+          at = entry.version
           try {
             // An edit's Automerge changes go into its note's document, and the edit takes the note's text as merged.
             const change = this.docs.apply(this.state, entry.change)
@@ -80,7 +195,7 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
             log.error({ err: error, version: entry.version, type: entry.change?.type }, 'Skipped a change in the log that can’t be applied')
           }
         }
-        this.version = read[read.length - 1].version
+        this.version = at
         if (entries.length) this.emit('entries', entries)
       }
     }).catch((err) => {
@@ -145,18 +260,29 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
     const versions: number[] = []
     // Tried first on a copy, each on the ones before it: what can't be applied never reaches the log.
     let trial = this.state
-    for (const { id, change } of outgoing) {
-      this.check(change, login)
-      await vet?.(change)
-      const ready = await this.prepare(change)
-      try {
-        trial = applyChange(trial, ready)
-      } catch {
-        throw new Refused(`That change can’t be applied (${change.type}).`)
+    const noting: string[] = []
+    try {
+      for (const { id, change } of outgoing) {
+        this.check(change, login)
+        await vet?.(change)
+        // Who deleted a note or a card, and when, is the hub's to say: whatever the client wrote is replaced.
+        const ready = stamped(await this.prepare(change), login, at)
+        const sentences = describe(trial, ready)
+        try {
+          trial = applyChange(trial, ready)
+        } catch {
+          throw new Refused(`That change can’t be applied (${change.type}).`)
+        }
+        const version = await this.log.append({ id, client: `user:${login}:${tab}`, at, change: ready })
+        versions.push(version)
+        // A resend is in the log already, and noted.
+        if (version) noting.push(...sentences)
       }
-      versions.push(await this.log.append({ id, client: `user:${login}:${tab}`, at, change: ready }))
+    } finally {
+      // What went in is noted even when a later change was refused: those before it are in the log.
+      await this.catchUp()
+      await noted(this, { kind: 'user', login }, noting)
     }
-    await this.catchUp()
     return versions
   }
 
@@ -175,6 +301,8 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
     const wrong = whatsWrong(change)
     if (wrong) throw new Refused(`That change can’t be used (${change.type}): ${wrong}.`)
     this.guardLock(change, { kind: 'user', login })
+    // Put back from the trash is the hub's own doing, from its copy: a client's copy of a note or card isn't "restored".
+    if ((change.type === 'note.put' || change.type === 'card.put') && change.restored) throw new Refused('A note or a card is put back from the trash, not written.')
     // A permission runs something on an agent's machine: answered through answerPermission, by its owner, never written.
     if (change.type === 'card.update' && change.fields.permission) throw new Refused('A permission is answered on its card, by its agent’s owner.')
     if (change.type === 'card.put' && change.card.permission && JSON.stringify(change.card.permission) !== JSON.stringify(this.state.cards.find((c) => c.id === change.card.id)?.permission)) throw new Refused('A permission is answered on its card, by its agent’s owner.')
@@ -199,6 +327,16 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
     this.seen.set(agentId, now)
     // Others hear when listening starts or stops, or when an agent shows up after a while.
     if (!was || waiting !== 0 || now.at - was.at > 60_000) this.emit('presence', this.presence())
+  }
+
+  /**
+   * The last time this agent was heard from, in milliseconds: a call of its own or its runner's, or now while it has a
+   * wait open. Never before the hub started, so a restart doesn't make every agent look gone.
+   */
+  lastHeard(agentId: string, now = Date.now()) {
+    const seen = this.seen.get(agentId)
+    if (seen && seen.waiting > 0) return now
+    return Math.max(this.startedAt, seen?.at ?? 0, ...[...(this.runners.get(agentId)?.values() ?? [])].map((r) => r.at))
   }
 
   /** A runner of an agent was heard from: one more running for it, if it's new. */
@@ -233,8 +371,12 @@ export class Hub extends EventEmitter<{ entries: [Entry[]]; presence: [Record<st
   /** The hub's own changes, and what agents do through its tools. */
   async record(actor: Actor, change: Change, id: string = randomUUID()) {
     this.guardLock(change, actor)
-    const version = await this.log.append({ id, client: clientOf(actor), at: new Date().toISOString(), change: await this.prepare(change) })
+    const at = new Date().toISOString()
+    const ready = stamped(await this.prepare(change), whoIs(this.state, actor), at)
+    const sentences = describe(this.state, ready)
+    const version = await this.log.append({ id, client: clientOf(actor), at, change: ready })
     await this.catchUp()
+    await noted(this, actor, sentences)
     return version
   }
 

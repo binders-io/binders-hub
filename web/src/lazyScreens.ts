@@ -21,6 +21,7 @@ export const Agents = screen(() => import('./screens/Agents'), 'Agents')
 export const AgentTerminal = screen(() => import('./screens/AgentTerminal'), 'AgentTerminal')
 export const Settings = screen(() => import('./screens/Settings'), 'Settings')
 export const Account = screen(() => import('./screens/Account'), 'Account')
+export const Ask = screen(() => import('./screens/Ask'), 'Ask')
 
 /**
  * Fetches every screen once the page is quiet. There's no service worker, so an open tab works offline only with what

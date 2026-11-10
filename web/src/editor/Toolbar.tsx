@@ -46,10 +46,13 @@ const groups: Tool[][] = [
   ],
 ]
 
-/** The formatting toolbar over the editor, and Show Markdown at its end. */
-export function Toolbar({ editor, raw, onRaw }: { editor: RefObject<EditorHandle | null>; raw: boolean; onRaw: (raw: boolean) => void }) {
+/**
+ * The formatting toolbar over the editor, and Show Markdown at its end. On a phone it's under the words while they're
+ * being written, over the keyboard, with a way to put the keyboard away.
+ */
+export function Toolbar({ editor, raw, onRaw, onDone }: { editor: RefObject<EditorHandle | null>; raw: boolean; onRaw: (raw: boolean) => void; onDone?: () => void }) {
   return (
-    <div className="md-toolbar" role="toolbar" aria-label="Formatting">
+    <div className={`md-toolbar${onDone ? ' docked' : ''}`} role="toolbar" aria-label="Formatting">
       {groups.map((group, index) => (
         <div key={index} className="md-tool-group">
           {group.map((tool) => {
@@ -72,10 +75,11 @@ export function Toolbar({ editor, raw, onRaw }: { editor: RefObject<EditorHandle
           })}
         </div>
       ))}
-      <button className={`md-tool md-raw${raw ? ' on' : ''}`} onClick={() => onRaw(!raw)} aria-pressed={raw} title={raw ? 'Hide the Markdown' : 'Show the Markdown on every line'}>
+      <button className={`md-tool md-raw${raw ? ' on' : ''}`} onMouseDown={(event) => event.preventDefault()} onClick={() => onRaw(!raw)} aria-pressed={raw} title={raw ? 'Hide the Markdown' : 'Show the Markdown on every line'}>
         {raw ? <EyeOff size={15} /> : <Eye size={15} />}
         <span>Markdown</span>
       </button>
+      {onDone && <button type="button" className="md-tool md-done" onClick={onDone}>Done</button>}
     </div>
   )
 }

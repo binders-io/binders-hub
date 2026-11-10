@@ -9,7 +9,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 async function commitsChoice(you: unknown) {
   standInHub(hubState, you)
   await mount(<Agents />)
-  fireEvent.click(screen.getByRole('button', { name: /Set up an agent/ }))
+  fireEvent.click(screen.getByRole('button', { name: /Set one up by hand/ }))
   const group = await screen.findByRole('radiogroup', { name: /Commits and pull requests by/ }).catch(() => document.getElementById('runner-commit-as')!)
   return { buttons: within(group).getAllByRole('radio') as HTMLButtonElement[], dialog: group.closest('[role="dialog"]') ?? document.body }
 }
