@@ -166,7 +166,7 @@ describe('the hub’s brain, as apps and terminals reach it', () => {
       await set.brain.caughtUp()
       const seen = await you('GET', '/api/brain')
       // What answers, and whether it all stays on the hub's own network: never where the models are or how they're reached.
-      assert.deepEqual(Object.keys(seen.body.brain).sort(), ['inUse', 'localOnly', 'provider', 'summarize'])
+      assert.deepEqual(Object.keys(seen.body.brain).sort(), ['first', 'inUse', 'localOnly', 'provider', 'summarize'])
       assert.equal(seen.body.index.sources >= 1, true)
       const chosen = await boss('PATCH', '/api/brain', { provider: 'openai' })
       assert.equal(chosen.body.brain.needs, 'The address of the server.')

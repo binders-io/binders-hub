@@ -1394,13 +1394,13 @@ body.focus-mode .sidebar, body.focus-mode .topbar { display: none; }
 .home-side { display: grid; gap: 18px; position: sticky; top: 0; }
 .home-side h2 { margin: 0 0 8px; font: 800 14px/1.2 var(--display); }
 ul.waiting { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-ul.waiting button { display: flex; gap: 9px; width: 100%; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--fill-1); text-align: left; color: var(--text); }
-ul.waiting button:hover { border-color: var(--line-strong); }
-ul.waiting span { display: grid; min-width: 0; }
-ul.waiting b { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-ul.waiting em { font-style: normal; font-size: 12px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-ul.waiting small { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 2px; font-size: 11.5px; color: var(--faint); }
-ul.waiting svg { flex: none; margin-top: 2px; }
+ul.waiting li > button { display: flex; gap: 9px; width: 100%; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--fill-1); text-align: left; color: var(--text); }
+ul.waiting li > button:hover { border-color: var(--line-strong); }
+ul.waiting li > button > span { display: grid; min-width: 0; }
+ul.waiting li > button b { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ul.waiting li > button em { font-style: normal; font-size: 12px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+ul.waiting li > button small { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 2px; font-size: 11.5px; color: var(--faint); }
+ul.waiting li > button > svg { flex: none; margin-top: 2px; }
 .home-waiting { display: grid; gap: 10px; align-content: start; scroll-margin-top: 8px; }
 .home-waiting:focus { outline: none; }
 .home-waiting h2 { margin: 0; font: 800 14px/1.2 var(--display); }
@@ -2059,8 +2059,8 @@ button.work-agent:not(:disabled):hover { border-color: var(--line-strong); backg
 .brain-count.alert { background: var(--amber-wash); color: var(--amber); }
 .brain-rail-none { margin: 0; font-size: 13px; }
 ul.waiting.compact { gap: 5px; }
-ul.waiting.compact button { padding: 8px 10px; }
-ul.waiting.compact em { -webkit-line-clamp: 1; }
+ul.waiting.compact li > button { padding: 8px 10px; }
+ul.waiting.compact li > button em { -webkit-line-clamp: 1; }
 .brain-agents { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; }
 .brain-agents a { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--fill-1); color: var(--text); text-decoration: none; }
 .brain-agents a:hover { border-color: var(--line-strong); }
@@ -2093,7 +2093,7 @@ ul.waiting.compact em { -webkit-line-clamp: 1; }
   .brain-compose .ask-send { width: 44px; height: 44px; }
   .brain-compose .ask-scope, .brain-compose .ask-new { min-height: 44px; }
   .ask-box textarea { font-size: 16px; }
-  ul.waiting.compact button { min-height: 44px; }
+  ul.waiting.compact li > button { min-height: 44px; }
 }
 @media (max-width: 600px) { .brain-compose { padding-bottom: 8px; } .brain-starter { flex: 1 1 100%; } }
 .ask-intro { display: grid; gap: 8px; text-align: center; }
@@ -2333,3 +2333,55 @@ ul.waiting.compact em { -webkit-line-clamp: 1; }
 .brain-came-more { justify-self: start; }
 .brain-came-refused { margin: 0; font-size: 12px; color: var(--red); overflow-wrap: anywhere; }
 @media (max-width: 600px) { .brain-came-undo, .brain-came-more { min-height: 44px; display: inline-flex; align-items: center; } }
+
+/* ---------- What the Brain drafted for a card that waits on you (under its row; a group of such cards is one row) ---------- */
+ul.waiting > li { min-width: 0; }
+.first { display: grid; gap: 8px; min-width: 0; box-sizing: border-box; margin: 4px 0 0 12px; padding: 9px 11px; border-radius: 10px; border: 1px solid var(--violet-line); background: var(--violet-wash); color: var(--text); font-size: 12.5px; font-weight: 400; line-height: 1.45; overflow-wrap: anywhere; }
+.first p, .first ul, .first small { margin: 0; padding: 0; font-weight: 400; }
+.first-label { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--violet); }
+.first-label svg, .first-line svg { flex: none; }
+.first-words { color: var(--text-2); white-space: pre-wrap; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.first-words.open { display: block; -webkit-line-clamp: unset; overflow: visible; }
+.first-more { justify-self: start; padding: 2px 0; font-size: 12px; font-weight: 700; color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
+.first-more:hover { color: var(--text); }
+.first-from { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-size: 12px; color: var(--muted); }
+.first-from ul { display: flex; flex-wrap: wrap; gap: 2px 10px; list-style: none; min-width: 0; }
+.first-from li { min-width: 0; }
+.first-from a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+.first-from a:hover { color: var(--violet); }
+.first-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.first-actions .button { white-space: normal; height: auto; min-height: 32px; padding-block: 5px; }
+.first-edit { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px 10px; border-radius: var(--r-sm); border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font: inherit; font-size: 13px; line-height: 1.45; resize: vertical; overflow-wrap: anywhere; }
+.first-edit:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; border-color: var(--text); }
+.first-edit:disabled { opacity: 0.6; }
+.first-again .first-line, .first-yours .first-line { display: flex; align-items: baseline; gap: 6px; color: var(--text-2); }
+.first-again .first-line svg { margin-top: 3px; color: var(--violet); }
+.first-yours { border-color: var(--line); background: var(--fill-1); }
+.first-yours .first-line { font-style: italic; color: var(--muted); }
+.first-sent { font-size: 12px; font-weight: 700; color: var(--green); }
+.first-error { font-size: 12.5px; font-weight: 700; color: var(--red); }
+li.first-group { display: grid; gap: 8px; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--fill-1); }
+.first-group > .first { margin-left: 0; }
+.first-group-head { display: flex; gap: 9px; min-width: 0; }
+.first-group-head svg { flex: none; margin-top: 2px; }
+.first-group-head > span { display: grid; min-width: 0; }
+.first-group-head b { font-size: 13px; overflow-wrap: anywhere; }
+.first-group-head em { font-style: normal; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.first-answer-all { margin: 0; padding: 0; border: 0; background: none; }
+.first-stop { display: grid; gap: 6px; justify-items: start; }
+.first-stop small { font-size: 11.5px; color: var(--muted); }
+.first-stop .confirm-button.sure { height: auto; min-height: 32px; padding: 6px 10px; white-space: normal; text-align: left; line-height: 1.25; }
+.first-cards > summary { display: flex; align-items: center; gap: 6px; padding: 4px 0; cursor: pointer; list-style: none; font: 700 12.5px/1.2 var(--body); color: var(--muted); }
+.first-cards > summary::-webkit-details-marker { display: none; }
+.first-cards > summary svg { flex: none; transition: transform 0.15s; }
+.first-cards[open] > summary svg { transform: rotate(90deg); }
+.first-cards > summary:focus-visible, .first-more:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; border-radius: 4px; }
+.first-cards[open] > summary { margin-bottom: 6px; }
+ul.waiting.first-inner { background: none; color: var(--text); font-size: 13px; font-weight: 400; padding: 0; border-radius: 0; }
+@media (max-width: 900px), (hover: none) {
+  .first-actions .button, .first-cards > summary, .first-more { min-height: 40px; }
+  .first-more { padding-inline: 4px; }
+  .first-from a { display: inline-flex; align-items: center; min-height: 40px; }
+  .first-edit { font-size: 16px; }
+}
+@media (prefers-reduced-motion: reduce) { .first-cards > summary svg { transition: none; } }

@@ -114,7 +114,7 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
     const index = space ? { ...await space.index.stats(), ...(space.files ? { kept: space.files.status() } : {}) } : undefined
     // Only admins see where the models are and how they're reached; everyone sees what answers.
     const brain = view && (admin ? view : {
-      provider: view.provider, summarize: view.summarize, localOnly: view.localOnly, inUse: view.inUse, embeddingsInUse: view.embeddingsInUse,
+      provider: view.provider, summarize: view.summarize, first: view.first, localOnly: view.localOnly, inUse: view.inUse, embeddingsInUse: view.embeddingsInUse,
       transcriptionInUse: view.transcriptionInUse, speechInUse: view.speechInUse,
     })
     return { brain, admin, ...(index ? { index } : {}) }

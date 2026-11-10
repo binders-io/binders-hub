@@ -1,8 +1,10 @@
+import { firstRules } from '../hub/src/brain/first.ts'
 import type { BrainModel, Passage } from '../hub/src/brain/models.ts'
 
 // The demo hub's Brain: no model at all, only a few answers written here, put together from the board the hub hands it.
 // It is there so the Brain's page can be looked at with nothing set up: what it says of the work is what the invented
-// hub holds, and it shows each kind of view. Asked anything else, it says what it can be asked.
+// hub holds, and it shows each kind of view. Asked anything else, it says what it can be asked. For an agent's question it
+// drafts an answer when a note has a sentence about it, and says it's the person's to decide when none does.
 
 const boardTitle = 'What’s going on now'
 const block = (view: unknown) => `\`\`\`view\n${JSON.stringify(view)}\n\`\`\``
@@ -100,11 +102,34 @@ function reply(question: string, board: string, passages: Passage[]): { words: s
   return { words: 'This is a demo hub, so its Brain knows only a few questions.', view: stack({ next: next(['What needs me?', 'What are my agents working on?', 'What’s in review?', 'Draw how the open work fits together']) }, ['next']) }
 }
 
+/**
+ * A draft of an answer to an agent's question, as the Brain's first look asks for one: the sentence among the notes that
+ * shares the most words with the question, when one shares enough to be about it, and otherwise that it's the person's.
+ */
+function draft(question: string, passages: Passage[]): { text: string; sources: number[] } {
+  const wordsIn = (text: string) => new Set(text.toLowerCase().match(/[a-z]{4,}/g) ?? [])
+  const asked = wordsIn(question.slice(question.indexOf(':') + 1))
+  let best = { n: -1, shared: 0, sentence: '' }
+  passages.forEach((passage, n) => {
+    // The first document is the card that asks: an answer has to come from somewhere else.
+    if (n === 0) return
+    for (const sentence of passage.text.split(/(?<=[.!?])\s+|\n+/)) {
+      const shared = [...wordsIn(sentence)].filter((word) => asked.has(word)).length
+      if (shared > best.shared) best = { n, shared, sentence: sentence.replace(/^[#*>\s-]+/, '').trim() }
+    }
+  })
+  return best.shared >= 3 ? { text: `FACT\n${best.sentence}`, sources: [best.n] } : { text: 'YOURS\nNothing in the notes says, so it is yours to decide.', sources: [] }
+}
+
 /** The demo's stand-in for a model: the same few answers every time, from the board it's given. */
 export const demoBrain: BrainModel = {
   label: 'Demo Brain',
   summarize: async (capture) => ({ title: capture.title ?? 'Captured', summary: capture.text.replace(/\s+/g, ' ').trim().slice(0, 240), points: [], decisions: [], followUps: [] }),
-  answer: async (question, passages) => {
+  answer: async (question, passages, more) => {
+    if (more === firstRules) {
+      const made = draft(question, passages)
+      return { text: made.text, parts: [{ text: made.text, sources: made.sources }] }
+    }
     const said = reply(question, passages.find((p) => p.title === boardTitle)?.text ?? '', passages)
     return { text: said.words, parts: [{ text: said.words, sources: said.cites ?? [] }], ...(said.view ? { view: block(said.view) } : {}) }
   },

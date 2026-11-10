@@ -591,6 +591,21 @@ whether to do something on the board.
 - **The Brain's page** has the conversation in the middle, with the box at the bottom, and a rail beside it, "Now": what
   needs you (the same list as Home's) and each agent with what it's doing. On a narrow screen the two are a switch. An
   old address ending in `/ask` still opens it.
+- **The Brain looks first at what waits on you** (`hub/src/brain/first.ts`, `GET /api/brain/first`). Under a card that
+  waits on a person, Home and the Brain's rail show what the Brain makes of it:
+  - For an agent's question, a draft of the answer, worked out from the Binder's notes and cards and naming the ones it
+    rests on. It answers only what the notes say: a choice between ways, something to approve, access the agent lacks,
+    or anything the notes don't cover is marked as yours to decide, with what it found. An answer that rests on nothing
+    but the card that asks is treated the same way.
+  - For a card that stopped on something that usually passes (a busy provider, a dropped connection, a timeout), that
+    another try may do, with a button for it. That is read from the reason in code, not by a model.
+  - Cards that wait for the same thing are gathered: the same question on several cards is answered once for all of
+    them, and three or more waiting cards from one note are shown together and can be stopped together.
+  It only drafts. What goes to an agent is what a person sends, as that person (`POST /api/brain/first/send`), and
+  stopping is theirs too. A draft is written when someone looks at what's waiting, a few at a time and at most 40 an
+  hour for a Binder, so a hub nobody is watching asks its model nothing. A draft that said "yours to decide" is asked
+  again once a note has been written since, so something a listener heard can answer a question that had none. A hub's
+  admins can turn the drafts off in Settings → Brain (or `BRAIN_FIRST=0`); a stop is still read, as that asks no model.
 - **A note's Chat** answers from the hub's own model when no agent is listening, or when it's picked, with the note in
   front of it in full and the rest of the binder to draw on (`POST /api/notes/:id/ask`). It reads and can't change the
   note, and says that an agent can.

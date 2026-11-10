@@ -594,7 +594,7 @@ const threadKey = (login: string) => `ask-thread:${login.toLowerCase()}`
  * with an embeddings model, by what they mean; then the model's answer, citing them. Without a model, the passages.
  */
 /** The passages in these Binders that best match `query`: by its words and, with an embeddings model, by what it means. */
-async function find(settings: BrainSettingsStore, places: AskPlace[], query: string, most: number, embedWithinMs?: number) {
+export async function find(settings: BrainSettingsStore, places: AskPlace[], query: string, most: number, embedWithinMs?: number) {
   const embedder = settings.embedder()
   let vector: Float32Array | undefined
   if (embedder) {

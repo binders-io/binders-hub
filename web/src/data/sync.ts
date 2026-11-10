@@ -2,6 +2,7 @@ import type { TerminalInfo } from '../../../shared/terminal.ts'
 import { applyChange as apply, type Change, type Entry, type HubState, type Outgoing } from '../../../shared/state.ts'
 import { forWire, isOld, leftCard, type Activity, type Card, type Presence } from '../../../shared/work.ts'
 import { lightNote, type Note } from '../../../shared/notes.ts'
+import { firstEvent } from './first'
 import { heardEvent } from './listen'
 import { space, spaceHeaders } from './space'
 
@@ -384,6 +385,8 @@ export class HubConnection {
       if (message.type === 'presence' && message.presence) this.onPresence(message.presence)
       // Something came in through a listener, or was taken back: whatever shows it asks again.
       if (message.type === 'heard') window.dispatchEvent(new Event(heardEvent))
+      // The Brain has a draft ready for a card that waits on someone: the list of waiting cards asks again.
+      if (message.type === 'first') window.dispatchEvent(new Event(firstEvent))
     }
     socket.onclose = () => {
       if (this.socket === socket) this.again()

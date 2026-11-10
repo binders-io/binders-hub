@@ -17,6 +17,8 @@ import { bestPicks, candidates, defaultVoice, scoreOf, type Job } from './autoPi
 //                           whisper or Parakeet server of your own), so what phones and Macs record is written down better
 //   SPEECH_BASE_URL, SPEECH_MODEL, SPEECH_VOICE, SPEECH_API_KEY   speech (OpenAI's speech API: Kokoro and the like), so
 //                           the hub can answer out loud
+//   BRAIN_FIRST             0 for the Brain not to draft answers to agents' questions (it does, when someone looks at
+//                           what's waiting, with the chat model)
 //   BRAIN_LOCAL_ONLY        1: every model on the hub's own network, never a cloud provider
 // Each job can also be served by one of your machines (machines.ts): a Mac or a GPU box running the Binders daemon, which
 // reaches the model servers on itself for the hub. Those are chosen in Settings only, as the machines are added there.
@@ -35,6 +37,8 @@ export interface BrainSettings {
   baseUrl: string
   /** Sum up dictations, conversations and meetings sent to the hub, as they arrive. */
   summarize: boolean
+  /** Look first at what waits on people: draft an answer to an agent's question when someone looks at what's waiting. */
+  first: boolean
   embeddingsBaseUrl: string
   embeddingsModel: string
   transcriptionBaseUrl: string
@@ -88,7 +92,7 @@ const keyNames: KeyName[] = ['apiKey', 'embeddingsKey', 'transcriptionKey', 'spe
 export const defaultModel = 'claude-opus-5-5'
 
 const defaults: BrainSettings = {
-  provider: 'off', model: '', baseUrl: '', summarize: true, embeddingsBaseUrl: '', embeddingsModel: '',
+  provider: 'off', model: '', baseUrl: '', summarize: true, first: true, embeddingsBaseUrl: '', embeddingsModel: '',
   transcriptionBaseUrl: '', transcriptionModel: '', speechBaseUrl: '', speechModel: '', speechVoice: '', localOnly: false,
   machine: '', embeddingsMachine: '', transcriptionMachine: '', speechMachine: '', autoJobs: [], ownJobs: [],
 }
@@ -98,6 +102,7 @@ const variables = {
   model: 'BRAIN_MODEL',
   baseUrl: 'BRAIN_BASE_URL',
   summarize: 'BRAIN_SUMMARIZE',
+  first: 'BRAIN_FIRST',
   embeddingsBaseUrl: 'EMBEDDINGS_BASE_URL',
   embeddingsModel: 'EMBEDDINGS_MODEL',
   transcriptionBaseUrl: 'TRANSCRIPTION_BASE_URL',
@@ -179,6 +184,7 @@ function checked(fields: Partial<BrainSettings>): Partial<BrainSettings> {
   }
   if (fields.baseUrl !== undefined) out.baseUrl = checkedUrl(fields.baseUrl, 'The model’s server')
   if (fields.summarize !== undefined) out.summarize = Boolean(fields.summarize)
+  if (fields.first !== undefined) out.first = Boolean(fields.first)
   if (fields.embeddingsBaseUrl !== undefined) out.embeddingsBaseUrl = checkedUrl(fields.embeddingsBaseUrl, 'The embeddings server')
   if (fields.embeddingsModel !== undefined) {
     const model = String(fields.embeddingsModel).trim()
@@ -215,6 +221,7 @@ function fromEnv(env: Record<string, string | undefined>) {
   if (env[variables.model]) fields.model = env[variables.model]
   if (env[variables.baseUrl]) fields.baseUrl = env[variables.baseUrl]
   if (env[variables.summarize]) fields.summarize = !['0', 'off', 'false', 'no'].includes(env[variables.summarize]!.toLowerCase())
+  if (env[variables.first]) fields.first = !['0', 'off', 'false', 'no'].includes(env[variables.first]!.toLowerCase())
   if (env[variables.embeddingsBaseUrl]) fields.embeddingsBaseUrl = env[variables.embeddingsBaseUrl]
   if (env[variables.embeddingsModel]) fields.embeddingsModel = env[variables.embeddingsModel]
   for (const name of ['transcriptionBaseUrl', 'transcriptionModel', 'speechBaseUrl', 'speechModel', 'speechVoice'] as const) if (env[variables[name]]) fields[name] = env[variables[name]]

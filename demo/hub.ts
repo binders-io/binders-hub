@@ -16,6 +16,7 @@ import { SpaceBrain } from '../hub/src/brain/brain.ts'
 import { BrainSettingsStore } from '../hub/src/brain/settings.ts'
 import { demoBrain } from './brain.ts'
 import { Inbox } from '../hub/src/listen/inbox.ts'
+import { FirstAnswers } from '../hub/src/brain/first.ts'
 import { demoBinder, demoChanges, demoAgents, demoPeople } from './data.ts'
 
 // A hub to look at, and nothing else: everything it holds is invented (data.ts) and lives in this process. It reads no
@@ -66,7 +67,9 @@ export async function startDemoHub(port: number, webDir = resolve(import.meta.di
     brain.start()
     // Listeners can be set up and posted to here. No feed is ever read: this hub reaches nothing.
     const inbox = new Inbox({ hub, kv: new MemoryKV(), sealer, member: (login) => demoPeople.includes(login) })
-    return { id, hub, actions, github, webhooks: undefined as never, filesDir: join(files, id), brain, inbox }
+    // What the Brain makes of the cards waiting on someone: drafted by the stand-in, as everything it says is.
+    const first = new FirstAnswers({ hub, settings: brains, kv: new MemoryKV(), place: () => ({ id, name: info.name, brain, url: () => '' }) })
+    return { id, hub, actions, github, webhooks: undefined as never, filesDir: join(files, id), brain, inbox, first }
   }
 
   const spaces = new Spaces(kv, start)
@@ -79,6 +82,8 @@ export async function startDemoHub(port: number, webDir = resolve(import.meta.di
   const space = spaces.get(demoBinder.space)!
   const hub = space.hub
   await heardSoFar(space.inbox!, demoPeople[0])
+  // What was just heard is searchable before anyone looks: the Brain's drafts may rest on it.
+  await space.brain!.caughtUp()
   for (const agent of demoAgents) hub.touch(agent, 1)
   const listening = setInterval(() => { for (const agent of demoAgents) hub.touch(agent) }, 30_000)
 
