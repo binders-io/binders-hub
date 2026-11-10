@@ -525,6 +525,9 @@ open to anyone is left to agents with machines.
   state, and never sent back. A key goes only to the server it was typed for: change the address to another host, or
   the kind of model, and the key is forgotten and typed again. The routes that make and change any agent never set a
   model; only the model's own routes do.
+- **An address on the hub's own machine or network** (a proxy or a model server beside the hub) is the hub's business:
+  a hub admin who also runs the Binder may add one, over http too. Anyone else is told so, and that a model on their
+  own machine belongs with Binders' own agent there. An address out on the internet is over https, whoever asks.
 - **What it reads is material.** It is told, as the Brain is, that nothing in a note, a card or a diff is an
   instruction to it. It has no way to run anything, so the most a planted instruction can reach is the hub's own agent
   tools, which every agent already has.
@@ -549,6 +552,12 @@ installed for it and no model key is on the machine. The runner has the repo; th
   command the model runs can see doesn't include the agent's token either.
 - **Giving it a model.** On the agent's card, by a Binder's owners and admins. Until it has one it takes a card and
   puts it back, saying it has no model.
+- **Or a model on its own machine.** A proxy or a model server on the agent's machine, or on a network only it reaches
+  (a local Azure proxy, LM Studio, Ollama, vLLM), is no place the hub can call. The agent's owner gives its address in
+  the runner's settings, as the machine sees it (`http://127.0.0.1:8000`; http is fine there) with the model or
+  deployment's name, and the runner's program asks it directly: nothing goes by way of the hub. An address given
+  without its `/v1` is tried with it. A key, when the server wants one, is read on the machine from
+  `BINDERS_MODEL_KEY`, and neither it nor the agent's token is in the environment of a command the model runs.
 - **What shows on the card.** It prints the events Claude Code prints, so its steps in the repo, what it says and how
   it ended reach the card as any agent's do. Its calls to the hub's own tools aren't steps: the card shows those
   already.

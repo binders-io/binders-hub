@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod'
 import { takeView, takeViewFromParts } from './viewBlock.ts'
 import type { Step, StepModel } from '../../../shared/agent.ts'
+import { chatBody, stepFrom, type ChatAnswer } from '../../../shared/openaiStep.ts'
 
 // The models the hub calls itself, for what it does without an agent: summing up a dictation, conversation or meeting a
 // phone or Mac sent it, and answering a question from the notes and cards it found for it. Claude through Anthropic's
@@ -492,15 +493,9 @@ export class OpenAICompatibleModel implements BrainModel {
    * Studio). A busy or briefly failing server is asked again a few times, a little later each time.
    */
   async step({ system, turns, tools }: StepInput): Promise<Step> {
-    const messages: Record<string, unknown>[] = [{ role: 'system', content: system }]
-    for (const turn of turns) {
-      if (turn.role === 'user') messages.push({ role: 'user', content: turn.text })
-      else if (turn.role === 'assistant') messages.push({ role: 'assistant', content: turn.text || null, ...(turn.calls.length ? { tool_calls: turn.calls.map((call) => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.input ?? {}) } })) } : {}) })
-      else for (const result of turn.results) messages.push({ role: 'tool', tool_call_id: result.id, content: result.failed ? `It failed: ${result.text}` : result.text })
-    }
-    const body = { model: this.model, stream: false, messages, ...(tools.length ? { tools: tools.map((tool) => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.input } })) } : {}) }
+    const body = chatBody(this.model, { system, turns, tools })
     const what = `The model server at ${serverName(this.base, this.via)}`
-    let answer: { choices?: { message?: { content?: string | null; tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[] }; finish_reason?: string }[]; usage?: { prompt_tokens?: number; completion_tokens?: number }; model?: string } | undefined
+    let answer: ChatAnswer | undefined
     for (let attempt = 0; ; attempt++) {
       try {
         answer = await post(at(this.base, 'chat/completions'), this.apiKey, body, this.via ? 20 * 60_000 : 300_000, what, this.via) as typeof answer
@@ -510,17 +505,7 @@ export class OpenAICompatibleModel implements BrainModel {
         await new Promise((go) => setTimeout(go, stepRetries[attempt]))
       }
     }
-    const choice = answer?.choices?.[0]
-    const text = (choice?.message?.content ?? '').replace(/<think>[\s\S]*?<\/think>/g, '').replace(/^[\s\S]*?<\/think>/, '').trim()
-    const calls = (choice?.message?.tool_calls ?? []).flatMap((call, n) => {
-      if (!call.function?.name) return []
-      let input: unknown = {}
-      // What a model wrote for a tool's arguments may not be JSON: the tool is then called with them as they are, and says so.
-      try { input = call.function.arguments ? JSON.parse(call.function.arguments) : {} } catch { input = { unreadable: call.function.arguments } }
-      return [{ id: call.id || `call-${n}`, name: call.function.name, input }]
-    })
-    const stop: Step['stop'] = choice?.finish_reason === 'content_filter' ? 'refused' : choice?.finish_reason === 'length' ? 'length' : calls.length ? 'tools' : 'end'
-    return { text, calls, stop, ...(answer?.usage ? { usage: { in: answer.usage.prompt_tokens ?? 0, out: answer.usage.completion_tokens ?? 0 } } : {}) }
+    return stepFrom(answer)
   }
 
   async talk(turns: Turn[], passages: Passage[], more?: string): Promise<string> {

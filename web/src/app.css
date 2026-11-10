@@ -2426,3 +2426,5 @@ ul.waiting.first-inner { background: none; color: var(--text); font-size: 13px; 
   .model-agent-choice, .model-agent-kind { transition: none; }
   .model-agent-result .spin { animation: none; }
 }
+.model-agent-own { display: grid; gap: 14px; margin-top: 10px; }
+.model-agent-own .field-hint { margin: 0; }

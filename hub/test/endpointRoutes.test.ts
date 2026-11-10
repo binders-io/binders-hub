@@ -16,7 +16,8 @@ import { BrainSettingsStore } from '../src/brain/settings.ts'
 import { EndpointAgents } from '../src/agent/endpoint.ts'
 import { seed } from './helpers.ts'
 
-const people: Member[] = [{ login: 'ana', role: 'owner' }, { login: 'cy', role: 'member' }, { login: 'di', role: 'reader' }]
+// root runs the hub (one of its admins) and is one of the Binder's admins as well; ana runs the Binder and no more than that.
+const people: Member[] = [{ login: 'ana', role: 'owner' }, { login: 'cy', role: 'member' }, { login: 'di', role: 'reader' }, { login: 'root', role: 'admin' }]
 
 /** A stand-in for a model server: one that calls the tool it's asked to, or one that only talks. */
 async function modelServer(callsTools: boolean) {
@@ -343,6 +344,93 @@ describe('a model’s key', () => {
     } finally {
       await good.close()
       await elsewhere.close()
+      await set.close()
+    }
+  })
+})
+
+describe('a model on the hub’s own machine or network', () => {
+  // These tests' hub lets any address through for its stand-in servers; this one is as a real hub is.
+  async function realHub() {
+    const set = await setUp()
+    ;(set.space().endpoints as unknown as { reach: object }).reach = {}
+    return set
+  }
+
+  it('is a hub admin’s to add, over http too, and nobody else’s: a Binder’s owner is told who can, and what to do for a model on their own machine', async () => {
+    const set = await realHub()
+    const local = await modelServer(true)
+    try {
+      const ana = await set.as('ana')
+      const refused = await ana('POST', '/api/agents/endpoint', { name: 'Proxy', kind: 'openai', baseUrl: local.url, model: 'deploy' })
+      assert.equal(refused.status, 422)
+      assert.match(refused.raw, /127\.0\.0\.1 is on this hub’s own machine or network, which only a hub admin can have a model reached at\. If the model is on your own machine, set up Binders’ own agent there/)
+      assert.deepEqual((await ana('POST', '/api/agents/endpoint/test', { kind: 'openai', baseUrl: local.url, model: 'deploy' })).body.ok, false)
+      assert.equal(local.seen.length, 0, 'nothing was sent there')
+
+      // The hub's admin runs the hub, so its own machine is theirs to point a model at.
+      const root = await set.as('root')
+      assert.deepEqual((await root('POST', '/api/agents/endpoint/test', { kind: 'openai', baseUrl: local.url, model: 'deploy' })).body, { ok: true })
+      const made = await root('POST', '/api/agents/endpoint', { name: 'Proxy', kind: 'openai', baseUrl: local.url, model: 'deploy' })
+      assert.equal(made.status, 200)
+      assert.equal((made.body as { agent: { endpoint: { ready: { ok: boolean } } } }).agent.endpoint.ready.ok, true)
+      assert.equal(local.seen.at(-1)!.auth, undefined, 'a proxy that holds its own key is sent none')
+    } finally {
+      await local.close()
+      await set.close()
+    }
+  })
+
+  it('still wants https for an address out on the internet, whoever asks', async () => {
+    const set = await realHub()
+    try {
+      const root = await set.as('root')
+      const refused = await root('POST', '/api/agents/endpoint', { name: 'Far', kind: 'openai', baseUrl: 'http://models.example.com/v1', model: 'deploy' })
+      assert.equal(refused.status, 422)
+      assert.match(refused.raw, /has to start with https:\/\//)
+    } finally {
+      await set.close()
+    }
+  })
+})
+
+describe('where Binders’ own agent finds its model on its own machine', () => {
+  const machine = (runner: object) => ({ name: 'On a machine', provider: 'other', repos: [], binders: [], skills: [], runner: { tool: 'binders', access: 'full', timeoutMinutes: 60, worktrees: true, ...runner } })
+
+  it('is an address its owner gives with its runner’s settings, http and this machine included, with the model there', async () => {
+    const set = await setUp()
+    try {
+      const ana = await set.as('ana')
+      const made = (await ana('POST', '/api/agents', machine({ modelUrl: ' http://127.0.0.1:8000 ', model: 'DeepSeek-Deploy' }))).body as { agent: { id: string; runner: { modelUrl?: string; model?: string } } }
+      assert.deepEqual([made.agent.runner.modelUrl, made.agent.runner.model], ['http://127.0.0.1:8000', 'DeepSeek-Deploy'])
+      for (const [runner, why] of [
+        [{ modelUrl: 'http://127.0.0.1:8000' }, /Say which model, or which deployment, is at that address/],
+        [{ modelUrl: 'localhost:8000', model: 'm' }, /is a web address, such as http:\/\/127\.0\.0\.1:8000/],
+        [{ modelUrl: 'http://user:secret@127.0.0.1:8000', model: 'm' }, /can’t have a name or password in it\. A key goes in BINDERS_MODEL_KEY on the machine/],
+      ] as const) {
+        const refused = await ana('PATCH', `/api/agents/${made.agent.id}`, { name: 'On a machine', runner: machine(runner).runner })
+        assert.equal(refused.status, 422)
+        assert.match(refused.raw, why)
+      }
+      // Another tool has no use for it: it isn't kept.
+      const other = (await ana('PATCH', `/api/agents/${made.agent.id}`, { name: 'On a machine', runner: { tool: 'claude', access: 'full', timeoutMinutes: 60, worktrees: true, modelUrl: 'http://127.0.0.1:8000', model: 'opus' } })).body as { runner: { modelUrl?: string } }
+      assert.equal(other.runner.modelUrl, undefined)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('is its owner’s alone to change, as with the rest of what it runs', async () => {
+    const set = await setUp()
+    try {
+      const cy = await set.as('cy')
+      const made = (await cy('POST', '/api/agents', machine({ modelUrl: 'http://127.0.0.1:8000', model: 'm' }))).body as { agent: { id: string } }
+      const ana = await set.as('ana')
+      const refused = await ana('PATCH', `/api/agents/${made.agent.id}`, { name: 'On a machine', runner: machine({ modelUrl: 'http://10.0.0.9:1234', model: 'm' }).runner })
+      assert.equal(refused.status, 422)
+      assert.match(refused.raw, /Only On a machine’s owner, @cy, can change what it runs on their machine/)
+      assert.equal(set.space().hub.state.agents.find((a) => a.id === made.agent.id)!.runner!.modelUrl, 'http://127.0.0.1:8000')
+    } finally {
       await set.close()
     }
   })

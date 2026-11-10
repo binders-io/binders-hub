@@ -39,6 +39,14 @@ export interface RunnerSettings {
   /** full: no permission prompts at all; auto: Claude Code decides what's safe; edits: file edits only. */
   access: 'full' | 'auto' | 'edits'
   model?: string
+  /**
+   * For Binders' own agent: where its model is, when that's on the agent's own machine or a network only it reaches (a
+   * local proxy, LM Studio, Ollama, vLLM). A server that speaks OpenAI's chat API, by its address as the machine sees
+   * it, such as http://127.0.0.1:8000; `model` is the model or deployment there. The runner asks it itself, with a key
+   * from the machine's own BINDERS_MODEL_KEY when it needs one. With none, the hub takes each step of the model the
+   * agent was given there.
+   */
+  modelUrl?: string
   /** A card that runs longer is stopped and put back. */
   timeoutMinutes: number
   /** Minutes without a word from the agent before its run is stopped as stuck (15): a model it can't reach, a prompt

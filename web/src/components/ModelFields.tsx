@@ -1,6 +1,6 @@
 import type { AgentEndpoint } from '../../../shared/work.ts'
 import { Field } from './Dialog'
-import { modelKinds } from './modelAgent'
+import { modelKinds, localMeansTheHub, looksLocal } from './modelAgent'
 
 // The boxes adding a model agent and editing one share: what it takes, its model, and its key.
 
@@ -79,7 +79,7 @@ export function ModelKindFields({ values, onChange, keyHint, onKind }: { values:
       </div>
       {kind === 'openai' && (
         <>
-          <Field label="Address" hint="The address ending in /v1. For Azure and Foundry, your resource’s address followed by /openai/v1.">
+          <Field label="Address" hint={looksLocal(values.baseUrl) ? localMeansTheHub : 'The address ending in /v1. For Azure and Foundry, your resource’s address followed by /openai/v1.'}>
             <input className="mono" inputMode="url" value={values.baseUrl} onChange={(e) => set({ baseUrl: e.target.value })} placeholder="https://your-resource.openai.azure.com/openai/v1" autoComplete="off" autoCapitalize="none" spellCheck={false} />
           </Field>
           <ModelField value={values.model} onChange={(model) => set({ model })} />
@@ -90,7 +90,7 @@ export function ModelKindFields({ values, onChange, keyHint, onKind }: { values:
         <>
           <ModelField value={values.model} onChange={(model) => set({ model })} placeholder="claude-opus-5-5" />
           <KeyField value={values.key} onChange={(key) => set({ key })} hint={keyHint} />
-          <Field label="Address (optional)" hint="Only for Microsoft Foundry. Leave empty for Anthropic.">
+          <Field label="Address (optional)" hint={looksLocal(values.baseUrl) ? localMeansTheHub : 'Only for Microsoft Foundry. Leave empty for Anthropic.'}>
             <input className="mono" inputMode="url" value={values.baseUrl} onChange={(e) => set({ baseUrl: e.target.value })} placeholder="https://your-resource.services.ai.azure.com/anthropic" autoComplete="off" autoCapitalize="none" spellCheck={false} />
           </Field>
         </>

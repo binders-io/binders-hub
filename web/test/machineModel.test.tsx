@@ -3,9 +3,9 @@ import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { defaultRunner } from '../../shared/work.ts'
 import type { Agent } from '../src/data/model'
-import { isModelAgent } from '../src/components/modelAgent'
+import { isModelAgent, machineModelWords, modelOnMachine } from '../src/components/modelAgent'
 import { Agents } from '../src/screens/Agents'
-import { agent, hubState, me, mount, standInHub, standInRoute } from './harness'
+import { agent, hubState, me, mount, settle, standInHub, standInRoute } from './harness'
 
 afterEach(() => {
   cleanup()
@@ -96,17 +96,17 @@ describe('the Model row', () => {
 })
 
 describe('setting up an agent with the Binders tool', () => {
-  it('says the machine needs no key, and has no model box of its own', async () => {
+  it('says where its model can be, and has no model box of its own', async () => {
     await boardWith([])
     fireEvent.click(screen.getByRole('button', { name: 'Set one up by hand' }))
     const dialog = (await screen.findByRole('dialog', { name: 'Set up an agent' })) as HTMLElement
     expect(within(dialog).queryByLabelText(/^Model/)).toBeTruthy()
     fireEvent.click(within(dialog).getByRole('radio', { name: /^Binders/ }))
-    expect(within(dialog).getByText('Binders’ own agent works in the repo on this machine, and the hub takes each step of its model, so the machine needs no key. Give it a model from its card once it’s set up.')).toBeTruthy()
+    expect(within(dialog).getByText('Binders’ own agent works in the repo on this machine. Nothing else is installed there. Its model is on the hub, or on the machine itself: choose below.')).toBeTruthy()
     expect(within(dialog).queryByLabelText(/^Model/)).toBeNull()
     expect(within(dialog).getByLabelText(/^Time limit/)).toBeTruthy()
     fireEvent.click(within(dialog).getByRole('radio', { name: /Claude Code/ }))
-    expect(within(dialog).queryByText(/the machine needs no key/)).toBeNull()
+    expect(within(dialog).queryByText(/Its model is on the hub, or on the machine itself/)).toBeNull()
     expect(within(dialog).getByLabelText(/^Model/)).toBeTruthy()
   })
 
@@ -114,7 +114,7 @@ describe('setting up an agent with the Binders tool', () => {
     await boardWith([withModel])
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
     const dialog = (await screen.findByRole('dialog', { name: 'Edit Binders on studio-mac' })) as HTMLElement
-    expect(within(dialog).getByText(/the machine needs no key/)).toBeTruthy()
+    expect(within(dialog).getByText(/Its model is on the hub, or on the machine itself/)).toBeTruthy()
     expect(within(dialog).queryByLabelText(/^Model/)).toBeNull()
   })
 })
@@ -287,5 +287,149 @@ describe('the dialog for a machine agent’s model', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Take it away? Press again' }))
     expect((await within(dialog).findByRole('alert')).textContent).toContain('Only this Binder’s owners and admins can take a model away.')
     expect(screen.getByRole('dialog')).toBeTruthy()
+  })
+})
+
+// Binders' own agent with its model on its own machine: a server or proxy the runner calls itself, set in its runner settings.
+const local: Agent = { ...onMachine, runner: { ...onMachine.runner!, model: 'local-model', modelUrl: 'http://127.0.0.1:8000' } }
+
+describe('Binders’ own agent with its model on its machine', () => {
+  const edit = async (agents: Agent[], you: unknown = owner) => {
+    await boardWith(agents, you)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    return (await screen.findByRole('dialog', { name: /^Edit / })) as HTMLElement
+  }
+
+  it('words it as the model and the host of its address, on its machine', () => {
+    expect(machineModelWords({ model: 'local-model', modelUrl: 'http://127.0.0.1:8000' })).toBe('local-model at 127.0.0.1:8000, on its machine')
+    expect(modelOnMachine(local)).toBe(true)
+    expect(modelOnMachine(withModel)).toBe(false)
+    expect(modelOnMachine({ ...agent, runner: { ...defaultRunner, modelUrl: 'http://x' } })).toBe(false)
+  })
+
+  it('opens the form on “On the hub” for an agent with no address, with nothing else to fill in', async () => {
+    const dialog = await edit([withModel])
+    const group = within(dialog).getByRole('radiogroup', { name: 'Its model' })
+    expect(within(group).getByRole('radio', { name: /On the hub/ }).getAttribute('aria-checked')).toBe('true')
+    expect(within(group).getByText('The hub reaches the model and keeps its key. Give it one from its card.')).toBeTruthy()
+    expect(within(dialog).queryByLabelText(/^Address on the machine/)).toBeNull()
+    expect(within(dialog).queryByLabelText(/^Model or deployment/)).toBeNull()
+  })
+
+  it('opens the form on “On this machine” for an agent that has an address, with its fields filled in', async () => {
+    const dialog = await edit([local])
+    const group = within(dialog).getByRole('radiogroup', { name: 'Its model' })
+    expect(within(group).getByRole('radio', { name: /On this machine/ }).getAttribute('aria-checked')).toBe('true')
+    const address = within(dialog).getByLabelText(/^Address on the machine/) as HTMLInputElement
+    expect(address.value).toBe('http://127.0.0.1:8000')
+    expect(address.placeholder).toBe('http://127.0.0.1:8000')
+    expect((within(dialog).getByLabelText(/^Model or deployment/) as HTMLInputElement).value).toBe('local-model')
+    expect(within(dialog).getByText('If the server wants a key, put it in BINDERS_MODEL_KEY in the runner’s environment on that machine. It never leaves the machine.')).toBeTruthy()
+    // It never asks for a key.
+    expect(within(dialog).queryByLabelText(/^Key/)).toBeNull()
+  })
+
+  it('shows the choice and its fields only for the Binders tool, and sends no address with another tool', async () => {
+    const dialog = await edit([local])
+    const saved = standInRoute('PATCH', '/api/agents/w1', () => ({}))
+    fireEvent.click(within(dialog).getByRole('radio', { name: /Claude Code/ }))
+    expect(within(dialog).queryByRole('radiogroup', { name: 'Its model' })).toBeNull()
+    expect(within(dialog).queryByLabelText(/^Address on the machine/)).toBeNull()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    const runner = (saved[0] as { runner: Record<string, unknown> }).runner
+    expect(runner.tool).toBe('claude')
+    expect('modelUrl' in runner && runner.modelUrl !== undefined).toBe(false)
+    expect(runner.model).toBeUndefined()
+  })
+
+  it('saves the address and the model with the runner settings when “On this machine” is picked', async () => {
+    const dialog = await edit([withModel])
+    const saved = standInRoute('PATCH', '/api/agents/w1', () => ({}))
+    pick(dialog, /On this machine/)
+    type(dialog, /^Address on the machine/, 'http://127.0.0.1:8000')
+    type(dialog, /^Model or deployment/, 'local-model')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(saved).toHaveLength(1)
+    const runner = (saved[0] as { runner: { tool: string; modelUrl?: string; model?: string } }).runner
+    expect(runner).toMatchObject({ tool: 'binders', modelUrl: 'http://127.0.0.1:8000', model: 'local-model' })
+  })
+
+  it('needs the model’s name once “On this machine” is picked', async () => {
+    const dialog = await edit([withModel])
+    const saved = standInRoute('PATCH', '/api/agents/w1', () => ({}))
+    pick(dialog, /On this machine/)
+    type(dialog, /^Address on the machine/, 'http://127.0.0.1:8000')
+    expect((within(dialog).getByLabelText(/^Model or deployment/) as HTMLInputElement).required).toBe(true)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await settle(50)
+    expect(saved).toHaveLength(0)
+  })
+
+  it('sends neither address nor model when “On the hub” is picked again', async () => {
+    const dialog = await edit([local])
+    const saved = standInRoute('PATCH', '/api/agents/w1', () => ({}))
+    pick(dialog, /On the hub/)
+    expect(within(dialog).queryByLabelText(/^Address on the machine/)).toBeNull()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    const runner = (saved[0] as { runner: Record<string, unknown> }).runner
+    expect(runner.tool).toBe('binders')
+    expect(runner.modelUrl).toBeUndefined()
+    expect(runner.model).toBeUndefined()
+  })
+
+  it('shows the hub’s refusal in the form and keeps what was typed', async () => {
+    const dialog = await edit([withModel])
+    standInRoute('PATCH', '/api/agents/w1', () => reply(400, 'A model address can’t have a name or a password in it.'))
+    pick(dialog, /On this machine/)
+    type(dialog, /^Address on the machine/, 'http://me:pw@127.0.0.1:8000')
+    type(dialog, /^Model or deployment/, 'local-model')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('A model address can’t have a name or a password in it.')
+    expect((within(dialog).getByLabelText(/^Address on the machine/) as HTMLInputElement).value).toBe('http://me:pw@127.0.0.1:8000')
+    expect(screen.getByRole('dialog')).toBeTruthy()
+  })
+
+  it('sets one up with its model on the machine, sending the address and model in its runner', async () => {
+    await boardWith([])
+    const made = standInRoute('POST', '/api/agents', () => ({ agent: local, token: 'tok' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Set one up by hand' }))
+    const dialog = (await screen.findByRole('dialog', { name: 'Set up an agent' })) as HTMLElement
+    fireEvent.click(within(dialog).getByRole('radio', { name: /^Binders/ }))
+    expect(within(dialog).getByRole('radio', { name: /On the hub/ }).getAttribute('aria-checked')).toBe('true')
+    pick(dialog, /On this machine/)
+    type(dialog, /^Address on the machine/, ' http://127.0.0.1:8000 ')
+    type(dialog, /^Model or deployment/, 'local-model')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Set up' }))
+    await waitFor(() => expect(made).toHaveLength(1))
+    expect((made[0] as { runner: object }).runner).toMatchObject({ tool: 'binders', modelUrl: 'http://127.0.0.1:8000', model: 'local-model' })
+  })
+
+  it('reads its model on its machine in the card, with no Change link and neither amber line', async () => {
+    // Whatever model the card holds for it, and however that model is doing, is not the one used.
+    await boardWith([{ ...local, endpoint: { ...unready.endpoint! } }])
+    const row = screen.getByText('Model').nextElementSibling as HTMLElement
+    expect(row.textContent).toBe('local-model at 127.0.0.1:8000, on its machine')
+    expect(within(row).queryByRole('button')).toBeNull()
+    expect(document.querySelector('.agent-warning')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Put it right' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Give it a model' })).toBeNull()
+    expect(screen.queryByText(/No model yet/)).toBeNull()
+    // The runner controls are still there.
+    expect(screen.getByRole('button', { name: 'New token for Binders on studio-mac' })).toBeTruthy()
+  })
+
+  it('shows no “No model yet” line for one with an address and no model on the card, to a member too', async () => {
+    await boardWith([local], member)
+    expect(screen.queryByText(/No model yet/)).toBeNull()
+    expect(screen.queryByText(/Ask one of this Binder’s owners/)).toBeNull()
+    expect(screen.getByText('Model').nextElementSibling!.textContent).toContain('on its machine')
+  })
+
+  it('still reads as before for one without an address', async () => {
+    await boardWith([onMachine])
+    expect(screen.getByText(/No model yet\. It can’t work until it has one\./)).toBeTruthy()
   })
 })

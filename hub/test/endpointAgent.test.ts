@@ -192,11 +192,16 @@ describe('an endpoint, as a person gives it', () => {
     assert.match(whatsWrongWithEndpoint({ kind: 'openai', model: 'gpt' })!, /isn’t a web address/)
   })
 
-  it('is only ever out on the internet, over https: the hub isn’t made to call its own network', () => {
+  it('is over https when it’s out on the internet, and on the hub’s own machine or network only for a hub admin', () => {
     assert.match(whatsWrongWithEndpoint({ kind: 'openai', model: 'm', baseUrl: 'http://acme.openai.azure.com/openai/v1' })!, /https/)
-    assert.match(whatsWrongWithEndpoint({ kind: 'openai', model: 'm', baseUrl: 'https://127.0.0.1:8080/v1' })!, /own network/)
-    assert.match(whatsWrongWithEndpoint({ kind: 'openai', model: 'm', baseUrl: 'https://169.254.169.254/v1' })!, /own network/)
-    assert.match(whatsWrongWithEndpoint({ kind: 'anthropic', model: 'm', baseUrl: 'https://10.0.0.5/anthropic' })!, /own network/)
+    for (const address of ['https://127.0.0.1:8080/v1', 'http://127.0.0.1:8000', 'https://169.254.169.254/v1', 'http://10.0.0.5:1234/v1']) {
+      assert.match(whatsWrongWithEndpoint({ kind: 'openai', model: 'm', baseUrl: address })!, /own machine or network, which only a hub admin/, address)
+      assert.equal(whatsWrongWithEndpoint({ kind: 'openai', model: 'm', baseUrl: address }, { ownNetwork: true }), undefined, address)
+    }
+    assert.match(whatsWrongWithEndpoint({ kind: 'anthropic', model: 'm', baseUrl: 'https://10.0.0.5/anthropic' })!, /own machine or network/)
+    // A hub admin's word covers the hub's own network, never plain http out on the internet.
+    assert.match(whatsWrongWithEndpoint({ kind: 'openai', model: 'm', baseUrl: 'http://models.example.com/v1' }, { ownNetwork: true })!, /https/)
+    assert.match(whatsWrongWithEndpoint({ kind: 'openai', model: 'm', baseUrl: 'http://user:pass@127.0.0.1:8000' }, { ownNetwork: true })!, /name or password/)
   })
 })
 

@@ -291,3 +291,12 @@ describe('an agent that is a model, elsewhere', () => {
     expect(text).not.toMatch(/Online|Offline/)
   })
 })
+
+describe('An address on a machine’s own network, in a form for a model the hub reaches', () => {
+  it('is told apart from one out on the internet', async () => {
+    const { looksLocal } = await import('../src/components/modelAgent')
+    for (const address of ['http://127.0.0.1:8000', 'http://localhost:1234/v1', 'https://10.0.0.5/v1', 'http://192.168.1.20:11434', 'http://172.20.0.3:8000/v1', 'http://spark.local:8000']) expect(looksLocal(address), address).toBe(true)
+    for (const address of ['https://your-resource.openai.azure.com/openai/v1', 'https://api.openai.com/v1', 'https://172.64.0.1/v1', '']) expect(looksLocal(address), address).toBe(false)
+  })
+})
+

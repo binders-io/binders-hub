@@ -21,7 +21,7 @@ import { Webhooks } from '../../hub/src/webhooks.ts'
 import { BrainSettingsStore } from '../../hub/src/brain/settings.ts'
 import { EndpointAgents } from '../../hub/src/agent/endpoint.ts'
 import { Runner } from '../src/runner.ts'
-import { command, eventLine, fitted, hubModel, inside, repoTools, work, workRules } from '../src/harness.ts'
+import { command, eventLine, fitted, hubModel, inside, machineModel, repoTools, work, workRules } from '../src/harness.ts'
 import { StreamReader } from '../src/stream.ts'
 import type { LoopTurn, Step, StepModel, Tool } from '../../shared/agent.ts'
 
@@ -203,7 +203,7 @@ describe('what it prints', () => {
     ]) reader.line(eventLine(event, hub)!)
     const reading = reader.take()
     assert.deepEqual(reading.said, ['Let me look at the header.'])
-    assert.deepEqual(reading.steps, [{ tool: 'read_file', text: 'src/header.ts', result: '1\texport const title = "Hello"' }, { tool: 'run', text: 'npm test', result: 'Failed: It ended with 1.' }], 'its calls to the hub’s own tools aren’t steps: the card shows those already')
+    assert.deepEqual(reading.steps, [{ tool: 'Read', text: 'src/header.ts', result: '1\texport const title = "Hello"' }, { tool: 'Bash', text: 'npm test', result: 'Failed: It ended with 1.' }], 'its calls to the hub’s own tools aren’t steps: the card shows those already')
     assert.equal(eventLine({ type: 'said', text: '   ' }, hub), undefined)
   })
 })
@@ -232,7 +232,7 @@ describe('a run', () => {
 
       const reader = new StreamReader()
       for (const line of printed) reader.line(line)
-      assert.deepEqual(reader.take(true).steps.map((s) => s.tool), ['read_file', 'edit_file', 'run'])
+      assert.deepEqual(reader.take(true).steps.map((s) => s.tool), ['Read', 'Edit', 'Bash'])
       const reading = reader.summary
       assert.equal(reading.sessionId, undefined, 'no session is named: each run starts from the card')
       assert.equal(reading.reply, 'The header is green now, and committed.')
@@ -311,6 +311,63 @@ describe('the agent’s model, by way of the hub', () => {
   })
 })
 
+describe('the agent’s model, on its own machine', () => {
+  const server = (answers: { status: number; body: unknown }[]) => {
+    const seen: { url: string; auth?: string; apiKey?: string; body: { model: string; messages: { role: string; content?: string }[]; tools?: unknown[] } }[] = []
+    const send = (async (url: string | URL | Request, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>
+      seen.push({ url: String(url), auth: headers.authorization, apiKey: headers['api-key'], body: JSON.parse(String(init?.body)) })
+      const next = answers[Math.min(seen.length - 1, answers.length - 1)]
+      return new Response(typeof next.body === 'string' ? next.body : JSON.stringify(next.body), { status: next.status, headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch
+    return { seen, send }
+  }
+  const calls = { choices: [{ message: { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read_file', arguments: '{"path":"src/header.ts"}' } }] }, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 40, completion_tokens: 8 } }
+  const input = { system: 'Work.', turns: [{ role: 'user' as const, text: 'Go' }], tools: [{ name: 'read_file', description: 'Reads.', input: { type: 'object', properties: {} } }] }
+
+  it('is asked from here at the address given, over http too, with no key when the machine has none', async () => {
+    const { seen, send } = server([{ status: 200, body: calls }])
+    const model = machineModel('http://127.0.0.1:8000', 'DeepSeek-Deploy', undefined, send)
+    assert.deepEqual(await model.step(input), { text: '', calls: [{ id: 'c1', name: 'read_file', input: { path: 'src/header.ts' } }], stop: 'tools', usage: { in: 40, out: 8 } })
+    assert.equal(seen[0].url, 'http://127.0.0.1:8000/chat/completions')
+    assert.equal(seen[0].auth, undefined)
+    assert.equal(seen[0].body.model, 'DeepSeek-Deploy')
+    assert.deepEqual(seen[0].body.messages.map((m) => [m.role, m.content]), [['system', 'Work.'], ['user', 'Go']])
+    assert.equal(model.label, 'DeepSeek-Deploy at 127.0.0.1:8000, from this machine')
+  })
+
+  it('sends the machine’s own key both ways a server may want it', async () => {
+    const { seen, send } = server([{ status: 200, body: calls }])
+    await machineModel('http://localhost:1234/v1', 'local-model', 'machine-key', send).step(input)
+    assert.equal(seen[0].url, 'http://localhost:1234/v1/chat/completions')
+    assert.deepEqual([seen[0].auth, seen[0].apiKey], ['Bearer machine-key', 'machine-key'])
+  })
+
+  it('tries the address with /v1 when the server has nothing at it as given, and stays there', async () => {
+    const { seen, send } = server([{ status: 404, body: { error: 'Resource not found' } }, { status: 200, body: calls }, { status: 200, body: calls }])
+    const model = machineModel('http://127.0.0.1:8000/', 'DeepSeek-Deploy', undefined, send)
+    await model.step(input)
+    await model.step(input)
+    assert.deepEqual(seen.map((s) => s.url), ['http://127.0.0.1:8000/chat/completions', 'http://127.0.0.1:8000/v1/chat/completions', 'http://127.0.0.1:8000/v1/chat/completions'])
+  })
+
+  it('asks a busy server again, and says in words what a server that won’t do it said', async () => {
+    const busy = server([{ status: 429, body: {} }, { status: 503, body: {} }, { status: 200, body: calls }])
+    assert.equal((await machineModel('http://127.0.0.1:8000/v1', 'm', undefined, busy.send, [1, 1, 1]).step(input)).stop, 'tools')
+    assert.equal(busy.seen.length, 3)
+
+    const noKey = server([{ status: 401, body: { error: { message: 'Access denied due to invalid subscription key.' } } }])
+    await assert.rejects(() => machineModel('http://127.0.0.1:8000/v1', 'm', undefined, noKey.send).step(input), /refused the request \(401\): it wants a key, which goes in BINDERS_MODEL_KEY on this machine\. It said: .*invalid subscription key/)
+    assert.equal(noKey.seen.length, 1, 'not asked again for what won’t change')
+
+    const noModel = server([{ status: 404, body: { error: { message: 'The API deployment for this resource does not exist.' } } }])
+    await assert.rejects(() => machineModel('http://127.0.0.1:8000/v1', 'gone', undefined, noModel.send).step(input), /has no model or deployment called gone, or no chat API at that address\. It said: .*does not exist/)
+
+    const down = (async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:8000') }) as unknown as typeof fetch
+    await assert.rejects(() => machineModel('http://127.0.0.1:8000', 'm', undefined, down, []).step(input), /couldn’t be reached from this machine: connect ECONNREFUSED 127\.0\.0\.1:8000\. Is its server running here\?/)
+  })
+})
+
 // The whole of it: a real hub, a real runner, and a stand-in for the model's server. The runner takes a card and starts
 // its own file in its work mode; that asks the hub for each step; the hub asks the model's server with the key it keeps.
 
@@ -334,7 +391,8 @@ async function modelServer(play: (body: { messages: { role: string; content?: st
 }
 
 describe('Binders’ own agent on a machine, with a real hub and a real runner', { skip: process.platform === 'win32' ? 'the stand-in repo is made with a shell' : false }, () => {
-  it('takes a card, changes the repo with a model the hub reaches for it, and finishes the card', async () => {
+  /** A hub, a repo, a stand-in model server and a card; the runner takes the card and the agent works it. */
+  async function workACard(where: 'hub' | 'machine') {
     const { dir, remove } = await repo()
     const hub = new Hub(new MemoryLog())
     await hub.start([{ type: 'binder.put', binder: { id: 'b1', name: 'Site' } }])
@@ -344,9 +402,10 @@ describe('Binders’ own agent on a machine, with a real hub and a real runner',
     const auth = new Auth(kv, sealer, { github: () => undefined, allowed: () => ({ users: [], orgs: [] }), devLogin: () => true })
     const actions = new Actions(hub, github)
     const settings = await new BrainSettingsStore(new MemoryKV(), sealer, {}).load()
-    // Not started: nothing here is a model with no machine. It's the hub's side of an agent's model all the same.
-    const endpoints = new EndpointAgents({ hub, actions, kv: new MemoryKV(), sealer, brain: settings, reach: { thisMachineToo: true } })
-    const app = await buildServer(Spaces.of(kv, [{ info: { id: 'test', name: 'Test', members: [] }, space: { id: 'test', hub, actions, github, webhooks: new Webhooks(hub, actions), endpoints } }]), { auth, brain: settings }, { publicUrl: 'http://hub.test' })
+    // Not started: nothing here is a model with no machine. It's the hub's side of an agent's model all the same. With
+    // the model on the machine, the hub has no part in it, and isn't given the means.
+    const endpoints = where === 'hub' ? new EndpointAgents({ hub, actions, kv: new MemoryKV(), sealer, brain: settings, reach: { thisMachineToo: true } }) : undefined
+    const app = await buildServer(Spaces.of(kv, [{ info: { id: 'test', name: 'Test', members: [] }, space: { id: 'test', hub, actions, github, webhooks: new Webhooks(hub, actions), ...(endpoints ? { endpoints } : {}) } }]), { auth, brain: settings }, { publicUrl: 'http://hub.test' })
     await app.listen({ port: 0, host: '127.0.0.1' })
     const url = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
 
@@ -361,9 +420,17 @@ describe('Binders’ own agent on a machine, with a real hub and a real runner',
       { text: 'The header is green now.' },
     ][n] ?? { text: 'Done.' }
     const server = await modelServer((body) => (body.tools?.length === 1 && body.tools[0].function.name === 'ready' ? { calls: [{ name: 'ready', input: {} }] } : script(body.messages.filter((m) => m.role === 'assistant').length)))
+    const close = async () => {
+      await server.close()
+      await app.close()
+      await remove()
+    }
     try {
-      const me = await actions.putAgent('you', { name: 'Own agent', runner: { tool: 'binders', access: 'full', timeoutMinutes: 2, worktrees: false }, endpoint: { kind: 'openai', baseUrl: server.url, model: 'gpt-deploy', takes: { cards: true, chats: true, debriefs: true, challenges: true } } })
-      await endpoints.setKey(me.id, 'the-hubs-key')
+      const runner = { tool: 'binders' as const, access: 'full' as const, timeoutMinutes: 2, worktrees: false }
+      const me = where === 'hub'
+        ? await actions.putAgent('you', { name: 'Own agent', runner, endpoint: { kind: 'openai', baseUrl: server.url, model: 'gpt-deploy', takes: { cards: true, chats: true, debriefs: true, challenges: true } } })
+        : await actions.putAgent('you', { name: 'Own agent', runner: { ...runner, modelUrl: server.url, model: 'gpt-deploy' } })
+      await endpoints?.setKey(me.id, 'the-hubs-key')
       const token = await auth.issueAgentToken(me.id, 'test')
       const made = await actions.createCard({ kind: 'user', login: 'you' }, { binderId: 'b1', title: 'Make the header green', meantFor: me.id })
       cardId = made.id
@@ -380,19 +447,38 @@ describe('Binders’ own agent on a machine, with a real hub and a real runner',
       assert.match(await readFile(join(dir, 'src', 'header.ts'), 'utf8'), /color = "blue"/, 'the folder the runner was started in is left as it was')
       assert.ok(after.activity.some((a) => a.kind === 'completed' && /The header is green\./.test(a.text ?? '')))
       // What it did in the repo shows on the card as it would for any agent; its calls to the hub's own tools don't.
-      assert.deepEqual(after.activity.filter((a) => a.kind === 'step').map((a) => [a.tool, a.text]), [['read_file', 'src/header.ts'], ['edit_file', 'src/header.ts'], ['run', 'grep -c green src/header.ts && git commit -qam "The header is green"']])
+      assert.deepEqual(after.activity.filter((a) => a.kind === 'step').map((a) => [a.tool, a.text]), [['Read', 'src/header.ts'], ['Edit', 'src/header.ts'], ['Bash', 'grep -c green src/header.ts && git commit -qam "The header is green"']])
       assert.ok(after.activity.some((a) => a.kind === 'said' && a.text.includes('The colour is set in src/header.ts.')))
-      // The model's server was only ever asked by the hub, with the key the hub keeps: never with the agent's token.
-      assert.ok(server.seen.length >= 6)
-      assert.ok(server.seen.every((s) => s.auth === 'Bearer the-hubs-key'))
       const last = server.seen.at(-1)!.body
       assert.ok(last.messages.some((m) => m.role === 'tool' && /^1$/m.test(m.content ?? '')), 'it was given what its command printed')
       assert.ok(last.tools!.some((t) => t.function.name === 'run') && last.tools!.some((t) => t.function.name === 'complete_task'))
       assert.ok(!JSON.stringify(server.seen).includes(token), 'the agent’s token never reaches the model')
+      return { server, close }
+    } catch (err) {
+      await close()
+      throw err
+    }
+  }
+
+  it('takes a card, changes the repo with a model the hub reaches for it, and finishes the card', async () => {
+    const { server, close } = await workACard('hub')
+    try {
+      // The model's server was only ever asked by the hub, with the key the hub keeps: never with the agent's token.
+      assert.ok(server.seen.length >= 6)
+      assert.ok(server.seen.every((s) => s.auth === 'Bearer the-hubs-key'))
     } finally {
-      await server.close()
-      await app.close()
-      await remove()
+      await close()
+    }
+  })
+
+  it('does the same with a model on its own machine, which the runner asks itself: no key, and nothing by way of the hub', async () => {
+    const { server, close } = await workACard('machine')
+    try {
+      // Six steps and no more: the hub never asked whether it calls tools, as the hub has no part in it.
+      assert.equal(server.seen.length, 6)
+      assert.ok(server.seen.every((s) => s.auth === undefined), 'no key is sent when the machine has none')
+    } finally {
+      await close()
     }
   })
 })

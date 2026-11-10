@@ -6,7 +6,7 @@ import type { AgentEndpoint } from '../../../shared/work.ts'
 import { Dialog, Field } from './Dialog'
 import { SettingsLink } from './SettingsLink'
 import { KeyField, ModelField, TakesField } from './ModelFields'
-import { movedTo, newAddressNeedsKey } from './modelAgent'
+import { localMeansTheHub, looksLocal, movedTo, newAddressNeedsKey } from './modelAgent'
 
 /**
  * Changing an agent that is a model at an address: its model or deployment, its address where its kind has one, a new
@@ -66,14 +66,14 @@ export function EditModel({ agent, onClose }: { agent: Agent & { endpoint: Agent
               : 'Claude, by Anthropic’s API.'}
         </p>
         {endpoint.kind === 'openai' && (
-          <Field label="Address" hint="The address ending in /v1. For Azure and Foundry, your resource’s address followed by /openai/v1.">
+          <Field label="Address" hint={looksLocal(baseUrl) ? localMeansTheHub : 'The address ending in /v1. For Azure and Foundry, your resource’s address followed by /openai/v1.'}>
             <input className="mono" inputMode="url" value={baseUrl} onChange={(e) => clear(setBaseUrl)(e.target.value)} placeholder="https://your-resource.openai.azure.com/openai/v1" autoComplete="off" autoCapitalize="none" spellCheck={false} />
           </Field>
         )}
         {endpoint.kind !== 'brain' && <ModelField value={model} onChange={clear(setModel)} placeholder={endpoint.kind === 'anthropic' ? 'claude-opus-5-5' : undefined} />}
         {endpoint.kind !== 'brain' && <KeyField value={key} onChange={clear(setKey)} hint={movedTo(baseUrl, endpoint.baseUrl) ? newAddressNeedsKey : 'Empty keeps the key that’s there. Type one to replace it.'} />}
         {endpoint.kind === 'anthropic' && (
-          <Field label="Address (optional)" hint="Only for Microsoft Foundry. Leave empty for Anthropic.">
+          <Field label="Address (optional)" hint={looksLocal(baseUrl) ? localMeansTheHub : 'Only for Microsoft Foundry. Leave empty for Anthropic.'}>
             <input className="mono" inputMode="url" value={baseUrl} onChange={(e) => clear(setBaseUrl)(e.target.value)} placeholder="https://your-resource.services.ai.azure.com/anthropic" autoComplete="off" autoCapitalize="none" spellCheck={false} />
           </Field>
         )}

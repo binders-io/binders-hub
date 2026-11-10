@@ -2825,12 +2825,13 @@ export class Runner {
       case 'qwen':
         return plain('qwen', ['-p', prompt, ...(full ? ['-y'] : []), ...(model ? ['-m', model] : [])])
       case 'binders': {
-        // Binders' own agent: this runner's own file, in its work mode (harness.ts). The hub takes each step of the
-        // agent's model, so there's nothing to install here and no model key on this machine. It prints the events
-        // Claude Code does, which is what's read from it.
+        // Binders' own agent: this runner's own file, in its work mode (harness.ts), so there's nothing to install
+        // here. It prints the events Claude Code does, which is what's read from it.
         const self = fileURLToPath(import.meta.url)
         const main = basename(self) === 'runner.ts' ? join(dirname(self), 'main.ts') : self
-        return plain(process.execPath, [...process.execArgv, main, 'work', '--dir', dir, '--access', full ? 'full' : 'edits', prompt])
+        // Its model on this machine, when its owner gave one: asked from here. Otherwise the hub takes each step.
+        const here = settings.modelUrl && model ? ['--model-url', settings.modelUrl, '--model', model] : []
+        return plain(process.execPath, [...process.execArgv, main, 'work', '--dir', dir, '--access', full ? 'full' : 'edits', ...here, prompt])
       }
       default: {
         if (process.platform === 'win32') {

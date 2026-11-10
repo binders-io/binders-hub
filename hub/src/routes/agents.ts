@@ -190,6 +190,11 @@ export async function agentRoutes(app: FastifyInstance, context: Context) {
     if (!endpoints) throw new Refused('This Binder can’t run an agent that is a model.')
     return endpoints
   }
+  /**
+   * What the person asking may have the hub reach: a hub admin, who runs the hub, may point a model at the hub's own
+   * machine or network (a proxy or a model server beside it). A Binder's owners and admins, as such, may not.
+   */
+  const reachOf = (request: FastifyRequest) => ({ ...endpointsOf(request).reach, ownNetwork: isAdmin(login(request)) })
   /** An endpoint as a person sent it: only what one holds, and what it takes (everything, when they don't say). */
   const endpointFrom = (body: Record<string, unknown>, was?: AgentEndpoint): AgentEndpoint => {
     const words = (value: unknown, most: number) => (typeof value === 'string' && value.trim() ? value.trim().slice(0, most) : undefined)
@@ -224,7 +229,7 @@ export async function agentRoutes(app: FastifyInstance, context: Context) {
     const endpoint = endpointFrom(body)
     const endpoints = endpointsOf(request)
     const of = typeof body.agent === 'string' ? sp(request).hub.state.agents.find((a) => a.id === body.agent && !a.revoked) : undefined
-    return endpoints.test(endpoint, keyIn(body) ?? (of && sameServer(endpoint, of.endpoint) ? await endpoints.keyFor(of.id) : undefined))
+    return endpoints.test(endpoint, keyIn(body) ?? (of && sameServer(endpoint, of.endpoint) ? await endpoints.keyFor(of.id) : undefined), reachOf(request))
   }))
 
   app.post('/api/agents/endpoint', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, act(async (request) => {
@@ -233,11 +238,11 @@ export async function agentRoutes(app: FastifyInstance, context: Context) {
     const name = typeof body.name === 'string' ? body.name : ''
     const endpoint = endpointFrom(body)
     const endpoints = endpointsOf(request)
-    const wrong = whatsWrongWithEndpoint(endpoint, endpoints.reach)
+    const wrong = whatsWrongWithEndpoint(endpoint, reachOf(request))
     if (wrong) throw new Refused(wrong)
     const key = keyIn(body)
     // Tried as it's made: one that can't work is still made, saying why, so its address or key can be put right.
-    const tried = await endpoints.test(endpoint, key)
+    const tried = await endpoints.test(endpoint, key, reachOf(request))
     const made = await sp(request).actions.putAgent(login(request), { name, provider: 'other', repos: [], binders: [], skills: [], runsOn: 'This hub', endpoint: { ...endpoint, ready: { ...tried, at: new Date().toISOString() } } })
     if (key) await endpoints.setKey(made.id, key)
     await noted(sp(request).hub, { kind: 'user', login: login(request) }, `Set up the agent “${made.name}”, a model the hub runs.`)
@@ -257,13 +262,13 @@ export async function agentRoutes(app: FastifyInstance, context: Context) {
     if (!kind) throw new Refused('Say what its model is: the hub’s own, a server that speaks OpenAI’s chat API, or Claude by Anthropic’s API.')
     const endpoint = endpointFrom({ ...body, kind }, existing.endpoint && kind !== existing.endpoint.kind ? undefined : existing.endpoint)
     const endpoints = endpointsOf(request)
-    const wrong = whatsWrongWithEndpoint(endpoint, endpoints.reach)
+    const wrong = whatsWrongWithEndpoint(endpoint, reachOf(request))
     if (wrong) throw new Refused(wrong)
     const key = keyIn(body)
     // Another kind of model, or another server: the key it had was for the old one, and goes. One is typed for the new.
     const another = !!existing.endpoint && !sameServer(endpoint, existing.endpoint)
     if (key || another) await endpoints.setKey(existing.id, key)
-    const tried = await endpoints.test(endpoint, key ?? await endpoints.keyFor(existing.id))
+    const tried = await endpoints.test(endpoint, key ?? await endpoints.keyFor(existing.id), reachOf(request))
     const saved = await sp(request).actions.putAgent(login(request), { ...existing, endpoint: { ...endpoint, ready: { ...tried, at: new Date().toISOString() } } }, existing.id)
     if (!existing.endpoint) await noted(sp(request).hub, { kind: 'user', login: login(request) }, `Gave the agent “${saved.name}” a model the hub reaches for it.`)
     return { agent: saved }

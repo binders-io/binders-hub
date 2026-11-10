@@ -1,6 +1,6 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { AnimatePresence } from 'motion/react'
-import { Bot, Check, ChevronDown, ChevronRight, Copy, KeyRound, Laptop, Play, RotateCw, SquareTerminal, Trash2 } from 'lucide-react'
+import { Bot, Check, ChevronDown, ChevronRight, Copy, KeyRound, Laptop, Play, RotateCw, SquareTerminal, Trash2, TriangleAlert } from 'lucide-react'
 import type { Agent, Provider } from '../data/model'
 import { isListening, isOnline, useStore, runnerPlaces, runnersOf } from '../data/store'
 import { agentRepos, asksOf, usualRules, defaultRunner, runnerShown, toolForProvider, type RunnerSettings } from '../../../shared/work.ts'
@@ -19,7 +19,7 @@ import { AddMachine } from '../components/AddMachine'
 import { AddModel } from '../components/AddModel'
 import { EditModel } from '../components/EditModel'
 import { MachineModel } from '../components/MachineModel'
-import { isModelAgent, modelReady, modelWords, takesNames, usesOwnModel } from '../components/modelAgent'
+import { isModelAgent, machineModelWords, modelOnMachine, modelReady, modelWords, takesNames, usesOwnModel } from '../components/modelAgent'
 import { RepoInput } from '../components/RepoInput'
 import { runnerState } from '../components/runnerState'
 import { ScheduleList } from '../components/Schedules'
@@ -35,7 +35,7 @@ const setBeyondDefaults = (agent: Agent) => {
   const run = runnerShown(agent)
   return agent.repos.length > 0 || agent.skills.length > 0 || agent.binders.length > 0 || !!run.workspace || !!run.model
     || run.access !== toolInfo(run.tool).access[0] || run.timeoutMinutes !== defaultRunner.timeoutMinutes || (run.parallel ?? 3) !== 3
-    || !!run.held || !!run.live || !!run.cli || run.commitAs === 'app' || (run.allow ?? []).length > 0
+    || !!run.modelUrl || !!run.held || !!run.live || !!run.cli || run.commitAs === 'app' || (run.allow ?? []).length > 0
 }
 
 const list = (text: string) => text.split(/[,\n]/).map((t) => t.trim()).filter(Boolean)
@@ -149,6 +149,8 @@ function AgentCard({ agent, onEdit, onModel, onToken, onRevoke, onStart }: { age
   const hosted = isModelAgent(agent)
   // Binders' own agent works on a machine, and takes its steps from a model the hub holds: it has none until it's given one.
   const ownModel = usesOwnModel(agent)
+  // A model on the agent's own machine is the one used, so the card's own model, and what's wrong with it, don't matter.
+  const onItsMachine = modelOnMachine(agent)
   const fixModel = hosted ? onEdit : onModel
   const holding = state.cards.filter((c) => c.agentId === agent.id && c.stage === 'working')
   // A card it asked about waits in Blocked, still its: it counts here, or an agent whose question waits reads as idle.
@@ -202,13 +204,13 @@ function AgentCard({ agent, onEdit, onModel, onToken, onRevoke, onStart }: { age
       </header>
       {agent.runnerSeen?.enterpriseMcp && (runner?.tool ?? 'claude') === 'claude' && <p className="agent-note" role="status">Enterprise MCP config on this machine: working without Binders’ MCP tools, its runner reporting for it.</p>}
       {agent.runnerSeen?.bypassOff && (runner?.tool ?? 'claude') === 'claude' && runner?.access === 'full' && <p className="agent-note" role="status">This machine’s Claude Code policy turns full access off: it edits files without asking, and the commands it runs follow the policy’s rules.</p>}
-      {agent.endpoint?.ready && !agent.endpoint.ready.ok && (
+      {agent.endpoint?.ready && !agent.endpoint.ready.ok && !onItsMachine && (
         <p className="agent-warning model-agent-warning" role="status">
           <span>{agent.endpoint.ready.why || 'It didn’t answer as it needs to.'}</span>
           {manager && <button type="button" className="button model-agent-fix" onClick={fixModel}>Put it right</button>}
         </p>
       )}
-      {ownModel && !agent.endpoint && (
+      {ownModel && !agent.endpoint && !onItsMachine && (
         <p className="agent-warning model-agent-warning" role="status">
           <span>{manager ? 'No model yet. It can’t work until it has one.' : 'No model yet. It can’t work until it has one. Ask one of this Binder’s owners or admins to give it a model.'}</span>
           {manager && <button type="button" className="button model-agent-fix" onClick={onModel}>Give it a model</button>}
@@ -244,7 +246,9 @@ function AgentCard({ agent, onEdit, onModel, onToken, onRevoke, onStart }: { age
         {agent.runsOn && <><dt>Runs on</dt><dd className="runs-on mono" title={agent.runsOn}>{agent.runsOn}</dd></>}
         {ownModel && <>
           <dt>Model</dt>
-          <dd className="model-agent-row">{agent.endpoint
+          <dd className="model-agent-row">{onItsMachine && runner
+            ? <span className="mono" title={machineModelWords(runner)}>{machineModelWords(runner)}</span>
+            : agent.endpoint
             ? <><span className="mono" title={modelWords(agent.endpoint)}>{modelWords(agent.endpoint)}</span>{manager && <button type="button" className="text-button" onClick={onModel}>Change</button>}</>
             : <span className="faint">None yet</span>}</dd>
         </>}
@@ -319,10 +323,19 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
   for (let n = 2; taken.has(suggested.toLowerCase()); n++) suggested = `${tool.name} ${n}`
   const name = typed ?? suggested
   const [more, setMore] = useState(() => !!agent && setBeyondDefaults(agent))
+  // Binders' own agent's model: on the hub, which holds its key, or on the agent's own machine, where the runner calls it.
+  const [onMachine, setOnMachine] = useState(() => !!agent?.runner?.modelUrl)
+  const chooseWhere = (machine: boolean) => {
+    setOnMachine(machine)
+    // On the hub, there is no address and no name here: the hub's own model is set from the agent's card.
+    if (!machine) setRun({ modelUrl: undefined, model: undefined })
+  }
+  const [problem, setProblem] = useState<string>()
   // Picking a tool keeps an access it allows, and drops a model meant for another tool.
   const pickTool = (id: AgentTool) => {
     const next = toolInfo(id)
-    setRunner((r) => ({ ...r, tool: id, access: next.access.includes(r.access) ? r.access : next.access[0], model: id === r.tool ? r.model : undefined }))
+    setRunner((r) => ({ ...r, tool: id, access: next.access.includes(r.access) ? r.access : next.access[0], model: id === r.tool ? r.model : undefined, modelUrl: id === r.tool ? r.modelUrl : undefined }))
+    if (id !== runner.tool) setOnMachine(false)
   }
   // The models its runner found on its machine, once it has connected with this tool.
   // Found by this agent's runner, or by any runner on a machine with the tool installed, or its fixed names.
@@ -335,17 +348,19 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
+    setProblem(undefined)
     const fields = { name, provider: providerFor(runner.tool), repos, skills: list(skills), binders, runsOn: runsOn || undefined, runner }
-    if (agent) {
-      const saved = await attempt(async () => {
+    // A refusal is the hub's words, shown here where the person is looking, and what was typed stays.
+    try {
+      if (agent) {
         await store.updateAgent(agent.id, fields)
-        return true
-      })
-      if (saved) onClose()
-      return
+        onClose()
+        return
+      }
+      onMade(await store.createAgent(fields))
+    } catch (error) {
+      setProblem(error instanceof Error && error.message ? error.message : 'The hub couldn’t save that. Try again.')
     }
-    const made = await attempt(() => store.createAgent(fields))
-    if (made) onMade(made)
   }
 
   return (
@@ -362,9 +377,33 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
               </button>
             ))}
           </div>
-          {runner.tool === 'binders' && <span className="field-hint">Binders’ own agent works in the repo on this machine, and the hub takes each step of its model, so the machine needs no key. Give it a model from its card once it’s set up.</span>}
+          {runner.tool === 'binders' && <span className="field-hint">Binders’ own agent works in the repo on this machine. Nothing else is installed there. Its model is on the hub, or on the machine itself: choose below.</span>}
           {!tool.mcp && runner.tool !== 'custom' && <span className="field-hint">{tool.name} doesn’t get Binders’ tools for a run, so the runner hands it each card and note, and reports back what it prints.</span>}
         </fieldset>
+        {runner.tool === 'binders' && (
+          <div className="field" role="radiogroup" aria-label="Its model">
+            <span className="field-label" aria-hidden="true">Its model</span>
+            <div className="model-agent-kinds">
+              {([[false, 'On the hub', 'The hub reaches the model and keeps its key. Give it one from its card.'], [true, 'On this machine', 'A model server or a proxy on the machine itself, or on a network only it reaches. The runner calls it directly.']] as const).map(([machine, name, help]) => (
+                <button key={name} type="button" role="radio" aria-checked={onMachine === machine} className={`model-agent-kind${onMachine === machine ? ' on' : ''}`} onClick={() => chooseWhere(machine)}>
+                  <b>{name}</b>
+                  <em>{help}</em>
+                </button>
+              ))}
+            </div>
+            {onMachine && (
+              <div className="model-agent-own">
+                <Field label="Address on the machine" hint="As the machine sees it. http is fine here.">
+                  <input id="runner-model-url" className="mono" required inputMode="url" value={runner.modelUrl ?? ''} onChange={(e) => setRun({ modelUrl: e.target.value.trim() || undefined })} placeholder="http://127.0.0.1:8000" autoComplete="off" autoCapitalize="none" spellCheck={false} />
+                </Field>
+                <Field label="Model or deployment">
+                  <input id="runner-own-model" className="mono" required value={runner.model ?? ''} onChange={(e) => setRun({ model: e.target.value.trim() || undefined })} autoComplete="off" autoCapitalize="none" spellCheck={false} />
+                </Field>
+                <p className="field-hint">If the server wants a key, put it in BINDERS_MODEL_KEY in the runner’s environment on that machine. It never leaves the machine.</p>
+              </div>
+            )}
+          </div>
+        )}
         <Field label="Name"><input id="agent-name" autoFocus required value={name} onChange={(e) => setTyped(e.target.value)} placeholder={tool.name} /></Field>
         {runner.tool === 'custom' && (
           <Field label="Command" hint="{prompt}, {dir} and {mcp} (the MCP settings file) are filled in. BINDERS_CARD and BINDERS_TOKEN are set.">
@@ -465,6 +504,7 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
             </fieldset>
           </div>
         </details>
+        {problem && <p className="model-agent-result bad" role="alert"><TriangleAlert size={14} aria-hidden="true" /> {problem}</p>}
         <footer className="form-actions">
           <button type="button" className="button" onClick={onClose}>Cancel</button>
           <button type="submit" className="button primary" disabled={!name.trim()}>{agent ? 'Save' : 'Set up'}</button>

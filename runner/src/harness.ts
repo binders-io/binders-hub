@@ -4,12 +4,14 @@ import path from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { runLoop, type LoopEvent, type LoopLimits, type LoopTurn, type Step, type StepModel, type Tool } from '../../shared/agent.ts'
+import { chatBody, stepFrom, type ChatAnswer } from '../../shared/openaiStep.ts'
 
-// Binders' own agent for a card that needs code: `binders-runner work`, started by the runner like any other tool. It
-// has no model of its own on the machine. Each step is taken by the hub, with the address and key the agent was given
-// there, so a machine needs no model credentials; what runs here is the loop (shared/agent.ts) and the tools for a
-// repo: read, list, search, edit, write and, with full access, run a command. It reaches the hub's own agent tools the
-// way every agent's tool does, and prints what it does as the events the runner already reads (Claude Code's stream).
+// Binders' own agent for a card that needs code: `binders-runner work`, started by the runner like any other tool. What
+// runs here is the loop (shared/agent.ts) and the tools for a repo: read, list, search, edit, write and, with full
+// access, run a command. Its model is in one of two places. On the hub: each step is taken by the hub, with the address
+// and key the agent was given there, so the machine needs no model credentials. Or on this machine: a server or a proxy
+// here that speaks OpenAI's chat API, which this program asks itself. It reaches the hub's own agent tools the way
+// every agent's tool does, and prints what it does as the events the runner already reads (Claude Code's stream).
 
 /** How far one run may go. */
 export const workLimits: LoopLimits = { steps: 100, ms: 45 * 60_000, resultChars: 20_000, callsPerStep: 8 }
@@ -204,8 +206,8 @@ export function repoTools(root: string, access: 'full' | 'edits', env: NodeJS.Pr
     },
   ]
   if (access === 'full') {
-    // What the model runs doesn't get this agent's token: it's for the hub's tools, which this program calls itself.
-    const { BINDERS_TOKEN: _token, ...forCommands } = env
+    // What the model runs doesn't get this agent's token, or its model's key: they're for this program's own calls.
+    const { BINDERS_TOKEN: _token, BINDERS_MODEL_KEY: _key, ...forCommands } = env
     tools.push({
       spec: { name: 'run', description: 'Runs a command in the repo’s folder, with a shell, and gives what it printed and how it ended. It stops after two minutes unless you say how long it may take (at most ten).', input: { type: 'object', properties: { command: text, timeout_seconds: { type: 'number' } }, required: ['command'], additionalProperties: false } },
       run: async (input) => {
@@ -265,11 +267,69 @@ export function hubModel(hubUrl: string, token: string, send: typeof fetch = fet
   }
 }
 
+/** The address a step is posted to: the server's, with the path its chat API has. */
+const chatAt = (base: string, v1 = false) => `${base.replace(/\/+$/, '')}${v1 ? '/v1' : ''}/chat/completions`
+
+/**
+ * The agent's model, asked from this machine: a server that speaks OpenAI's chat API at an address the machine reaches,
+ * such as a proxy or a model server on it. Nothing goes by way of the hub. An address given without its /v1 is tried
+ * with it when the server has nothing at the address as given; a busy server is asked again a few times.
+ */
+export function machineModel(baseUrl: string, model: string, key?: string, send: typeof fetch = fetch, waits = [2000, 5000, 10_000]): StepModel {
+  const where = (() => {
+    try {
+      return new URL(baseUrl).host
+    } catch {
+      return baseUrl
+    }
+  })()
+  let v1 = false
+  return {
+    label: `${model} at ${where}, from this machine`,
+    step: async (input) => {
+      const body = JSON.stringify(chatBody(model, { ...input, turns: fitted(input.turns) }))
+      for (let attempt = 0; ; attempt++) {
+        let response: Response
+        try {
+          response = await send(chatAt(baseUrl, v1), { method: 'POST', headers: { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${key}`, 'api-key': key } : {}) }, body, signal: AbortSignal.timeout(25 * 60_000) })
+        } catch (err) {
+          if (attempt >= waits.length) throw new Error(`The model at ${where} couldn’t be reached from this machine: ${err instanceof Error ? err.message : String(err)}. Is its server running here?`)
+          await new Promise((go) => setTimeout(go, waits[attempt]))
+          continue
+        }
+        if (response.ok) {
+          try {
+            return stepFrom(await response.json() as ChatAnswer)
+          } catch {
+            throw new Error(`The model at ${where} answered with something other than JSON.`)
+          }
+        }
+        // Nothing at the address as given: most servers have their chat API under /v1.
+        if (response.status === 404 && !v1 && !/\/v\d+\/?$/.test(new URL(baseUrl).pathname)) {
+          v1 = true
+          continue
+        }
+        if ((response.status === 429 || response.status >= 500) && attempt < waits.length) {
+          await new Promise((go) => setTimeout(go, waits[attempt]))
+          continue
+        }
+        const said = (await response.text().catch(() => '')).replace(/\s+/g, ' ').trim().slice(0, 300)
+        if (response.status === 401 || response.status === 403) throw new Error(`The model at ${where} refused the request (${response.status})${key ? ': the key in BINDERS_MODEL_KEY on this machine isn’t one it takes' : ': it wants a key, which goes in BINDERS_MODEL_KEY on this machine'}.${said ? ` It said: ${said}` : ''}`)
+        if (response.status === 404) throw new Error(`The model at ${where} has no model or deployment called ${model}, or no chat API at that address.${said ? ` It said: ${said}` : ''}`)
+        throw new Error(`The model at ${where} answered ${response.status}.${said ? ` It said: ${said}` : ''}`)
+      }
+    },
+  }
+}
+
 // What it prints ------------------------------------------------------------------------------------------------------
+
+/** Its tools for a repo, by the names a card already knows from Claude Code, so it counts and draws them the same: an edit is an edit, a command a command. */
+const shownAs: Record<string, string> = { read_file: 'Read', list_files: 'Glob', search: 'Grep', edit_file: 'Edit', write_file: 'Write', run: 'Bash' }
 
 /** One line of the stream the runner reads: Claude Code's events, which it already shows on the card as they come. */
 export function eventLine(event: LoopEvent, hubNames: Set<string>): string | undefined {
-  const named = (name: string) => (hubNames.has(name) ? `mcp__${hubServer}__${name}` : name)
+  const named = (name: string) => (hubNames.has(name) ? `mcp__${hubServer}__${name}` : shownAs[name] ?? name)
   if (event.type === 'said') return event.text.trim() ? JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: event.text }] } }) : undefined
   if (event.type === 'call') return JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: event.call.id, name: named(event.call.name), input: event.call.input ?? {} }] } })
   return JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: event.result.id, content: event.result.text.slice(0, 2000), ...(event.result.failed ? { is_error: true } : {}) }] } })
@@ -285,8 +345,9 @@ export interface WorkOptions {
   prompt: string
   print?: (line: string) => void
   limits?: Partial<LoopLimits>
-  /** For tests: the model, in place of the hub's; and the hub's tools, in place of a connection to it. */
+  /** The model, in place of the hub's: one on this machine, or a test's. */
   model?: StepModel
+  /** For tests: the hub's tools, in place of a connection to it. */
   hub?: { instructions: string; tools: Tool[] }
   env?: NodeJS.ProcessEnv
 }
@@ -342,14 +403,21 @@ export async function work(options: WorkOptions): Promise<number> {
   }
 }
 
-/** `binders-runner work [--dir <folder>] [--access full|edits] <prompt>`: the hub's address and the agent's token come from the runner, as they do for every tool. */
+/**
+ * `binders-runner work [--dir <folder>] [--access full|edits] [--model-url <address> --model <name>] <prompt>`: the hub's
+ * address and the agent's token come from the runner, as they do for every tool.
+ */
 export async function workCommand(args: string[], env: NodeJS.ProcessEnv = process.env): Promise<number> {
   let dir = process.cwd()
   let access: 'full' | 'edits' = 'edits'
+  let modelUrl: string | undefined
+  let modelName: string | undefined
   const rest: string[] = []
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--dir' && args[i + 1]) dir = args[++i]
     else if (args[i] === '--access' && args[i + 1]) access = args[++i] === 'full' ? 'full' : 'edits'
+    else if (args[i] === '--model-url' && args[i + 1]) modelUrl = args[++i]
+    else if (args[i] === '--model' && args[i + 1]) modelName = args[++i]
     else rest.push(args[i])
   }
   const prompt = rest.join(' ').trim()
@@ -363,5 +431,7 @@ export async function workCommand(args: string[], env: NodeJS.ProcessEnv = proce
     process.stderr.write('Say what to work on: binders-runner work [--dir <folder>] [--access full|edits] <prompt>\n')
     return 2
   }
-  return work({ dir, hubUrl, token, access, prompt, env })
+  // Its model on this machine, when the runner says where: asked from here, with this machine's own key if it has one.
+  const model = modelUrl && modelName ? machineModel(modelUrl, modelName, env.BINDERS_MODEL_KEY?.trim() || undefined) : undefined
+  return work({ dir, hubUrl, token, access, prompt, env, ...(model ? { model } : {}) })
 }

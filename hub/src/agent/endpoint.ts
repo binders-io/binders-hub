@@ -12,7 +12,7 @@ import type { KV } from '../kv.ts'
 import { log } from '../logger.ts'
 import { instructions, mcpServer } from '../mcp.ts'
 import type { Sealer } from '../secrets.ts'
-import { refusal, type Reach } from '../tell.ts'
+import { onThisNetwork, refusal, type Reach } from '../tell.ts'
 
 // An agent that is a model at an address, with no machine: the hub runs it. It is an agent like any other, connected to
 // the hub's own agent tools through the same door a runner's agent uses, so what it may do, and every check on it, are
@@ -49,15 +49,37 @@ const clip = (text: string, most: number) => {
   return one.length > most ? `${one.slice(0, most - 1)}…` : one
 }
 
-/** What's wrong with an endpoint as a person gave it, in words; nothing when it's fine. */
-export function whatsWrongWithEndpoint(endpoint: Pick<AgentEndpoint, 'kind' | 'baseUrl' | 'model'>, reach: Reach = {}): string | undefined {
+/** Who is adding a model: a hub admin may have the hub reach its own machine and network, as they run it. */
+export interface ModelReach extends Reach {
+  /** The hub's own machine and network too, over http or https: for the hub's admins, and a test's stand-in server. */
+  ownNetwork?: boolean
+}
+
+/**
+ * What's wrong with an endpoint as a person gave it, in words; nothing when it's fine. An address out on the internet
+ * is over https, so the key and what's sent can't be read on the way. One on the hub's own machine or network (a proxy
+ * or a model server beside the hub) is the hub's business: its admins may add one, over http too, and nobody else can
+ * point the hub at its own network.
+ */
+export function whatsWrongWithEndpoint(endpoint: Pick<AgentEndpoint, 'kind' | 'baseUrl' | 'model'>, reach: ModelReach = {}): string | undefined {
   if (!['brain', 'openai', 'anthropic'].includes(endpoint.kind)) return 'Say what it is: the hub’s own model, a server that speaks OpenAI’s chat API, or Claude by Anthropic’s API.'
   if (endpoint.kind === 'brain') return undefined
   if (!endpoint.model?.trim()) return 'Say which model, or which deployment.'
-  // Anthropic's own address needs none; anywhere else it's given, and it's on the internet over https, as nothing here
-  // should make the hub call its own network.
+  // Anthropic's own address needs none.
   if (endpoint.kind === 'anthropic' && !endpoint.baseUrl?.trim()) return undefined
-  return refusal(endpoint.baseUrl?.trim() ?? '', reach)?.replace('The hub only tells addresses', 'An agent’s model is only reached at addresses')
+  const address = endpoint.baseUrl?.trim() ?? ''
+  let url: URL | undefined
+  try {
+    url = new URL(address)
+  } catch {
+    url = undefined
+  }
+  if (url && (url.protocol === 'http:' || url.protocol === 'https:') && onThisNetwork(url.hostname)) {
+    if (url.username || url.password) return 'The address can’t have a name or password in it.'
+    if (reach.ownNetwork || reach.thisMachineToo) return undefined
+    return `${url.hostname} is on this hub’s own machine or network, which only a hub admin can have a model reached at. If the model is on your own machine, set up Binders’ own agent there and give it the address in its settings: its runner calls it directly.`
+  }
+  return refusal(address, reach)?.replace('The hub only tells addresses', 'An agent’s model is only reached at addresses')
 }
 
 type Job = { kind: 'card' | 'chat' | 'debrief' | 'challenge'; id: string; title?: string }
@@ -155,8 +177,8 @@ export class EndpointAgents {
   }
 
   /** Whether an endpoint can do an agent's work: it's reached, and its model calls a tool when asked to. */
-  async test(endpoint: AgentEndpoint, key?: string): Promise<{ ok: boolean; why?: string }> {
-    const wrong = whatsWrongWithEndpoint(endpoint, this.reach)
+  async test(endpoint: AgentEndpoint, key?: string, reach: ModelReach = this.reach): Promise<{ ok: boolean; why?: string }> {
+    const wrong = whatsWrongWithEndpoint(endpoint, reach)
     if (wrong) return { ok: false, why: wrong }
     const model = this.modelAt(endpoint, key)
     if (!model) return { ok: false, why: 'The hub has no model of its own yet: set one up in Settings → Brain, or give this agent its own.' }
