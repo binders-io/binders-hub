@@ -613,7 +613,8 @@ whether to do something on the board.
   person's agents, what's waiting on them, what's being worked on, their change sets and environments, read from the state
   for that reply. A document rather than tools, so any model can answer "what are my agents working on?", on the first try,
   with no extra round trip while someone waits to hear it. What the model can have done is one plain line (`DO stop c1`),
-  which only proposes: everything a model reads was written by anyone in a binder, so the hub works out what the line would
+  which only proposes (several cards can be stopped with one line, and it comes to one offer for all of them): everything a
+  model reads was written by anyone in a binder, so the hub works out what the line would
   mean, says so in its own words, and does it only on the person's answer, read by the hub from what they said, or a button
   on the Brain. What merges, deploys or lets an agent use a tool takes that word itself ("approve"), and anything else they say
   drops it. It's checked again when it's carried out. A release is a change set, so "put release 18 into motion" approves

@@ -48,6 +48,8 @@ function reply(question: string, board: string, passages: Passage[]): { words: s
 
   const stopping = /^(?:please )?stop\b(.*)/.exec(asked)
   if (stopping) {
+    // "Stop everything" or "stop all of it" names every card being worked on, on the one line.
+    if (/\b(all|everything|every)\b/.test(stopping[1])) return working.length ? { words: `DO stop ${working.map((c) => c.mark).join(' ')}` } : { words: 'Nothing is being worked on.' }
     const wanted = stopping[1].replace(/\b(the|work|on|card|it)\b/g, ' ').trim().split(/\s+/).filter(Boolean)
     const card = working.find((c) => wanted.length && wanted.every((word) => c.title.toLowerCase().includes(word))) ?? (wanted.length ? undefined : working[0])
     return card ? { words: `DO stop ${card.mark}` } : { words: 'I couldn’t tell which card you meant. Say a few words of its title.' }

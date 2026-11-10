@@ -64,7 +64,7 @@ export const doRules = [
   'DO approve MARK',
   'DO promote MARK',
   'DO card MARK TITLE',
-  'stop: stops a card’s work, or keeps a ready card from being picked up. tell: answers an agent’s question on that card, or passes it a message, and WORDS are what to say. allow and deny: answer the permission an agent asked for on that card. approve: approves a change set, which starts it merging, as when they say to put a release in motion. promote: puts on that environment what’s on the one before it. card: puts a new card on that binder’s board, and TITLE is a short line saying what to do.',
+  'stop: stops a card’s work, or keeps a ready card from being picked up; when they name several cards, or all of some kind (“stop all the rebrand cards”), give every one of their marks on the one line, as in DO stop MARK MARK MARK. tell: answers an agent’s question on that card, or passes it a message, and WORDS are what to say. allow and deny: answer the permission an agent asked for on that card. approve: approves a change set, which starts it merging, as when they say to put a release in motion. promote: puts on that environment what’s on the one before it. card: puts a new card on that binder’s board, and TITLE is a short line saying what to do.',
   'MARK is what’s in square brackets in the document, on the line for the very thing they named. Read the titles, and don’t just take the first.',
   'For example, with a document line [x9] “Fix the header”: Sonnet, running the tests: “stop the header work” is DO stop x9, and “tell it to use the new logo” is DO tell x9 use the new logo.',
   'If they didn’t say which, and the conversation doesn’t make it clear, ask which in words, without a line. If it isn’t in the document, say so.',
@@ -208,18 +208,21 @@ export interface Asked {
   verb: 'stop' | 'tell' | 'allow' | 'deny' | 'approve' | 'promote' | 'card'
   mark: string
   rest: string
+  /** The lines after the first, when a model gave several: only stopping takes more than one. */
+  also?: Asked[]
 }
 
 const doLine = /^[\s>*`_•-]*DO[ \t]+(stop|tell|allow|deny|approve|promote|card)\b[ \t]*\[?([^\s\]]*)\]?[ \t:,—–-]*(.*?)[\s*`_]*$/gm
 
 /** A model's reply without its line, and what the line asks for: the first one, when there's more than one. */
 export function readDo(reply: string): { words: string; asked?: Asked } {
-  let asked: Asked | undefined
+  const lines: Asked[] = []
   const words = reply.replace(doLine, (_line, verb: Asked['verb'], mark: string, rest: string) => {
-    asked ??= { verb, mark: mark.toLowerCase().replace(/[^a-z0-9-]/g, ''), rest: rest.trim() }
+    lines.push({ verb, mark: mark.toLowerCase().replace(/[^a-z0-9-]/g, ''), rest: rest.trim() })
     return ''
   })
-  return { words: words.replace(/\n{3,}/g, '\n\n').trim(), asked }
+  const [asked, ...also] = lines
+  return { words: words.replace(/\n{3,}/g, '\n\n').trim(), asked: asked && also.length ? { ...asked, also } : asked }
 }
 
 /** A reply without the board's marks, should a model say them: read out, "c1 to c6" means nothing to anyone. */
@@ -285,6 +288,30 @@ export function propose(asked: Asked, board: Board, login: string, waitMs = 5000
 
   switch (asked.verb) {
     case 'stop': {
+      // Several cards named at once, on one line or on a line each: one thing to agree to, for all of them.
+      const named = [asked, ...(asked.also ?? []).filter((line) => line.verb === 'stop')].flatMap((line) => [line.mark, ...line.rest.split(/[\s,;]+/).map((word) => word.toLowerCase().replace(/[^a-z0-9-]/g, ''))])
+      const stoppable = (c: Card | undefined): c is Card => !!c && (c.stage === 'working' || c.stage === 'blocked' || c.stage === 'ready')
+      const several = [...new Set(named)].flatMap((mark) => {
+        const found = board.targets.get(mark)
+        // Only cards on this board, in a Binder the person can change: a word that isn't a mark is just a word.
+        if (!found || found.kind !== 'card' || found.place.readOnly) return []
+        const one = found.place.hub.state.cards.find((c) => c.id === found.id)
+        return stoppable(one) ? [{ place: found.place, card: one }] : []
+      })
+      if (several.length > 1) {
+        const titles = several.slice(0, 3).map(({ card }) => quoted(card.title)).join(', ')
+        return made({
+          what: `Stop ${several.length} cards: ${titles}${several.length > 3 ? ` and ${several.length - 3} more` : ''}. They go to Proposed, where nothing picks them up.`,
+          button: `Stop all ${several.length}`,
+          word: 'stop',
+          run: async () => {
+            let stopped = 0
+            // One that moved on since is left where it is, and the rest are still stopped.
+            for (const { place: where, card } of several) await where.actions.stopCard(login, card.id).then(() => { stopped++ }, () => undefined)
+            return stopped === several.length ? `Stopped ${stopped} cards. They’re in Proposed.` : `Stopped ${stopped} of ${several.length} cards: the others had moved on.`
+          },
+        })
+      }
       const card = cardOf()
       if (card.stage !== 'working' && card.stage !== 'blocked' && card.stage !== 'ready') throw new Refused(`${quoted(card.title)} isn’t being worked on.`)
       return made({
