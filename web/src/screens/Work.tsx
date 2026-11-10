@@ -16,7 +16,6 @@ import { copyCardLink, moveAsk, movesOf, stopHolding } from '../components/CardM
 import { EditableText } from '../components/EditableText'
 import { go, href } from '../route'
 import { useUI } from '../ui'
-import { titleOf } from '../../../shared/notes.ts'
 import { mayTake, meantForNow, repoEnvironments } from '../../../shared/work.ts'
 import { useMayChangeBinder } from './settings/access'
 
@@ -44,7 +43,7 @@ function lifecycle(card: Card, state: HubState): Step[] {
   const checks = pull ? checksSummary(pull.checks) : undefined
   const rank = stages.findIndex((s) => s.id === card.stage)
   const raw: [string, string, string, boolean, typeof Check][] = [
-    ['note', 'Written', note ? `In “${titleOf(note.text)}”` : 'Put on the board by hand', true, FileText],
+    ['note', 'Written', note ? `In “${note.title}”` : 'Put on the board by hand', true, FileText],
     ['board', 'On the board', card.jira ? `Jira ${card.jira.key}` : card.issue ? `Issue #${card.issue.number}` : 'Ready for an agent', card.stage !== 'proposed', ListChecks],
     ['claim', 'Claimed', agent ? agent.name : meantForNow(state, card) ? `Meant for ${nameFor(state, card.meantFor!)}` : card.stage === 'ready' && !state.agents.some((a) => !a.revoked && mayTake(state, a, card)) ? 'No agent works in this binder and repo: set one’s binders and repos on the Agents page' : 'Any agent that can', !!agent || rank >= 3, Workflow],
     ['build', 'Built', card.stage === 'working' ? (card.doing ?? 'Working') : rank > 2 ? 'Finished' : 'Not started', rank > 2, SquareTerminal],
@@ -400,8 +399,8 @@ export function Work({ id }: { id: string }) {
           {note && (
             <a className="side-card quote-card" href={href({ screen: 'notes', id: note.id })}>
               <h3><Quote size={12} /> From the note</h3>
-              {card.quote ? <q>{card.quote}</q> : <p>{titleOf(note.text)}</p>}
-              <span className="link-row">{titleOf(note.text)} <ArrowUpRight size={12} /></span>
+              {card.quote ? <q>{card.quote}</q> : <p>{note.title}</p>}
+              <span className="link-row">{note.title} <ArrowUpRight size={12} /></span>
             </a>
           )}
 

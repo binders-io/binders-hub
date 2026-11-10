@@ -72,6 +72,8 @@ export async function stateRoutes(app: FastifyInstance, context: Context) {
       // A project's repo changes only to one the person can push to.
       // Its agents' repos too, at most 500: each new one, only by someone who can push to it, as an agent's own repos.
       const vet = async (change: Change) => {
+        // A note held without its text is a browser's own: writing it whole would replace the note with nothing.
+        if (change.type === 'note.put' && change.note?.left) throw new Refused('This note’s text isn’t loaded in this browser, so it can’t be saved from it.')
         // Where a Binder's cards and notes go, and taking a binder away, are its owners' and admins' to change (and the
         // hub's admins'); a Binder with no members is open to everyone, so anyone may.
         if (change.type === 'binder.delete' || (change.type === 'binder.put' && whereItGoes(change.binder) !== whereItGoes(hub.state.binders.find((b) => b.id === change.binder.id)))) {

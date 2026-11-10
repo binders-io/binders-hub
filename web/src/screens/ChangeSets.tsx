@@ -9,7 +9,6 @@ import { ConfirmButton } from '../components/ConfirmButton'
 import { DebriefView, SetDebriefButton } from '../components/Debrief'
 import { FindingsLink, SetChallenge } from '../components/Challenge'
 import { PullDiffs } from '../components/Diffs'
-import { titleOf } from '../../../shared/notes.ts'
 import { testTally } from '../../../shared/changeSet.ts'
 import { AgentAvatar, CheckGlyph, RepoTag, checksSummary, unpicked, usePhone } from '../components/bits'
 import { heard } from '../data/sync'
@@ -144,7 +143,7 @@ export function ChangeSets({ id }: { id: string }) {
             <div className="set-meta">
               {repos.map((r) => <RepoTag key={r} repo={r} />)}
               <span className="num"><span className="plus">+{added}</span> <span className="minus">−{removed}</span></span>
-              {firstNote && <span>from <a href={href({ screen: 'notes', id: firstNote.id })}>{titleOf(firstNote.text)}</a>{set.forNote && ' only'}</span>}
+              {firstNote && <span>from <a href={href({ screen: 'notes', id: firstNote.id })}>{firstNote.title}</a>{set.forNote && ' only'}</span>}
               {set.debrief?.testPlan?.length ? <TestsLine set={set} /> : null}
             </div>
           </div>

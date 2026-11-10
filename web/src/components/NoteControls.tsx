@@ -4,7 +4,8 @@ import { guideMost } from '../../../shared/guide.ts'
 import { lineDiff, fromMarkdown, type Note, type NoteProposal } from '../../../shared/notes.ts'
 import { call } from '../data/api'
 import { spaceHeaders, spaceHref } from '../data/space'
-import { useActions, useHub } from '../data/store'
+import { useActions, useHub, useNoteText } from '../data/store'
+import { sizeOf, textOf } from '../data/noteText'
 import { openMenuUnder, type MenuItem } from './ContextMenu'
 import { Dialog } from './Dialog'
 import { href } from '../route'
@@ -89,11 +90,17 @@ export async function sumUp(note: Pick<Note, 'id'>) {
   if (done) toast('Summed up. The summary is in the note.')
 }
 
-/** Whether a note has enough words to be worth summing up, and none of a summary yet. */
-export const canSumUp = (note: Pick<Note, 'text'>) => note.text.replace(/^#[^\n]*\n?/, '').trim().split(/\s+/).length >= 25 && !note.text.includes('\n## Summary\n')
+/**
+ * Whether a note has enough words to be worth summing up, and none of a summary yet. A note whose text isn't here can't
+ * be told, and isn't offered: it's offered once it's been opened.
+ */
+export const canSumUp = (note: Pick<Note, 'text' | 'left'>) => {
+  const text = textOf(note)
+  return text !== undefined && text.replace(/^#[^\n]*\n?/, '').trim().split(/\s+/).length >= 25 && !text.includes('\n## Summary\n')
+}
 
 /** "Send to…" and "Sum it up" for a note's menu: each only when it can be done. */
-export function sendAndSumItems(note: Pick<Note, 'id' | 'text'>, targets: SendTarget[]): MenuItem[] {
+export function sendAndSumItems(note: Pick<Note, 'id' | 'text' | 'left'>, targets: SendTarget[]): MenuItem[] {
   const working = isSumming(note.id)
   return [
     ...(targets.length ? [{ label: 'Send to…', icon: <Send size={14} />, submenu: targets.map((target) => ({ label: target.name, onSelect: () => void sendNote(note, target) })) }] : []),
@@ -124,12 +131,13 @@ function Diff({ before, after }: { before: string; after: string }) {
   )
 }
 
-function ProposalRow({ proposal, note, mayChange, agents }: { proposal: NoteProposal; note: Note; mayChange: boolean; agents: { id: string; name: string }[] }) {
+/** `now` is the note's text as it is now, undefined until it's here. */
+function ProposalRow({ proposal, now, mayChange, agents }: { proposal: NoteProposal; now: string | undefined; mayChange: boolean; agents: { id: string; name: string }[] }) {
   // A reader reads what's suggested and what was said; they add nothing.
   const reads = !useMayChangeBinder()
   const [said, setSaid] = useState('')
   const open = proposal.state === 'open'
-  const stale = open && proposal.base !== note.text
+  const stale = open && now !== undefined && proposal.base !== now
   const decide = (accept: boolean) => void attempt(() => call('POST', `/api/note-proposals/${proposal.id}/decide`, { accept }))
   const comment = () => void attempt(() => call('POST', `/api/note-proposals/${proposal.id}/comments`, { text: said })).then((done) => { if (done) setSaid('') })
   return (
@@ -147,7 +155,7 @@ function ProposalRow({ proposal, note, mayChange, agents }: { proposal: NoteProp
           <div className="note-proposal-actions">
             <button type="button" className="button" disabled={!said.trim()} onClick={comment}>Comment</button>
             {mayChange && <button type="button" className="button" onClick={() => decide(false)}>Turn down</button>}
-            {mayChange && <button type="button" className="button primary" disabled={stale} onClick={() => decide(true)}>Accept</button>}
+            {mayChange && <button type="button" className="button primary" disabled={stale || now === undefined} onClick={() => decide(true)}>Accept</button>}
           </div>
         </>
       )}
@@ -162,7 +170,7 @@ interface Commit {
   subject: string
 }
 
-function Versions({ note, mayChange, onPropose }: { note: Note; mayChange: boolean; onPropose: (text: string) => void }) {
+function Versions({ note, now, mayChange, onPropose }: { note: Note; now: string | undefined; mayChange: boolean; onPropose: (text: string) => void }) {
   const reads = !useMayChangeBinder()
   const [commits, setCommits] = useState<Commit[]>()
   const [chosen, setChosen] = useState<{ sha: string; text: string }>()
@@ -185,11 +193,12 @@ function Versions({ note, mayChange, onPropose }: { note: Note; mayChange: boole
           </li>
         ))}
       </ol>
-      {chosen && (
+      {chosen && now === undefined && <p className="faint">Reading the note…</p>}
+      {chosen && now !== undefined && (
         <div>
           <p className="faint">From that version to the note now:</p>
-          <Diff before={chosen.text} after={note.text} />
-          {chosen.text.trim() !== note.text.trim() && !reads && (
+          <Diff before={chosen.text} after={now} />
+          {chosen.text.trim() !== now.trim() && !reads && (
             mayChange
               ? <button type="button" className="button" onClick={() => void attempt(() => call('POST', `/api/notes/${note.id}/restore`, { sha: chosen.sha }))}>Go back to this version</button>
               : <button type="button" className="button" onClick={() => onPropose(chosen.text)}>Suggest going back to this version</button>
@@ -200,7 +209,7 @@ function Versions({ note, mayChange, onPropose }: { note: Note; mayChange: boole
   )
 }
 
-function ProposeForm({ note, start, onDone }: { note: Note; start: string; onDone: () => void }) {
+function ProposeForm({ note, now, start, onDone }: { note: Note; now: string | undefined; start: string; onDone: () => void }) {
   const [text, setText] = useState(start)
   const [why, setWhy] = useState('')
   const send = () => void attempt(() => call('POST', `/api/notes/${note.id}/proposals`, { text, why })).then((done) => { if (done) onDone() })
@@ -214,7 +223,7 @@ function ProposeForm({ note, start, onDone }: { note: Note; start: string; onDon
       </label>
       <div className="note-proposal-actions">
         <button type="button" className="button" onClick={onDone}>Cancel</button>
-        <button type="button" className="button primary" disabled={!why.trim() || text === note.text} onClick={send}>Suggest</button>
+        <button type="button" className="button primary" disabled={!why.trim() || now === undefined || text === now} onClick={send}>Suggest</button>
       </div>
     </div>
   )
@@ -225,29 +234,40 @@ function NoteReview({ note, mayChange, onClose, opening }: { note: Note; mayChan
   const proposals = useHub((state) => state.noteProposals ?? noProposals)
   const agents = useHub((state) => state.agents)
   const reads = !useMayChangeBinder()
+  // The note as it is now, for what's compared with it: until it's here, nothing is.
+  const { text: now } = useNoteText(note.id)
   const [tab, setTab] = useState(opening)
   const [proposing, setProposing] = useState<string>()
   const mine = proposals.filter((p) => p.noteId === note.id).sort((a, b) => Number(b.state === 'open') - Number(a.state === 'open') || b.at.localeCompare(a.at))
   return (
     <Dialog title={note.title || 'Untitled'} onClose={onClose} wide>
       {proposing !== undefined
-        ? <ProposeForm note={note} start={proposing} onDone={() => { setProposing(undefined); setTab('proposals') }} />
+        ? <ProposeForm note={note} now={now} start={proposing} onDone={() => { setProposing(undefined); setTab('proposals') }} />
         : (
           <>
             <div className="note-review-tabs" role="tablist">
               <button type="button" role="tab" aria-selected={tab === 'proposals'} className={`button${tab === 'proposals' ? ' primary' : ''}`} onClick={() => setTab('proposals')}>Suggested changes</button>
               <button type="button" role="tab" aria-selected={tab === 'versions'} className={`button${tab === 'versions' ? ' primary' : ''}`} onClick={() => setTab('versions')}>Versions</button>
-              {note.locked && !mayChange && !reads && <button type="button" className="button" onClick={() => setProposing(note.text)}>Suggest a change</button>}
+              {note.locked && !mayChange && !reads && <button type="button" className="button" disabled={now === undefined} onClick={() => now !== undefined && setProposing(now)}>Suggest a change</button>}
             </div>
             {tab === 'versions'
-              ? <Versions note={note} mayChange={mayChange} onPropose={setProposing} />
+              ? <Versions note={note} now={now} mayChange={mayChange} onPropose={setProposing} />
               : mine.length
-                ? mine.map((p) => <ProposalRow key={p.id} proposal={p} note={note} mayChange={mayChange} agents={agents} />)
+                ? mine.map((p) => <ProposalRow key={p.id} proposal={p} now={now} mayChange={mayChange} agents={agents} />)
                 : <p className="faint">{reads ? 'No suggested changes.' : note.locked ? 'No suggested changes. Anyone in this binder can suggest one, and agents do it with propose_note_change.' : 'Suggested changes are for locked notes. This one can be edited directly.'}</p>}
           </>
         )}
     </Dialog>
   )
+}
+
+/** "Long for a guide" when the note is longer than what every run is given of it. Its length is known whether its text is here or not. */
+function GuideLength({ noteId }: { noteId: string }) {
+  const long = useHub((state) => {
+    const note = state.notes.find((n) => n.id === noteId)
+    return !!note && sizeOf(note) > guideMost
+  })
+  return long ? <span className="note-guide-long" title={`Agents are given the first ${guideMost.toLocaleString()} characters, and can read the rest`}>Long for a guide</span> : null
 }
 
 /** The note's guide, lock and history buttons; on a phone, one button for them all, with what `more` adds. */
@@ -269,19 +289,20 @@ export function NoteControls({ note, mayChange, more }: { note: Note; mayChange:
   const toggleLock = () => void attempt(() => call('POST', `/api/notes/${note.id}/lock`, { locked: !note.locked }))
   const openReview = () => setReview(open || note.locked ? 'proposals' : 'versions')
   if (more) {
-    const items: MenuItem[] = [
+    // Made when the menu opens, from the note as it is then: whether it can be summed up is read from its text.
+    const items = (): MenuItem[] => [
       { label: open ? `Review ${open} suggested change${open === 1 ? '' : 's'}` : 'Versions and suggested changes', icon: <History size={14} />, onSelect: openReview },
       ...(reads ? [] : [
         { label: note.locked ? 'Unlock' : 'Lock', icon: note.locked ? <LockOpen size={14} /> : <Lock size={14} />, disabled: !!note.locked && !mayChange, onSelect: toggleLock },
         { label: guide ? 'Stop using as the guide' : 'Make it the binder’s guide', icon: <BookMarked size={14} />, onSelect: toggleGuide },
       ]),
       { label: 'Copy link', icon: <Link2 size={14} />, onSelect: () => copyNoteLink(note.id) },
-      ...(reads ? [] : sendAndSumItems(note, targets)),
+      ...(reads ? [] : sendAndSumItems(store.current().notes.find((n) => n.id === note.id) ?? note, targets)),
       ...more,
     ]
     return (
       <>
-        <button type="button" className="icon-button note-more" onClick={(event) => openMenuUnder(event, items)} aria-haspopup="menu" aria-label="More for this note">
+        <button type="button" className="icon-button note-more" onClick={(event) => openMenuUnder(event, items())} aria-haspopup="menu" aria-label="More for this note">
           <Ellipsis size={18} />{open > 0 && <i className="waiting num">{open}</i>}
         </button>
         {review && <NoteReview note={note} mayChange={mayChange} opening={review} onClose={() => setReview(undefined)} />}
@@ -293,7 +314,7 @@ export function NoteControls({ note, mayChange, more }: { note: Note; mayChange:
       {!reads && <button type="button" className={`icon-button${guide ? ' on' : ''}`} aria-pressed={guide} onClick={toggleGuide} title={guide ? 'This is the binder’s guide: every agent here reads it first. Stop using it as the guide' : 'Make this the binder’s guide: every agent here reads it first'} aria-label="Binder guide"><BookMarked size={15} /></button>}
       {!reads && <button type="button" className={`icon-button${note.locked ? ' on' : ''}`} aria-pressed={!!note.locked} disabled={!!note.locked && !mayChange} onClick={toggleLock} title={lockTitle} aria-label={note.locked ? 'Locked' : 'Lock'}>{note.locked ? <Lock size={15} /> : <LockOpen size={15} />}</button>}
       <button type="button" className={`icon-button${open ? ' on' : ''}`} onClick={openReview} title={open ? `${open} suggested change${open === 1 ? '' : 's'} to review` : 'Versions and suggested changes'} aria-label="Versions and suggested changes"><History size={15} />{open > 0 && <i className="waiting num">{open}</i>}</button>
-      {guide && note.text.length > guideMost && <span className="note-guide-long" title={`Agents are given the first ${guideMost.toLocaleString()} characters, and can read the rest`}>Long for a guide</span>}
+      {guide && <GuideLength noteId={note.id} />}
       {review && <NoteReview note={note} mayChange={mayChange} opening={review} onClose={() => setReview(undefined)} />}
     </>
   )

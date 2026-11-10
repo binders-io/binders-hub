@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import type { AddressInfo } from 'node:net'
-import { emptyState, type HubState } from '../../shared/state.ts'
+import { applyChange, emptyState, type HubState } from '../../shared/state.ts'
+import { headChars, leftOf, type Note } from '../../shared/notes.ts'
 import { lightChange, lightState, newestActivity, recentActivityMs } from '../../shared/light.ts'
 import type { BlastRadius, BlastSymbol, Challenge } from '../../shared/changeSet.ts'
 import type { Activity, Agent, Card, ChangeSet, FileDiff, PullRequest } from '../../shared/work.ts'
@@ -14,7 +15,7 @@ import { MemoryLog } from '../src/log.ts'
 import { Scheduler } from '../src/scheduler.ts'
 import { Sealer } from '../src/secrets.ts'
 import { buildServer } from '../src/server.ts'
-import { fakeGitHub, oneSpace, seed } from './helpers.ts'
+import { fakeGitHub, note, oneSpace, seed } from './helpers.ts'
 
 // What a browser loads of a Binder, and what the hub keeps for good: a card's activity beyond the recent lines is asked
 // for when the card opens, a card's worktree goes once its pull request has the diff, and a pull request's lines go two
@@ -415,5 +416,71 @@ describe('a merged pull request’s diff', () => {
     const actions = new Actions(second, { forRepo: async () => undefined } as never)
     assert.equal(await actions.clearDoneWorktrees(), 1)
     assert.equal(await actions.dropOldDiffs(now, 14 * 86_400_000), 1, 'dated first')
+  })
+})
+
+describe('a note in a browser’s state', () => {
+  const long = `# Long\n\nSee [[Plan]] and [[plan|the plan]] and [[Other#Part]].\n\n${'More words. '.repeat(100)}`
+  const withNote = (n: Note): HubState => ({ ...emptyState(), notes: [n] })
+  const only = (state: HubState) => state.notes[0]
+
+  it('has no text, and says how long it is, how it starts and what it links to', () => {
+    const state = withNote(note('n1', 'Long', { text: long }))
+    const light = only(lightState(state))
+    assert.equal(light.text, '')
+    assert.equal(light.title, 'Long')
+    assert.equal(light.left?.size, long.length)
+    assert.equal(light.left?.head, long.slice(0, headChars))
+    assert.equal(light.left?.head.length, headChars)
+    assert.deepEqual(light.left?.links, ['plan', 'other'], 'in lower case, each once')
+    assert.deepEqual(light.left, leftOf(long))
+  })
+
+  it('leaves the hub’s own state whole', () => {
+    const state = withNote(note('n1', 'Long', { text: long }))
+    lightState(state)
+    assert.equal(only(state).text, long)
+    assert.equal(only(state).left, undefined)
+    // A note already light is not worked out again.
+    const light = lightState(state)
+    assert.equal(only(lightState(light)), only(light))
+  })
+
+  it('stays light when it’s edited, and what stands in for its text follows', () => {
+    const light = lightState(withNote(note('n1', 'Long', { text: long })))
+    const edited = '# Longer\n\nNow it links [[Third]] only.\n'
+    const next = only(applyChange(light, { type: 'note.edit', id: 'n1', text: edited, title: 'Longer', by: 'sam', at: '2026-11-10T08:00:00.000Z' }))
+    assert.equal(next.text, '')
+    assert.equal(next.title, 'Longer')
+    assert.deepEqual(next.left, { size: edited.length, head: edited, links: ['third'] })
+    assert.deepEqual(next.editors, ['you', 'sam'])
+  })
+
+  it('stays light when it’s put whole, and what stands in for its text follows', () => {
+    const light = lightState(withNote(note('n1', 'Long', { text: long })))
+    const put = note('n1', 'Renamed', { text: '# Renamed\n\nA [[Fourth]] link.\n', editedAt: '2026-11-10T09:00:00.000Z' })
+    const next = only(applyChange(light, { type: 'note.put', note: put }))
+    assert.equal(next.text, '')
+    assert.equal(next.title, 'Renamed')
+    assert.equal(next.editedAt, '2026-11-10T09:00:00.000Z')
+    assert.deepEqual(next.left, leftOf(put.text))
+  })
+
+  it('takes the text as before when it’s held whole, on an edit and on a put', () => {
+    const whole = withNote(note('n1', 'Long', { text: long }))
+    const edited = only(applyChange(whole, { type: 'note.edit', id: 'n1', text: '# New\n', title: 'New', by: 'you', at: '2026-11-10T08:00:00.000Z' }))
+    assert.equal(edited.text, '# New\n')
+    assert.equal(edited.left, undefined)
+    const put = only(applyChange(whole, { type: 'note.put', note: note('n1', 'Put', { text: '# Put\n' }) }))
+    assert.equal(put.text, '# Put\n')
+    assert.equal(put.left, undefined)
+  })
+
+  it('arrives whole when it’s new to a browser, even one holding every other note light', () => {
+    const light = lightState(withNote(note('n1', 'Long', { text: long })))
+    const next = applyChange(light, { type: 'note.put', note: note('n2', 'Fresh', { text: '# Fresh\n\nJust written.\n' }) })
+    assert.equal(next.notes.find((n) => n.id === 'n2')?.text, '# Fresh\n\nJust written.\n')
+    assert.equal(next.notes.find((n) => n.id === 'n2')?.left, undefined)
+    assert.equal(next.notes.find((n) => n.id === 'n1')?.text, '')
   })
 })

@@ -1,7 +1,7 @@
 import type { TerminalInfo } from '../../../shared/terminal.ts'
 import { applyChange as apply, type Change, type Entry, type HubState, type Outgoing } from '../../../shared/state.ts'
 import { forWire, type Activity, type Presence } from '../../../shared/work.ts'
-import type { Note } from '../../../shared/notes.ts'
+import { lightNote, type Note } from '../../../shared/notes.ts'
 import { space, spaceHeaders } from './space'
 
 // Notes as this browser holds them: what the hub has confirmed, and this browser's own changes on top, waiting to be
@@ -21,10 +21,12 @@ export interface Sync {
 }
 
 // Bumped when what's kept changes shape, so an older browser cache is left behind, not read wrong. Each Binder's own.
-export const keys = { cache: `binders-hub-cache-v4:${space}`, outbox: `binders-hub-outbox-v3:${space}`, client: 'binders-hub-client' }
+export const keys = { cache: `binders-hub-cache-v5:${space}`, outbox: `binders-hub-outbox-v3:${space}`, client: 'binders-hub-client' }
 const cachePrefix = 'binders-hub-cache-'
-/** Each Binder's cache from before diffs' lines were left out of it: all in the way of what replaces them. */
-const oldCaches = `${cachePrefix}v3:`
+/** Each Binder's cache from before notes' texts were left out of it (v4) and before diffs' lines were (v3): all in the way of what replaces them. */
+const oldCaches = [`${cachePrefix}v3:`, `${cachePrefix}v4:`]
+/** How many notes keep their text in the copy kept for next time: the ones opened last. */
+export const keptTexts = 20
 
 function read<T>(key: string): T | undefined {
   try {
@@ -71,7 +73,7 @@ const outboxKey = `${keys.outbox}:${clientId}`
 
 export function startingSync(seed: HubState): Sync {
   try {
-    for (const key of Object.keys(window.localStorage)) if (key.startsWith(oldCaches)) window.localStorage.removeItem(key)
+    for (const key of Object.keys(window.localStorage)) if (oldCaches.some((old) => key.startsWith(old))) window.localStorage.removeItem(key)
   } catch {
     // Blocked storage: nothing to clear.
   }
@@ -92,11 +94,17 @@ export const rememberOutbox = (sync: Sync) => write(outboxKey, sync.pending)
 
 /**
  * The hub's state, to start from next time: all of it, so it's written now and then. The hub has it if this is behind.
- * Every Binder at this address shares the browser's room for it. When there's none left, the one you're in gets it.
+ * The texts of the notes in `keep` (the last ones opened, at most 20) go with it, and of those with changes waiting, and
+ * every other note is written without its text, as the hub sends it: what's held in memory is as it was. Every Binder at this address shares the browser's room
+ * for it. When there's none left, the one you're in gets it.
  */
-export function rememberCache(sync: Sync) {
+export function rememberCache(sync: Sync, keep: readonly string[] = []) {
   try {
-    const text = JSON.stringify({ version: sync.version, confirmed: sync.confirmed })
+    // A note with changes waiting keeps its text as well: offline, it's the only place its words can be read.
+    const kept = new Set([...keep.slice(0, keptTexts), ...sync.pending.flatMap(({ change }) => noteOf(change) ?? [])])
+    const notes = sync.confirmed.notes.map((n) => (n.left || kept.has(n.id) ? n : lightNote(n)))
+    const confirmed = notes.some((n, index) => n !== sync.confirmed.notes[index]) ? { ...sync.confirmed, notes } : sync.confirmed
+    const text = JSON.stringify({ version: sync.version, confirmed })
     try {
       window.localStorage.setItem(keys.cache, text)
     } catch {
@@ -108,8 +116,8 @@ export function rememberCache(sync: Sync) {
   }
 }
 
-export function remember(sync: Sync) {
-  rememberCache(sync)
+export function remember(sync: Sync, keep: readonly string[] = []) {
+  rememberCache(sync, keep)
   rememberOutbox(sync)
 }
 
@@ -206,9 +214,43 @@ export function receive(sync: Sync, entries: Entry[], sent: Set<string>): Sync {
   return next
 }
 
-/** Everything the hub has, as of a version: what you were waiting on stays on top. */
+/**
+ * A note's text, as the hub sent it, taken into this tab: the note stops being one without its text. Only when it's the
+ * note's text as of now (the hub's `editedAt` is the confirmed note's), as the note may have changed since it was asked
+ * for, and only for a note that doesn't have its text yet. Anything else gives the same `sync` back.
+ */
+export function hold(sync: Sync, noteId: string, text: string, editedAt: string): Sync {
+  const index = sync.confirmed.notes.findIndex((n) => n.id === noteId)
+  const note = sync.confirmed.notes[index]
+  if (!note?.left || note.editedAt !== editedAt) return sync
+  const { left: _left, ...whole } = note
+  const notes = sync.confirmed.notes.slice()
+  notes[index] = { ...whole, text }
+  return { ...sync, confirmed: { ...sync.confirmed, notes } }
+}
+
+/**
+ * Everything the hub has, as of a version: what you were waiting on stays on top. A note this tab holds the text of keeps
+ * it when the hub's copy is the same version of it (the same `editedAt`), as is one this tab made and the hub hasn't
+ * confirmed yet; any other comes without its text, to be asked for when it's opened.
+ */
 export function snapshot(sync: Sync, version: number, state: HubState): Sync {
-  return { ...sync, confirmed: state, version }
+  if (!state.notes.some((n) => n.left)) return { ...sync, confirmed: state, version }
+  const before = new Map(sync.confirmed.notes.map((n) => [n.id, n]))
+  const made = new Map<string, Note>()
+  for (const { change } of sync.pending) if (change.type === 'note.put') made.set(change.note.id, change.note)
+  let changed = false
+  const notes = state.notes.map((n) => {
+    if (!n.left) return n
+    const had = before.get(n.id)
+    const ours = made.get(n.id)
+    const text = had && !had.left && had.editedAt === n.editedAt ? had.text : ours && !ours.left && ours.editedAt === n.editedAt ? ours.text : undefined
+    if (text === undefined) return n
+    changed = true
+    const { left: _left, ...whole } = n
+    return { ...whole, text }
+  })
+  return { ...sync, confirmed: changed ? { ...state, notes } : state, version }
 }
 
 /** Changes the hub already had (a resend after a reload): nothing to wait for. */

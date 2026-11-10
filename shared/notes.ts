@@ -61,10 +61,28 @@ export interface Note {
   /** The commit that saved it last, and its file in the notes repo. */
   commit?: string
   path?: string
+  /**
+   * On a browser only: the note's text isn't here (`text` is empty), and this stands in for it until the note is opened.
+   * The hub never keeps one, and refuses a note sent with one.
+   */
+  left?: NoteLeft
   /** On a client only: edits are on their way to the hub. */
   saving?: boolean
   /** On a client only: the hub has the edits, and commits them when typing pauses. */
   committing?: boolean
+}
+
+/** How much of a note's start a browser keeps while its text isn't there: enough for a preview, and for when it was heard. */
+export const headChars = 600
+
+/**
+ * What stands in for a note's text on a browser that hasn't asked for it: how long it is, how it starts, and the notes
+ * its [[links]] name, in lower case and each once.
+ */
+export interface NoteLeft {
+  size: number
+  head: string
+  links: string[]
 }
 
 export interface NotesState {
@@ -161,8 +179,11 @@ export function apply<S extends NotesState>(state: S, change: Change): S {
     case 'note.put': {
       // A note's lock is the hub's to change: writing the note whole neither takes one off nor puts one on. One put back
       // from the trash is the hub's own copy, so it keeps the lock it had.
-      const { locked: _given, ...note } = change.note
-      const locked = change.restored ? change.note.locked : state.notes.find((n) => n.id === note.id)?.locked
+      const { locked: _given, ...given } = change.note
+      const was = state.notes.find((n) => n.id === given.id)
+      // On a browser that holds this note without its text, it stays that way: only what stands in for the text follows.
+      const note = was?.left ? lightNote(given) : given
+      const locked = change.restored ? change.note.locked : was?.locked
       const trashed = change.restored ? state.trashedNotes?.filter((t) => t.note.id !== note.id) : state.trashedNotes
       return { ...state, notes: upsert(state.notes, locked ? { ...note, locked } : note), ...(trashed ? { trashedNotes: trashed } : {}) }
     }
@@ -187,7 +208,8 @@ export function apply<S extends NotesState>(state: S, change: Change): S {
         ...state,
         notes: state.notes.map((n) =>
           n.id === change.id
-            ? { ...n, text: change.text, title: change.title, editedAt: change.at, editedBy: change.by, editors: n.editors.includes(change.by) ? n.editors : [...n.editors, change.by] }
+            // A browser that holds the note without its text keeps it so: what stands in for the text follows the edit.
+            ? { ...n, ...(n.left ? { text: '', left: leftOf(change.text) } : { text: change.text }), title: change.title, editedAt: change.at, editedBy: change.by, editors: n.editors.includes(change.by) ? n.editors : [...n.editors, change.by] }
             : n),
       }
     case 'note.link':
@@ -226,6 +248,12 @@ export const isBlank = (text: string) => !text.replace(/^#+\s*$/gm, '').trim()
 export function linksIn(text: string) {
   return [...text.matchAll(/\[\[([^\]|#^]+)(?:[#^][^\]|]*)?(?:\|[^\]]*)?\]\]/g)].map((m) => m[1].trim())
 }
+
+/** What stands in for a text on a browser that hasn't asked for it. */
+export const leftOf = (text: string): NoteLeft => ({ size: text.length, head: text.slice(0, headChars), links: [...new Set(linksIn(text).map((title) => title.toLowerCase()))] })
+
+/** A note as a browser holds it before its text is asked for: everything but the text, and what stands in for it. */
+export const lightNote = (note: Note): Note => (note.left ? note : { ...note, text: '', left: leftOf(note.text) })
 
 /** [[Links]] as words, for somewhere they don't link: what they show, or the note they name. */
 export const linksAsWords = (text: string) => text.replace(/\[\[([^\]|#^]+)(?:[#^][^\]|]*)?(?:\|([^\]]*))?\]\]/g, (_, title: string, shown?: string) => (shown?.trim() || title).trim())

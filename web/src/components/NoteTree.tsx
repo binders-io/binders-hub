@@ -8,7 +8,8 @@ import { openMenu, openMenuUnder, type MenuItem } from './ContextMenu'
 import { FolderRuleDialog } from './FolderRules'
 import { attempt, failure, toast } from './Toast'
 import type { Folder, Note } from '../data/model'
-import { sameFields, useActions, useHub, type NotesSaved } from '../data/store'
+import { sameFields, useActions, useHub, useNoteSearch, type NotesSaved } from '../data/store'
+import { headOf, textOf } from '../data/noteText'
 import { go, href } from '../route'
 import { useUI } from '../ui'
 import { useMayChangeBinder } from '../screens/settings/access'
@@ -24,7 +25,7 @@ const sameRows = (a: Note[], b: Note[]) => a.length === b.length && a.every((not
  * the hub writes (a note that's been summed up or added to since still says when it was heard), else when it last changed.
  */
 const recordedAt = (note: Note) => {
-  const heard = /^_[^\n]*?(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) UTC/m.exec(note.text.slice(0, 600))
+  const heard = /^_[^\n]*?(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) UTC/m.exec(headOf(note))
   return heard ? `${heard[1]}T${heard[2]}` : note.editedAt
 }
 
@@ -100,6 +101,8 @@ export function NoteTree({ currentId }: { currentId: string }) {
   const ui = useUI()
   const sendTargets = useSendTargets()
   const [filter, setFilter] = useState('')
+  // What the hub finds in the notes' texts, which this browser mostly doesn't hold.
+  const found = useNoteSearch(filter)
   // Typing changes a note's text, which the tree only reads to search it.
   const notes = useHub((state) => state.notes, filter ? Object.is : sameRows)
   const [collapsed, setCollapsed] = useState(readCollapsed)
@@ -303,8 +306,9 @@ export function NoteTree({ currentId }: { currentId: string }) {
   const words = filter.toLowerCase().split(/\s+/).filter(Boolean)
   const matches = words.length
     ? notes.filter((n) => {
-        const text = `${n.title} ${pathOf(n)} ${n.text}`.toLowerCase()
-        return words.every((w) => text.includes(w))
+        // The words may be one in the title and another in the text. A note without its text here has how it starts.
+        const text = `${n.title} ${pathOf(n)} ${textOf(n) ?? headOf(n)}`.toLowerCase()
+        return words.every((w) => text.includes(w)) || found.has(n.id)
       })
     : []
 

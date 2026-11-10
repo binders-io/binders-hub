@@ -6,7 +6,7 @@ import { save } from '../../../shared/noteDoc.ts'
 import { Refused } from '../hub.ts'
 import { captureFolders } from '../brain/brain.ts'
 import { commentOn, decide, propose, setLock } from '../noteChanges.ts'
-import { fromMarkdown, lockStops, slug, titleOf, type Binder, type Note } from '../../../shared/notes.ts'
+import { fromMarkdown, linksIn, lockStops, slug, titleOf, type Binder, type Note } from '../../../shared/notes.ts'
 import { readerWords, type Space } from '../spaces.ts'
 import { bodies } from '../schemas.ts'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
@@ -179,6 +179,55 @@ export async function workRoutes(app: FastifyInstance, context: Context) {
     const doc = hub.noteDoc(param(request, 'id'))
     if (!doc) return reply.code(404).send({ error: 'No such note' })
     return reply.type('application/octet-stream').header('x-binders-version', String(hub.version)).send(Buffer.from(save(doc)))
+  })
+  // A note's text as the hub has it now: a browser's state has each note's start and its length, and asks for the rest
+  // when the note is opened. Reads, so a reader may ask too: the hook lets every GET through.
+  app.get('/api/notes/:id/text', async (request, reply) => {
+    const note = sp(request).hub.state.notes.find((n) => n.id === param(request, 'id'))
+    if (!note) return reply.code(404).send({ error: 'No such note' })
+    return { text: note.text, editedAt: note.editedAt }
+  })
+  // The notes that link to this one, each with the line that does: a browser doesn't hold the text to find it in.
+  app.get('/api/notes/:id/backlinks', async (request, reply) => {
+    const { notes } = sp(request).hub.state
+    const note = notes.find((n) => n.id === param(request, 'id'))
+    if (!note) return reply.code(404).send({ error: 'No such note' })
+    const wanted = note.title.toLowerCase()
+    const names = (text: string) => linksIn(text).map((t) => t.toLowerCase())
+    return {
+      notes: notes
+        .filter((n) => n.id !== note.id && names(n.text).includes(wanted))
+        .map((n) => ({ id: n.id, title: n.title, line: n.text.split('\n').find((l) => names(l).includes(wanted))?.replace(/^[-*>#\s]+/, '') ?? '' })),
+    }
+  })
+  // The notes whose title, place or text has every word asked for: the tree's filter looks in the text too, and a browser
+  // holds only how each note starts. Each request reads every note, and one comes each time someone pauses typing.
+  app.get('/api/notes/search', { config: { rateLimit: { max: 240, timeWindow: '1 minute' } } }, async (request) => {
+    const { q } = request.query as { q?: unknown }
+    if (typeof q !== 'string' || q.trim().length < 2 || q.length > 200) return { ids: [] as string[] }
+    const words = q.toLowerCase().split(' ').filter(Boolean)
+    const { notes, folders, binders } = sp(request).hub.state
+    // A note's place: its Binder's name, then its folders' names from the outermost in.
+    const placeOf = (note: Note) => {
+      const names: string[] = []
+      const seen = new Set<string>()
+      let folder = folders.find((f) => f.id === note.folderId)
+      while (folder && !seen.has(folder.id)) {
+        seen.add(folder.id)
+        names.unshift(folder.name)
+        folder = folders.find((f) => f.id === folder!.parentId)
+      }
+      return [binders.find((b) => b.id === note.binderId)?.name ?? note.binderId, ...names].join(' ')
+    }
+    const ids: string[] = []
+    for (const note of notes) {
+      const all = `${note.title}\n${placeOf(note)}\n${note.text}`.toLowerCase()
+      if (words.every((word) => all.includes(word))) {
+        ids.push(note.id)
+        if (ids.length === 200) break
+      }
+    }
+    return { ids }
   })
   app.get('/api/notes/:id/history', async (request, reply) => {
     const { notes } = sp(request)

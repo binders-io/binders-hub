@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { CalendarClock, Pause, Play, Trash2, TriangleAlert, Zap } from 'lucide-react'
 import { cronPreset, defaultStaleHours, describeCron, nextRun, presetCron, weekdays, type Preset, type Schedule } from '../../../shared/schedule.ts'
-import { titleOf } from '../../../shared/notes.ts'
 import { call } from '../data/api'
 import { nameFor, useStore } from '../data/store'
 import { href } from '../route'
@@ -44,7 +43,7 @@ export function ScheduleDialog({ noteId, onClose }: { noteId: string; onClose: (
   const mine = (state.schedules ?? []).filter((s) => s.noteId === noteId)
   const [editing, setEditing] = useState<Schedule | 'new' | undefined>(mine.length ? undefined : 'new')
   return (
-    <Dialog title={`Schedule “${note ? titleOf(note.text) || note.title : 'note'}”`} onClose={onClose} wide>
+    <Dialog title={`Schedule “${note ? note.title : 'note'}”`} onClose={onClose} wide>
       <p className="schedule-intro">Each time it runs, the hub puts this note on the board as a card, the note’s words as they are then its instructions, for the agent you pick. A run that isn’t done yet when the next is due makes that one skip.</p>
       {mine.length > 0 && <ScheduleList schedules={mine} onEdit={(s) => setEditing(s)} showNote={false} />}
       {editing ? (
@@ -185,7 +184,7 @@ export function ScheduleList({ schedules, onEdit, showNote = true }: { schedules
           <li key={s.id} className={s.enabled ? '' : 'off'}>
             <CalendarClock size={16} />
             <div className="schedule-text">
-              {showNote && <a href={href({ screen: 'notes', id: s.noteId })}>{note ? titleOf(note.text) || note.title : 'A deleted note'}</a>}
+              {showNote && <a href={href({ screen: 'notes', id: s.noteId })}>{note ? note.title : 'A deleted note'}</a>}
               <b>{describeCron(s.cron)} <span className="faint">({s.tz})</span> · {s.agentId ? nameFor(state, s.agentId) : 'any agent'}</b>
               <span className="faint">
                 {s.enabled ? (next ? `Next ${when(next, s.tz)}` : 'Never comes round') : 'Off'}

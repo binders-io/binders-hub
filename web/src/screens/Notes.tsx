@@ -3,7 +3,8 @@ import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObj
 import { AnimatePresence, motion } from 'motion/react'
 import { ArrowUpRight, CalendarClock, Check, ChevronLeft, GitPullRequest, LoaderCircle, Lock, ChevronsLeft, ChevronsRight, ExternalLink, Maximize2, MessageSquare, Minimize2, PanelLeft, PanelRight, Sparkles, Trash2, X } from 'lucide-react'
 import { stages } from '../data/model'
-import { isOnline, nameFor, sameFields, sameValues, useActions, useClock, useHub, useLiveNote, usePresence, type State } from '../data/store'
+import { isOnline, nameFor, sameFields, sameValues, useActions, useClock, useHub, useLiveNote, useNoteText, usePresence, type State } from '../data/store'
+import { linksOf, textOf } from '../data/noteText'
 import { cardPrompt } from '../data/prompts'
 import type { Card, Note } from '../data/model'
 import { ago, usePhone } from '../components/bits'
@@ -482,13 +483,37 @@ interface EditorProps {
   onFocusChange?: (focused: boolean) => void
 }
 
-/** The note itself. Once its document is here the editor keeps its own text, so a keystroke goes no further than this. */
+/**
+ * What stands where the note will be while its text comes from the hub: nothing at first, so a note that's quick doesn't
+ * flash, then a faint word. The editor is not here: it would send what's typed in it as the whole note.
+ */
+function NoteLoading({ failed, offline, again }: { failed: boolean; offline: boolean; again: () => void }) {
+  const [late, setLate] = useState(false)
+  useEffect(() => {
+    const timer = window.setTimeout(() => setLate(true), 200)
+    return () => window.clearTimeout(timer)
+  }, [])
+  if (offline) return <p className="note-loading faint" role="status">This note isn’t on this device yet. It loads when you’re back online.</p>
+  if (failed) return <p className="note-loading" role="alert">This note couldn’t be loaded. <button type="button" className="text-button" onClick={again}>Try again</button></p>
+  return late ? <p className="note-loading faint" role="status">Loading…</p> : null
+}
+
+/**
+ * The note itself. Once its document is here the editor keeps its own text, so a keystroke goes no further than this.
+ * The editor is made only once the note's text is here, and then stays for that note, even if a snapshot from the hub
+ * brings the note back without its text: it has the text, and is never shown an empty one.
+ */
 const NoteEditor = memo(function NoteEditor({ noteId, binderId, folderId, editor, raw, readOnly, onFocusChange }: EditorProps) {
   const store = useActions()
   const { openItem } = useUI()
   const may = useMayChangeBinder()
   const live = useLiveNote(noteId)
-  const text = useHub((state) => state.notes.find((n) => n.id === noteId)?.text ?? '')
+  const { text: here, failed, again } = useNoteText(noteId)
+  const offline = useHub((state) => state.sync.connection === 'offline')
+  // The last text this editor had, with the note it's of: a text is never shown for any note but its own.
+  const kept = useRef<{ noteId: string; text: string }>(undefined)
+  if (here !== undefined) kept.current = { noteId, text: here }
+  const text = kept.current?.noteId === noteId ? kept.current.text : undefined
   const work = useHub((state) => workOf(state, noteId), sameWork)
   const marks = useMemo<Marks>(() => ({
     work,
@@ -509,40 +534,57 @@ const NoteEditor = memo(function NoteEditor({ noteId, binderId, folderId, editor
       if (found || may) go({ screen: 'notes', id: found ? found.id : store.addNote(binderId, folderId, `# ${title}\n\n`) })
     },
   }), [store, binderId, folderId, may])
-  return <MarkdownEditor ref={editor} noteId={noteId} text={text} live={live} onChange={(next, changes) => store.editNote(noteId, next, changes)} links={links} marks={marks} raw={raw} readOnly={readOnly} onFocusChange={onFocusChange} />
+  if (text === undefined) return <NoteLoading failed={failed} offline={offline} again={again} />
+  return <MarkdownEditor ref={editor} noteId={noteId} text={text} live={live} onChange={(next, changes) => { kept.current = { noteId, text: next }; store.editNote(noteId, next, changes) }} links={links} marks={marks} raw={raw} readOnly={readOnly} onFocusChange={onFocusChange} />
 })
 
-/** A note's [[links]], in lower case, worked out once for each version of it: this looks through every note on every change. */
-const linksOf = new WeakMap<Note, string[]>()
-function linkedFrom(note: Note) {
-  let titles = linksOf.get(note)
-  if (!titles) {
-    titles = linksIn(note.text).map((t) => t.toLowerCase())
-    linksOf.set(note, titles)
-  }
-  return titles
-}
-
-/** Notes that link here, with the line that does. */
+/**
+ * Notes that link here: each with its title, and the line that does when it's known. A note held whole has it at once;
+ * one without its text has it from the hub, which is asked when the notes that link here change.
+ */
 function backlinksTo(state: State, noteId: string, title: string) {
   const wanted = title.toLowerCase()
   return state.notes
-    .filter((n) => n.id !== noteId && linkedFrom(n).includes(wanted))
-    .map((n) => ({ id: n.id, title: n.title, line: n.text.split('\n').find((l) => linksIn(l).some((t) => t.toLowerCase() === wanted))?.replace(/^[-*>#\s]+/, '') ?? '' }))
+    .filter((n) => n.id !== noteId && linksOf(n).includes(wanted))
+    .map((n) => {
+      const text = textOf(n)
+      return { id: n.id, title: n.title, line: text === undefined ? undefined : lineLinking(text, wanted) }
+    })
 }
+
+/** The first line of a text with a link to this title, without what starts a list item, a quote or a heading. */
+const lineLinking = (text: string, wanted: string) => text.split('\n').find((l) => linksIn(l).some((t) => t.toLowerCase() === wanted))?.replace(/^[-*>#\s]+/, '') ?? ''
 
 type Backlink = ReturnType<typeof backlinksTo>[number]
 const sameBacklinks = (a: Backlink[], b: Backlink[]) => a.length === b.length && a.every((link, index) => sameValues(link, b[index]))
 
 const Backlinks = memo(function Backlinks({ noteId, title }: { noteId: string; title: string }) {
   const backlinks = useHub((state) => backlinksTo(state, noteId, title), sameBacklinks)
+  // The lines of notes whose text isn't here come from the hub, for the notes that link here as they are now.
+  const linking = backlinks.map((l) => l.id).join()
+  const unread = backlinks.some((l) => l.line === undefined)
+  const [asked, setAsked] = useState<{ noteId: string; title: string; linking: string; lines: Record<string, string> }>()
+  useEffect(() => {
+    if (!unread) return
+    let gone = false
+    call<{ notes?: { id: string; line: string }[] }>('GET', `/api/notes/${encodeURIComponent(noteId)}/backlinks`).then(
+      (answer) => {
+        if (!gone) setAsked({ noteId, title, linking, lines: Object.fromEntries((answer.notes ?? []).map((n) => [n.id, n.line])) })
+      },
+      () => undefined,
+    )
+    return () => {
+      gone = true
+    }
+  }, [noteId, title, linking, unread])
+  const lines = asked && asked.noteId === noteId && asked.title === title ? asked.lines : {}
   return (
     <section className="backlinks" aria-label="Linked mentions">
       <h2>Linked mentions <span className="num">{backlinks.length}</span></h2>
       {backlinks.map((from) => (
         <a key={from.id} href={href({ screen: 'notes', id: from.id })} className="backlink">
           <b>{from.title} <ArrowUpRight size={12} /></b>
-          <span>{from.line.replace(/\[\[([^\]|]+)(\|([^\]]*))?\]\]/g, (_m, t: string, _a, alias?: string) => alias || t)}</span>
+          <span>{(from.line ?? lines[from.id] ?? '').replace(/\[\[([^\]|]+)(\|([^\]]*))?\]\]/g, (_m, t: string, _a, alias?: string) => alias || t)}</span>
         </a>
       ))}
       {!backlinks.length && <p>No note links here yet. Type [[{title}]] in another note to link it.</p>}

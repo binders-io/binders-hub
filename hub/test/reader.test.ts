@@ -164,6 +164,10 @@ describe('what a reader may do', () => {
     assert.equal((await cy('GET', '/api/history')).status, 200)
     assert.equal((await cy('GET', '/api/trash')).status, 200)
     assert.equal((await cy('GET', '/api/notes/n1/doc')).status, 200)
+    // A note's text, who links to it and a search of the notes: asked for when a note is opened, and reads like the rest.
+    assert.deepEqual((await cy('GET', '/api/notes/n1/text')).body.text, '# First note\n')
+    assert.equal((await cy('GET', '/api/notes/n1/backlinks')).status, 200)
+    assert.deepEqual((await cy('GET', '/api/notes/search?q=first')).body, { ids: ['n1'] })
     assert.equal((await cy('GET', '/api/notes/n1/access')).status, 200)
     assert.equal((await cy('GET', '/api/spaces')).status, 200)
     assert.equal((await cy('GET', '/api/jira')).status, 200)

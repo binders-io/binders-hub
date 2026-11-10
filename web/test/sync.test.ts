@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyState, type Change, type Entry, type HubState } from '../../shared/state.ts'
-import { clientId, heard, HubConnection, keys, queue, receive, remember, rememberCache, rememberOutbox, settled, shown, snapshot, startingSync, type Sync } from '../src/data/sync'
+import { lightNote } from '../../shared/notes.ts'
+import { clientId, heard, HubConnection, hold, keys, queue, receive, remember, rememberCache, rememberOutbox, settled, shown, snapshot, startingSync, type Sync } from '../src/data/sync'
 
 // What the rest of the web app stands on: your changes stay on top of what the hub confirmed, whatever arrives and in
 // whatever order, and what's waiting survives a reload.
@@ -311,5 +312,126 @@ describe('whether the hub has answered yet', () => {
     expect(heard(start({ version: 0, connection: 'offline' }))).toBe(false)
     expect(heard(start({ version: 4, connection: 'connecting' }))).toBe(true)
     expect(heard(start({ version: 0, connection: 'live' }))).toBe(true)
+  })
+})
+
+// A note a browser holds without its text has `left` and an empty `text`: the hub's light state. Its text is asked for
+// when the note is opened, and taken in here (`hold`) only if it's the text of the note as the state has it.
+describe('a note’s text taken in', () => {
+  const light = (id: string, text = 'words', editedAt = 'then') => lightNote({ ...note(id, text), editedAt })
+  const lightSync = (over: Partial<Sync> = {}) => start({ confirmed: hubState({ notes: [light('n1'), light('n2', 'other')] }), ...over })
+
+  it('takes the text of a note that has none, and the note stops standing in for it', () => {
+    const sync = lightSync()
+    const held = hold(sync, 'n1', 'words', 'then')
+    expect(held).not.toBe(sync)
+    expect(held.confirmed.notes[0]).toMatchObject({ id: 'n1', text: 'words' })
+    expect(held.confirmed.notes[0].left).toBeUndefined()
+    expect(held.confirmed.notes[1]).toBe(sync.confirmed.notes[1])
+    expect(sync.confirmed.notes[0].left).toBeDefined()
+  })
+
+  it('refuses a text of another version of the note: it changed meanwhile, or the feed is behind', () => {
+    const sync = lightSync()
+    expect(hold(sync, 'n1', 'newer words', 'later')).toBe(sync)
+  })
+
+  it('refuses a note that is whole already, and one that isn’t there', () => {
+    const sync = start()
+    expect(hold(sync, 'n1', 'something else', 'then')).toBe(sync)
+    expect(sync.confirmed.notes[0].text).toBe('words')
+    expect(hold(lightSync(), 'missing', 'words', 'then').confirmed.notes).toHaveLength(2)
+  })
+
+  it('shows the held text, with a change waiting on top of it', () => {
+    const held = hold(lightSync(), 'n1', 'words', 'then')
+    expect(shown(queue(held, edit('n1', 'mine'), new Set())).notes[0].text).toBe('mine')
+  })
+
+  it('keeps a light note light through the live feed, and a whole one whole', () => {
+    const sync = hold(lightSync(), 'n1', 'words', 'then')
+    const next = receive(sync, [entry(2, edit('n1', 'both')), entry(3, edit('n2', 'also'))], new Set())
+    expect(next.confirmed.notes[0]).toMatchObject({ text: 'both' })
+    expect(next.confirmed.notes[0].left).toBeUndefined()
+    expect(next.confirmed.notes[1]).toMatchObject({ text: '', left: { size: 4 } })
+  })
+
+  it('keeps a text this tab holds through a snapshot of the same version of the note, and takes the rest as they come', () => {
+    const sync = hold(lightSync(), 'n1', 'words', 'then')
+    const next = snapshot(sync, 5, hubState({ notes: [light('n1'), light('n2', 'other'), light('n3')] }))
+    expect(next.version).toBe(5)
+    expect(next.confirmed.notes[0]).toMatchObject({ id: 'n1', text: 'words' })
+    expect(next.confirmed.notes[0].left).toBeUndefined()
+    expect(next.confirmed.notes[1]).toMatchObject({ text: '', left: { size: 5 } })
+    expect(next.confirmed.notes[2].left).toBeDefined()
+  })
+
+  it('doesn’t keep a text through a snapshot of a note that was written since', () => {
+    const sync = hold(lightSync(), 'n1', 'words', 'then')
+    const next = snapshot(sync, 5, hubState({ notes: [light('n1', 'rewritten', 'later')] }))
+    expect(next.confirmed.notes[0]).toMatchObject({ text: '', left: { size: 9 } })
+  })
+
+  it('keeps a note this tab made and the hub hasn’t confirmed whole when the snapshot has it', () => {
+    const made = { ...note('n9', '# new'), editedAt: 'just now' }
+    const sync = queue(lightSync(), { type: 'note.put', note: made }, new Set())
+    const next = snapshot(sync, 5, hubState({ notes: [lightNote(made)] }))
+    expect(next.confirmed.notes[0]).toMatchObject({ id: 'n9', text: '# new' })
+    expect(next.confirmed.notes[0].left).toBeUndefined()
+    expect(shown(next).notes[0].left).toBeUndefined()
+  })
+
+  it('hands a snapshot with no light notes over as it is', () => {
+    const state = hubState()
+    expect(snapshot(start(), 5, state).confirmed).toBe(state)
+  })
+})
+
+describe('what a note’s text costs the copy kept for next time', () => {
+  const stored = () => JSON.parse(window.localStorage.getItem(keys.cache)!).confirmed.notes as { id: string; text: string; left?: { size: number } }[]
+  const many = (count: number) => start({ confirmed: hubState({ notes: Array.from({ length: count }, (_, index) => note(`n${index}`, `words ${index}`)) }) })
+
+  it('is the text of the last 20 notes opened, and the rest without theirs', () => {
+    const sync = many(30)
+    rememberCache(sync, Array.from({ length: 25 }, (_, index) => `n${index}`))
+    const notes = stored()
+    expect(notes.filter((n) => !n.left)).toHaveLength(20)
+    expect(notes.filter((n) => !n.left).map((n) => n.id)).toEqual(Array.from({ length: 20 }, (_, index) => `n${index}`))
+    expect(notes[25]).toMatchObject({ id: 'n25', text: '', left: { size: 'words 25'.length } })
+  })
+
+  it('leaves what’s in memory as it was', () => {
+    const sync = many(3)
+    const before = JSON.stringify(sync.confirmed)
+    rememberCache(sync, [])
+    expect(JSON.stringify(sync.confirmed)).toBe(before)
+    expect(stored().every((n) => n.left && n.text === '')).toBe(true)
+  })
+
+  it('writes a note with changes waiting whole as well', () => {
+    rememberCache(queue(many(3), edit('n1', 'typed'), new Set()), [])
+    expect(stored().map((n) => !n.left)).toEqual([false, true, false])
+  })
+
+  it('writes a note light that it was given light, and doesn’t write every note again when none has a text to leave out', () => {
+    const sync = start({ confirmed: hubState({ notes: [lightNote(note('n1'))] }) })
+    rememberCache(sync, ['n1'])
+    expect(stored()[0]).toMatchObject({ id: 'n1', text: '', left: { size: 5 } })
+  })
+
+  it('is read back after a reload: the light notes and the ones kept', () => {
+    rememberCache(many(3), ['n2'])
+    const back = startingSync(emptyState())
+    expect(back.confirmed.notes.map((n) => !n.left)).toEqual([false, false, true])
+    expect(back.version).toBe(1)
+  })
+
+  it('leaves the caches of older shapes behind', () => {
+    window.localStorage.setItem('binders-hub-cache-v3:x', '{}')
+    window.localStorage.setItem('binders-hub-cache-v4:x', '{}')
+    startingSync(emptyState())
+    expect(window.localStorage.getItem('binders-hub-cache-v3:x')).toBeNull()
+    expect(window.localStorage.getItem('binders-hub-cache-v4:x')).toBeNull()
+    expect(keys.cache).toContain('cache-v5:')
   })
 })

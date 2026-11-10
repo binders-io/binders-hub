@@ -2274,3 +2274,138 @@ describe('a browser’s state', () => {
     await close()
   })
 })
+
+describe('a note’s text, asked for when it’s opened', () => {
+  const put = (id: string, title: string, text: string, extra: Record<string, unknown> = {}) => ({ type: 'note.put' as const, note: { id, title, binderId: 'b1', editedAt: '2026-11-10T08:00:00.000Z', editors: ['you'], text, ...extra } })
+  const withNotes = async () => {
+    const set = await setUp()
+    // A deeper folder, to see a place from the outermost in.
+    await set.hub.record({ kind: 'hub' }, { type: 'folder.put', folder: { id: 'f2', binderId: 'b1', name: 'Quarterly', parentId: 'f1' } })
+    await set.hub.record({ kind: 'hub' }, put('t1', 'Target', '# Target\n\nWhat the others point at.\n'))
+    await set.hub.record({ kind: 'hub' }, put('l1', 'Links once', '# Links once\n\nIntro line.\n- first, see [[Target]] for more\n- and again [[target]]\n'))
+    await set.hub.record({ kind: 'hub' }, put('l2', 'Links in a heading', '# Links in a heading\n\n## [[Target|The target]] again\n'))
+    await set.hub.record({ kind: 'hub' }, put('l3', 'Links elsewhere', '# Links elsewhere\n\nOnly [[Something else]].\n'))
+    await set.hub.record({ kind: 'hub' }, put('d1', 'Deep', '# Deep\n\nThe rollout needs a zebra crossing.\n', { folderId: 'f2' }))
+    return { ...set, as: api(set.url, await signIn(set.url)) }
+  }
+
+  it('answers a note’s text and when it was edited, from the hub’s own copy', async () => {
+    const { as, close } = await withNotes()
+    const got = await as('GET', '/api/notes/t1/text')
+    assert.equal(got.status, 200)
+    assert.deepEqual(got.body, { text: '# Target\n\nWhat the others point at.\n', editedAt: '2026-11-10T08:00:00.000Z' })
+    const missing = await as('GET', '/api/notes/nope/text')
+    assert.equal(missing.status, 404)
+    assert.deepEqual(missing.body, { error: 'No such note' })
+    await close()
+  })
+
+  it('names the other notes that link to a note, in lower case, with the first line that does', async () => {
+    const { as, close } = await withNotes()
+    const got = await as('GET', '/api/notes/t1/backlinks')
+    assert.equal(got.status, 200)
+    assert.deepEqual(got.body.notes, [
+      { id: 'l1', title: 'Links once', line: 'first, see [[Target]] for more' },
+      { id: 'l2', title: 'Links in a heading', line: '[[Target|The target]] again' },
+    ])
+    assert.deepEqual((await as('GET', '/api/notes/l3/backlinks')).body, { notes: [] })
+    assert.deepEqual((await as('GET', '/api/notes/n1/backlinks')).body, { notes: [] })
+    assert.equal((await as('GET', '/api/notes/nope/backlinks')).status, 404)
+    await close()
+  })
+
+  it('leaves out a note that links to itself', async () => {
+    const { hub, as, close } = await withNotes()
+    await hub.record({ kind: 'hub' }, put('t1', 'Target', '# Target\n\nSee [[target]].\n'))
+    assert.deepEqual((await as('GET', '/api/notes/t1/backlinks')).body.notes.map((n: { id: string }) => n.id), ['l1', 'l2'])
+    await close()
+  })
+
+  it('searches titles, places and text, each word anywhere among them, in the state’s order', async () => {
+    const { as, close } = await withNotes()
+    const ids = async (q: string) => (await as('GET', `/api/notes/search?q=${encodeURIComponent(q)}`)).body.ids
+    assert.deepEqual(await ids('zebra'), ['d1'], 'only in the text')
+    assert.deepEqual(await ids('ZEBRA Crossing'), ['d1'], 'in lower case, every word')
+    assert.deepEqual(await ids('quarterly'), ['d1'], 'a folder’s name')
+    assert.deepEqual(await ids('server planning quarterly'), ['d1'], 'the Binder’s name, then the folders’ from the outermost in')
+    assert.deepEqual(await ids('deep zebra'), ['d1'], 'one word in the title and one in the text')
+    assert.deepEqual(await ids('deep rubbish'), [], 'every word has to be there')
+    assert.deepEqual(await ids('links'), ['l1', 'l2', 'l3'])
+    assert.deepEqual(await ids('planning'), ['n1', 'd1'], 'the folder’s own notes and the ones inside it')
+    await close()
+  })
+
+  it('answers nothing to a search that’s too short or too long, and at most 200 ids', async () => {
+    const { hub, as, close } = await withNotes()
+    assert.deepEqual((await as('GET', '/api/notes/search?q=z')).body, { ids: [] })
+    assert.deepEqual((await as('GET', '/api/notes/search?q=')).body, { ids: [] })
+    assert.deepEqual((await as('GET', '/api/notes/search')).body, { ids: [] })
+    assert.deepEqual((await as('GET', '/api/notes/search?q=%20%20')).body, { ids: [] }, 'spaces are no words')
+    assert.deepEqual((await as('GET', `/api/notes/search?q=${'a'.repeat(201)}`)).body, { ids: [] })
+    assert.equal((await as('GET', `/api/notes/search?q=${'a'.repeat(200)}`)).status, 200)
+    for (let i = 0; i < 210; i++) await hub.record({ kind: 'hub' }, put(`m${i}`, `Many ${i}`, `# Many ${i}\n\nsame words\n`))
+    const ids = (await as('GET', '/api/notes/search?q=same%20words')).body.ids
+    assert.equal(ids.length, 200)
+    assert.equal(ids[0], 'm0')
+    await close()
+  })
+
+  it('finds a note in a folder that loops back on itself without going round for ever', async () => {
+    const { hub, as, close } = await withNotes()
+    await hub.record({ kind: 'hub' }, { type: 'folder.put', folder: { id: 'fa', binderId: 'b1', name: 'Alpha', parentId: 'fb' } })
+    await hub.record({ kind: 'hub' }, { type: 'folder.put', folder: { id: 'fb', binderId: 'b1', name: 'Beta', parentId: 'fa' } })
+    await hub.record({ kind: 'hub' }, put('c1', 'Circular', '# Circular\n', { folderId: 'fa' }))
+    assert.deepEqual((await as('GET', '/api/notes/search?q=beta%20alpha')).body.ids, ['c1'])
+    await close()
+  })
+
+  it('refuses a note put from a browser that holds it without its text, and the Binder keeps the note', async () => {
+    const { hub, url, close } = await withNotes()
+    const you = api(url, await signIn(url))
+    const before = hub.version
+    const refused = await you('POST', '/api/changes', { client: 'tab-1234', changes: [{ id: 'light', change: put('t1', 'Target', '', { left: { size: 40, head: '# Target', links: [] } }) }] })
+    assert.equal(refused.status, 422)
+    assert.equal(refused.body.error, 'This note’s text isn’t loaded in this browser, so it can’t be saved from it.')
+    assert.equal(hub.version, before, 'nothing went in the log')
+    assert.equal(hub.state.notes.find((n) => n.id === 't1')?.text, '# Target\n\nWhat the others point at.\n')
+    // A whole note goes in as before.
+    const fine = await you('POST', '/api/changes', { client: 'tab-1234', changes: [{ id: 'whole', change: put('t1', 'Target', '# Target\n\nChanged.\n') }] })
+    assert.equal(fine.status, 200)
+    assert.equal(hub.state.notes.find((n) => n.id === 't1')?.text, '# Target\n\nChanged.\n')
+    await close()
+  })
+
+  it('has /api/state whole, and /api/state?light=1 without any note’s text', async () => {
+    const { as, close } = await withNotes()
+    const whole = (await as('GET', '/api/state')).body.state
+    const t1 = whole.notes.find((n: { id: string }) => n.id === 't1')
+    assert.equal(t1.text, '# Target\n\nWhat the others point at.\n')
+    assert.equal(t1.left, undefined)
+    const light = (await as('GET', '/api/state?light=1')).body.state
+    assert.ok(light.notes.length > 1)
+    for (const n of light.notes) {
+      assert.equal(n.text, '', n.id)
+      assert.equal(typeof n.left.size, 'number', n.id)
+    }
+    assert.deepEqual(light.notes.find((n: { id: string }) => n.id === 'l1').left.links, ['target'])
+    await close()
+  })
+
+  it('sends a note’s change whole on the live feed to a browser holding the light state', async () => {
+    const { hub, url, close } = await withNotes()
+    const cookie = await signIn(url)
+    const received: Entry[] = []
+    const socket = new WebSocket(`${url.replace('http', 'ws')}/api/live?since=${hub.version}&light=1`, { headers: { cookie } })
+    socket.on('message', (data) => {
+      const message = JSON.parse(String(data)) as { type: string; entries?: Entry[] }
+      if (message.type === 'entries') received.push(...message.entries!)
+    })
+    await new Promise((done) => socket.once('open', done))
+    await hub.record({ kind: 'hub' }, put('t1', 'Target', '# Target\n\nLive words.\n'))
+    await until(() => received.length === 1)
+    const got = received[0].change
+    assert.equal(got.type === 'note.put' && got.note.text, '# Target\n\nLive words.\n')
+    socket.close()
+    await close()
+  })
+})

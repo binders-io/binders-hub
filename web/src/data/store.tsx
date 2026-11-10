@@ -1,14 +1,15 @@
 import { shownName } from '../../../shared/people.ts'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { emptyState, type Change, type HubState } from '../../../shared/state.ts'
-import { isBlank, titleOf } from '../../../shared/notes.ts'
+import { titleOf } from '../../../shared/notes.ts'
 import type { Activity, Agent, Card, Environment, Me, Note, Provider } from './model'
 import { handMove, type Presence, type RunnerSettings } from '../../../shared/work.ts'
 import type { BlastRadius, BlastSymbol, TestOutcome } from '../../../shared/changeSet.ts'
 import { call } from './api'
 import { askedReasoning } from '../components/Reasoning'
 import { attempt, failure, toast } from '../components/Toast'
-import { clientId, HubConnection, queue, receive, rememberCache, rememberOutbox, settled, shown, snapshot, startingSync, withHistory, type AgentTerminals, type Connection, type Sync } from './sync'
+import { clientId, HubConnection, hold, keptTexts, queue, receive, rememberCache, rememberOutbox, settled, shown, snapshot, startingSync, withHistory, type AgentTerminals, type Connection, type Sync } from './sync'
+import { isEmpty, textOf } from './noteText'
 import { LiveNotes, type LiveNote, type Waiting } from './liveNote'
 import { spaceHeaders } from './space'
 
@@ -39,8 +40,6 @@ type Step = (state: State) => State
 const withShown = (s: State): State => ({ ...s, ...shown(s.sync, s) })
 
 const starting = (): State => withShown({ ...emptyState(), sync: startingSync(emptyState()), presence: {}, terminals: {}, signedOut: false, unreachable: false })
-
-export const isEmpty = (note: Note) => isBlank(note.text)
 
 let made = 0
 const newId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(++made).toString(36)}`
@@ -118,9 +117,22 @@ export interface Actions {
   /** Deletes a note, which the hub keeps for 30 days: the toast that follows has Undo. */
   deleteNote: (noteId: string) => void
   clearChat: (chatId: string) => void
-  /** An edit to a note: Automerge changes to its document, with its text after them; or the whole text, until the document is here. */
+  /**
+   * An edit to a note: Automerge changes to its document, with its text after them; or the whole text, until the document
+   * is here. A note whose text isn't here (it has `left`) is never written whole, as what this tab has of it is empty.
+   */
   editNote: (noteId: string, text: string, changes?: string[]) => void
+  /** Leaving a note nothing was written in throws it away. A note whose text isn't here has something written in it. */
   discardIfEmpty: (noteId: string) => void
+  /**
+   * A note's text, as the hub sent it with its `editedAt`, taken in here and never sent to the hub. False when it wasn't
+   * taken: the note changed meanwhile (the feed is behind, or ahead), or it already has its text.
+   */
+  holdNote: (noteId: string, text: string, editedAt: string) => boolean
+  /** A note was opened: its text is kept with the copy of the state this browser holds for next time (the last 20 are). */
+  noteOpened: (noteId: string) => void
+  /** A note's text from the hub, with its `editedAt`: one request at a time for each note, shared by whoever asks while it's out. */
+  askForText: (noteId: string) => Promise<{ text: string; editedAt: string }>
   addBinder: (name: string, repo?: string) => string
   updateBinder: (id: string, fields: { guideNoteId?: string; name?: string; repo?: string; repos?: string[]; issues?: boolean; notes?: boolean; notesBranch?: string; reviewComments?: boolean }) => void
   deleteBinder: (id: string) => Promise<void>
@@ -197,6 +209,17 @@ export interface Store extends Actions {
   connection: Connection
 }
 
+/** The notes opened here, the last first: the ones whose texts the browser's copy of the state keeps. */
+class Opened {
+  ids: string[]
+  constructor(ids: string[]) {
+    this.ids = ids.slice(0, keptTexts)
+  }
+  open(noteId: string) {
+    this.ids = [noteId, ...this.ids.filter((id) => id !== noteId)].slice(0, keptTexts)
+  }
+}
+
 /** The state, held apart from React, and who to tell when it changes. */
 class Held {
   private state: State
@@ -232,6 +255,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const hub = useRef<HubConnection>(undefined)
   const flushTimer = useRef<number>(undefined)
   const flushing = useRef<Promise<void>>(undefined)
+  // The notes whose texts are kept in the browser's copy: the last opened first, and to start with, those the copy had.
+  const [asking] = useState(() => new Map<string, { at: number; answer: Promise<{ text: string; editedAt: string }> }>())
+  const [recent] = useState(() => new Opened(held.get().sync.confirmed.notes.filter((n) => !n.left).map((n) => n.id)))
   const [lives] = useState(() => new LiveNotes({
     fetchDoc: async (noteId) => {
       const response = await fetch(`/api/notes/${encodeURIComponent(noteId)}/doc`, { credentials: 'same-origin', headers: spaceHeaders })
@@ -352,7 +378,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const keep = () => {
       window.clearTimeout(timer)
       timer = undefined
-      rememberCache(held.get().sync)
+      rememberCache(held.get().sync, recent.ids)
     }
     const keepOutbox = () => {
       if (!outboxDue) return
@@ -379,7 +405,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('pagehide', leave)
       leave()
     }
-  }, [held])
+  }, [held, recent])
 
   const actions = useMemo<Actions>(() => {
     const now = held.get
@@ -435,11 +461,44 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         toast('Deleted.', { action: { label: 'Undo', run: () => void putBack('note', noteId) } })
       },
       clearChat: (chatId) => change({ type: 'chat.clear', id: chatId }),
-      editNote: (noteId, text, changes) => change({ type: 'note.edit', id: noteId, text, title: titleOf(text), by: login(), at: new Date().toISOString(), ...(changes ? { changes } : {}) }),
+      editNote: (noteId, text, changes) => {
+        // The whole text of a note this tab doesn't have the text of would be taken by the hub as the note: nothing goes.
+        // Changes to its document are only what was typed, so they go: an editor that kept its note when a snapshot took
+        // the text away sends no other kind.
+        if (!changes && now().notes.find((n) => n.id === noteId)?.left) return
+        change({ type: 'note.edit', id: noteId, text, title: titleOf(text), by: login(), at: new Date().toISOString(), ...(changes ? { changes } : {}) })
+      },
       discardIfEmpty: (noteId) => {
         const note = now().notes.find((n) => n.id === noteId)
         // Throwing away an empty note is a change, which a reader's leaving of one they only looked at must not send.
         if (note && isEmpty(note) && now().me?.role !== 'reader') change({ type: 'note.delete', id: noteId })
+      },
+      holdNote: (noteId, text, editedAt) => {
+        let took = false
+        held.step((s) => {
+          const next = hold(s.sync, noteId, text, editedAt)
+          if (next === s.sync) return s
+          took = true
+          return withShown({ ...s, sync: next })
+        })
+        return took
+      },
+      noteOpened: (noteId) => recent.open(noteId),
+      askForText: (noteId) => {
+        // A request that has hung is not waited on for ever: after a while the next one is a new one.
+        const out = asking.get(noteId)
+        if (out && Date.now() - out.at < askedForMs) return out.answer
+        const answer = call<{ text?: unknown; editedAt?: unknown }>('GET', `/api/notes/${encodeURIComponent(noteId)}/text`)
+          .then((body) => {
+            // An answer that isn't a text and when it was written is not taken for an empty note.
+            if (typeof body?.text !== 'string' || typeof body.editedAt !== 'string') throw new Error('The hub answered without the note’s text.')
+            return { text: body.text, editedAt: body.editedAt }
+          })
+          .finally(() => {
+            if (asking.get(noteId)?.answer === answer) asking.delete(noteId)
+          })
+        asking.set(noteId, { at: Date.now(), answer })
+        return answer
       },
       addBinder: (name, repo) => {
         const id = newId('binder')
@@ -523,7 +582,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       saveNotes: () => call<NotesSaved>('POST', '/api/notes/save'),
       distill: (noteId, agentId) => {
         const note = now().notes.find((n) => n.id === noteId)
-        const title = note ? titleOf(note.text) : 'the note'
+        const title = note ? note.title : 'the note'
         return call<Card>('POST', '/api/cards', {
           binderId: note?.binderId,
           title: `Distill “${title}” into work items`,
@@ -566,7 +625,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (await loadMe()) await hub.current?.start()
       },
     }
-  }, [held, change, flush, loadMe])
+  }, [held, change, flush, loadMe, recent, asking])
 
   return (
     <LiveContext.Provider value={lives}>
@@ -589,6 +648,95 @@ export function useLiveNote(noteId: string) {
   }, [lives, noteId])
   // Just after moving to another note, the last one's isn't this one's.
   return live?.noteId === noteId ? live : undefined
+}
+
+/** How many times a note's text is asked for, and how long between, before it's given up on. */
+const textTries = 5
+const textRetryMs = 400
+/** How long a request for a note's text is shared with whoever asks next. */
+const askedForMs = 15_000
+
+/**
+ * A note's text, for a screen that reads it. The state a browser holds has most notes without their text and says so
+ * (`left`); one that's wanted is asked for from the hub and taken into the state, where the note then stays whole. `text`
+ * is undefined until it's here, and never an empty string standing in for it. The hub may answer with a text that's
+ * not the one the state's note is of (it changed meanwhile, or the live feed hasn't brought the change yet): it's asked
+ * for again shortly, up to five times, and then `failed` is true until `again`. Nothing is asked while the hub can't be
+ * reached, or for a note that has its text.
+ */
+export function useNoteText(noteId: string) {
+  const actions = useActions()
+  const note = useHub((state) => state.notes.find((n) => n.id === noteId), sameFields<Note>('id', 'text', 'left', 'editedAt'))
+  const offline = useHub((state) => state.sync.connection === 'offline')
+  const light = !!note?.left
+  // Where it gave up: the note, and which round of asking. A try again starts another, and so does the hub coming back or
+  // the note changing here: a page still loading its state gives up on a text newer than its notes, and asks again by
+  // itself once they've arrived.
+  const [gaveUp, setGaveUp] = useState<string>()
+  const [tries, setTries] = useState(0)
+  const round = `${noteId}:${tries}:${offline}:${light ? note?.editedAt ?? '' : ''}`
+  useEffect(() => actions.noteOpened(noteId), [actions, noteId])
+  useEffect(() => {
+    if (!light || offline) return
+    let gone = false
+    let timer: number | undefined
+    const run = (attempt: number) => {
+      actions.askForText(noteId).then(
+        (answer) => {
+          if (gone) return
+          // Taken, or it has its text by now (another screen asked too).
+          if (actions.holdNote(noteId, answer.text, answer.editedAt) || !actions.current().notes.find((n) => n.id === noteId)?.left) return
+          retry(attempt)
+        },
+        (error: { status?: number }) => {
+          if (gone) return
+          // The hub saying there's no such note, or that it isn't ours to read, doesn't change by asking again.
+          if (error?.status === 404 || error?.status === 401 || error?.status === 403) setGaveUp(round)
+          else retry(attempt)
+        },
+      )
+    }
+    const retry = (attempt: number) => {
+      if (attempt >= textTries) setGaveUp(round)
+      else timer = window.setTimeout(() => run(attempt + 1), textRetryMs)
+    }
+    run(1)
+    return () => {
+      gone = true
+      window.clearTimeout(timer)
+    }
+  }, [actions, noteId, light, offline, round])
+  const again = useCallback(() => setTries((n) => n + 1), [])
+  return { text: note ? textOf(note) : undefined, failed: light && gaveUp === round, again }
+}
+
+/** No notes: what a search that hasn't answered gives, the same each time. */
+const noIds: ReadonlySet<string> = new Set()
+
+/**
+ * The notes with these words in their text, as the hub finds them (the browser holds most notes without it). Asked for
+ * when typing has paused, for two characters or more; an answer to words no longer typed is ignored. Nothing is asked
+ * while the hub can't be reached: the notes this tab has are all there is to search then.
+ */
+export function useNoteSearch(words: string): ReadonlySet<string> {
+  const asked = words.trim()
+  const offline = useHub((state) => state.sync.connection === 'offline')
+  const [found, setFound] = useState<{ words: string; ids: ReadonlySet<string> }>()
+  useEffect(() => {
+    if (asked.length < 2 || offline) return
+    let current = true
+    const timer = window.setTimeout(() => {
+      void call<{ ids?: string[] }>('GET', `/api/notes/search?q=${encodeURIComponent(asked)}`).then(
+        (answer) => { if (current) setFound({ words: asked, ids: new Set(answer.ids ?? []) }) },
+        () => { if (current) setFound(undefined) },
+      )
+    }, 200)
+    return () => {
+      current = false
+      window.clearTimeout(timer)
+    }
+  }, [asked, offline])
+  return found && found.words === asked && asked.length >= 2 && !offline ? found.ids : noIds
 }
 
 function useHeld() {
