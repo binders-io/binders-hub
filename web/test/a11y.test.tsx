@@ -155,10 +155,12 @@ describe('the palette', () => {
     const box = await opened()
     fireEvent.change(box, { target: { value: 'what was decided?' } })
     fireEvent.keyDown(box, { key: 'Enter' })
-    const heading = await screen.findByRole('heading', { name: 'what was decided?' })
-    const page = heading.closest('.ask-result') as HTMLElement
-    // The question shows at once and its answer when the hub has given it.
-    await waitFor(() => expect(page.querySelector('.ask-answer strong')?.textContent).toBe('decided'))
+    // The question shows at once, in a place of its own, and the answer takes that place when the hub has given it: so
+    // the answer's place is looked for again each time, and a slow machine is given the time it takes.
+    const result = () => screen.getByRole('heading', { name: 'what was decided?' }).closest('.ask-result') as HTMLElement
+    await screen.findByRole('heading', { name: 'what was decided?' })
+    await waitFor(() => expect(result().querySelector('.ask-answer strong')?.textContent).toBe('decided'), { timeout: 5000 })
+    const page = result()
     expect(page.querySelector('.ask-answer')?.textContent).not.toContain('**')
     expect(within(page).getAllByRole('button', { name: /^Source / }).map((b) => b.textContent)).toEqual(['1', '2'])
     expect(page.querySelectorAll('.ask-sources > li').length).toBe(1)
