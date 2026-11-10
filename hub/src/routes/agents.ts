@@ -44,7 +44,7 @@ export async function agentRoutes(app: FastifyInstance, context: Context) {
         if (await brainMachines?.isBrainLine(body.token)) return turnedAway(401, 'That line is from Settings → Brain, for a machine that only lends models: run it with binders add --token. To add a machine with code on it, make a line on the Agents page.')
         return turnedAway(401, 'That line has run out or was replaced. Make a new one on the Agents page: Add a machine.')
       }
-      const space = spaces.get(line.binder)
+      const space = await spaces.start(line.binder)
       const info = spaces.info(line.binder)
       if (!space || !info) return turnedAway(401, 'The Binder that line was made for isn’t on this hub any more. Make a new line in one that is.')
       // Its maker speaks for the agent, so they must still be in the Binder (a hub admin, only while it has no owner), and able to change it.
@@ -92,7 +92,7 @@ export async function agentRoutes(app: FastifyInstance, context: Context) {
     terminals.runner(socket, async (token) => {
       const agent = await auth.agentFor(token)
       const spaceId = agent && (agent.space ?? spaces.list()[0]?.id)
-      const space = spaceId ? spaces.get(spaceId) : undefined
+      const space = spaceId ? await spaces.start(spaceId) : undefined
       // An agent acts with its owner's reach, so not for one who can only read the Binder.
       const there = space?.hub.state.agents.find((a) => a.id === agent?.id && !a.revoked)
       return agent && there && spaces.roleOf(spaceId!, there.owner) !== 'reader' ? `${spaceId}/${agent.id}` : undefined

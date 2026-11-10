@@ -353,6 +353,11 @@ export class SpaceBrain {
 
   // Captures that wait for a summary ---------------------------------------------------------------------------------
 
+  /** How many captures wait for a summary: they're written when a model next answers, which only a running Binder hears. */
+  get summariesWaiting() {
+    return this.unsummed.size
+  }
+
   private async loadUnsummed() {
     try {
       const raw = await this.kv.get(waitingKey)

@@ -153,7 +153,7 @@ class Failure extends Error {
  */
 export async function captureHome(spaces: Spaces, login: string) {
   const own = personalId(login)
-  const kv = spaces.get(own)?.brain?.kv
+  const kv = (await spaces.start(own))?.brain?.kv
   const chosen = kv ? await chosenHome(kv) : undefined
   return chosen && spaces.forPerson(login, false).some((s) => s.info.id === chosen && s.role !== 'reader') ? chosen : own
 }
@@ -175,6 +175,7 @@ export class AppLinkSession {
   private deps: AppLinkDeps
   private login: string
   private subscribed = false
+  private closed = false
   private pending = new Set<string>()
   private flushTimer?: NodeJS.Timeout
   private stops: (() => void)[] = []
@@ -187,6 +188,7 @@ export class AppLinkSession {
   }
 
   close() {
+    this.closed = true
     clearTimeout(this.flushTimer)
     for (const stop of this.stops) stop()
     this.stops = []
@@ -194,7 +196,15 @@ export class AppLinkSession {
 
   // Places ---------------------------------------------------------------------------------------------------------
 
-  /** The binders of every Binder the person is in (as a member: a hub admin's others aren't theirs to carry about). */
+  /**
+   * Starts every Binder the person is in that hasn't started (a personal one nobody has needed since the hub did), so
+   * `places` and `subscribe`, which look at the running ones, find them all. Theirs only: nobody else's is started here.
+   */
+  private async wake() {
+    await Promise.all(this.deps.spaces.forPerson(this.login, false).map(({ info }) => this.deps.spaces.start(info.id).catch(() => undefined)))
+  }
+
+  /** The binders of every Binder the person is in (as a member: a hub admin's others aren't theirs to carry about). Those running: `wake` has started the person's. */
   places(): Place[] {
     const out: Place[] = []
     for (const { info, role } of this.deps.spaces.forPerson(this.login, false)) {
@@ -280,6 +290,7 @@ export class AppLinkSession {
     const method = typeof message.method === 'string' ? message.method : ''
     const params = (message.params && typeof message.params === 'object' ? message.params : {}) as Record<string, unknown>
     try {
+      await this.wake()
       const result = await this.call(method, params)
       if (id !== undefined) this.deps.send({ jsonrpc: '2.0', id, result })
     } catch (err) {
@@ -308,7 +319,7 @@ export class AppLinkSession {
       case 'binders/hello':
         return { name: this.deps.hubName, version: this.deps.version, protocol: 1, features: this.features() }
       case 'binders/subscribe':
-        if (!this.subscribed) this.subscribe()
+        if (!this.subscribed) await this.subscribe()
         return {}
       case 'ping':
         return {}
@@ -664,15 +675,15 @@ export class AppLinkSession {
   }
 
   /** The person's own Binder's store: where what came of their captures and moments is kept. */
-  private ledger() {
-    const own = this.deps.spaces.get(personalId(this.login))?.brain ?? this.own().space.brain
+  private async ledger() {
+    const own = (await this.deps.spaces.start(personalId(this.login)))?.brain ?? this.own().space.brain
     if (!own) throw new Refused('Your hub has no brain to keep this in.')
     return own.kv
   }
 
   private async ledgerGet<T>(key: string): Promise<T | undefined> {
     try {
-      const raw = await this.ledger().get(key)
+      const raw = await (await this.ledger()).get(key)
       return raw ? (JSON.parse(raw) as T) : undefined
     } catch {
       return undefined
@@ -680,7 +691,7 @@ export class AppLinkSession {
   }
 
   private async ledgerSet(key: string, value: unknown) {
-    await this.ledger().set(key, JSON.stringify(value), 60 * 86_400)
+    await (await this.ledger()).set(key, JSON.stringify(value), 60 * 86_400)
   }
 
   private async setOutcome(outcome: Outcome) {
@@ -761,6 +772,7 @@ export class AppLinkSession {
   async audio(meta: AudioCapture, audio: Uint8Array, mime: string) {
     const transcriber = this.deps.settings?.transcriber()
     if (!transcriber) throw new Refused('Your hub has no transcription model.')
+    await this.wake()
     const id = meta.id
     const key = `app:outcome:${id.toLowerCase()}`
     const already = await this.ledgerGet<Outcome>(key)
@@ -782,7 +794,7 @@ export class AppLinkSession {
           log.info('The hub’s transcript had no times; the iPhone’s stays')
           return
         }
-        const space = this.deps.spaces.get(capture.space)
+        const space = await this.deps.spaces.start(capture.space)
         const text = transcriptMarkdown(segments, names)
         if (!space?.brain || !text) return
         const speakers = [...new Set(segments.map((s) => names[s.speaker ?? ''] || s.speaker).filter((s): s is string => Boolean(s)))]
@@ -899,7 +911,7 @@ export class AppLinkSession {
       if (made) {
         // What it made is in a Binder they may since have been made a reader of: not taken back from there.
         if (this.places().some((p) => p.spaceId === made.space && p.role === 'reader')) throw new Refused(readerWords)
-        const space = this.deps.spaces.get(made.space)
+        const space = await this.deps.spaces.start(made.space)
         if (made.kind === 'card') {
           const card = space?.hub.state.cards.find((c) => c.id === made.id)
           // Taken back only while nobody has moved it on.
@@ -1028,7 +1040,7 @@ export class AppLinkSession {
   // Notifications --------------------------------------------------------------------------------------------------
 
   /** Follows every Binder the person is in, and tells the iPhone what changed, a quarter-second's worth at a time. */
-  private subscribe() {
+  private async subscribe() {
     this.subscribed = true
     const kindsOf = (change: Entry['change']): string[] => {
       const type = change.type
@@ -1039,8 +1051,10 @@ export class AppLinkSession {
       return []
     }
     for (const { info, role } of this.deps.spaces.forPerson(this.login, false)) {
-      const space = this.deps.spaces.get(info.id)
+      const space = await this.deps.spaces.start(info.id).catch(() => undefined)
       if (!space) continue
+      // The iPhone went away while this Binder started: nothing is left to follow it for.
+      if (this.closed) return
       const follow = (entries: Entry[]) => {
         for (const { change } of entries) {
           for (const kind of kindsOf(change)) this.pending.add(kind)
@@ -1052,6 +1066,7 @@ export class AppLinkSession {
       space.hub.on('entries', follow)
       this.stops.push(() => space.hub.off('entries', follow))
     }
+    if (this.closed) return
     const mine = (login: string, kinds: string[]) => {
       if (login.toLowerCase() !== this.login.toLowerCase()) return
       for (const kind of kinds) this.pending.add(kind)

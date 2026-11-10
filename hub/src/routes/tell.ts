@@ -50,11 +50,12 @@ export async function tellRoutes(app: FastifyInstance, context: Context) {
     const who = login(request)
     const mine = spaces.forPerson(who, isAdmin(who)).filter(({ info }) => !info.members.length || info.members.some((m) => m.login.toLowerCase() === who.toLowerCase()))
     return {
-      binders: mine.map(({ info, role }) => {
-        const hub = spaces.get(info.id)?.hub
+      binders: await Promise.all(mine.map(async ({ info, role }) => {
+        // Their own Binder is started for this, if nothing has needed it yet: what waits in it is in the number.
+        const hub = (await spaces.start(info.id))?.hub
         // Nothing waits on a reader: they answer nothing and approve nothing.
         return { id: info.id, name: info.name, count: hub ? forAttention(waitingOn(hub.state, who, { reads: role === 'reader' })).length : 0 }
-      }),
+      })),
     }
   }))
 }

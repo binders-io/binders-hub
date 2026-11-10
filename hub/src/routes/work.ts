@@ -303,7 +303,10 @@ export async function workRoutes(app: FastifyInstance, context: Context) {
   app.get('/api/notes/send-to', act(async (request) => {
     const here = sp(request).id
     // Not one they can only read: a note sent there would be a note written there.
-    const own = spaces.forPerson(login(request), false).filter(({ info, role }) => info.id !== here && role !== 'reader' && spaces.get(info.id))
+    const there = spaces.forPerson(login(request), false).filter(({ info, role }) => info.id !== here && role !== 'reader')
+    // Their own Binder is started for this, if nothing has needed it yet, so it's offered.
+    const started = await Promise.all(there.map(({ info }) => spaces.start(info.id)))
+    const own = there.filter((_, i) => started[i])
     return { binders: own.map(({ info }) => ({ id: info.id, name: info.name, personal: !!info.personal })).sort((a, b) => Number(b.personal) - Number(a.personal)) }
   }))
   app.post('/api/notes/:id/send', act(async (request) => {
@@ -318,7 +321,7 @@ export async function workRoutes(app: FastifyInstance, context: Context) {
     if (!target) throw new Refused('You’re not in that Binder.')
     if (chosen.role === 'reader') throw new Refused(readerWords)
     if (target.id === from.id) throw new Refused('That note is in that Binder already.')
-    const to = spaces.get(target.id)
+    const to = await spaces.start(target.id)
     if (!to) throw new Refused('That Binder isn’t available just now. Try again in a moment.')
     const note = from.hub.state.notes.find((n) => n.id === param(request, 'id'))
     if (!note) throw new Refused('That note isn’t there any more.')
@@ -337,7 +340,7 @@ export async function workRoutes(app: FastifyInstance, context: Context) {
     copy.text = copyWords(note, `Sent from [${asLinkText(note.title || titleOf(note.text))}](${fromUrl}) in ${asWords(spaceName(spaces.info(from.id)))} by @${me} on ${when(at)}.`)
     // Sending it twice makes a second copy, and says so.
     const again = to.hub.state.notes.some((n) => n.text.split('\n').some((line) => line.startsWith('_Sent from ') && line.includes(`](${fromUrl})`)))
-    await copyPictures(note.text, from, to, part, mine.map((s) => spaces.get(s.info.id)).filter((s): s is Space => !!s))
+    await copyPictures(note.text, from, to, part, async () => (await Promise.all(mine.map((s) => spaces.start(s.info.id)))).filter((s): s is Space => !!s))
     await to.hub.record({ kind: 'user', login: me }, { type: 'note.put', note: copy })
     // The original keeps where it went, unless it's locked against this person: then it's left exactly as it is.
     const marked = !lockStops(note, { login: me, manager: manager(request) })
@@ -406,7 +409,7 @@ function copyWords(note: Note, line: string) {
  * The pictures a note shows, put in the notes of the Binder it's sent to: they're kept by their contents' hash in the
  * Binder they were put in, and only the people of a Binder find them there. One that can't be found is left out.
  */
-async function copyPictures(text: string, from: Space, to: Space, part: Binder, theirs: Space[]) {
+async function copyPictures(text: string, from: Space, to: Space, part: Binder, theirs: () => Promise<Space[]>) {
   const names = [...new Set([...text.matchAll(/\/api\/files\/([a-f0-9]{24}\.[a-z0-9]+)/g)].map((m) => m[1]))]
   if (!names.length || !to.filesDir) return
   const dirsOf = async (space: Space) => {
@@ -414,7 +417,7 @@ async function copyPictures(text: string, from: Space, to: Space, part: Binder, 
     const top = join(space.filesDir, '..')
     return [space.filesDir, ...(await readdir(top, { withFileTypes: true }).catch(() => [])).filter((d) => d.isDirectory() && !d.name.startsWith('.')).map((d) => join(top, d.name, 'files'))]
   }
-  const searched = (await Promise.all([from, ...theirs.filter((s) => s !== from)].map(dirsOf))).flat()
+  const searched = (await Promise.all([from, ...(await theirs()).filter((s) => s !== from)].map(dirsOf))).flat()
   const into = join(to.filesDir, '..', slug(part.name), 'files')
   await mkdir(into, { recursive: true })
   for (const name of names) {

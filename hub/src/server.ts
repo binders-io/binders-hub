@@ -168,7 +168,8 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
     const mine = spaces.forPerson(request.user.login, isAdmin(request.user.login))
     const found = named ? mine.find((s) => s.info.id === named) : mine[0]
     if (found) {
-      request.space = spaces.get(found.info.id)
+      // Started now if it's a personal Binder nobody has needed since the hub started.
+      request.space = await spaces.start(found.info.id)
       request.role = found.role
       // Their GitHub for this Binder: their sign-in to its own app (signed in before the hub kept one per Binder, the
       // token they signed in with, which is the first Binder's).

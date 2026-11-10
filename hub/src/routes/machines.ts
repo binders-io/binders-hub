@@ -64,7 +64,8 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
     // An agent's token: the runner's, for work it takes. A token made before the hub held several Binders is the first's.
     const agent = await auth.agentFor(token)
     if (agent) {
-      const space = spaces.get(agent.space ?? spaces.list()[0]?.id ?? '')
+      // The agent's token is proof enough to start its Binder, if it's a personal one nothing has needed yet.
+      const space = await spaces.start(agent.space ?? spaces.list()[0]?.id ?? '')
       if (space && named && named !== space.id) return setByHand(reply, 'This agent’s token is for another binder.')
       const there = space?.hub.state.agents.find((a) => a.id === agent.id && !a.revoked)
       if (!space || !there) return setByHand(reply, agentStale)
@@ -91,8 +92,10 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
     if (named && !allowed.includes(named)) return refused(`This connection is for another binder. To use ${named}, connect to its address and allow it.`)
     const reached = mine.filter((s) => (named ? s.info.id === named : allowed.includes(s.info.id)))
     if (!reached.length) return refused(`@${person.user.login} isn’t in ${allowed.length > 1 ? 'any of the binders' : 'the binder'} this connection is for.`)
-    const places = reached.flatMap((s) => {
-      const space = spaces.get(s.info.id)
+    // Started now, those of theirs that nothing has needed yet: the connection is theirs and for these Binders.
+    const started = await Promise.all(reached.map((s) => spaces.start(s.info.id)))
+    const places = reached.flatMap((s, i) => {
+      const space = started[i]
       return space ? [{ id: s.info.id, name: s.info.name, role: s.role, hub: space.hub, actions: space.actions, brain: space.brain }] : []
     })
     if (!places.length) return unauthorized(reply, request)

@@ -41,6 +41,12 @@ export interface SpaceInfo {
   /** For a personal Binder: the Binder whose GitHub App it reaches GitHub through (the one its person signs in by). */
   home?: string
   /**
+   * For a personal Binder: whether it has work that goes on without its person (an agent, a schedule, a run under way, a
+   * repo it follows, its own Jira, a summary waiting), so it starts with the hub. One that has none starts when it's first needed.
+   * Not said yet, for one from before this was kept: it starts with the hub, and says.
+   */
+  wakes?: boolean
+  /**
    * When it was taken off the hub, and by whom. It stays in the list so its address stays taken, but it isn't listed,
    * opened or started; its files and its GitHub repo are left as they were.
    */
@@ -71,6 +77,17 @@ export interface Space {
   /** Its brain: the index of its notes and cards, what's captured put in as notes, questions answered. */
   brain?: SpaceBrain
   stop?: () => Promise<void>
+}
+
+/**
+ * Whether a Binder has work that goes on without its person: an agent that may be listening, a schedule, a run under
+ * way, a repo whose pull requests it follows, a Jira project that tells it what happened there, a capture waiting for
+ * a summary. A personal Binder with none of these needn't run until its person next comes.
+ */
+export function worksAlone(space: Pick<Space, 'hub' | 'brain' | 'jira'>) {
+  const { state } = space.hub
+  return state.agents.some((agent) => !agent.revoked) || (state.schedules?.length ?? 0) > 0 || state.cards.some((card) => card.stage === 'working') ||
+    state.binders.some((binder) => !!binder.repo) || !!space.jira?.settings.baseUrl || (space.brain?.summariesWaiting ?? 0) > 0
 }
 
 /** Names a Binder's address can't take: the hub's own paths. */
@@ -134,11 +151,55 @@ export class Spaces {
       this.setInfos([{ id: first.id, name: first.name, createdAt: new Date().toISOString(), createdBy: 'hub', members: first.members }])
       await this.save()
     }
-    // Team Binders first: a personal one reaches GitHub through one of them.
+    // Team Binders first: a personal one reaches GitHub through one of them. Then the personal ones with work that goes
+    // on without their person. The rest start when they're first needed (`start`), so a hub with thousands of people
+    // starts the Binders in use and not one for everybody.
     const live = this.list()
-    for (const info of [...live.filter((i) => !i.personal), ...live.filter((i) => i.personal)]) this.running.set(info.id, await this.make(info.id, info))
+    for (const info of [...live.filter((i) => !i.personal), ...live.filter((i) => i.personal && i.wakes !== false)]) this.running.set(info.id, await this.make(info.id, info))
     this.started = true
     return this
+  }
+
+  /** Binders being started because someone needs them: one start each, whoever else asks meanwhile. */
+  private waking = new Map<string, Promise<Space>>()
+
+  /**
+   * A Binder's running parts, started now if they aren't yet: a personal Binder with nothing going on in it isn't
+   * started with the hub, and starts here the first time it's needed. Undefined for one that isn't on the hub, or
+   * while the hub is still starting the Binders it starts with.
+   */
+  async start(id: string): Promise<Space | undefined> {
+    const running = this.running.get(id)
+    if (running) return running
+    const info = this.info(id)
+    if (!info || !this.started) return undefined
+    let waking = this.waking.get(id)
+    if (!waking) {
+      waking = this.make(id, info).then((space) => {
+        // Taken off the hub while it was starting: it isn't kept.
+        if (this.info(id)) this.running.set(id, space)
+        else void space.stop?.().catch(() => undefined)
+        return space
+      }).finally(() => this.waking.delete(id))
+      this.waking.set(id, waking)
+    }
+    return waking
+  }
+
+  /** How many Binders on the hub haven't started: those nobody has needed since the hub did. */
+  get asleep() {
+    return this.list().length - this.running.size
+  }
+
+  /**
+   * Says whether a personal Binder has work that goes on without its person, for the next time the hub starts. Kept
+   * only when it changes.
+   */
+  async setWakes(id: string, wakes: boolean) {
+    const info = this.info(id)
+    if (!info?.personal || info.wakes === wakes) return
+    info.wakes = wakes
+    await this.save()
   }
 
   /** For tests and hubs started by hand: Binders already running, kept in memory. */

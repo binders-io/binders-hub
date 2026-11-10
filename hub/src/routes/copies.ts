@@ -27,7 +27,7 @@ export async function copyRoutes(app: FastifyInstance, context: Context) {
       const info = spaces.info(id)
       if (!info || !spaces.forPerson(me, admin).some((s) => s.info.id === id)) throw new Refused('No such Binder.')
       if (!spaces.mayManage(id, me, admin)) throw new Refused('Only the Binder’s owners and admins can download a copy of it.')
-      const hub = spaces.get(id)?.hub
+      const hub = (await spaces.start(id))?.hub
       if (!hub) throw new Refused('No such Binder.')
       const now = new Date()
       const { bytes } = await makeCopy(hub, { id, name: info.name, people: info.members }, now)

@@ -126,11 +126,13 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
     return { brain: await brainSettings.set(bodyOf<Partial<BrainSettings> & Keys>(bodies.brain, request)), admin: true }
   }))
 
-  const placesFor = (request: Parameters<typeof login>[0], everywhere?: boolean): AskPlace[] => {
+  // Started on the way, when one is the person's own personal Binder that nothing has needed yet.
+  const placesFor = async (request: Parameters<typeof login>[0], everywhere?: boolean): Promise<AskPlace[]> => {
     // Every binder they're in: as a member, even for a hub admin, who may open others but didn't ask about them.
     const ids = everywhere ? spaces.forPerson(login(request), false).map((s) => s.info.id) : [sp(request).id]
-    return ids.flatMap((id) => {
-      const space = spaces.get(id)
+    const started = await Promise.all(ids.map((id) => spaces.start(id)))
+    return ids.flatMap((id, i) => {
+      const space = started[i]
       if (!space?.brain) return []
       const info = spaces.info(id)
       const name = info?.name ?? id
@@ -148,7 +150,7 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
   app.post('/api/brain/ask', askLimit, act(async (request) => {
     if (!brainSettings) throw new Refused('This hub has no brain.')
     const body = bodyOf<{ question: string; everywhere?: boolean; turns?: z.infer<typeof said> }>(asking, request)
-    const result = await ask(brainSettings, placesFor(request, body.everywhere), body.question, { person: login(request), may: true, turns: body.turns })
+    const result = await ask(brainSettings, await placesFor(request, body.everywhere), body.question, { person: login(request), may: true, turns: body.turns })
     // Ask's own page sends the conversation so far, even when it's empty: what it asks is kept for the person, to open
     // again on any device. An offer to do something isn't, as it can't be taken up later. Another client asking alone
     // adds nothing to it.
@@ -181,7 +183,7 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
   app.post('/api/notes/:id/ask', askLimit, act(async (request) => {
     if (!brainSettings) throw new Refused('This hub has no brain.')
     const body = bodyOf<{ question: string; turns?: z.infer<typeof said> }>(aboutNote, request)
-    return ask(brainSettings, placesFor(request), body.question, { about: { place: sp(request).id, note: param(request, 'id') }, turns: body.turns })
+    return ask(brainSettings, await placesFor(request), body.question, { about: { place: sp(request).id, note: param(request, 'id') }, turns: body.turns })
   }))
 
   // A person's answer to what a question came to: theirs alone, once, and still in a Binder they can open.
@@ -200,7 +202,7 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
   app.post('/api/brain/search', searchLimit, act(async (request) => {
     if (!brainSettings) throw new Refused('This hub has no brain.')
     const body = bodyOf<{ query: string; everywhere?: boolean }>(bodies.brainSearch, request)
-    return search(brainSettings, placesFor(request, body.everywhere), body.query)
+    return search(brainSettings, await placesFor(request, body.everywhere), body.query)
   }))
 
   app.post('/api/captures', captureLimit, act(async (request) => {
@@ -211,8 +213,8 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
     // go, while they're still in it. With no choice made, it goes where it always has.
     const named = request.headers['x-binders-space'] || (request.query as { space?: string } | undefined)?.space || body.binder
     if (!named) {
-      const own = spaces.get(personalId(who))?.brain?.kv
-      const home = own && (await chosenHome(own)) ? spaces.get(await captureHome(spaces, who)) : undefined
+      const own = (await spaces.start(personalId(who)))?.brain?.kv
+      const home = own && (await chosenHome(own)) ? await spaces.start(await captureHome(spaces, who)) : undefined
       if (home?.brain) space = home
     }
     // Where it goes is only known here, so the hook leaves this address to say so: a reader's capture is refused.

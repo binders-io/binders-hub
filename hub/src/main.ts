@@ -16,7 +16,7 @@ import { ReviewsSaver } from './savers/reviews.ts'
 import { Scheduler } from './scheduler.ts'
 import { hubSecret, Sealer } from './secrets.ts'
 import { buildServer } from './server.ts'
-import { Spaces, firstSpaceIn, type Space, type SpaceInfo } from './spaces.ts'
+import { Spaces, firstSpaceIn, worksAlone, type Space, type SpaceInfo } from './spaces.ts'
 import { agentReach } from './reach.ts'
 import { Merger } from './merger.ts'
 import { Webhooks } from './webhooks.ts'
@@ -319,8 +319,18 @@ const app = await buildServer(spaces, { auth, options, brain: brainSettings, mac
 await app.listen({ port, host })
 console.log(`Binders hub listening on http://${host}:${port}; starting its Binders.`)
 
+// Which personal Binders have work that goes on without their person: those start with the hub, and the rest when
+// their person next comes. Said again each minute, as a Binder gains and loses such work, and once more as the hub stops.
+const sayWhichWake = async () => {
+  for (const space of spaces.all()) if (spaces.info(space.id)?.personal) await spaces.setWakes(space.id, worksAlone(space)).catch(() => undefined)
+}
+const wakesTimer = setInterval(() => void sayWhichWake(), 60_000)
+wakesTimer.unref()
+
 const stop = async (code: number) => {
+  clearInterval(wakesTimer)
   await app.close()
+  await sayWhichWake()
   await spaces.stop()
   // Last of the hub's, so the next one starts at once.
   await lease?.release()
@@ -347,7 +357,7 @@ const githubOf = (s: Space) => {
 const lines = [
   `Binders hub on http://${host}:${port} for ${publicUrl}`,
   `log: ${firstLog.kind}${firstLog.kind === 'memory' ? ' (set REDIS_URL to keep it)' : ''}`,
-  `Binders: ${spaces.all().map((s) => `${spaces.info(s.id)?.name ?? s.id} at /${s.id} (version ${s.hub.version})`).join(', ')}`,
+  `Binders: ${spaces.all().map((s) => `${spaces.info(s.id)?.name ?? s.id} at /${s.id} (version ${s.hub.version})`).join(', ')}${spaces.asleep ? `, and ${spaces.asleep} personal that start when they’re first needed` : ''}`,
   `GitHub: ${spaces.all().map(githubOf).join('; ')}`,
   `following GitHub: ${options.get().pollMode === 'off' ? 'webhooks only' : `by asking every ${options.get().pollSeconds} s while no webhook arrives`}`,
   `sign-in: ${[signInThrough() ? `GitHub (through ${signInThrough()!.id}'s app)` : '', auth.options.devLogin() ? 'by name (this machine only)' : ''].filter(Boolean).join(' and ') || 'none yet'}`,

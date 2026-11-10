@@ -192,7 +192,7 @@ export async function stateRoutes(app: FastifyInstance, context: Context) {
     const ext = /^[a-f0-9]{24}\.([a-z]+)$/.exec(name)?.[1]
     const type = Object.entries(pictureTypes).find(([, e]) => e === ext)?.[0]
     // Looked for in the Binders the person may open: a picture's name is its hash, so it's found wherever it was put.
-    const dirs = spaces.forPerson(login(request), isAdmin(login(request))).map(({ info }) => spaces.get(info.id)?.filesDir).filter((d): d is string => !!d)
+    const dirs = (await Promise.all(spaces.forPerson(login(request), isAdmin(login(request))).map(async ({ info }) => (await spaces.start(info.id))?.filesDir))).filter((d): d is string => !!d)
     if (!dirs.length || !type) return reply.code(404).send({ error: 'No such file.' })
     try {
       const file = await findFile(dirs, name)

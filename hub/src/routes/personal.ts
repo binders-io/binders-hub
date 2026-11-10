@@ -70,7 +70,7 @@ export async function personalRoutes(app: FastifyInstance, context: Context) {
     const there = spaces.forPerson(me, false).find((s) => s.info.id === body.binder)
     if (!there) throw new Refused('You’re not in that Binder.')
     if (there.role === 'reader') throw new Refused(readerWords)
-    const kv = spaces.get(personalId(me))?.brain?.kv
+    const kv = (await spaces.start(personalId(me)))?.brain?.kv
     if (!kv) throw new Refused('Your own Binder isn’t ready yet. Try again in a moment.')
     // Their own is the default: nothing is kept for it.
     await chooseHome(kv, body.binder === personalId(me) ? undefined : body.binder)
