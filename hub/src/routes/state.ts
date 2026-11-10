@@ -74,11 +74,11 @@ export async function stateRoutes(app: FastifyInstance, context: Context) {
       const vet = async (change: Change) => {
         // A note held without its text is a browser's own: writing it whole would replace the note with nothing.
         if (change.type === 'note.put' && change.note?.left) throw new Refused('This note’s text isn’t loaded in this browser, so it can’t be saved from it.')
-        // Where a Binder's cards and notes go, and taking a binder away, are its owners' and admins' to change (and the
-        // hub's admins'); a Binder with no members is open to everyone, so anyone may.
+        // Where a Binder's cards and notes go, and taking a binder away, are its owners' and admins' to change (the
+        // hub's admins', while it has no owner).
         if (change.type === 'binder.delete' || (change.type === 'binder.put' && whereItGoes(change.binder) !== whereItGoes(hub.state.binders.find((b) => b.id === change.binder.id)))) {
           const info = spaces.info(sp(request).id)
-          if (info?.members.length && !spaces.mayManage(info.id, login(request), isAdmin(login(request)))) throw new Refused('Only this Binder’s owners and admins can change where its cards and notes go.')
+          if (info && !spaces.mayManage(info.id, login(request), isAdmin(login(request)))) throw new Refused('Only this Binder’s owners and admins can change where its cards and notes go.')
         }
         if (change.type !== 'binder.put') return
         const was = hub.state.binders.find((b) => b.id === change.binder.id)

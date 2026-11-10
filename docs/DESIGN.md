@@ -330,14 +330,22 @@ with the Mac.
   sending a note refuse a reader in the same words, and the brain tells a reader how things stand and never offers them
   a change. Nothing waits on a reader, and a reader isn't offered an agent's terminal. Making someone a reader revokes the
   agents they own there, an agent whose owner can only read isn't accepted, and a line made by a reader can't add a
-  machine. Everyone in a binder sees who runs it. Only its owners and admins,
-  and the hub's admins, change where its cards and notes go (its repo, its agents' repos, whether notes are pushed,
-  whether cards are kept as issues, whether a Challenge's findings are posted) and its environments; a binder with no
-  members is open to all. A person can leave a binder, the last owner can't, and taking someone out, or their leaving,
-  revokes the agents they own there (`hub/src/routes/binders.ts`). An agent whose owner is no longer in its binder is
-  refused, with a 403 in words. An owner or a hub admin can take a binder off the hub by typing its name: it stops and
-  isn't listed or opened, nothing is destroyed, and its address stays taken. The hub's first binder and personal
-  binders can't be taken off (`hub/src/spaces.ts`).
+  machine. Everyone in a binder sees who runs it. A binder's settings are its owners' and admins': its people, GitHub,
+  Jira, folder rules, environments, the channel it tells, its locked notes, its agents and its name, and where its cards
+  and notes go (its repo, its agents' repos, whether notes are pushed, whether cards are kept as issues, whether a
+  Challenge's findings are posted). A binder with no members is open to all, as members. A person can leave a binder, the
+  last owner can't, and taking someone out, or their leaving, revokes the agents they own there
+  (`hub/src/routes/binders.ts`). An agent whose owner is no longer in its binder is refused, with a 403 in words. An
+  owner can take a binder off the hub by typing its name: it stops and isn't listed or opened, nothing is destroyed, and
+  its address stays taken. The hub's first binder and personal binders can't be taken off (`hub/src/spaces.ts`).
+- The hub's admins run the hub: who gets in, the brain, its options, and making a binder for someone else. Being one
+  gives no place in a binder: they open the binders they're in and the open ones, like anyone. A binder with no owner,
+  which is one with no members or one whose owners have gone, is looked after by the hub's admins until it has one: there
+  they are admins (`Spaces.roleFor`, kept to hand in an index beside the open binders, as `forPerson` runs on every
+  request), and may name its first owner. `GET /api/hub/binders` lists every team binder with its owners, for the hub's
+  admins, and `PUT /api/hub/binders/:id/owners/:login` makes someone an owner of any of them, one they aren't in too,
+  and writes that in the binder's history. On a hub where no one is named an admin, everyone counts as one, so everyone
+  looks after a binder with no owner.
 
 ## Delivery (built)
 

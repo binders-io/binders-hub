@@ -30,16 +30,17 @@ export function useSpaces() {
 }
 
 /**
- * Whether you may change this binder's settings: its owners and admins, the hub's admins, and anyone when it has no
- * members at all. Until the hub has said which, a plain member's controls wait.
+ * Whether you may change this binder's settings: its owners and admins. The hub says you're its admin when you're one of
+ * the hub's admins and it has no owner, so that's no special case here. `noOwner` is whether the hub's list of the binder
+ * shows no owner; until the list has come, it's false, so a line about it doesn't flash.
  */
 export function useBinderAccess() {
   const spaces = useSpaces()
   const me = useStore().state.me
   const managers = spaces.here?.managers ?? []
-  // A reader changes nothing in the Binder, the hub's admins who are readers there included.
-  const may = me?.role !== 'reader' && (!!me?.hubAdmin || me?.role === 'owner' || me?.role === 'admin' || (!!spaces.here && managers.length === 0))
-  return { ...spaces, managers, may }
+  const may = me?.role === 'owner' || me?.role === 'admin'
+  const noOwner = !!spaces.here && !managers.some((m) => m.role === 'owner')
+  return { ...spaces, managers, may, noOwner }
 }
 
 /**

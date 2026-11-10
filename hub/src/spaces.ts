@@ -102,6 +102,10 @@ export class Spaces {
   private memberOf = new Map<string, Set<string>>()
   /** The live Binders with no members: anyone the hub lets in may open them. */
   private open = new Set<string>()
+  /** The live team Binders with no owner (those with no members too): the hub's admins look after them until they have one. */
+  private ownerless = new Set<string>()
+  /** Who runs the hub, set once by the server: nobody until then. */
+  hubAdmin: (login: string) => boolean = () => false
   /** `list()`, until a Binder is made, taken off the hub or loaded. */
   private live?: readonly SpaceInfo[]
   /** Set once every Binder has started: until then the hub answers only that it's starting. */
@@ -155,6 +159,7 @@ export class Spaces {
     this.madeAt.clear()
     this.memberOf.clear()
     this.open.clear()
+    this.ownerless.clear()
     this.live = undefined
     for (const info of infos) this.add(info)
   }
@@ -171,6 +176,7 @@ export class Spaces {
   private index(info: SpaceInfo) {
     if (info.removedAt) return
     if (!info.members.length) this.open.add(info.id)
+    if (!info.personal && !info.members.some((m) => m.role === 'owner')) this.ownerless.add(info.id)
     for (const member of info.members) {
       const login = member.login.toLowerCase()
       const ids = this.memberOf.get(login) ?? new Set<string>()
@@ -182,6 +188,7 @@ export class Spaces {
   /** Call before its members change or it's taken off the hub, with the members it has now. */
   private unindex(info: SpaceInfo) {
     this.open.delete(info.id)
+    this.ownerless.delete(info.id)
     for (const member of info.members) {
       const login = member.login.toLowerCase()
       const ids = this.memberOf.get(login)
@@ -222,6 +229,7 @@ export class Spaces {
     return [...new Set(this.list().flatMap((s) => s.members.map((m) => m.login)))]
   }
 
+  /** A person's own place in a Binder, with no hub admin in it: for what is about them, not about running the Binder. */
   roleOf(id: string, login: string): Role | undefined {
     const info = this.info(id)
     return info && this.roleIn(info, login)
@@ -232,26 +240,40 @@ export class Spaces {
     return info.members.find((m) => same(m.login, login))?.role
   }
 
-  /** The Binders a person may open, theirs first in the order they were made. Hub admins may open all. */
+  /** Whether a Binder has an owner: one that has none is looked after by the hub's admins until it has. */
+  hasOwner(id: string) {
+    return !!this.info(id)?.members.some((m) => m.role === 'owner')
+  }
+
+  /**
+   * What a person is in a Binder: their own place, or a member's for anyone in one with no members. A hub admin is
+   * an admin of a team Binder that has no owner, whatever lower place they have there, and of none that has one.
+   */
+  roleFor(id: string, login: string, hubAdmin: boolean): Role | undefined {
+    const info = this.info(id)
+    return info && this.roleWith(info, login, hubAdmin)
+  }
+
+  private roleWith(info: SpaceInfo, login: string, hubAdmin: boolean): Role | undefined {
+    if (hubAdmin && this.ownerless.has(info.id)) return 'admin'
+    return this.roleIn(info, login)
+  }
+
+  /** The Binders a person may open, theirs first in the order they were made. A hub admin's include those with no owner. */
   forPerson(login: string, hubAdmin = false) {
-    // A hub admin's answer is most of the list anyway; for anyone else it's their own Binders and the open ones.
-    if (hubAdmin) {
-      return this.list()
-        .map((info) => ({ info, role: this.roleIn(info, login) ?? (!info.personal ? ('admin' as const) : undefined) }))
-        .filter((s): s is { info: SpaceInfo; role: Role } => !!s.role)
-    }
-    const ids = [...(this.memberOf.get(login.toLowerCase()) ?? []), ...this.open]
-    return ids
+    // Where to look: their own Binders, the open ones and, for a hub admin, those with no owner. Each says what they are.
+    const ids = new Set([...(this.memberOf.get(login.toLowerCase()) ?? []), ...this.open, ...(hubAdmin ? this.ownerless : [])])
+    return [...ids]
       .sort((a, b) => this.madeAt.get(a)! - this.madeAt.get(b)!)
       .map((id) => this.info(id)!)
-      .map((info) => ({ info, role: this.roleIn(info, login) }))
+      .map((info) => ({ info, role: this.roleWith(info, login, hubAdmin) }))
       .filter((s): s is { info: SpaceInfo; role: Role } => !!s.role)
   }
 
-  /** Whether a person may change who's in a Binder: its owners and admins, and the hub's admins. */
+  /** Whether a person may change a Binder (who's in it, its settings): its owners and admins, and the hub's admins while it has no owner. */
   mayManage(id: string, login: string, hubAdmin: boolean) {
-    const role = this.roleOf(id, login)
-    return hubAdmin || role === 'owner' || role === 'admin'
+    const role = this.roleFor(id, login, hubAdmin)
+    return role === 'owner' || role === 'admin'
   }
 
   /** An address for a new Binder from its name: "Mobile app" is /mobile-app, or /mobile-app-2 when that's taken. */
@@ -318,7 +340,7 @@ export class Spaces {
     return info
   }
 
-  /** Adds someone or changes their role. Only an owner (or the hub's admin) makes or unmakes owners. */
+  /** Adds someone or changes their role. Only an owner (or the hub's admin, while it has none) makes or unmakes owners. */
   async setMember(id: string, login: string, role: Role, byOwner: boolean) {
     const info = this.need(id)
     if (info.personal) throw new Refused('A personal Binder is its person’s alone.')

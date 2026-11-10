@@ -242,7 +242,8 @@ describe('the conversation the hub keeps for a person', () => {
       await bo('POST', '/api/brain/ask', { question: 'What is for lunch?', turns: [] })
       assert.deepEqual(((await bo('GET', '/api/brain/conversation')).body.turns as { question: string }[]).map((t) => t.question), ['What is for lunch?'])
       assert.deepEqual(((await you('GET', '/api/brain/conversation')).body.turns as { question: string }[]).map((t) => t.question), ['Who is booking the garage?'])
-      assert.deepEqual((await boss('GET', '/api/brain/conversation')).body, { turns: [] }, 'not a hub admin’s to read')
+      // A hub admin who isn't in the Binder doesn't get in to read it.
+      assert.equal((await boss('GET', '/api/brain/conversation')).status, 403, 'not a hub admin’s to read')
       assert.equal((await you('DELETE', '/api/brain/conversation')).status, 200)
       assert.deepEqual((await you('GET', '/api/brain/conversation')).body, { turns: [] })
       assert.equal(((await bo('GET', '/api/brain/conversation')).body.turns as unknown[]).length, 1, 'theirs is theirs')

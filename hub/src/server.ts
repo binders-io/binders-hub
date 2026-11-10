@@ -67,11 +67,13 @@ declare module 'fastify' {
  *
  * A hub holds one or more Binders (spaces, in the code), each a team's own board. Most of /api is about one of them:
  * the one a request names with x-binders-space, or the first the person may open. Who may open which is the
- * Binder's members; the hub's admins make Binders and may open all of them.
+ * Binder's members; the hub's admins make Binders and look after those that have no owner.
  */
 export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: OptionsStore; brain?: BrainSettingsStore; machines?: BrainMachines }, options: ServerOptions) {
   const context = makeContext(spaces, deps, options)
   const { auth, isAdmin, secure, signInSpace } = context
+  // A Binder with no owner is looked after by the hub's admins: the Binders' roles ask who they are.
+  spaces.hubAdmin = isAdmin
   const app = Fastify({ ...(options.logger ? { loggerInstance: options.logger } : { logger: false }), logController: new LogController({ disableRequestLogging: !options.logRequests }), bodyLimit: 4 * 1024 * 1024, trustProxy: trustedProxies() })
   // The hub listens before its Binders have started, which takes a while with many of them: a server that watches
   // /health then sees a hub that's busy, not one that's gone. Until they're up, it's all that's answered besides /ready.
@@ -190,8 +192,8 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
     if (role === 'reader' && !readerMaySend(request.method, request.url, request.user.login)) return reply.code(403).send({ error: readerWords })
   })
 
-  /** What's the hub's rather than one Binder's: who you are, your tokens, its options, GitHub, and its Binders. */
-  const hubWide = /^\/api\/(me|tokens|options|spaces)(\/|\?|$)/
+  /** What's the hub's rather than one Binder's: who you are, your tokens, its options, GitHub, and its Binders (the list of them, too). */
+  const hubWide = /^\/api\/(me|tokens|options|spaces|hub)(\/|\?|$)/
   app.get('/health', async () => ({ ok: true }))
   app.get('/ready', async (_request, reply) => {
     if (!spaces.ready) return reply.code(503).send({ ok: false, message: 'The hub is still starting its Binders.' })

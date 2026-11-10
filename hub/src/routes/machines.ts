@@ -71,8 +71,8 @@ export async function machineRoutes(app: FastifyInstance, context: Context) {
       // An agent acts with its owner's reach, which for a reader is none that changes anything.
       if (spaces.roleOf(space.id, there.owner) === 'reader') return setByHand(reply, `@${there.owner} can only read this binder, so ${there.name} can’t work in it. Ask one of its owners to let them change it, or set the agent up again under someone who can.`)
       // Its token speaks as its owner's agent, so only while its owner is in the Binder (one with no members is open to
-      // everyone), or is one of the hub's named admins, who may open any team Binder.
-      if (!spaces.roleOf(space.id, there.owner) && !(namedAdmin(there.owner) && !spaces.info(space.id)?.personal)) return setByHand(reply, `@${there.owner} isn’t in this binder any more, so ${there.name} can’t work in it. Ask one of its owners to add them back, or set the agent up again under someone who is in it.`)
+      // everyone), or is one of the hub's named admins and it has no owner.
+      if (!spaces.roleFor(space.id, there.owner, namedAdmin(there.owner))) return setByHand(reply, `@${there.owner} isn’t in this binder any more, so ${there.name} can’t work in it. Ask one of its owners to add them back, or set the agent up again under someone who is in it.`)
       return serve(request, reply, mcpServer(space.hub, space.actions, agent.id, { issueToken: (id) => auth.issueAgentToken(id, space.id), publicUrl: options.publicUrl }, space.jira))
     }
     if (token?.startsWith('bnd_')) return setByHand(reply, agentStale)

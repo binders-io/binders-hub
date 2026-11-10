@@ -1,7 +1,7 @@
 // Settings' sections, in the two groups the sidebar shows them in. Light on purpose: a link to a section from anywhere
 // in the app (`SettingsLink`) reads its name from here without pulling in the screen.
 
-export type SectionId = 'general' | 'people' | 'github' | 'flow' | 'jira' | 'history' | 'access' | 'brain' | 'agents' | 'status'
+export type SectionId = 'general' | 'people' | 'github' | 'flow' | 'jira' | 'history' | 'access' | 'hubbinders' | 'brain' | 'agents' | 'status'
 export type GroupId = 'binder' | 'hub'
 
 export interface Section {
@@ -10,6 +10,8 @@ export interface Section {
   group: GroupId
   /** The line under the section's name. */
   detail: string
+  /** Only for the hub's admins: others don't see it listed, and its address takes them to General. */
+  hubAdmin?: true
 }
 
 export const sections: Section[] = [
@@ -20,6 +22,7 @@ export const sections: Section[] = [
   { id: 'jira', group: 'binder', label: 'Jira', detail: 'Mirrors this binder’s cards into one Jira Cloud project: a card becomes an issue, its stage the issue’s status, and what people do there comes back: a status they change moves the card, a comment lands on it. The hub keeps the words; Jira’s copy is written, never read back.' },
   { id: 'history', group: 'binder', label: 'History', detail: 'What people and agents did here that others may want to know of later, and what was deleted, which can be put back for 30 days.' },
   { id: 'access', group: 'hub', label: 'Who gets in', detail: 'Who may sign in to this hub, and who runs it.' },
+  { id: 'hubbinders', group: 'hub', hubAdmin: true, label: 'Binders', detail: 'Every binder on this hub and who owns it. Name an owner for one that has none.' },
   { id: 'brain', group: 'hub', label: 'Brain', detail: 'The models the hub sums up, answers and talks with, the same for every binder on this hub.' },
   { id: 'agents', group: 'hub', label: 'Agents', detail: 'How change sets merge, and who agents commit as.' },
   { id: 'status', group: 'hub', label: 'Status', detail: 'How the hub is doing, and the addresses other clients use to reach it.' },

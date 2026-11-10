@@ -130,17 +130,20 @@ describe('finding a person’s Binders', () => {
     infos.push(info('gone', [{ login: 'alice', role: 'owner' }], { removedAt: '2026-11-02T00:00:00.000Z', removedBy: 'x' }))
     infos.push(info('gone-open', [], { removedAt: '2026-11-02T00:00:00.000Z', removedBy: 'x' }))
     infos.push(info('twice', [{ login: 'Dup', role: 'admin' }, { login: 'dup', role: 'member' }, { login: 'zed', role: 'owner' }]))
+    // Binders whose owners have gone: the hub's admins look after these.
+    infos.push(info('orphan', [{ login: 'alice', role: 'member' }, { login: 'Bob', role: 'admin' }]), info('orphan-two', [{ login: 'zed', role: 'reader' }]))
     return infos
   }
 
-  /** What `forPerson` has always given, worked out from the saved list alone. */
+  /** What `forPerson` should give, worked out from the saved list alone: a hub admin is an admin of a team Binder with no owner. */
   const expected = async (kv: MemoryKV, login: string, hubAdmin: boolean) => {
     const saved = JSON.parse((await kv.get('spaces'))!) as SpaceInfo[]
     return saved
       .filter((s) => !s.removedAt)
       .map((s) => {
         const own: Role | undefined = !s.members.length ? 'member' : s.members.find((m) => m.login.toLowerCase() === login.toLowerCase())?.role
-        return { id: s.id, role: own ?? (hubAdmin && !s.personal ? ('admin' as const) : undefined) }
+        const looksAfter = hubAdmin && !s.personal && !s.members.some((m) => m.role === 'owner')
+        return { id: s.id, role: looksAfter ? ('admin' as const) : own }
       })
       .filter((s) => s.role)
   }
@@ -156,16 +159,42 @@ describe('finding a person’s Binders', () => {
     assert.deepEqual(spaces.list().map((s) => s.id), (JSON.parse((await kv.get('spaces'))!) as SpaceInfo[]).filter((s) => !s.removedAt).map((s) => s.id), `${step}: the list`)
   }
 
-  it('gives what it always gave, for a mix of Binders, as members and Binders change', async () => {
+  it('gives what the saved list says, for a mix of Binders, as members and Binders change', async () => {
     const kv = new MemoryKV()
     await kv.set('spaces', JSON.stringify(mix()))
     const spaces = await new Spaces(kv, stub).load({ id: 'main', name: 'Main', members: [] })
     await sameAsBefore(spaces, kv, 'as loaded')
     assert.deepEqual(spaces.forPerson('nobody-at-all').map((s) => s.info.id), ['main', 'open-two'], 'the open ones are everyone’s')
     assert.equal(spaces.roleOf('twice', 'DUP'), 'admin', 'the first who names them')
+    // A hub admin looks after the Binders with no owner, and only those, whatever place they have there.
+    const looked = (login: string) => spaces.forPerson(login, true).filter((s) => !spaces.hasOwner(s.info.id)).map((s) => `${s.info.id}:${s.role}`)
+    assert.deepEqual(looked('someone-else'), ['main:admin', 'open-two:admin', 'orphan:admin', 'orphan-two:admin'])
+    assert.deepEqual(spaces.forPerson('someone-else', true).map((s) => s.info.id), ['main', 'orphan', 'orphan-two', 'open-two'].sort((a, b) => spaces.list().findIndex((i) => i.id === a) - spaces.list().findIndex((i) => i.id === b)))
+    assert.deepEqual(spaces.forPerson('someone-else').map((s) => s.info.id), ['main', 'open-two'], 'not a hub admin: only the open ones')
+    assert.equal(spaces.roleFor('orphan-two', 'zed', true), 'admin', 'over the reader’s place')
+    assert.equal(spaces.roleFor('orphan-two', 'zed', false), 'reader')
+    assert.equal(spaces.roleFor('team-1', 'someone-else', true), undefined, 'a Binder with an owner is not theirs')
+    assert.equal(spaces.mayManage('team-1', 'someone-else', true), false)
+    assert.equal(spaces.mayManage('orphan', 'someone-else', true), true)
+    assert.equal(spaces.mayManage('orphan', 'alice', false), false, 'a member')
+    assert.equal(spaces.mayManage('orphan', 'bob', false), true, 'an admin of it')
+    assert.equal(spaces.mayManage('main', 'bo', false), false, 'not everyone, in a Binder with no members')
+    assert.equal(spaces.roleFor('~alice', 'someone-else', true), undefined, 'a personal Binder is its person’s')
+    assert.equal(spaces.hasOwner('orphan'), false)
+    assert.equal(spaces.hasOwner('team-1'), true)
     assert.equal(spaces.roleOf('gone', 'alice'), undefined, 'not one taken off the hub')
     assert.equal(spaces.info('gone'), undefined)
 
+    // Naming an owner takes a Binder out of the hub admins’ care; the index follows.
+    await spaces.setMember('orphan', 'Alice', 'owner', true)
+    await sameAsBefore(spaces, kv, 'an owner named')
+    assert.ok(!spaces.forPerson('someone-else', true).some((s) => s.info.id === 'orphan'))
+    assert.equal(spaces.roleFor('orphan', 'someone-else', true), undefined)
+    await spaces.setMember('orphan', 'alice', 'member', true).then(() => assert.fail('the last owner was made a member'), (error) => assert.match(String(error), /at least one owner/))
+    await spaces.setMember('orphan', 'bob', 'owner', true)
+    await spaces.setMember('orphan', 'alice', 'member', true)
+    await sameAsBefore(spaces, kv, 'the first owner stepped down for a second')
+    await spaces.removeMember('orphan', 'bob', true).then(() => assert.fail('the last owner was removed'), (error) => assert.match(String(error), /at least one owner/))
     await spaces.setMember('team-1', 'Zed', 'member', true)
     await sameAsBefore(spaces, kv, 'a member added')
     await spaces.setMember('team-1', 'zed', 'admin', true)
@@ -174,10 +203,14 @@ describe('finding a person’s Binders', () => {
     await sameAsBefore(spaces, kv, 'a member removed')
     await spaces.remove('team-3', 'hub')
     await sameAsBefore(spaces, kv, 'a Binder taken off the hub')
+    await spaces.remove('orphan-two', 'hub')
+    await sameAsBefore(spaces, kv, 'a Binder with no owner taken off the hub')
+    assert.ok(!spaces.forPerson('someone-else', true).some((s) => s.info.id === 'orphan-two'), 'and no longer in their care')
     assert.equal(spaces.roleOf('team-3', 'alice'), undefined)
     await spaces.create({ name: 'Brand new', owner: 'Alice' }, 'hub')
     await sameAsBefore(spaces, kv, 'a Binder made')
-    assert.deepEqual(spaces.forPerson('alice').map((s) => s.info.id).slice(-2), ['~alice', 'brand-new'], 'in the order made')
+    assert.deepEqual(spaces.forPerson('alice').map((s) => s.info.id).slice(-3), ['~alice', 'orphan', 'brand-new'], 'in the order made')
+    assert.ok(!spaces.forPerson('someone-else', true).some((s) => s.info.id === 'brand-new'), 'one made with its owner isn’t in the hub admins’ care')
     await spaces.ensurePersonal('Zed', undefined)
     await sameAsBefore(spaces, kv, 'a personal Binder made')
     assert.ok(spaces.forPerson('zed').some((s) => s.info.id === '~zed'))

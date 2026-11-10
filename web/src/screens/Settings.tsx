@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react'
-import { Bot, Brain, ChevronLeft, ChevronRight, History as HistoryIcon, KeyRound, Plug, Server, SlidersHorizontal, Users, Workflow } from 'lucide-react'
+import { Bot, Boxes, Brain, ChevronLeft, ChevronRight, History as HistoryIcon, KeyRound, Plug, Server, SlidersHorizontal, Users, Workflow } from 'lucide-react'
 import { space } from '../data/space'
 import { useStore } from '../data/store'
 import { useRoute } from '../route'
@@ -12,12 +12,14 @@ import { Flow } from './settings/Flow'
 import { General } from './settings/General'
 import { GitHub } from './settings/GitHub'
 import { HistoryPart } from './settings/History'
+import { HubBinders } from './settings/HubBinders'
 import { HubStatus } from './settings/HubStatus'
 import { JiraPart } from './settings/Jira'
+import { NoOwnerLine } from './settings/shared'
 import { groups, isSection, rememberSection, rememberedSection, sectionHref, sections, type GroupId, type SectionId } from './settings/sections'
 
 const icons: Record<SectionId, (props: { size?: number }) => ReactNode> = {
-  general: SlidersHorizontal, people: Users, github: Github, flow: Workflow, jira: Plug, history: HistoryIcon, access: KeyRound, brain: Brain, agents: Bot, status: Server,
+  general: SlidersHorizontal, people: Users, github: Github, flow: Workflow, jira: Plug, history: HistoryIcon, access: KeyRound, hubbinders: Boxes, brain: Brain, agents: Bot, status: Server,
 }
 
 /**
@@ -32,9 +34,14 @@ export function Settings() {
   const phone = usePhone()
   const heading = useRef<HTMLHeadingElement>(null)
   const here = route.screen === 'settings'
-  const wanted = here && isSection(route.id) ? route.id : undefined
+  // Sections only the hub's admins have are General to anyone else, once the hub has said who you are.
+  const hubAdmin = !!state.me?.hubAdmin
+  const barred = (id: string | undefined) => !!state.me && !hubAdmin && !!sections.find((s) => s.id === id)?.hubAdmin
+  const named = here && isSection(route.id) ? route.id : undefined
+  const wanted = barred(named) ? undefined : named
+  const remembered = rememberedSection()
   // On a phone with no section named, the list of them; elsewhere, the one last open.
-  const current = wanted ?? (phone ? undefined : rememberedSection())
+  const current = barred(named) ? 'general' : wanted ?? (phone ? undefined : barred(remembered) ? 'general' : remembered)
   useEffect(() => {
     if (wanted) rememberSection(wanted)
     // So Back moves between sections, rather than leaving a bare #/settings that stands for any of them.
@@ -60,7 +67,7 @@ export function Settings() {
             <div key={group.id} role="group" aria-labelledby={`settings-group-${group.id}`}>
               <p className="settings-group-title" id={`settings-group-${group.id}`}>{group.title}</p>
               {(group.id === 'hub' || binderName) && <p className="settings-group-sub">{group.id === 'binder' ? binderName : 'The same for every binder here'}</p>}
-              {sections.filter((s) => s.group === group.id).map((s) => {
+              {sections.filter((s) => s.group === group.id && (!s.hubAdmin || hubAdmin)).map((s) => {
                 const Icon = icons[s.id]
                 return (
                   <a key={s.id} href={sectionHref(s.id)} className={s.id === current ? 'on' : ''} aria-current={s.id === current ? 'page' : undefined}>
@@ -82,6 +89,7 @@ export function Settings() {
             <h2 ref={heading} tabIndex={-1}>{section.label}</h2>
             <p>{section.detail}</p>
           </header>
+          {section.group === 'binder' && <NoOwnerLine />}
           {section.id === 'general' && <General />}
           {section.id === 'people' && <People />}
           {section.id === 'github' && <GitHub />}
@@ -89,6 +97,7 @@ export function Settings() {
           {section.id === 'jira' && <JiraPart />}
           {section.id === 'history' && <HistoryPart />}
           {section.id === 'access' && <HubOptionsPanel part="access" />}
+          {section.id === 'hubbinders' && <HubBinders />}
           {section.id === 'brain' && <BrainPanel />}
           {section.id === 'agents' && <HubOptionsPanel part="agents" />}
           {section.id === 'status' && <HubStatus />}

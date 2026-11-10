@@ -4,7 +4,8 @@ import { bodies } from '../schemas.ts'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { Context } from './context.ts'
 
-// The hub's Binders and who's in them.
+// The hub's Binders and who's in them. A Binder's owners and admins run it. The hub's admins run the hub, and look after a
+// Binder only while it has no owner.
 
 /** A role as a sentence says it. */
 const aRole = { owner: 'an owner', admin: 'an admin', member: 'a member', reader: 'a reader' }
@@ -34,7 +35,23 @@ export async function binderRoutes(app: FastifyInstance, context: Context) {
     const admin = isAdmin(login(request))
     if (!spaces.info(id) || !spaces.forPerson(login(request), admin).some((s) => s.info.id === id)) throw new Refused('No such Binder.')
     if (!spaces.mayManage(id, login(request), admin)) throw new Refused('Only the Binder’s owners and admins can change who’s in it.')
-    return { id, byOwner: admin || spaces.roleOf(id, login(request)) === 'owner' }
+    // The hub's admins stand in for the owner a Binder doesn't have.
+    return { id, byOwner: spaces.roleOf(id, login(request)) === 'owner' || (admin && !spaces.hasOwner(id)) }
+  }
+  // Every team Binder on the hub with who owns it, for the hub's admins: the ones they don't look after too, so they can
+  // name an owner for any. `yours` is whether the asker can open it: they're in it, it's open, or it has no owner.
+  const hubBinders = (request: FastifyRequest) => {
+    if (!isAdmin(login(request))) throw new Refused('Only the hub’s admins see every Binder.')
+    return {
+      binders: spaces.list().filter((info) => !info.personal).map((info) => ({
+        id: info.id, name: info.name, createdAt: info.createdAt,
+        ...(spaces.isFirst(info.id) ? { first: true } : {}),
+        people: info.members.length,
+        owners: info.members.filter((m) => m.role === 'owner').map((m) => m.login),
+        admins: info.members.filter((m) => m.role === 'admin').map((m) => m.login),
+        yours: !!spaces.roleFor(info.id, login(request), true),
+      })),
+    }
   }
   /** Revokes every agent a person owns in a Binder, as the agents route revokes one, and says which. `why` finishes the history line. */
   const revokeAgentsOf = async (id: string, owner: string, by: string, why = 'is no longer in this Binder') => {
@@ -98,6 +115,21 @@ export async function binderRoutes(app: FastifyInstance, context: Context) {
     if (hub) await noted(hub, { kind: 'user', login: me }, leaving ? `@${me} left this Binder.` : `Took @${was?.login ?? who} out of this Binder.`)
     return { ...spaceView(request), revoked: await revokeAgentsOf(id, who, me) }
   }))
+  app.get('/api/hub/binders', act(async (request) => hubBinders(request)))
+  // A hub admin names an owner for any Binder, one they aren't in too: what a Binder with no owner waits for.
+  app.put('/api/hub/binders/:id/owners/:login', act(async (request) => {
+    const me = login(request)
+    if (!isAdmin(me)) throw new Refused('Only the hub’s admins name a Binder’s owner.')
+    const id = param(request, 'id')
+    if (!spaces.info(id)) throw new Refused('No such Binder.')
+    const who = param(request, 'login').trim().replace(/^@/, '')
+    const was = spaces.info(id)!.members.find((m) => m.login.toLowerCase() === who.toLowerCase())
+    const info = await spaces.setMember(id, who, 'owner', true)
+    const now = info.members.find((m) => m.login.toLowerCase() === who.toLowerCase())
+    const hub = spaces.get(id)?.hub
+    if (hub && now && was?.role !== 'owner') await noted(hub, { kind: 'user', login: me }, `@${me}, one of the hub’s admins, made @${now.login} an owner of this Binder.`)
+    return hubBinders(request)
+  }))
   // Taking a Binder off the hub destroys nothing: it stops, and isn't listed or opened again.
   app.delete('/api/spaces/:id', act(async (request) => {
     const id = param(request, 'id')
@@ -106,7 +138,7 @@ export async function binderRoutes(app: FastifyInstance, context: Context) {
     const info = spaces.info(id)
     if (!info || !spaces.forPerson(me, admin).some((s) => s.info.id === id)) throw new Refused('No such Binder.')
     if (info.personal) throw new Refused('A personal Binder can’t be removed.')
-    if (!admin && spaces.roleOf(id, me) !== 'owner') throw new Refused('Only the Binder’s owners and the hub’s admins can remove it.')
+    if (spaces.roleOf(id, me) !== 'owner' && !(admin && !spaces.hasOwner(id))) throw new Refused('Only the Binder’s owners can remove it.')
     if (spaces.isFirst(id)) throw new Refused('The hub’s first Binder can’t be removed: its files are the hub’s own.')
     if (bodyOf(bodies.removeSpace, request).name !== info.name) throw new Refused('To remove a Binder, type its name exactly as it is.')
     await spaces.remove(id, me)

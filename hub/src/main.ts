@@ -182,7 +182,7 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   if (hook === 'pointed') console.log(`Pointed ${id}'s GitHub App's webhook at ${publicUrl}${github.path('hook')}.`)
   else if (hook.startsWith('failed')) hubLog.warn({ binder: id, why: hook }, 'Couldn’t point a GitHub App’s webhook here')
   const hub = new Hub(log)
-  hub.lockManager = (login) => spaces.mayManage(id, login, false)
+  hub.lockManager = (login) => spaces.mayManage(id, login, spaces.hubAdmin(login))
   started = hub
   // A Binder is one notebook: it starts with the one binder its notes and board are in, named as it is.
   await hub.start(first ? startingSeed(options.get().allowedUsers[0] ?? 'you') : [{ type: 'binder.put', binder: info.personal ? { id: 'notes', name: 'Notes', createdBy: info.personal } : { id: 'main', name: info.name, createdBy: info.createdBy } }], await stateFile?.read(), await stateFile?.readDocs())

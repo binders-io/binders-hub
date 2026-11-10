@@ -45,10 +45,10 @@ export function makeContext(spaces: Spaces, deps: { auth: Auth; options?: Option
   }
   /** Someone named as one of the hub's admins: not the "whoever can sign in" of a hub that has named nobody yet. */
   const namedAdmin = (login: string) => [...(firstGitHub()?.admins() ?? []), ...(options.admins ?? []), ...(hubOptions?.get().admins ?? [])].some((a) => a.toLowerCase() === login.toLowerCase())
-  /** Who may change how a Binder reaches GitHub: its owners and admins, and the hub's admins. */
+  /** Who may change how a Binder reaches GitHub: its owners and admins (the hub's admins, while it has no owner). */
   // A Binder on the hub's app (a personal one too) reaches GitHub through its home Binder's: changed there, by that
   // Binder's owners, not from here.
-  const mayManageGitHub = (request: FastifyRequest) => !spaces.info(request.space?.id ?? '')?.personal && (isAdmin(request.user!.login) || request.role === 'owner' || request.role === 'admin')
+  const mayManageGitHub = (request: FastifyRequest) => !spaces.info(request.space?.id ?? '')?.personal && (request.role === 'owner' || request.role === 'admin')
 
   /** The Binder to sign in through: the one named, when it has a GitHub App, else the first that has one. */
   const signInSpace = (named?: string) => {

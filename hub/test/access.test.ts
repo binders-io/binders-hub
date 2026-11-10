@@ -21,8 +21,13 @@ import type { Agent } from '../../shared/work.ts'
 
 // Who may do what in a Binder, and what happens to a person's agents, and to a Binder, when they go.
 
-async function setUp(members: Member[] = [{ login: 'ana', role: 'owner' }]) {
+/** `others`: more Binders the hub already has, as its saved list holds them (made by hand, to have ones with no owner). */
+async function setUp(members: Member[] = [{ login: 'ana', role: 'owner' }], others: { id: string; name: string; members: Member[] }[] = []) {
   const kv = new MemoryKV()
+  if (others.length) {
+    const made = (id: string, name: string, who: Member[]) => ({ id, name, createdAt: '2026-11-01T00:00:00.000Z', createdBy: 'hub', members: who })
+    await kv.set('spaces', JSON.stringify([made('acme', 'Acme', members), ...others.map((o) => made(o.id, o.name, o.members))]))
+  }
   const sealer = new Sealer('test-secret')
   const auth = new Auth(kv, sealer, { github: () => undefined, allowed: () => ({ users: [], orgs: [] }), devLogin: () => true })
   const stopped: string[] = []
@@ -128,13 +133,23 @@ describe('taking a person out of a Binder', () => {
     await open.close()
   })
 
-  it('lets one of the hub’s named admins keep an agent in a Binder they aren’t a member of', async () => {
-    // root is named as an admin of this hub, and so may open any team Binder without being listed in it.
-    const { as, url, close } = await setUp()
+  it('lets one of the hub’s named admins keep an agent in a Binder with no owner, and only while it has none', async () => {
+    // root is named as an admin of this hub: it looks after a team Binder whose owners have gone, without being listed in it.
+    const { as, url, close } = await setUp([{ login: 'ana', role: 'admin' }])
     const made = await (await as('root', 'acme'))('POST', '/api/agents', { name: 'Fixer' })
     assert.equal(made.status, 200)
     assert.equal((await agentConnects(url, made.body.token)).status, 200)
+    // Once it has an owner, root isn't in it any more, and the agent's token stops with that.
+    assert.equal((await (await as('root'))('PUT', '/api/hub/binders/acme/owners/ana')).status, 200)
+    const refused = await agentConnects(url, made.body.token)
+    assert.equal(refused.status, 403)
+    assert.match(refused.text, /@root isn’t in this binder any more/)
     await close()
+
+    // With an owner, the hub's admin can't make one.
+    const owned = await setUp()
+    assert.equal((await (await owned.as('root', 'acme'))('POST', '/api/agents', { name: 'Fixer' })).status, 403)
+    await owned.close()
   })
 })
 
@@ -204,7 +219,7 @@ describe('where a Binder’s cards and notes go', () => {
   }
   const refusal = 'Only this Binder’s owners and admins can change where its cards and notes go.'
 
-  it('is changed by its owners and admins, and the hub’s admins, and by no other member', async () => {
+  it('is changed by its owners and admins, and by no other member, the hub’s admins included', async () => {
     const { spaces, ana, di, cy, root, close } = await team()
     const state = () => spaces.get('acme')!.hub.state.binders[0]
     // A member renames, and writes out what's already so, and nothing more.
@@ -220,11 +235,13 @@ describe('where a Binder’s cards and notes go', () => {
     assert.equal((await putBinder(cy, { id: 'p2', name: 'Second', repo: 'acme/second' })).status, 422)
     assert.equal((await putBinder(cy, { id: 'p2', name: 'Second' })).status, 200)
 
-    // Its owner and its admin do, and the hub's admin, who isn't in it.
+    // Its owner and its admin do. The hub's admin isn't in it, and a Binder with an owner isn't theirs to run.
     assert.equal((await putBinder(ana, { id: 'p1', name: 'App', repo: 'acme/app' })).status, 200)
     assert.equal(state().repo, 'acme/app')
+    assert.equal((await putBinder(root, { id: 'p1', name: 'App', repo: 'acme/other' })).status, 403)
     assert.equal((await putBinder(di, { id: 'p1', name: 'App', repo: 'acme/app', issues: false })).status, 200)
-    assert.equal((await putBinder(root, { id: 'p1', name: 'App', repo: 'acme/app', issues: false, notesBranch: 'docs' })).status, 200)
+    assert.equal((await putBinder(di, { id: 'p1', name: 'App', repo: 'acme/app', issues: false, notesBranch: 'docs' })).status, 200)
+    assert.equal(state().repo, 'acme/app')
     assert.equal(state().notesBranch, 'docs')
     // A member keeping it all as it is, renaming: not a change.
     assert.equal((await putBinder(cy, { id: 'p1', name: 'App again', repo: 'ACME/app', issues: false, notesBranch: 'docs' })).status, 200)
@@ -246,11 +263,15 @@ describe('where a Binder’s cards and notes go', () => {
     await close()
   })
 
-  it('stays open to anyone in a Binder with no members, and is a personal Binder’s person’s own', async () => {
+  it('is the hub’s admins’ in a Binder with no members, none else’s there, and is a personal Binder’s person’s own', async () => {
     const open = await setUp([])
     const bo = await open.as('bo', 'acme')
-    assert.equal((await putBinder(bo, { id: 'p1', name: 'App', repo: 'acme/app', issues: false })).status, 200)
-    assert.equal((await changes(bo, { type: 'binder.delete', id: 'p1' })).status, 200)
+    assert.equal((await putBinder(bo, { id: 'p1', name: 'App', repo: 'acme/app', issues: false })).status, 422, 'a member of an open Binder can’t')
+    assert.equal((await putBinder(bo, { id: 'p1', name: 'App' })).status, 200, 'but still writes what changes nothing')
+    const root = await open.as('root', 'acme')
+    assert.equal((await putBinder(root, { id: 'p1', name: 'App', repo: 'acme/app', issues: false })).status, 200, 'it has no owner, so the hub’s admin looks after it')
+    assert.equal((await changes(bo, { type: 'binder.delete', id: 'p1' })).status, 422)
+    assert.equal((await changes(root, { type: 'binder.delete', id: 'p1' })).status, 200)
     // Their own Binder: they own it.
     const own = await open.as('bo', '~bo')
     assert.equal((await putBinder(own, { id: 'p9', name: 'Notes', repo: 'bo/notes' })).status, 200)
@@ -336,11 +357,9 @@ describe('taking a Binder off the hub', () => {
     await close()
   })
 
-  it('lets a hub admin who isn’t in it remove it, and never the hub’s first Binder or a personal one', async () => {
+  it('leaves a Binder with an owner to its owners, lets a hub admin remove one with none, and never the hub’s first Binder or a personal one', async () => {
     const { spaces, root, ana, close } = await hubWithGlobex()
-    const first = await root('DELETE', '/api/spaces/acme', { name: 'Acme' })
-    assert.equal(first.status, 422)
-    assert.match(first.body.error, /first Binder/)
+    assert.equal((await root('DELETE', '/api/spaces/acme', { name: 'Acme' })).body.error, 'No such Binder.', 'the hub’s admin isn’t in it, and it has an owner')
     assert.match((await ana('DELETE', '/api/spaces/acme', { name: 'Acme' })).body.error, /first Binder/, 'not by its owner either')
     const personal = await ana('DELETE', '/api/spaces/~ana', { name: 'Personal' })
     assert.equal(personal.status, 422)
@@ -348,9 +367,26 @@ describe('taking a Binder off the hub', () => {
     assert.ok(spaces.info('acme') && spaces.info('~ana'))
     assert.equal((await root('DELETE', '/api/spaces/~ana', { name: 'Personal' })).body.error, 'No such Binder.', 'the hub’s admins don’t reach someone’s own')
 
-    assert.equal((await root('DELETE', '/api/spaces/globex', { name: 'Globex' })).status, 200)
-    assert.equal(spaces.list().find((s) => s.id === 'globex'), undefined)
+    // Globex has an owner, so the hub's admin doesn't reach it.
+    assert.equal((await root('DELETE', '/api/spaces/globex', { name: 'Globex' })).body.error, 'No such Binder.')
+    assert.ok(spaces.info('globex'))
     await close()
+
+    // Even looking after it (it has no members), never the first.
+    const open = await setUp([])
+    const first = await (await open.as('root'))('DELETE', '/api/spaces/acme', { name: 'Acme' })
+    assert.equal(first.status, 422)
+    assert.match(first.body.error, /first Binder/)
+    await open.close()
+
+    // One whose owners have gone is the hub's admin's to remove, with its name, and not a member's.
+    const orphan = await setUp([{ login: 'ana', role: 'owner' }], [{ id: 'orphan', name: 'Orphan', members: [{ login: 'cy', role: 'admin' }] }])
+    const asRoot = await orphan.as('root')
+    const asCy = await orphan.as('cy')
+    assert.equal((await asCy('DELETE', '/api/spaces/orphan', { name: 'Orphan' })).body.error, 'Only the Binder’s owners can remove it.')
+    assert.equal((await asRoot('DELETE', '/api/spaces/orphan', { name: 'Orphan' })).status, 200)
+    assert.equal(orphan.spaces.info('orphan'), undefined)
+    await orphan.close()
   })
 })
 

@@ -101,14 +101,18 @@ itself when it starts.
 
 A hub holds binders. A binder is one notebook, as on the Mac: its folders and notes, its board, its GitHub repo and its
 members, at its own address (`https://hub/mobile-app/`). Anyone signed in makes one, from the binder switcher at the top
-left, and owns it. Its owners and admins add and remove people in Settings → People, and only they (and the hub's
-admins) change where its cards and notes go: its repo, its agents' repos, whether notes are pushed, whether cards are
-kept as issues, and whether a Challenge's findings are posted as review comments. Everyone in a binder sees who runs it.
+left, and owns it. Its owners and admins add and remove people in Settings → People, and only they change where its
+cards and notes go: its repo, its agents' repos, whether notes are pushed, whether cards are kept as issues, and whether
+a Challenge's findings are posted as review comments, along with its GitHub, Jira, folder rules, environments and channel.
+Everyone in a binder sees who runs it. The hub's admins run the hub. Being one gives no place in a
+binder, so they open the ones they're in and the open ones, like anyone. A binder with no owner (one with no members, or
+whose owners have gone) is looked after by the hub's admins until it has one, and they name its first owner. Settings →
+This hub → Binders lists every binder on the hub with who owns it, for the hub's admins.
 A person in a binder is an owner, an admin, a member or a reader, set in Settings → People. A reader sees everything in it and can ask its brain, and changes nothing: what they try to change is
 refused, with a line saying so, and nothing waits on them. Making someone a reader revokes the agents they own there,
 and an agent whose owner can only read isn't accepted. A person can leave a binder (Settings → General), unless they're
 its only owner; leaving, or being taken out, revokes the agents they own there. The switcher shows how many things wait
-in each of the other binders you're in. A binder's owners and the hub's admins can take it off the hub by typing its
+in each of the other binders you're in. A binder's owners can take it off the hub by typing its
 name: nothing is destroyed, its notes stay in its repo and its data on the hub's disk, and its address stays taken. The
 hub's first binder and personal binders can't be taken off. Everyone also gets a binder of their own at `/~login`, which
 nobody else opens (the hub's admins included), its notes synced to a private `<login>/binders-notes` repo once the hub's

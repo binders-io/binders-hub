@@ -362,7 +362,7 @@ describe('the environments’ addresses', () => {
   }
   const id = (value: string) => encodeURIComponent(value)
 
-  it('are the Binder’s owners’ and admins’ and the hub’s admins’, and a member only reads and promotes', async () => {
+  it('are the Binder’s owners’ and admins’, not the hub’s admins’, and a member only reads and promotes', async () => {
     const { hub, actions, as, close } = await server()
     const [member, admin, owner, root] = [await as('sam'), await as('boss'), await as('ola'), await as('root')]
     for (const [method, path, body] of [['POST', '/api/environments', { repo: 'acme/web', name: 'Staging' }], ['POST', '/api/environments/look', {}], ['PUT', `/api/environments/${id('acme/web#staging')}`, { url: '' }], ['DELETE', `/api/environments/${id('acme/web#staging')}`, undefined]] as const) {
@@ -373,7 +373,9 @@ describe('the environments’ addresses', () => {
     assert.equal(hub.state.environments.length, 0)
     assert.equal((await admin('POST', '/api/environments', { repo: 'acme/web', name: 'Staging' })).status, 200)
     assert.equal((await owner('POST', '/api/environments', { repo: 'acme/web', name: 'QA' })).status, 200)
-    assert.equal((await root('POST', '/api/environments', { repo: 'acme/web', name: 'Canary' })).status, 200)
+    // The hub's admin runs the hub, not this Binder, which has an owner.
+    assert.equal((await root('POST', '/api/environments', { repo: 'acme/web', name: 'Canary' })).status, 403)
+    assert.equal((await admin('POST', '/api/environments', { repo: 'acme/web', name: 'Canary' })).status, 200)
     // Promote is anyone's in the Binder: the refusal here is the hub's, for no workflow, not for who asked.
     const promoted = await member('POST', `/api/environments/${id('acme/web#qa')}/promote`)
     assert.equal(promoted.status, 422)

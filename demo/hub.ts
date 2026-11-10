@@ -39,8 +39,8 @@ export async function startDemoHub(port: number, webDir = resolve(import.meta.di
     await github.load()
     const hub = new Hub(new MemoryLog())
     await hub.start(info.personal ? [{ type: 'binder.put', binder: { id: 'notes', name: 'Notes', createdBy: info.personal } }] : demoChanges())
-    // Who may change a locked note, as the hub proper says it: the Binder's owners and admins.
-    hub.lockManager = (login) => spaces.mayManage(id, login, false)
+    // Who may change a locked note, as the hub proper says it: the Binder's owners and admins, and the hub's while it has no owner.
+    hub.lockManager = (login) => spaces.mayManage(id, login, spaces.hubAdmin(login))
     const actions = new Actions(hub, github)
     return { id, hub, actions, github, webhooks: undefined as never, filesDir: join(files, id) }
   }

@@ -1,6 +1,9 @@
 import { Check, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { Role } from '../../data/model'
+import { useStore } from '../../data/store'
+import { useBinderAccess } from './access'
+import { sectionHref } from './sections'
 
 /** The one line a person who can't change a binder's settings sees: who can. */
 export function WhoCan({ may, managers }: { may: boolean; managers: { login: string; role: Role }[] }) {
@@ -8,6 +11,18 @@ export function WhoCan({ may, managers }: { may: boolean; managers: { login: str
   const names = managers.map((m) => `@${m.login}`)
   const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0]
   return <p className="setup-note">Only this binder’s owners and admins{list ? `, ${list},` : ''} can change these.</p>
+}
+
+/**
+ * Said once, at the top of this binder's settings, when it has no owner: to one of the hub's admins, who look after it,
+ * where to name one; to everyone else, its own admins included, who can.
+ */
+export function NoOwnerLine() {
+  const me = useStore().state.me
+  const { noOwner } = useBinderAccess()
+  if (!noOwner || !me) return null
+  if (me.hubAdmin) return <p className="setup-note" role="status">This binder has no owner yet, so the hub’s admins look after it. Name an owner in <a href={sectionHref('people')}>People</a>.</p>
+  return <p className="setup-note" role="status">This binder has no owner yet. One of the hub’s admins can name one.</p>
 }
 
 /** Greys out whatever's inside, and takes it out of the Tab order, when its person may not change it. */

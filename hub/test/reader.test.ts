@@ -297,6 +297,8 @@ const theirOwnOrOnlyAsks = [
   'POST /api/tokens', 'DELETE /api/tokens/:id', 'DELETE /api/me/personal-github',
   'PUT /api/personal/oauth', 'DELETE /api/personal/oauth', 'PUT /api/personal/captures', 'POST /api/personal/repo',
   'POST /api/spaces',
+  // Naming a Binder's owner is the hub's, and the route asks for a hub admin.
+  'PUT /api/hub/binders/:id/owners/:login',
 ]
 /** Addresses that find out which Binder they’re for, and refuse a reader there: the hook leaves them to. */
 const decidedInTheRoute = ['POST /api/captures', 'POST /api/app/audio', 'POST /api/brain/do']

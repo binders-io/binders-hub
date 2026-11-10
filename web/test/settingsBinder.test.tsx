@@ -136,9 +136,21 @@ describe('General', () => {
     await screen.findByRole('heading', { name: 'Leave this binder' })
     expect(heading('Take this binder off the hub')).toBeNull()
     cleanup()
+    // A hub admin has no place in a binder that has an owner, so it's an admin's offer no more than theirs.
     hub({ section: 'general', role: 'admin', hubAdmin: true })
     await mount(<Settings />)
+    await screen.findByRole('heading', { name: 'Leave this binder' })
+    expect(heading('Take this binder off the hub')).toBeNull()
+    cleanup()
+    // Looking after one with no owner, the hub gives them the role admin, and they may.
+    hub({ section: 'general', role: 'admin', hubAdmin: true, spaceOver: { managers: [{ login: 'sam', role: 'admin' }] } })
+    await mount(<Settings />)
     expect(await screen.findByRole('heading', { name: 'Take this binder off the hub' })).toBeTruthy()
+    cleanup()
+    hub({ section: 'general', role: 'admin', spaceOver: { managers: [{ login: 'sam', role: 'admin' }] } })
+    await mount(<Settings />)
+    await screen.findByLabelText('Name')
+    expect(heading('Take this binder off the hub')).toBeNull()
     cleanup()
     hub({ section: 'general', spaceOver: { id: '~you' } })
     await mount(<Settings />)
@@ -308,11 +320,11 @@ describe('How work flows', () => {
     expect(screen.getByRole('checkbox', { name: /Post a Challenge’s findings/ }).closest('fieldset')!.disabled).toBe(true)
   })
 
-  it('has someone with no hand in it either, in a binder with no members, change the switches', async () => {
+  it('has a member of a binder with no owner see the switches greyed, as anyone else', async () => {
     hub({ section: 'flow', role: 'member', spaceOver: { managers: [], members: undefined } })
     await mount(<Settings />)
     const reviews = await screen.findByRole('checkbox', { name: /Post a Challenge’s findings/ })
-    expect(reviews.closest('fieldset')!.disabled).toBe(false)
+    expect(reviews.closest('fieldset')!.disabled).toBe(true)
   })
 
   it('points a binder with no repo to where one is picked', async () => {

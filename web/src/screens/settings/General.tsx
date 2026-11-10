@@ -22,7 +22,7 @@ export function General() {
   const { state } = store
   const me = state.me
   const access = useBinderAccess()
-  const { here, may, managers, change } = access
+  const { here, may, managers, noOwner, change } = access
   const { saved, shown } = useSaved()
   const [gone, setGone] = useState<Gone>()
   const [typed, setTyped] = useState('')
@@ -45,7 +45,8 @@ export function General() {
   // Leaving is theirs, whatever their role: a reader may leave as a member may.
   const isMember = !!me && (here?.role === 'member' || here?.role === 'reader' || managers.some((m) => m.login.toLowerCase() === me.user.login.toLowerCase()))
   const onlyOwner = me?.role === 'owner' && managers.filter((m) => m.role === 'owner').length <= 1
-  const mayRemove = !!me && me.role !== 'reader' && (!!me.hubAdmin || me.role === 'owner')
+  // Its owners, and one of the hub's admins looking after a binder that has none.
+  const mayRemove = !!me && (me.role === 'owner' || (me.role === 'admin' && !!me.hubAdmin && noOwner))
   const elsewhere = (spaces: SpaceView[] | undefined) => spaces?.find((s) => s.id !== here?.id)
 
   const leave = async () => {

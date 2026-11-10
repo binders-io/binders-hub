@@ -24,6 +24,8 @@ export const readerMay: [method: string, path: RegExp][] = [
   ['POST', /^\/api\/personal\/repo$/],
   // A new Binder of their own, which changes none they're a reader of.
   ['POST', /^\/api\/spaces$/],
+  // Naming a Binder's owner is the hub's, not the Binder their browser is in: the route says who may.
+  ['PUT', /^\/api\/hub\/binders\/[^/]+\/owners\/[^/]+$/],
 ]
 
 /**

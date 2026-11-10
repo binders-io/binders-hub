@@ -877,6 +877,10 @@ a.button { text-decoration: none; }
 .binder-name { flex: 1; min-width: 0; padding: 4px 6px; margin-left: -6px; border: 1px solid transparent; border-radius: 7px; background: none; font: 800 16px/1.3 var(--display); color: var(--text); }
 .binder-name:hover { border-color: var(--line); }
 .binder-name:focus { outline: none; border-color: var(--text); }
+.hub-binder-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.hub-binder-head b { flex: 1 1 140px; min-width: 0; font: 800 15px/1.3 var(--display); overflow-wrap: anywhere; }
+.hub-binder .faint { font-size: 12.5px; overflow-wrap: anywhere; }
+.tag.warn { background: var(--amber-wash); border: 1px solid var(--amber-line); color: var(--text); }
 .binder-add { display: grid; gap: 8px; justify-items: stretch; }
 .binder-add h3 { margin: 0; font: 800 14px/1.3 var(--display); }
 .binder-add .button { justify-self: start; }

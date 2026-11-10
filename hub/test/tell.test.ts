@@ -575,7 +575,7 @@ async function hubOf(options: { reach?: Reach } = {}) {
 }
 
 describe('/api/tell', () => {
-  it('lets owners, admins and the hub’s admins set, try and stop it, and members only see how it stands', async () => {
+  it('lets owners and admins set, try and stop it, the hub’s admins not unless the Binder has no owner, and members only see how it stands', async () => {
     const channel = await standIn()
     const { as, lines, close } = await hubOf()
     const ana = await as('ana')
@@ -602,13 +602,13 @@ describe('/api/tell', () => {
     const tried = await ana('POST', '/api/tell/test')
     assert.deepEqual(tried.body, { ok: true, answered: 'It answered 200: ok.' })
     assert.equal(channel.posted.length, 1)
-    assert.equal((await root('POST', '/api/tell/test')).body.ok, true, 'the hub’s admin may try it')
-    assert.equal(channel.posted.length, 2)
+    assert.equal((await root('POST', '/api/tell/test')).status, 403, 'the hub’s admin isn’t in this Binder, which has an owner')
+    assert.equal(channel.posted.length, 1)
     const after = await ben('GET', '/api/tell')
     assert.equal(after.body.last.ok, true)
     assert.equal(after.body.last.answered, 'It answered 200: ok.')
 
-    assert.equal((await root('PUT', '/api/tell', { url: channel.url })).status, 200, 'and set it')
+    assert.equal((await root('PUT', '/api/tell', { url: channel.url })).status, 403, 'nor set it')
     assert.equal((await ana('DELETE', '/api/tell')).status, 200)
     assert.deepEqual((await ben('GET', '/api/tell')).body, { set: false, mayManage: false })
     assert.deepEqual((await ana('POST', '/api/tell/test')).body, { ok: false, answered: 'No address is set yet.' })

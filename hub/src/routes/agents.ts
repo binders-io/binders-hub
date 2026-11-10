@@ -47,9 +47,9 @@ export async function agentRoutes(app: FastifyInstance, context: Context) {
       const space = spaces.get(line.binder)
       const info = spaces.info(line.binder)
       if (!space || !info) return turnedAway(401, 'The Binder that line was made for isn’t on this hub any more. Make a new line in one that is.')
-      // Its maker speaks for the agent, so they must still be in the Binder (a hub admin may open any team Binder), and able to change it.
+      // Its maker speaks for the agent, so they must still be in the Binder (a hub admin, only while it has no owner), and able to change it.
       if (spaces.roleOf(info.id, line.by) === 'reader') return turnedAway(401, `@${line.by} can only read ${info.name}, so the line they made can’t add a machine to it. Ask a member of ${info.name} to make a new one.`)
-      if (!spaces.roleOf(info.id, line.by) && !(namedAdmin(line.by) && !info.personal)) return turnedAway(401, `@${line.by} isn’t in ${info.name} any more, so the line they made can’t add a machine to it. Ask a member of ${info.name} to make a new one.`)
+      if (!spaces.roleFor(info.id, line.by, namedAdmin(line.by))) return turnedAway(401, `@${line.by} isn’t in ${info.name} any more, so the line they made can’t add a machine to it. Ask a member of ${info.name} to make a new one.`)
       const tool = preferred(body.tools)
       if (!tool) return turnedAway(422, `None of the tools Binders works with is installed on this machine. Install one (${findable.map((t) => t.name).join(', ')}), then run the same line again.`)
       const host = hostName(body.host ?? '') || 'A machine'

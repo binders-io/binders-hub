@@ -183,12 +183,10 @@ describe('sending a note to another Binder', () => {
       assert.deepEqual([none.status, none.body.error], [422, 'Say which Binder to send it to.'])
       assert.equal(JSON.stringify([set.team.hub.state.notes, set.ops.hub.state.notes, set.mine.hub.state.notes]), before, 'nothing was made or changed')
 
-      // From a Binder they're not in: a hub admin may open it, but sends only from one they're a member of.
+      // From a Binder they're not in: a hub admin doesn't open it, so sends from none they aren't a member of.
       const boss = api(set.url, await signIn(set.url, 'boss'))
-      assert.equal((await boss('GET', '/api/notes/send-to', undefined, 'ops')).status, 200)
-      const adminSend = await boss('POST', '/api/notes/anything/send', { binder: 'team' }, 'ops')
-      assert.equal(adminSend.status, 422)
-      assert.match(adminSend.body.error, /You’re not in the Binder this note is in/)
+      assert.equal((await boss('GET', '/api/notes/send-to', undefined, 'ops')).status, 403)
+      assert.equal((await boss('POST', '/api/notes/anything/send', { binder: 'team' }, 'ops')).status, 403)
       const bo = api(set.url, await signIn(set.url, 'bo'))
       assert.equal((await bo('POST', '/api/notes/n1/send', { binder: 'team' }, '~you')).status, 403, 'someone’s own Binder isn’t opened by anyone else')
     } finally {
@@ -205,7 +203,7 @@ describe('sending a note to another Binder', () => {
       const fromTeam = await you('GET', '/api/notes/send-to', undefined, 'team')
       assert.deepEqual(fromTeam.body.binders, [{ id: '~you', name: 'Personal', personal: true }, { id: 'side', name: 'Side', personal: false }])
       const boss = api(set.url, await signIn(set.url, 'boss'))
-      assert.deepEqual((await boss('GET', '/api/notes/send-to', undefined, 'team')).body.binders, [], 'a hub admin’s other Binders aren’t theirs to send to')
+      assert.equal((await boss('GET', '/api/notes/send-to', undefined, 'team')).status, 403, 'a hub admin’s other Binders aren’t theirs to send to, or to open')
     } finally {
       await set.close()
     }
