@@ -320,3 +320,114 @@ describe('the models the hub calls', () => {
     await assert.rejects(new OpenAICompatibleSpeaker({ baseURL: `${url}/nowhere`, model: 'k' }).speak('x'), BrainUnavailable)
   })
 })
+
+describe('a model taking one step with tools', () => {
+  const tools = [{ name: 'read_note', description: 'Reads a note.', input: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } }]
+
+  it('Claude: sends its tools and the conversation as Anthropic takes them, and reads the calls it comes back with', async () => {
+    const own = [{ type: 'thinking', thinking: '…', signature: 'sig' }, { type: 'text', text: 'Let me look.' }, { type: 'tool_use', id: 'toolu_1', name: 'read_note', input: { id: 'n1' } }]
+    let n = 0
+    const server = await standIn(() => ({ body: n++ === 0 ? message(own, { stop_reason: 'tool_use' }) : message([{ type: 'text', text: 'It says pnpm.' }]) }))
+    try {
+      const model = new ClaudeModel({ model: 'claude-opus-5-5', client: new Anthropic({ apiKey: 'test-key', baseURL: server.url, maxRetries: 0 }) })
+      assert.equal(await model.steps(), true)
+      const first = await model.step({ system: 'Answer from the notes.', turns: [{ role: 'user', text: 'Which package manager?' }], tools })
+      assert.deepEqual({ text: first.text, calls: first.calls, stop: first.stop, usage: first.usage }, { text: 'Let me look.', calls: [{ id: 'toolu_1', name: 'read_note', input: { id: 'n1' } }], stop: 'tools', usage: { in: 10, out: 10 } })
+      assert.deepEqual(server.seen[0].body.tools, [{ name: 'read_note', description: 'Reads a note.', input_schema: tools[0].input }])
+      assert.equal(server.seen[0].body.system, 'Answer from the notes.')
+
+      const second = await model.step({ system: 'Answer from the notes.', turns: [{ role: 'user', text: 'Which package manager?' }, { role: 'assistant', text: first.text, calls: first.calls, raw: first.raw }, { role: 'tool', results: [{ id: 'toolu_1', name: 'read_note', text: 'We use pnpm.' }, { id: 'toolu_2', name: 'read_note', text: 'No such note.', failed: true }] }], tools })
+      assert.deepEqual({ text: second.text, calls: second.calls, stop: second.stop }, { text: 'It says pnpm.', calls: [], stop: 'end' })
+      const sent = server.seen[1].body.messages as { role: string; content: unknown }[]
+      assert.deepEqual(sent[1], { role: 'assistant', content: own }, 'what it said before goes back as it came, thinking and all')
+      assert.deepEqual(sent[2], { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'We use pnpm.' }, { type: 'tool_result', tool_use_id: 'toolu_2', content: 'No such note.', is_error: true }] })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('Claude: says when it declined or was cut off, and sends no tools when there are none', async () => {
+    const answers = [message([], { stop_reason: 'refusal' }), message([{ type: 'text', text: 'Half' }], { stop_reason: 'max_tokens' })]
+    const server = await standIn(() => ({ body: answers.shift() }))
+    try {
+      const model = new ClaudeModel({ model: 'claude-opus-5-5', client: new Anthropic({ apiKey: 'test-key', baseURL: server.url, maxRetries: 0 }) })
+      assert.equal((await model.step({ system: '', turns: [{ role: 'user', text: 'x' }], tools: [] })).stop, 'refused')
+      assert.equal((await model.step({ system: '', turns: [{ role: 'user', text: 'x' }], tools: [] })).stop, 'length')
+      assert.equal('tools' in server.seen[0].body, false)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('an OpenAI-style server: sends functions and tool messages, and reads its tool calls', async () => {
+    const answers: unknown[] = [
+      { choices: [{ message: { content: '<think>hmm</think>', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_note', arguments: '{"id":"n1"}' } }, { type: 'function', function: { name: 'read_note', arguments: '{not json' } }] }, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 50, completion_tokens: 7 } },
+      { choices: [{ message: { content: 'It says pnpm.' }, finish_reason: 'stop' }] },
+    ]
+    const server = await standIn(() => ({ body: answers.shift() }))
+    try {
+      const model = new OpenAICompatibleModel({ baseURL: `${server.url}/v1`, model: 'gpt-foundry', apiKey: 'k' })
+      const first = await model.step({ system: 'Answer from the notes.', turns: [{ role: 'user', text: 'Which package manager?' }], tools })
+      assert.deepEqual(first, { text: '', calls: [{ id: 'call_1', name: 'read_note', input: { id: 'n1' } }, { id: 'call-1', name: 'read_note', input: { unreadable: '{not json' } }], stop: 'tools', usage: { in: 50, out: 7 } })
+      assert.deepEqual(server.seen[0].body.tools, [{ type: 'function', function: { name: 'read_note', description: 'Reads a note.', parameters: tools[0].input } }])
+      assert.equal(server.seen[0].headers.authorization, 'Bearer k')
+
+      const second = await model.step({ system: 'Answer from the notes.', turns: [{ role: 'user', text: 'Which package manager?' }, { role: 'assistant', text: '', calls: first.calls }, { role: 'tool', results: [{ id: 'call_1', name: 'read_note', text: 'We use pnpm.' }, { id: 'call-1', name: 'read_note', text: 'Its arguments weren’t JSON.', failed: true }] }], tools })
+      assert.deepEqual(second, { text: 'It says pnpm.', calls: [], stop: 'end' })
+      assert.deepEqual(server.seen[1].body.messages, [
+        { role: 'system', content: 'Answer from the notes.' },
+        { role: 'user', content: 'Which package manager?' },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_note', arguments: '{"id":"n1"}' } }, { id: 'call-1', type: 'function', function: { name: 'read_note', arguments: '{"unreadable":"{not json"}' } }] },
+        { role: 'tool', tool_call_id: 'call_1', content: 'We use pnpm.' },
+        { role: 'tool', tool_call_id: 'call-1', content: 'It failed: Its arguments weren’t JSON.' },
+      ])
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('an OpenAI-style server: asks a busy one again, and gives up on one that stays busy or refuses the request', async () => {
+    const { stepRetries } = await import('../src/brain/models.ts')
+    const waits = stepRetries.splice(0, stepRetries.length, 1, 1, 1)
+    let n = 0
+    const server = await standIn(() => (n++ < 2 ? { status: 429, body: { error: 'busy' } } : { body: { choices: [{ message: { content: 'There.' }, finish_reason: 'stop' }] } }))
+    const always = await standIn(() => ({ status: 503, body: {} }))
+    const bad = await standIn(() => ({ status: 400, body: { error: 'tools are not supported' } }))
+    try {
+      assert.equal((await new OpenAICompatibleModel({ baseURL: `${server.url}/v1`, model: 'm' }).step({ system: '', turns: [{ role: 'user', text: 'x' }], tools: [] })).text, 'There.')
+      assert.equal(server.seen.length, 3)
+      await assert.rejects(() => new OpenAICompatibleModel({ baseURL: `${always.url}/v1`, model: 'm' }).step({ system: '', turns: [{ role: 'user', text: 'x' }], tools: [] }), /answered 503/)
+      assert.equal(always.seen.length, 4, 'once, and three more times')
+      await assert.rejects(() => new OpenAICompatibleModel({ baseURL: `${bad.url}/v1`, model: 'm' }).step({ system: '', turns: [{ role: 'user', text: 'x' }], tools: [] }), /answered 400/)
+      assert.equal(bad.seen.length, 1, 'a request the server won’t take isn’t sent again')
+    } finally {
+      stepRetries.splice(0, stepRetries.length, ...waits)
+      await Promise.all([server.close(), always.close(), bad.close()])
+    }
+  })
+
+  it('an OpenAI-style server: is asked once whether it calls tools, and remembered', async () => {
+    const can = await standIn(() => ({ body: { choices: [{ message: { content: null, tool_calls: [{ id: 'c', type: 'function', function: { name: 'ready', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] } }))
+    const talks = await standIn(() => ({ body: { choices: [{ message: { content: 'I am ready!' }, finish_reason: 'stop' }] } }))
+    const refuses = await standIn(() => ({ status: 400, body: { error: 'unknown field tools' } }))
+    try {
+      const model = new OpenAICompatibleModel({ baseURL: `${can.url}/v1`, model: 'm' })
+      assert.equal(await model.steps(), true)
+      assert.equal(await model.steps(), true)
+      assert.equal(can.seen.length, 1)
+      assert.equal(await new OpenAICompatibleModel({ baseURL: `${talks.url}/v1`, model: 'm' }).steps(), false, 'one that answers in words without calling it can’t')
+      assert.equal(await new OpenAICompatibleModel({ baseURL: `${refuses.url}/v1`, model: 'm' }).steps(), false)
+    } finally {
+      await Promise.all([can.close(), talks.close(), refuses.close()])
+    }
+  })
+
+  it('an OpenAI-style server: a filtered answer counts as declined', async () => {
+    const server = await standIn(() => ({ body: { choices: [{ message: { content: '' }, finish_reason: 'content_filter' }] } }))
+    try {
+      assert.equal((await new OpenAICompatibleModel({ baseURL: `${server.url}/v1`, model: 'm' }).step({ system: '', turns: [{ role: 'user', text: 'x' }], tools: [] })).stop, 'refused')
+    } finally {
+      await server.close()
+    }
+  })
+})

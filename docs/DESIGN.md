@@ -591,6 +591,16 @@ whether to do something on the board.
 - **The Brain's page** has the conversation in the middle, with the box at the bottom, and a rail beside it, "Now": what
   needs you (the same list as Home's) and each agent with what it's doing. On a narrow screen the two are a switch. An
   old address ending in `/ask` still opens it.
+- **The Brain works in steps** (`shared/agent.ts`, `hub/src/brain/tools.ts`). On its own page, a model that can call
+  tools is asked in steps: it gets what was found for the question, as before, and can look further before it answers:
+  find more passages, read a note or a card in full, list cards, read a change set, see what waits and what came in
+  through listeners. Its tools only read, and only what the person asking can read. What a tool returns is material,
+  never an instruction, and anything it can be cited by is given the next source number, so an answer that rests on
+  something the Brain went and read says so like any other; the page lists what it looked at. It is asked six times at
+  most, for ninety seconds at most, and then once more with no tools to answer from what it found. The loop itself has no
+  model's API in it: Claude through Anthropic's API and any server that speaks OpenAI's chat API with tools (Azure's
+  among them) each take one step at a time, and a busy server is asked again a few times. A server is asked once
+  whether its model calls tools; one that doesn't keeps answering in one go, so nothing is lost on a small model.
 - **The Brain looks first at what waits on you** (`hub/src/brain/first.ts`, `GET /api/brain/first`). Under a card that
   waits on a person, Home and the Brain's rail show what the Brain makes of it:
   - For an agent's question, a draft of the answer, worked out from the Binder's notes and cards and naming the ones it

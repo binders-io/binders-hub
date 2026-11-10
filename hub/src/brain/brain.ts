@@ -8,7 +8,11 @@ import { readerWords } from '../spaces.ts'
 import { log } from '../logger.ts'
 import { BrainIndex, type Hit, type IndexSource, type SourceKind } from './index.ts'
 import { captureNote, firstWords, hasSummary, transcriptOf, withSummary, withTranscript, worthSumming, type Capture } from './captures.ts'
-import { conversation, type Summary, type Turn } from './models.ts'
+import { answerRules, BrainUnavailable, citedParts, citeRule, conversation, type Answer, type BrainModel, type Passage, type Summary, type Turn } from './models.ts'
+import { runLoop } from '../../../shared/agent.ts'
+import type { Outcome } from '../../../shared/listen.ts'
+import { brainTools, SourceBook, toolRules, type Looked } from './tools.ts'
+import { takeView } from './viewBlock.ts'
 import { askPerson, boardFor, boardRules, doRules, heardAnswer, isAsking, onlyTellRules, propose, proposalView, readDo, spoken, stageNames, withoutMarks, type Asked, type Board, type Proposal, type WorkPlace } from './board.ts'
 import type { BrainSettingsStore } from './settings.ts'
 import type { VectorFiles } from './vectorFiles.ts'
@@ -574,6 +578,8 @@ export interface AskResult {
   proposal?: ReturnType<typeof proposalView>
   /** What it shows beside its words (shared/view.ts): checked by the hub, its Things filled in from the hub's own state. */
   view?: View
+  /** What it went and looked at on the way, when it worked in steps: for the page to say. */
+  looked?: Looked[]
 }
 
 /** One question to Ask and what came of it, as the hub keeps it for the person who asked. */
@@ -723,9 +729,10 @@ function searchFor(before: Turn[], question: string) {
  * `person`: who's asking, so it goes by how their work stands too. `may`: they can answer it here, so a question can
  * come to something it would do, which waits for their answer. `turns`: what was asked and answered before, for a
  * follow-up. `about`: a note the question is about, which the model has in full before anything found. `views`: where
- * it's asked can draw a view, so the model may end its answer with one.
+ * it's asked can draw a view, so the model may end its answer with one. `loop`: a model that can call tools may look
+ * things up in steps before it answers (tools.ts), with `heard` to say what a place's listeners brought in.
  */
-export async function ask(settings: BrainSettingsStore, places: AskPlace[], question: string, options: { most?: number; onSources?: (sources: AskSource[]) => void; person?: string; may?: boolean; turns?: unknown; about?: { place: string; note: string }; views?: boolean } = {}): Promise<AskResult> {
+export async function ask(settings: BrainSettingsStore, places: AskPlace[], question: string, options: { most?: number; onSources?: (sources: AskSource[]) => void; person?: string; may?: boolean; turns?: unknown; about?: { place: string; note: string }; views?: boolean; loop?: boolean; heard?: (place: string) => Promise<Outcome[]> } = {}): Promise<AskResult> {
   const asked = question.trim().slice(0, 2000)
   if (!asked) throw new Refused('Ask a question.')
   const before = earlier(options.turns)
@@ -735,7 +742,7 @@ export async function ask(settings: BrainSettingsStore, places: AskPlace[], ques
   const model = settings.model()
   // With no model, the passages are the answer, and they're for what was asked, not for what it follows.
   const found = await find(settings, where, searchFor(model ? before : [], asked), (options.most ?? 8) - (about ? 1 : 0))
-  const sources = about ? [about.source, ...found.sources.map((s) => ({ ...s, n: s.n + 1 }))] : found.sources
+  let sources = about ? [about.source, ...found.sources.map((s) => ({ ...s, n: s.n + 1 }))] : found.sources
   const passages = about ? [about.passage, ...found.passages] : found.passages
   const searchedBy = found.searchedBy
   options.onSources?.(sources)
@@ -744,7 +751,12 @@ export async function ask(settings: BrainSettingsStore, places: AskPlace[], ques
   try {
     const may = !!options.may && !isAsking(asked) && mayDo(places)
     const rules = [board ? `${boardRules}\n${may ? doRules : onlyTellRules}` : '', about ? noteRules : '', options.views ? viewRules : '', before.length ? conversationRules(before) : ''].filter(Boolean).join('\n') || undefined
-    const answer = await model.answer(asked, board ? [...passages, board.passage] : passages, rules)
+    // A model that calls tools looks things up in steps, where that's asked for; any other answers in one go, as before.
+    const steps = !!options.loop && !about && !!model.step && (await model.steps?.().catch(() => false))
+    const stepped = steps ? await answerInSteps({ settings, model, places: where, asked, passages, board, rules, sources, person: options.person, heard: options.heard }) : undefined
+    const answer = stepped?.answer ?? await model.answer(asked, board ? [...passages, board.passage] : passages, rules)
+    // What it went and read is a source like what was found for it.
+    if (stepped) sources = stepped.sources
     const said = (words: string, proposal?: Proposal) => ({ answer: { text: words, parts: [{ text: words, sources: [] }] }, sources, model: answer.model ?? model.label, searchedBy, ...(proposal ? { proposal: proposalView(proposal) } : {}) })
     // The board isn't a source to show: it's only what's so now. A line a model gave is taken out of what's shown.
     let wanted: Asked | undefined
@@ -765,10 +777,37 @@ export async function ask(settings: BrainSettingsStore, places: AskPlace[], ques
     }
     // What it shows: only where it was asked for, and only what reads as a view once the hub has filled in its Things.
     const view = options.views && answer.view ? viewFrom(answer.view, board, places.flatMap((p) => (p.work ? [p.work] : []))) : undefined
-    return { answer: { text: parts.map((p) => p.text).join('').trim(), parts }, sources, model: answer.model ?? model.label, searchedBy, ...(view ? { view } : {}) }
+    return { answer: { text: parts.map((p) => p.text).join('').trim(), parts }, sources, model: answer.model ?? model.label, searchedBy, ...(view ? { view } : {}), ...(stepped?.looked.length ? { looked: stepped.looked } : {}) }
   } catch (err) {
     return { sources, model: model.label, searchedBy, problem: err instanceof Error ? err.message : String(err) }
   }
+}
+
+/** How many times the model is asked for one question, and how long the whole of it may take. */
+export const askSteps = { steps: 6, ms: 90_000 }
+
+/**
+ * An answer worked out in steps: the model is given what was found, as it is in one go, and may look further with its
+ * tools before it answers. Its words are read as any model's that numbers its sources: its view comes out first, then
+ * its citations. What it read with a tool is added to the sources, by the number the tool gave it.
+ */
+async function answerInSteps(given: { settings: BrainSettingsStore; model: BrainModel; places: AskPlace[]; asked: string; passages: Passage[]; board?: Board; rules?: string; sources: AskSource[]; person?: string; heard?: (place: string) => Promise<Outcome[]> }): Promise<{ answer: Answer; sources: AskSource[]; looked: Looked[] }> {
+  const { model, board } = given
+  const book = new SourceBook(given.sources)
+  const documents = given.passages.map((p, i) => `[${i + 1}] ${p.title}${p.context ? ` (${p.context})` : ''}\n${p.text}`).join('\n\n')
+  // How the work stands is given with the question, unnumbered: it's what's so now, not a source to cite.
+  const now = board ? `<document title="${board.passage.title}">\n${board.passage.context}\n${board.passage.text}\n</document>\n\n` : ''
+  const outcome = await runLoop({
+    model: { label: model.label, step: (input) => model.step!(input) },
+    system: [answerRules, citeRule, given.rules ?? '', toolRules].filter(Boolean).join('\n'),
+    ask: `${documents ? `<documents>\n${documents}\n</documents>\n\n` : ''}${now}${given.asked}`,
+    tools: brainTools({ settings: given.settings, places: given.places, person: given.person, board, book, heard: given.heard }),
+    limits: askSteps,
+  })
+  if (outcome.stopped === 'refused') throw new BrainUnavailable('The model declined to answer that.')
+  const { words, raw } = takeView(outcome.text)
+  const parts = citedParts(words, book.sources.length)
+  return { answer: { parts, text: parts.map((p) => p.text).join('').trim(), ...(raw ? { view: raw } : {}), ...(outcome.model ? { model: outcome.model } : {}) }, sources: book.sources, looked: book.looked }
 }
 
 /** What Talk on the iPhone hears back: the brain's reply, to read out, and the passages it had to go on. */

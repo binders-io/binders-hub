@@ -69,6 +69,8 @@ interface Result {
   searchedBy: 'words' | 'words and meaning'
   problem?: string
   proposal?: Proposal
+  /** What it went and looked at on the way to the answer, when its model works in steps. */
+  looked?: { what: string }[]
   /** What to draw under the words, as the hub gave it: BrainView reads it, and draws nothing it can't make sense of. */
   view?: unknown
 }
@@ -271,6 +273,14 @@ function Answer({ turn, onNote, onCard, onAsk, mayKeep }: { turn: Turn; onNote: 
         <p className="setup-note">
           {!result.sources.length ? 'Nothing in your binders matches that.' : result.problem ? `No answer: ${result.problem} The passages that match best are below.` : <>The hub has no model to answer with yet, so here are the passages that match best. An admin can set one up in <SettingsLink section="brain" />.</>}
         </p>
+      )}
+      {!result.proposal && !!result.looked?.length && (
+        <details className="ask-read ask-looked">
+          <summary>Looked at <span className="num">{result.looked.length}</span></summary>
+          <ul>
+            {result.looked.map((one, i) => <li key={i}>{one.what}</li>)}
+          </ul>
+        </details>
       )}
       {!result.proposal && used.length > 0 && (
         <>

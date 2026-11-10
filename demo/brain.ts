@@ -1,5 +1,6 @@
 import { firstRules } from '../hub/src/brain/first.ts'
 import type { BrainModel, Passage } from '../hub/src/brain/models.ts'
+import type { LoopTurn, Step } from '../shared/agent.ts'
 
 // The demo hub's Brain: no model at all, only a few answers written here, put together from the board the hub hands it.
 // It is there so the Brain's page can be looked at with nothing set up: what it says of the work is what the invented
@@ -36,7 +37,8 @@ function things(elements: Elements, key: string, title: string, refs: Record<str
   return [key]
 }
 
-function reply(question: string, board: string, passages: Passage[]): { words: string; view?: unknown; cites?: number[] } {
+/** What it says of how the work stands, for the few questions it knows; nothing for any other. */
+function ofTheBoard(question: string, board: string): { words: string; view?: unknown } | undefined {
   const asked = question.toLowerCase()
   const agents = under(board, 'Agents').map((line) => /^- (.+?) \(/.exec(line)?.[1]).filter((name): name is string => !!name)
   const waiting = marked(under(board, 'Waiting on you'))
@@ -84,7 +86,7 @@ function reply(question: string, board: string, passages: Passage[]): { words: s
     return { words: 'This is how the open work moves, from notes to what you approve.', view: stack({ drawing: { type: 'Diagram', props: { title: 'The open work', code: lines.join('\n') } }, next: next(['What needs me?', 'What’s in review?']) }, ['drawing', 'next']) }
   }
 
-  if (/how many|count|chart|stage|number/.test(asked)) {
+  if (/\b(how many|count|chart|stages?|numbers?)\b/.test(asked)) {
     const labels = ['Waiting on you', 'Being worked on', 'Ready', 'In review', 'Change sets']
     const values = [waiting.length, working.length, ready.length, review.length, sets.length]
     const stat = (label: string, value: number, tone?: string) => ({ type: 'Stat', props: { label, value: String(value), ...(tone ? { tone } : {}) } })
@@ -99,9 +101,54 @@ function reply(question: string, board: string, passages: Passage[]): { words: s
     }
   }
 
+  return undefined
+}
+
+const next = (questions: string[]) => ({ type: 'Suggest', props: { questions } })
+const known = ['What needs me?', 'What are my agents working on?', 'What’s in review?', 'Draw how the open work fits together']
+
+/** Its answer in one go: what it knows of the board, or else the note that was found for the question, or what it can be asked. */
+function reply(question: string, board: string, passages: Passage[]): { words: string; view?: unknown; cites?: number[] } {
+  const said = ofTheBoard(question, board)
+  if (said) return said
   const found = passages.find((p) => p.title !== boardTitle)
-  if (found) return { words: `From “${found.title}”: ${found.text.replace(/\s+/g, ' ').trim().slice(0, 280)}`, cites: [passages.indexOf(found)], view: stack({ next: next(['What needs me?', 'What are my agents working on?']) }, ['next']) }
-  return { words: 'This is a demo hub, so its Brain knows only a few questions.', view: stack({ next: next(['What needs me?', 'What are my agents working on?', 'What’s in review?', 'Draw how the open work fits together']) }, ['next']) }
+  if (found) return { words: `From “${found.title}”: ${found.text.replace(/\s+/g, ' ').trim().slice(0, 280)}`, cites: [passages.indexOf(found)], view: stack({ next: next(known.slice(0, 2)) }, ['next']) }
+  return { words: 'This is a demo hub, so its Brain knows only a few questions.', view: stack({ next: next(known) }, ['next']) }
+}
+
+/** The sentence, among what a tool returned, that shares the most words with the question, with the number it's cited by. */
+function fromWhatItRead(question: string, read: string): { sentence: string; n: string } | undefined {
+  const wordsIn = (text: string) => new Set(text.toLowerCase().match(/[a-z]{4,}/g) ?? [])
+  const asked = wordsIn(question)
+  let best: { sentence: string; n: string; shared: number } | undefined
+  for (const block of read.split(/\n\n(?=\[\d+\] )/)) {
+    const n = /^\[(\d+)\]/.exec(block)?.[1]
+    if (!n) continue
+    for (const sentence of block.split('\n').slice(1).join('\n').split(/\n+|(?<=[.!?])\s+/)) {
+      // A sentence that asks isn't an answer: the card that asks the same thing would win every time.
+      if (sentence.trim().endsWith('?')) continue
+      const shared = [...wordsIn(sentence)].filter((word) => asked.has(word)).length
+      if (shared > (best?.shared ?? 1)) best = { sentence: sentence.replace(/^[#*>\s-]+/, '').trim(), n, shared }
+    }
+  }
+  return best
+}
+
+/**
+ * One step, for the Brain's page: what it knows of the board it answers at once; for anything else it looks in the notes
+ * with its find tool first, and answers from what came back, citing it.
+ */
+function stepOf(turns: LoopTurn[]): Step {
+  const first = turns[0]?.role === 'user' ? turns[0].text : ''
+  const board = /<document title="What’s going on now">\n([\s\S]*?)\n<\/document>/.exec(first)?.[1] ?? ''
+  const question = first.slice(Math.max(first.lastIndexOf('</document>\n\n') + 13, first.lastIndexOf('</documents>\n\n') + 14, 0)).trim()
+  const said = ofTheBoard(question, board)
+  if (said) return { text: `${said.words}${said.view ? `\n\n${block(said.view)}` : ''}`, calls: [], stop: 'end' }
+  const read = turns.flatMap((turn) => (turn.role === 'tool' ? turn.results.map((result) => result.text) : [])).join('\n\n')
+  if (!read) return { text: '', calls: [{ id: 'look-1', name: 'find', input: { query: question.slice(0, 200) } }], stop: 'tools' }
+  const found = fromWhatItRead(question, read)
+  const suggest = `\n\n${block(stack({ next: next(known.slice(0, 2)) }, ['next']))}`
+  return { text: found ? `${found.sentence} [${found.n}]${suggest}` : `I looked in the notes and found nothing about that.${suggest}`, calls: [], stop: 'end' }
 }
 
 /**
@@ -135,6 +182,8 @@ export const demoBrain: BrainModel = {
     const said = reply(question, passages.find((p) => p.title === boardTitle)?.text ?? '', passages)
     return { text: said.words, parts: [{ text: said.words, sources: said.cites ?? [] }], ...(said.view ? { view: block(said.view) } : {}) }
   },
+  steps: async () => true,
+  step: async ({ turns }) => stepOf(turns),
   talk: async (turns, passages) => reply(turns[turns.length - 1]?.text ?? '', passages.find((p) => p.title === boardTitle)?.text ?? '', passages).words,
   sortMoment: async (said) => ({ kind: 'note', title: said.slice(0, 80) }),
 }

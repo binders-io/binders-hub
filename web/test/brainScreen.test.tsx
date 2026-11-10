@@ -344,6 +344,28 @@ describe('an answer’s sources', () => {
   })
 })
 
+describe('what the Brain looked at', () => {
+  it('is listed under an answer it worked out in steps, folded away, and not under one it didn’t', async () => {
+    const answers = [
+      { answer: { text: '', parts: [{ text: 'Deploys go out on Tuesdays.', sources: [] }] }, sources: [], searchedBy: 'words', looked: [{ what: 'Looked for “deploy day”' }, { what: 'Read the note “How we build”' }] },
+      { answer: { text: '', parts: [{ text: 'We use pnpm.', sources: [] }] }, sources: [], searchedBy: 'words' },
+    ]
+    const { show } = await load(busy, { answer: () => answers.shift() })
+    await show()
+    fireEvent.change(box(), { target: { value: 'When do we deploy?' } })
+    fireEvent.keyDown(box(), { key: 'Enter' })
+    await screen.findByText('Deploys go out on Tuesdays.')
+    const looked = screen.getByText('Looked at').closest('details')!
+    expect(looked.open).toBe(false)
+    expect(within(looked.querySelector('summary')!).getByText('2')).toBeTruthy()
+    expect(within(looked).getAllByRole('listitem').map((item) => item.textContent)).toEqual(['Looked for “deploy day”', 'Read the note “How we build”'])
+    fireEvent.change(box(), { target: { value: 'Which package manager?' } })
+    fireEvent.keyDown(box(), { key: 'Enter' })
+    await screen.findByText('We use pnpm.')
+    expect(screen.getAllByText('Looked at').length).toBe(1)
+  })
+})
+
 describe('Home’s waiting list, shared with the rail', () => {
   it('is the same as before: yours first, with what each is, and a press opens it', async () => {
     const { standInHub, mount } = await import('./harness')

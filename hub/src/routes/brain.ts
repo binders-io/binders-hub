@@ -151,7 +151,7 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
   app.post('/api/brain/ask', askLimit, act(async (request) => {
     if (!brainSettings) throw new Refused('This hub has no brain.')
     const body = bodyOf<{ question: string; everywhere?: boolean; turns?: z.infer<typeof said> }>(asking, request)
-    const result = await ask(brainSettings, await placesFor(request, body.everywhere), body.question, { person: login(request), may: true, turns: body.turns, views: true })
+    const result = await ask(brainSettings, await placesFor(request, body.everywhere), body.question, { person: login(request), may: true, turns: body.turns, views: true, loop: true, heard: async (place) => (await (await spaces.start(place))?.inbox?.feed()) ?? [] })
     // Ask's own page sends the conversation so far, even when it's empty: what it asks is kept for the person, to open
     // again on any device. An offer to do something isn't, as it can't be taken up later. Another client asking alone
     // adds nothing to it.
