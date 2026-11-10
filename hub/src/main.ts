@@ -30,6 +30,8 @@ import { SpaceBrain } from './brain/brain.ts'
 import { KeptKV, StateFile } from './kept.ts'
 import { VectorFiles, vectorBranch } from './brain/vectorFiles.ts'
 import type { Binder } from '../../shared/notes.ts'
+import { Inbox } from './listen/inbox.ts'
+import { FeedReader } from './listen/reader.ts'
 
 // Everything comes from the environment (see README.md). GitHub is best set up from Settings, which makes a GitHub App
 // and keeps its keys here; the GITHUB_* variables set it up by hand instead, and win where both are set.
@@ -284,9 +286,14 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
     author: gitAuthor,
   })
   scheduler.copies = copies
+  // What comes in from outside: its listeners, what each hears, and the feeds read on the timer for a hub nothing reaches.
+  const inbox = new Inbox({ hub, kv: ownKv, sealer, member: (login) => !!spaces.roleOf(id, login) })
+  const feeds = new FeedReader({ hub, inbox, kv: ownKv })
+  webhooks.inbox = inbox
+  scheduler.feeds = feeds
   scheduler.start()
   const running: Space = {
-    id, hub, actions, webhooks, github, notes, poller, issues, jira, jiraIssues, tell, filesDir: join(notesDir, 'files'), brain, copies,
+    id, hub, actions, webhooks, github, notes, poller, issues, jira, jiraIssues, tell, filesDir: join(notesDir, 'files'), brain, copies, inbox, feeds,
     stop: async () => {
       // First: the rest of stopping can take longer than a server gives it.
       await stateFile?.save().catch(() => undefined)

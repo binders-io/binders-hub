@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react'
-import { Bot, Boxes, Brain, ChevronLeft, ChevronRight, History as HistoryIcon, KeyRound, Plug, Server, SlidersHorizontal, Users, Workflow } from 'lucide-react'
+import { Bot, Boxes, Brain, ChevronLeft, ChevronRight, History as HistoryIcon, Inbox, KeyRound, Plug, Server, SlidersHorizontal, Users, Workflow } from 'lucide-react'
 import { space } from '../data/space'
 import { useStore } from '../data/store'
 import { useRoute } from '../route'
@@ -15,11 +15,12 @@ import { HistoryPart } from './settings/History'
 import { HubBinders } from './settings/HubBinders'
 import { HubStatus } from './settings/HubStatus'
 import { JiraPart } from './settings/Jira'
+import { Listeners } from './settings/Listeners'
 import { NoOwnerLine } from './settings/shared'
 import { groups, isSection, rememberSection, rememberedSection, sectionHref, sections, type GroupId, type SectionId } from './settings/sections'
 
 const icons: Record<SectionId, (props: { size?: number }) => ReactNode> = {
-  general: SlidersHorizontal, people: Users, github: Github, flow: Workflow, jira: Plug, history: HistoryIcon, access: KeyRound, hubbinders: Boxes, brain: Brain, agents: Bot, status: Server,
+  general: SlidersHorizontal, people: Users, github: Github, flow: Workflow, listeners: Inbox, jira: Plug, history: HistoryIcon, access: KeyRound, hubbinders: Boxes, brain: Brain, agents: Bot, status: Server,
 }
 
 /**
@@ -94,6 +95,7 @@ export function Settings() {
           {section.id === 'people' && <People />}
           {section.id === 'github' && <GitHub />}
           {section.id === 'flow' && <Flow />}
+          {section.id === 'listeners' && <Listeners />}
           {section.id === 'jira' && <JiraPart />}
           {section.id === 'history' && <HistoryPart />}
           {section.id === 'access' && <HubOptionsPanel part="access" />}

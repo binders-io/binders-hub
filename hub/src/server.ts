@@ -18,6 +18,7 @@ import { personalRoutes } from './routes/personal.ts'
 import { signInRoutes } from './routes/signIn.ts'
 import { stateRoutes } from './routes/state.ts'
 import { tellRoutes } from './routes/tell.ts'
+import { listenRoutes } from './routes/listen.ts'
 import { webRoutes } from './routes/web.ts'
 import { workRoutes } from './routes/work.ts'
 import { brainRoutes } from './routes/brain.ts'
@@ -215,6 +216,7 @@ export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: 
   await machineRoutes(app, context)
   await jiraRoutes(app, context)
   await tellRoutes(app, context)
+  await listenRoutes(app, context)
   await brainRoutes(app, context)
   await appLinkRoutes(app, context)
   await oauthRoutes(app, context)

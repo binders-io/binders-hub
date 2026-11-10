@@ -15,6 +15,7 @@ import { Spaces, type Space, type SpaceInfo } from '../hub/src/spaces.ts'
 import { SpaceBrain } from '../hub/src/brain/brain.ts'
 import { BrainSettingsStore } from '../hub/src/brain/settings.ts'
 import { demoBrain } from './brain.ts'
+import { Inbox } from '../hub/src/listen/inbox.ts'
 import { demoBinder, demoChanges, demoAgents, demoPeople } from './data.ts'
 
 // A hub to look at, and nothing else: everything it holds is invented (data.ts) and lives in this process. It reads no
@@ -29,6 +30,18 @@ class NoGitHub extends GitHubConnection {
   status() {
     return { ...super.status(), server: true, webhooks: true }
   }
+}
+
+/** Harbor's listeners, and a few things they heard before anyone opened the page: all invented, like the rest. */
+async function heardSoFar(inbox: Inbox, owner: string) {
+  const mail = (await inbox.put(owner, undefined, { kind: 'post', name: 'Support mail', mode: 'on', folder: 'From outside' })).listener
+  const chat = (await inbox.put(owner, undefined, { kind: 'post', name: 'Team channel', mode: 'on', from: 'binder' })).listener
+  await inbox.put(owner, undefined, { kind: 'feed', name: 'Payments status page', url: 'https://status.example.com/feed', mode: 'watch' })
+  await inbox.take(mail.id, [
+    { sourceId: 'mail-1', title: 'Can I switch to annual mid-month?', text: 'Hi, we are on the monthly plan and would like to move to annual now. Do we lose what we already paid for this month?', sender: { name: 'Priya at Northwind' }, url: 'https://mail.example.com/t/1' },
+    { sourceId: 'mail-2', title: 'Invoice shows the wrong saving', text: 'Our annual receipt says we saved 10%, but the pricing page says two months free. Which is right?', sender: { name: 'Tom at Baker & Co' }, url: 'https://mail.example.com/t/2' },
+  ])
+  await inbox.take(chat.id, [{ sourceId: 'chat-1', title: 'Beta customers and the annual price', text: 'Reminder from the standup: beta customers keep their discount on annual plans until March. Someone should tell the api agent.', sender: { name: 'Jonas' } }])
 }
 
 export async function startDemoHub(port: number, webDir = resolve(import.meta.dirname, '../web/dist')) {
@@ -51,7 +64,9 @@ export async function startDemoHub(port: number, webDir = resolve(import.meta.di
     const actions = new Actions(hub, github)
     const brain = new SpaceBrain({ id, hub, kv: new MemoryKV(), settings: brains, embeds: false })
     brain.start()
-    return { id, hub, actions, github, webhooks: undefined as never, filesDir: join(files, id), brain }
+    // Listeners can be set up and posted to here. No feed is ever read: this hub reaches nothing.
+    const inbox = new Inbox({ hub, kv: new MemoryKV(), sealer, member: (login) => demoPeople.includes(login) })
+    return { id, hub, actions, github, webhooks: undefined as never, filesDir: join(files, id), brain, inbox }
   }
 
   const spaces = new Spaces(kv, start)
@@ -63,6 +78,7 @@ export async function startDemoHub(port: number, webDir = resolve(import.meta.di
   // The agents show as listening, as they would with their runners on, for as long as this runs.
   const space = spaces.get(demoBinder.space)!
   const hub = space.hub
+  await heardSoFar(space.inbox!, demoPeople[0])
   for (const agent of demoAgents) hub.touch(agent, 1)
   const listening = setInterval(() => { for (const agent of demoAgents) hub.touch(agent) }, 30_000)
 

@@ -11,6 +11,8 @@ import type { IssuesSaver } from './savers/issues.ts'
 import type { JiraSaver } from './savers/jira.ts'
 import type { Teller } from './tell.ts'
 import type { Webhooks } from './webhooks.ts'
+import type { Inbox } from './listen/inbox.ts'
+import type { FeedReader } from './listen/reader.ts'
 
 // One hub, several Binders: each its own team, with its own change log, projects, notes, cards and agents, and its own
 // members, and its own GitHub: its app, installations and webhook, and each member's sign-in to it. In the code a
@@ -76,6 +78,9 @@ export interface Space {
   copies?: CopyKeeper
   /** Its brain: the index of its notes and cards, what's captured put in as notes, questions answered. */
   brain?: SpaceBrain
+  /** What its listeners hear, and what becomes of it; and the feeds it reads to hear without being reached. */
+  inbox?: Inbox
+  feeds?: FeedReader
   stop?: () => Promise<void>
 }
 
@@ -87,7 +92,9 @@ export interface Space {
 export function worksAlone(space: Pick<Space, 'hub' | 'brain' | 'jira'>) {
   const { state } = space.hub
   return state.agents.some((agent) => !agent.revoked) || (state.schedules?.length ?? 0) > 0 || state.cards.some((card) => card.stage === 'working') ||
-    state.binders.some((binder) => !!binder.repo) || !!space.jira?.settings.baseUrl || (space.brain?.summariesWaiting ?? 0) > 0
+    state.binders.some((binder) => !!binder.repo) || !!space.jira?.settings.baseUrl || (space.brain?.summariesWaiting ?? 0) > 0 ||
+    // A feed is read on the hub's timer, which only a running Binder has. What's posted to it starts it when it arrives.
+    (state.listeners ?? []).some((listener) => listener.kind === 'feed' && listener.mode !== 'off')
 }
 
 /** Names a Binder's address can't take: the hub's own paths. */

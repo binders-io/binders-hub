@@ -118,8 +118,8 @@ describe('the rail', () => {
     const { show } = await load()
     await show()
     const headings = rail().getAllByRole('heading')
-    expect(headings.map((h) => h.tagName)).toEqual(['H2', 'H2'])
-    expect(headings.map((h) => h.textContent)).toEqual(['Needs you 1', 'Agents 4'])
+    expect(headings.map((h) => h.tagName)).toEqual(['H2', 'H2', 'H2'])
+    expect(headings.map((h) => h.textContent)).toEqual(['Needs you 1', 'Agents 4', 'Came in 0'])
   })
 
   it('opens what needs you when its row is pressed', async () => {
@@ -134,7 +134,7 @@ describe('the rail', () => {
     await show()
     expect(rail().getByText('Nothing needs you.')).toBeTruthy()
     expect(rail().getByText('No agents yet.')).toBeTruthy()
-    expect(rail().getAllByRole('heading').map((h) => h.textContent)).toEqual(['Needs you 0', 'Agents 0'])
+    expect(rail().getAllByRole('heading').map((h) => h.textContent)).toEqual(['Needs you 0', 'Agents 0', 'Came in 0'])
   })
 })
 

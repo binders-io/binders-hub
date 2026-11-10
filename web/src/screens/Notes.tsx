@@ -12,6 +12,7 @@ import { ago, usePhone } from '../components/bits'
 import { attempt, toast } from '../components/Toast'
 import { ConfirmButton } from '../components/ConfirmButton'
 import { NoteViews, type NoteView } from '../components/NoteViews'
+import { CameThrough } from '../components/CameThrough'
 import { call } from '../data/api'
 import { NoteControls, useMayChange } from '../components/NoteControls'
 import { AgentAvatar, Who, stageTone } from '../components/bits'
@@ -294,6 +295,7 @@ function NoteScreen({ noteId, listFirst, onDeleted }: { noteId: string; listFirs
             </>
           )}
         </NoteMeta>
+        <CameThrough noteId={note.id} />
         {note.locked && !mayChange && <p className="note-locked"><Lock size={13} /> Locked by @{note.locked.by}.{mayChangeBinder && ' Use the versions button to propose a change for review.'}</p>}
         {mayChange && !phone && <Toolbar editor={editor} raw={raw} onRaw={showRaw} />}
         <NoteEditor key={`${note.id}:${mayChange ? 'edit' : 'read'}`} noteId={note.id} binderId={note.binderId} folderId={note.folderId} editor={editor} raw={raw} readOnly={!mayChange} onFocusChange={setFocused} />

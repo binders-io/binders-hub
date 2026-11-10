@@ -15,6 +15,8 @@ are taken from, so they never come from a real hub.
   answers and shows each kind of view (rows of agents and cards, a chart, a table, a drawing) with nothing set up. Try
   "What needs me?", "What are my agents working on?", "How many cards are in each stage?", "Draw how the open work fits
   together" and "stop the receipt work".
+- Its listeners (Settings → Listeners, and "Came in" on the Brain's rail): two addresses that can be posted to on this
+  machine, with a few things already heard, and a feed that is listed and never read, as this hub reaches nothing.
 - `shoot.ts`: takes the pictures.
 
 ## Set up

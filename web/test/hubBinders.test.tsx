@@ -142,7 +142,7 @@ describe('the hub’s Binders section', () => {
     await mount(<Settings />)
     await screen.findByLabelText('Name')
     expect(within(nav()).queryByRole('link', { name: 'Binders' })).toBeNull()
-    expect(within(nav()).getAllByRole('link').length).toBe(10)
+    expect(within(nav()).getAllByRole('link').length).toBe(11)
   })
 
   it('sends anyone else to General when its address is opened, and so does a browser that remembered it', async () => {

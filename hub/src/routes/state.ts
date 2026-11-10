@@ -159,11 +159,15 @@ export async function stateRoutes(app: FastifyInstance, context: Context) {
     const presence = (now: Record<string, unknown>) => socket.readyState === socket.OPEN && socket.send(JSON.stringify({ type: 'presence', presence: now }))
     presence(hub.presence())
     hub.on('presence', presence)
+    // Something came in through a listener, or was taken back: the page asks for the rows again.
+    const heard = () => socket.readyState === socket.OPEN && socket.send(JSON.stringify({ type: 'heard' }))
+    hub.on('heard', heard)
     const ping = setInterval(() => socket.readyState === socket.OPEN && socket.ping(), 25_000)
     socket.on('close', () => {
       terminals.off('change', terminalsOf)
       hub.off('entries', live)
       hub.off('presence', presence)
+      hub.off('heard', heard)
       clearInterval(ping)
     })
   })

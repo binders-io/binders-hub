@@ -14,6 +14,7 @@ import type { BrainSettingsStore } from './settings.ts'
 import type { VectorFiles } from './vectorFiles.ts'
 import { viewFrom, viewRules } from './view.ts'
 import type { View } from '../../../shared/view.ts'
+import { topFolder } from '../listen/inbox.ts'
 
 // A Binder's brain: the index of its notes and cards, kept up as they change, what's captured on a phone or Mac put in
 // as notes and summed up, and questions answered from it all. The index is the Binder's own, in its own store; a
@@ -289,17 +290,11 @@ export class SpaceBrain {
     const id = where.sourceId ? `note-cap-${short(`${binder.id}\u0000${where.sourceId}`, 16)}` : `note-cap-${randomUUID().replace(/-/g, '').slice(0, 16)}`
     const already = state.notes.find((n) => n.id === id)
     if (already) return { note: already, created: false, summarizing: false, written: Promise.resolve(undefined as Summary | undefined) }
-    const folderName = (where.folder?.trim() || captureFolders[capture.kind]).replace(/[/\\]+/g, ' ').slice(0, 80)
     const changes: Entry['change'][] = []
     // Its id comes from its name, so two captures arriving at once make one folder; once made, it's found by that id
     // wherever it was moved and whatever it was renamed, and left as people have it.
-    const folderId = `folder-${folderName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'inbox'}-${short(`${binder.id}\u0000${folderName.toLowerCase()}`, 8)}`
-    let folder = state.folders.find((f) => f.id === folderId)
-      ?? state.folders.find((f) => f.binderId === binder.id && !f.parentId && f.name.toLowerCase() === folderName.toLowerCase())
-    if (!folder) {
-      folder = { id: folderId, binderId: binder.id, name: folderName }
-      changes.push({ type: 'folder.put', folder })
-    }
+    const { folder, made } = topFolder(state, binder.id, where.folder?.trim() || captureFolders[capture.kind])
+    if (made) changes.push({ type: 'folder.put', folder })
     const title = capture.title?.trim().slice(0, 120) || firstWords(capture.text)
     const at = new Date().toISOString()
     const note: Note = { id, title, binderId: binder.id, folderId: folder.id, editedAt: at, editedBy: login, editors: [login], text: captureNote(capture, title), captured: capture.kind }

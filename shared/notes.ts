@@ -1,3 +1,4 @@
+import type { NoteFrom } from './listen.ts'
 // Notes as the hub and the web app both hold them, and the changes that move them. Both sides apply a change with the
 // same `apply`, so a client that applied its own change at once ends up where the hub does.
 
@@ -60,6 +61,11 @@ export interface Note {
    * (anyone's words, heard in a room). Work that comes of a conversation or meeting is always read by a person first.
    */
   captured?: 'dictation' | 'conversation' | 'meeting' | 'note'
+  /**
+   * The listener it came through, when it came from outside the Binder's own people and devices (shared/listen.ts): who
+   * sent it, and how strongly it was said. What's from outside starts no work until a person has let it through.
+   */
+  from?: NoteFrom
   /** The commit that saved it last, and its file in the notes repo. */
   commit?: string
   path?: string
@@ -152,6 +158,8 @@ export type Change =
   | { type: 'note.delete'; id: string; by?: string; at?: string }
   /** Written by the hub, once it's checked who's asking. */
   | { type: 'note.lock'; id: string; locked?: { by: string; at: string } }
+  /** A person read a note that came from outside and let it through: its folder's rule may take it from here. */
+  | { type: 'note.pass'; id: string; by: string; at: string }
   | { type: 'noteProposal.put'; proposal: NoteProposal }
   | { type: 'noteProposal.update'; id: string; fields?: Pick<NoteProposal, 'state' | 'decidedBy' | 'decidedAt'>; comment?: NoteProposal['comments'][number] }
   /** The saver committed the note: written by the hub, never by a client. */
@@ -189,6 +197,8 @@ export function apply<S extends NotesState>(state: S, change: Change): S {
       const trashed = change.restored ? state.trashedNotes?.filter((t) => t.note.id !== note.id) : state.trashedNotes
       return { ...state, notes: upsert(state.notes, locked ? { ...note, locked } : note), ...(trashed ? { trashedNotes: trashed } : {}) }
     }
+    case 'note.pass':
+      return { ...state, notes: state.notes.map((n) => (n.id === change.id && n.from ? { ...n, from: { ...n.from, passed: { by: change.by, at: change.at } } } : n)) }
     case 'note.lock':
       return {
         ...state,

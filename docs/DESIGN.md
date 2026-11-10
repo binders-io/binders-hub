@@ -499,6 +499,46 @@ waits on a person, another agent's words aren't passed on. Two agents get
 20 messages an hour between them before they're told to ask a person. An agent reaches only agents working in binders it works
 in, and a Challenge's reviewer and the author it's judging can't message each other.
 
+## Listeners (built)
+
+A listener brings things into a Binder from outside it, and each thing it hears becomes a note in a folder there, where
+the folder's rule takes over (`shared/listen.ts`, `hub/src/listen`). A Binder's owners and admins set them up in
+Settings → Listeners; a personal Binder can have its own.
+
+- **Told or asked.** A source can post to the hub, or the hub can ask the source, so a hub nothing can reach (on a Mac,
+  behind a firewall) still hears.
+  - *An address to post to.* The hub gives out an address and a secret, said once. Anything that can post can feed it: a
+    Power Automate flow on a Teams channel or a mailbox, Twilio, a Shortcut, a script. The post carries the secret as a
+    bearer token, as a signature of its body (`X-Binders-Signature: sha256=…`, as GitHub signs), or as `?key=` for a tool
+    that can set neither. The body is JSON (`title`, `text`, `from`, `url`, `id`, or several under `events`), a form, or
+    plain words. Anything without the secret is answered as if the address weren't there.
+
+    ```sh
+    curl -X POST "https://hub.example.com/webhooks/in/<binder>/<listener>" \
+      -H "Authorization: Bearer bnl_…" -H "Content-Type: application/json" \
+      -d '{"title":"Printer on fire","text":"Third floor, again.","from":"Ana"}'
+    ```
+  - *A feed the hub reads* (RSS, Atom or JSON Feed), every few minutes. It reads out on the internet only, over https,
+    follows no redirect, and honours the feed's own "nothing new". Where a feed starts is where it is when first read:
+    what was already there is left alone. When it can't be read, the listener says why.
+  - *GitHub issues.* An open issue the hub didn't make, in a repo the binder works in, by webhook or by asking as the
+    rest of GitHub is followed.
+- **Heard once.** The same thing said twice is one note: a source's own id names it, or its words when it has none.
+- **How strongly it was said** is decided by the hub from who sent it, before anything reads its words, and nothing in
+  the words can change it. *Heard*: someone in the Binder (a GitHub login in it, or an address only its people have).
+  *Outside*: anyone else, and every bot. Who a post says sent it is a name to show, never a person on the hub.
+- **Watch, then On.** A new listener watches: the hub says what it would file, and files nothing. Turned on, it files.
+  Off, it hears nothing.
+- **What's from outside starts no work.** The note says where it came from (`from` on the note, and a line at its top).
+  A folder's rule doesn't distill a note from outside until someone in the Binder has read it and let it through
+  (`POST /api/notes/:id/pass`), and work from a listener's note is never accepted without a person. Outside words are
+  written so nothing in them is fetched or drawn when the note is opened: no picture loads from a sender's server.
+- **Came in.** The Brain's rail lists what each listener heard and what became of it, in the hub's words, newest first
+  (`GET /api/listen/feed`). A note the hub filed can be taken back while nobody has worked on it. Rows are kept a month,
+  in the Binder's store; the notes are what lasts.
+- **Limits.** 20 listeners to a Binder, 120 things an hour through each (the rest are held, and said so), 256 KB a
+  post, 50 things in one.
+
 ## The brain (built)
 
 The hub's own model, for what needs no agent: summing up what a phone or Mac captured, and answering a question from the

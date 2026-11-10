@@ -29,14 +29,14 @@ afterEach(() => {
 })
 
 describe('Settings', () => {
-  it('has two named groups, eleven sections for a hub admin, each a link to its own address', async () => {
+  it('has two named groups, twelve sections for a hub admin, each a link to its own address', async () => {
     hub('general', true)
     await mount(<Settings />)
     const nav = screen.getByRole('navigation', { name: 'Settings' })
     const binder = within(nav).getByRole('group', { name: 'This binder' })
     const hubs = within(nav).getByRole('group', { name: 'This hub' })
     // GitHub isn't set up in this hub, which a link says to a screen reader as well as with its dot.
-    expect(within(binder).getAllByRole('link').map((a) => a.textContent?.trim())).toEqual(['General', 'People', 'GitHub Needs a look', 'How work flows', 'Jira', 'History'])
+    expect(within(binder).getAllByRole('link').map((a) => a.textContent?.trim())).toEqual(['General', 'People', 'GitHub Needs a look', 'How work flows', 'Listeners', 'Jira', 'History'])
     expect(within(hubs).getAllByRole('link').map((a) => a.textContent?.trim())).toEqual(['Who gets in', 'Binders', 'Brain', 'Agents', 'Status'])
     expect(within(nav).getByRole('link', { name: 'How work flows' }).getAttribute('href')).toBe('#/settings/flow')
     expect(within(hubs).getByRole('link', { name: 'Status' }).getAttribute('href')).toBe('#/settings/status')

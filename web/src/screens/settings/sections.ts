@@ -1,7 +1,7 @@
 // Settings' sections, in the two groups the sidebar shows them in. Light on purpose: a link to a section from anywhere
 // in the app (`SettingsLink`) reads its name from here without pulling in the screen.
 
-export type SectionId = 'general' | 'people' | 'github' | 'flow' | 'jira' | 'history' | 'access' | 'hubbinders' | 'brain' | 'agents' | 'status'
+export type SectionId = 'general' | 'people' | 'github' | 'flow' | 'listeners' | 'jira' | 'history' | 'access' | 'hubbinders' | 'brain' | 'agents' | 'status'
 export type GroupId = 'binder' | 'hub'
 
 export interface Section {
@@ -19,6 +19,7 @@ export const sections: Section[] = [
   { id: 'people', group: 'binder', label: 'People', detail: 'Who’s in it, and who runs it.' },
   { id: 'github', group: 'binder', label: 'GitHub', detail: 'This binder’s own GitHub App and the repos it’s installed on, the repo its cards and notes go to, and the repos its agents work in. No other binder uses its app or sees its repos.' },
   { id: 'flow', group: 'binder', label: 'How work flows', detail: 'What goes to GitHub as work happens, and what runs by itself.' },
+  { id: 'listeners', group: 'binder', label: 'Listeners', detail: 'What comes into this binder from outside it: an address another tool posts to, a feed the hub reads, or issues opened on GitHub.' },
   { id: 'jira', group: 'binder', label: 'Jira', detail: 'Mirrors this binder’s cards into one Jira Cloud project: a card becomes an issue, its stage the issue’s status, and what people do there comes back: a status they change moves the card, a comment lands on it. The hub keeps the words; Jira’s copy is written, never read back.' },
   { id: 'history', group: 'binder', label: 'History', detail: 'What people and agents did here that others may want to know of later, and what was deleted, which can be put back for 30 days.' },
   { id: 'access', group: 'hub', label: 'Who gets in', detail: 'Who may sign in to this hub, and who runs it.' },

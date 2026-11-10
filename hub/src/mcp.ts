@@ -93,6 +93,8 @@ const quiet = new Set<string>([
   'pr.put', 'pr.update', 'pr.delete', 'env.put', 'env.update', 'env.delete', 'run.put', 'run.delete',
   // What a folder does with its notes, and how a note's work is kept: read when a card is made, never to pick one.
   'rule.put', 'rule.delete', 'note.work', 'note.distill',
+  // What listens for a Binder, and a note from outside let through: no card is made by either.
+  'listener.put', 'listener.delete', 'note.pass',
 ])
 /** The lines on a card a person writes in, and the card moving: the kinds `resumeFor` reads for an agent to go on. */
 const spoken = new Set<string>(['answer', 'comment', 'moved'])
