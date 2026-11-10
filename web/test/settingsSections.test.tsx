@@ -94,7 +94,7 @@ describe('Settings sections', () => {
     window.location.hash = '#/settings'
     await mount(<Settings />)
     const nav = screen.getByRole('navigation', { name: 'Settings' })
-    expect(within(nav).getAllByRole('link').length).toBe(11)
+    expect(within(nav).getAllByRole('link').length).toBe(12)
     expect(open()).toBeUndefined()
     expect(within(nav).getAllByRole('link').some((a) => a.getAttribute('aria-current'))).toBe(false)
     window.location.hash = '#/settings/people'

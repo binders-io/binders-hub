@@ -2765,6 +2765,8 @@ export class Runner {
         return plain('aider', [...(model ? ['--model', model] : [])])
       case 'qwen':
         return plain('qwen', [...(full ? ['-y'] : []), ...(model ? ['-m', model] : [])])
+      case 'binders':
+        throw new Error(toolInfo('binders').noTerminal!)
       default:
         throw new Error('This agent runs a command of its own, which has no terminal form: pick one of the tools in its settings to open it in a terminal.')
     }
@@ -2822,6 +2824,15 @@ export class Runner {
         return plain('aider', ['--message', prompt, '--yes-always', ...(model ? ['--model', model] : [])])
       case 'qwen':
         return plain('qwen', ['-p', prompt, ...(full ? ['-y'] : []), ...(model ? ['-m', model] : [])])
+      case 'binders': {
+        // Binders' own agent: this runner's own file, in its work mode (harness.ts), so there's nothing to install
+        // here. It prints the events Claude Code does, which is what's read from it.
+        const self = fileURLToPath(import.meta.url)
+        const main = basename(self) === 'runner.ts' ? join(dirname(self), 'main.ts') : self
+        // Its model on this machine, when its owner gave one: asked from here. Otherwise the hub takes each step.
+        const here = settings.modelUrl && model ? ['--model-url', settings.modelUrl, '--model', model] : []
+        return plain(process.execPath, [...process.execArgv, main, 'work', '--dir', dir, '--access', full ? 'full' : 'edits', ...here, prompt])
+      }
       default: {
         if (process.platform === 'win32') {
           const [command = '', ...args] = splitCommand(settings.command ?? '', { prompt, dir, mcp: mcp ?? '' })

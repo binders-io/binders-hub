@@ -1,6 +1,6 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { AnimatePresence } from 'motion/react'
-import { Check, ChevronDown, ChevronRight, Copy, KeyRound, Laptop, Play, RotateCw, SquareTerminal, Trash2 } from 'lucide-react'
+import { Bot, Check, ChevronDown, ChevronRight, Copy, KeyRound, Laptop, Play, RotateCw, SquareTerminal, Trash2, TriangleAlert } from 'lucide-react'
 import type { Agent, Provider } from '../data/model'
 import { isListening, isOnline, useStore, runnerPlaces, runnersOf } from '../data/store'
 import { agentRepos, asksOf, usualRules, defaultRunner, runnerShown, toolForProvider, type RunnerSettings } from '../../../shared/work.ts'
@@ -16,14 +16,18 @@ import { useUI } from '../ui'
 import { workerPrompt } from '../data/prompts'
 import { RunnerSteps } from '../components/RunnerSteps'
 import { AddMachine } from '../components/AddMachine'
+import { AddModel } from '../components/AddModel'
+import { EditModel } from '../components/EditModel'
+import { MachineModel } from '../components/MachineModel'
+import { isModelAgent, machineModelWords, modelOnMachine, modelReady, modelWords, takesNames, usesOwnModel } from '../components/modelAgent'
 import { RepoInput } from '../components/RepoInput'
 import { runnerState } from '../components/runnerState'
 import { ScheduleList } from '../components/Schedules'
 import { SettingsLink } from '../components/SettingsLink'
-import { useMayChangeBinder } from './settings/access'
+import { useMayChangeBinder, useMayManageBinder } from './settings/access'
 
 /** What an agent shows as, from the tool its runner starts. */
-const providerFor = (tool: AgentTool): Provider => (tool === 'codex' ? 'openai' : tool === 'custom' ? 'other' : tool)
+const providerFor = (tool: AgentTool): Provider => (tool === 'codex' ? 'openai' : tool === 'custom' || tool === 'binders' ? 'other' : tool)
 const shortAccess: Record<Access, string> = { full: 'Full access', auto: 'Auto', edits: 'Edits only' }
 
 /** Whether an agent's settings are anything but what a new one starts with, so its "More" opens when editing it. */
@@ -31,7 +35,7 @@ const setBeyondDefaults = (agent: Agent) => {
   const run = runnerShown(agent)
   return agent.repos.length > 0 || agent.skills.length > 0 || agent.binders.length > 0 || !!run.workspace || !!run.model
     || run.access !== toolInfo(run.tool).access[0] || run.timeoutMinutes !== defaultRunner.timeoutMinutes || (run.parallel ?? 3) !== 3
-    || !!run.held || !!run.live || !!run.cli || run.commitAs === 'app' || (run.allow ?? []).length > 0
+    || !!run.modelUrl || !!run.held || !!run.live || !!run.cli || run.commitAs === 'app' || (run.allow ?? []).length > 0
 }
 
 const list = (text: string) => text.split(/[,\n]/).map((t) => t.trim()).filter(Boolean)
@@ -43,13 +47,23 @@ export function Agents() {
   const { connectClaudeCode } = useUI()
   // A reader sees the agents and what they're doing; setting one up, editing, tokens and revoking are for those who may change the Binder.
   const may = useMayChangeBinder()
+  // A model with no machine reads the Binder's notes and spends a key, so only its owners and admins add or change one.
+  const manager = useMayManageBinder()
   const [addingMachine, setAddingMachine] = useState(false)
+  const [addingModel, setAddingModel] = useState(false)
+  const [editingModel, setEditingModel] = useState<string>()
+  // The model of an agent on a machine, which has a runner as well.
+  const [modelOf, setModelOf] = useState<string>()
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<Agent>()
   const [token, setToken] = useState<{ agent: Agent; token: string }>()
   const [starting, setStarting] = useState<Agent>()
   // Online first, then the ones set up most recently, so yours come before older ones.
-  const agents = state.agents.filter((a) => !a.revoked).sort((a, b) => Number(isOnline(b)) - Number(isOnline(a)) || b.createdAt.localeCompare(a.createdAt))
+  const foundModel = state.agents.find((a) => a.id === editingModel && !a.revoked)
+  const editingModelAgent = foundModel && isModelAgent(foundModel) ? foundModel : undefined
+  const machineModelAgent = state.agents.find((a) => a.id === modelOf && !a.revoked && !isModelAgent(a))
+  const up = (a: Agent) => (isModelAgent(a) ? modelReady(a) : isOnline(a))
+  const agents = state.agents.filter((a) => !a.revoked).sort((a, b) => Number(up(b)) - Number(up(a)) || b.createdAt.localeCompare(a.createdAt))
 
   return (
     <div className="agents-screen">
@@ -65,12 +79,25 @@ export function Agents() {
         </div>
       </header>
 
+      {manager ? (
+        <button type="button" className="model-agent-choice" onClick={() => setAddingModel(true)}>
+          <Bot size={18} aria-hidden="true" />
+          <span>
+            <b>A model, with no machine</b>
+            <em>The hub runs it. It distills notes, writes them, answers in a note’s chat, debriefs and challenges. It can’t read or change code.</em>
+          </span>
+        </button>
+      ) : (
+        <p className="model-agent-choice-none faint">Only this Binder’s owners and admins can add a model with no machine.</p>
+      )}
+
       <div className="agent-grid">
         {agents.map((agent) => (
           <AgentCard
             key={agent.id}
             agent={agent}
-            onEdit={() => setEditing(agent)}
+            onEdit={() => (isModelAgent(agent) ? setEditingModel(agent.id) : setEditing(agent))}
+            onModel={() => setModelOf(agent.id)}
             onToken={() => void attempt(async () => setToken({ agent, token: await store.newToken(agent.id) }))}
             onRevoke={() => void attempt(() => store.revokeAgent(agent.id))}
             onStart={() => setStarting(agent)}
@@ -95,6 +122,9 @@ export function Agents() {
 
       <AnimatePresence>
         {addingMachine && <AddMachine key="machine" onClose={() => setAddingMachine(false)} />}
+        {addingModel && <AddModel key="model" onClose={() => setAddingModel(false)} />}
+        {machineModelAgent && <MachineModel key={`machine-model-${machineModelAgent.id}`} agent={machineModelAgent} onClose={() => setModelOf(undefined)} />}
+        {editingModelAgent && <EditModel key={`model-${editingModelAgent.id}`} agent={editingModelAgent} onClose={() => setEditingModel(undefined)} />}
         {(adding || editing) && <AgentDialog key="agent" agent={editing} onClose={() => { setAdding(false); setEditing(undefined) }} onMade={(made) => { setAdding(false); setToken(made) }} />}
         {token && <TokenDialog key="token" agent={token.agent} token={token.token} onClose={() => setToken(undefined)} />}
         {starting && (
@@ -108,24 +138,32 @@ export function Agents() {
 }
 
 /** One agent: what it's doing first, then where it works and what it can do, as chips that fold up when there are many. */
-function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent; onEdit: () => void; onToken: () => void; onRevoke: () => void; onStart: () => void }) {
+function AgentCard({ agent, onEdit, onModel, onToken, onRevoke, onStart }: { agent: Agent; onEdit: () => void; onModel: () => void; onToken: () => void; onRevoke: () => void; onStart: () => void }) {
   const { state } = useStore()
   const may = useMayChangeBinder()
   // On a phone what it's doing comes first, and the rest when asked for.
   const phone = usePhone()
   const [factsOpen, setFactsOpen] = useState(false)
+  const manager = useMayManageBinder()
+  // One the hub runs, as a model at an address: no machine, no runner, no terminal, no token.
+  const hosted = isModelAgent(agent)
+  // Binders' own agent works on a machine, and takes its steps from a model the hub holds: it has none until it's given one.
+  const ownModel = usesOwnModel(agent)
+  // A model on the agent's own machine is the one used, so the card's own model, and what's wrong with it, don't matter.
+  const onItsMachine = modelOnMachine(agent)
+  const fixModel = hosted ? onEdit : onModel
   const holding = state.cards.filter((c) => c.agentId === agent.id && c.stage === 'working')
   // A card it asked about waits in Blocked, still its: it counts here, or an agent whose question waits reads as idle.
   const paused = state.cards.filter((c) => c.agentId === agent.id && c.stage === 'blocked')
   const holds = [...holding, ...paused]
   const asks = holds.filter((c) => asksOf(c))
   const done = state.cards.filter((c) => c.agentId === agent.id && (c.stage === 'review' || c.stage === 'live')).length
-  const online = isOnline(agent)
-  const listening = isListening(agent)
+  const online = hosted ? modelReady(agent) : isOnline(agent)
+  const listening = hosted ? false : isListening(agent)
   // Only its owner can start it, see its token or answer its permissions, so whose it is shows when it isn't yours.
   const login = state.me?.user.login
   const theirs = !!login && login.toLowerCase() !== agent.owner.toLowerCase()
-  const provider = toolInfo(agent.runner?.tool ?? toolForProvider(agent.provider)).name
+  const provider = hosted ? 'Runs on this hub' : toolInfo(agent.runner?.tool ?? toolForProvider(agent.provider)).name
   const runner = agent.runner
   // Repos grouped by owner, so an organization's name shows once.
   const owners = new Map<string, string[]>()
@@ -155,15 +193,29 @@ function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent
           <h3>{agent.name}</h3>
           {/* Each piece stays whole and the line wraps between them: the separators are drawn after a piece, so none starts a line. */}
           <span className="agent-meta">
-            <span className="agent-piece"><span className={`status-dot${online ? ' online' : ''}${listening ? ' listening' : ''}`} />{asks.length ? `${asks.length === 1 ? 'A question' : `${asks.length} questions`} for you` : listening ? 'Listening for work' : holding.length && online ? 'Working' : online ? 'Online' : agent.lastSeen ? `Seen ${ago(agent.lastSeen)} ago` : 'Not running'}</span>
+            <span className="agent-piece"><span className={`status-dot${online ? ' online' : ''}${listening ? ' listening' : ''}`} />{asks.length ? `${asks.length === 1 ? 'A question' : `${asks.length} questions`} for you` : hosted ? (holding.length ? 'Working' : online ? 'Ready' : 'Needs attention') : listening ? 'Listening for work' : holding.length && online ? 'Working' : online ? 'Online' : agent.lastSeen ? `Seen ${ago(agent.lastSeen)} ago` : 'Not running'}</span>
             {provider && <span className="agent-piece faint">{provider}</span>}
-            <span className="agent-piece faint agent-access">{shortAccess[(runner ?? defaultRunner).access]}</span>
+            {hosted
+              ? <span className="agent-piece faint model-agent-words">{modelWords(agent.endpoint)}</span>
+              : <span className="agent-piece faint agent-access">{shortAccess[(runner ?? defaultRunner).access]}</span>}
             {theirs && <span className="agent-piece faint agent-owner">@{agent.owner}’s</span>}
           </span>
         </div>
       </header>
       {agent.runnerSeen?.enterpriseMcp && (runner?.tool ?? 'claude') === 'claude' && <p className="agent-note" role="status">Enterprise MCP config on this machine: working without Binders’ MCP tools, its runner reporting for it.</p>}
       {agent.runnerSeen?.bypassOff && (runner?.tool ?? 'claude') === 'claude' && runner?.access === 'full' && <p className="agent-note" role="status">This machine’s Claude Code policy turns full access off: it edits files without asking, and the commands it runs follow the policy’s rules.</p>}
+      {agent.endpoint?.ready && !agent.endpoint.ready.ok && !onItsMachine && (
+        <p className="agent-warning model-agent-warning" role="status">
+          <span>{agent.endpoint.ready.why || 'It didn’t answer as it needs to.'}</span>
+          {manager && <button type="button" className="button model-agent-fix" onClick={fixModel}>Put it right</button>}
+        </p>
+      )}
+      {ownModel && !agent.endpoint && !onItsMachine && (
+        <p className="agent-warning model-agent-warning" role="status">
+          <span>{manager ? 'No model yet. It can’t work until it has one.' : 'No model yet. It can’t work until it has one. Ask one of this Binder’s owners or admins to give it a model.'}</span>
+          {manager && <button type="button" className="button model-agent-fix" onClick={onModel}>Give it a model</button>}
+        </p>
+      )}
       {runnersOf(agent) > 1 && <p className="agent-warning" role="status">{runnersOf(agent)} runners are running as {agent.name}{runnerPlaces(agent).length ? `, on ${runnerPlaces(agent).join(' and ')}` : ''}. They take the same work, each in its own folder: stop all but one.</p>}
 
       <div className={`agent-doing${holding.length ? ' busy' : ''}${asks.length ? ' asks' : ''}`}>
@@ -175,8 +227,14 @@ function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent
         )) : <span className="faint">Waiting for work{done ? ` · ${done} finished` : ''}</span>}
       </div>
 
-      {phone && <button type="button" className="section-toggle agent-facts-toggle" aria-expanded={factsOpen} onClick={() => setFactsOpen(!factsOpen)}><ChevronDown size={14} style={{ transform: factsOpen ? 'none' : 'rotate(-90deg)' }} /> Repos, skills and runner</button>}
-      {(!phone || factsOpen) && <dl className="agent-facts">
+      {phone && <button type="button" className="section-toggle agent-facts-toggle" aria-expanded={factsOpen} onClick={() => setFactsOpen(!factsOpen)}><ChevronDown size={14} style={{ transform: factsOpen ? 'none' : 'rotate(-90deg)' }} /> {hosted ? 'What it takes' : 'Repos, skills and runner'}</button>}
+      {(!phone || factsOpen) && hosted && (
+        <dl className="agent-facts">
+          <dt>Takes</dt>
+          <dd>{takesNames(agent.endpoint.takes).length ? <ChipGroup items={takesNames(agent.endpoint.takes)} /> : <span className="faint">Nothing: all four are off</span>}</dd>
+        </dl>
+      )}
+      {(!phone || factsOpen) && !hosted && <dl className="agent-facts">
         <dt>Repos</dt>
         <dd>{agent.repos.length ? [...owners.entries()].map(([owner, names]) => <ChipGroup key={owner} label={owner} items={names} mono />) : <span className="faint">Any repo</span>}</dd>
         {state.binders.length > 1 && <>
@@ -186,12 +244,20 @@ function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent
         <dt>Skills</dt>
         <dd>{agent.skills.length ? <ChipGroup items={agent.skills} /> : <span className="faint">Not said yet</span>}</dd>
         {agent.runsOn && <><dt>Runs on</dt><dd className="runs-on mono" title={agent.runsOn}>{agent.runsOn}</dd></>}
+        {ownModel && <>
+          <dt>Model</dt>
+          <dd className="model-agent-row">{onItsMachine && runner
+            ? <span className="mono" title={machineModelWords(runner)}>{machineModelWords(runner)}</span>
+            : agent.endpoint
+            ? <><span className="mono" title={modelWords(agent.endpoint)}>{modelWords(agent.endpoint)}</span>{manager && <button type="button" className="text-button" onClick={onModel}>Change</button>}</>
+            : <span className="faint">None yet</span>}</dd>
+        </>}
         <dt>Runner</dt>
         <dd className="runner-facts">{[toolInfo((runner ?? defaultRunner).tool).name, shortAccess[(runner ?? defaultRunner).access], `${(runner ?? defaultRunner).parallel ?? 3} at once`, `${(runner ?? defaultRunner).timeoutMinutes} min`].map((part) => <span key={part}>{part}</span>)}</dd>
-        {runner?.model && <><dt>Model</dt><dd className="runs-on mono" title={runner.model}>{runner.model}</dd></>}
+        {runner?.model && !ownModel && <><dt>Model</dt><dd className="runs-on mono" title={runner.model}>{runner.model}</dd></>}
       </dl>}
 
-      {may && (!listening || runnerState(agent).old) && (
+      {may && !hosted && (!listening || runnerState(agent).old) && (
         <div className="agent-start">
           <p className={online && runnerState(agent).old ? 'runner-old' : 'faint'}>{online && runnerState(agent).old ? runnerState(agent).text : 'Its runner isn’t running.'}</p>
           {restartable
@@ -199,7 +265,15 @@ function AgentCard({ agent, onEdit, onToken, onRevoke, onStart }: { agent: Agent
             : <button className="button primary" onClick={onStart}><Play size={13} /> {listening ? 'Restart the runner' : 'Start the runner'}</button>}
         </div>
       )}
-      {may && <footer>
+      {may && hosted && (
+        <footer>
+          {manager && <button className="button" onClick={onEdit}>Edit</button>}
+          <span className="agent-card-rare">
+            <ConfirmButton className="button only-icon danger" question="Revoke it? Press again" onConfirm={onRevoke} title="Revoke: it stops at once, and its key is removed" label={`Revoke ${agent.name}`}><Trash2 size={14} /></ConfirmButton>
+          </span>
+        </footer>
+      )}
+      {may && !hosted && <footer>
         {state.me?.user.login.toLowerCase() === agent.owner.toLowerCase() && (runner?.tool ?? 'claude') !== 'custom' && !toolInfo(runner?.tool ?? 'claude').noTerminal && (
           <a className="button" href={href({ screen: 'terminal', id: agent.id })} title={`${toolInfo(runner?.tool ?? 'claude').name} in a terminal on its machine, as you’d use it there`}><SquareTerminal size={14} /> Terminal</a>
         )}
@@ -249,10 +323,19 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
   for (let n = 2; taken.has(suggested.toLowerCase()); n++) suggested = `${tool.name} ${n}`
   const name = typed ?? suggested
   const [more, setMore] = useState(() => !!agent && setBeyondDefaults(agent))
+  // Binders' own agent's model: on the hub, which holds its key, or on the agent's own machine, where the runner calls it.
+  const [onMachine, setOnMachine] = useState(() => !!agent?.runner?.modelUrl)
+  const chooseWhere = (machine: boolean) => {
+    setOnMachine(machine)
+    // On the hub, there is no address and no name here: the hub's own model is set from the agent's card.
+    if (!machine) setRun({ modelUrl: undefined, model: undefined })
+  }
+  const [problem, setProblem] = useState<string>()
   // Picking a tool keeps an access it allows, and drops a model meant for another tool.
   const pickTool = (id: AgentTool) => {
     const next = toolInfo(id)
-    setRunner((r) => ({ ...r, tool: id, access: next.access.includes(r.access) ? r.access : next.access[0], model: id === r.tool ? r.model : undefined }))
+    setRunner((r) => ({ ...r, tool: id, access: next.access.includes(r.access) ? r.access : next.access[0], model: id === r.tool ? r.model : undefined, modelUrl: id === r.tool ? r.modelUrl : undefined }))
+    if (id !== runner.tool) setOnMachine(false)
   }
   // The models its runner found on its machine, once it has connected with this tool.
   // Found by this agent's runner, or by any runner on a machine with the tool installed, or its fixed names.
@@ -265,17 +348,19 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
+    setProblem(undefined)
     const fields = { name, provider: providerFor(runner.tool), repos, skills: list(skills), binders, runsOn: runsOn || undefined, runner }
-    if (agent) {
-      const saved = await attempt(async () => {
+    // A refusal is the hub's words, shown here where the person is looking, and what was typed stays.
+    try {
+      if (agent) {
         await store.updateAgent(agent.id, fields)
-        return true
-      })
-      if (saved) onClose()
-      return
+        onClose()
+        return
+      }
+      onMade(await store.createAgent(fields))
+    } catch (error) {
+      setProblem(error instanceof Error && error.message ? error.message : 'The hub couldn’t save that. Try again.')
     }
-    const made = await attempt(() => store.createAgent(fields))
-    if (made) onMade(made)
   }
 
   return (
@@ -292,8 +377,33 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
               </button>
             ))}
           </div>
+          {runner.tool === 'binders' && <span className="field-hint">Binders’ own agent works in the repo on this machine. Nothing else is installed there. Its model is on the hub, or on the machine itself: choose below.</span>}
           {!tool.mcp && runner.tool !== 'custom' && <span className="field-hint">{tool.name} doesn’t get Binders’ tools for a run, so the runner hands it each card and note, and reports back what it prints.</span>}
         </fieldset>
+        {runner.tool === 'binders' && (
+          <div className="field" role="radiogroup" aria-label="Its model">
+            <span className="field-label" aria-hidden="true">Its model</span>
+            <div className="model-agent-kinds">
+              {([[false, 'On the hub', 'The hub reaches the model and keeps its key. Give it one from its card.'], [true, 'On this machine', 'A model server or a proxy on the machine itself, or on a network only it reaches. The runner calls it directly.']] as const).map(([machine, name, help]) => (
+                <button key={name} type="button" role="radio" aria-checked={onMachine === machine} className={`model-agent-kind${onMachine === machine ? ' on' : ''}`} onClick={() => chooseWhere(machine)}>
+                  <b>{name}</b>
+                  <em>{help}</em>
+                </button>
+              ))}
+            </div>
+            {onMachine && (
+              <div className="model-agent-own">
+                <Field label="Address on the machine" hint="As the machine sees it. http is fine here.">
+                  <input id="runner-model-url" className="mono" required inputMode="url" value={runner.modelUrl ?? ''} onChange={(e) => setRun({ modelUrl: e.target.value.trim() || undefined })} placeholder="http://127.0.0.1:8000" autoComplete="off" autoCapitalize="none" spellCheck={false} />
+                </Field>
+                <Field label="Model or deployment">
+                  <input id="runner-own-model" className="mono" required value={runner.model ?? ''} onChange={(e) => setRun({ model: e.target.value.trim() || undefined })} autoComplete="off" autoCapitalize="none" spellCheck={false} />
+                </Field>
+                <p className="field-hint">If the server wants a key, put it in BINDERS_MODEL_KEY in the runner’s environment on that machine. It never leaves the machine.</p>
+              </div>
+            )}
+          </div>
+        )}
         <Field label="Name"><input id="agent-name" autoFocus required value={name} onChange={(e) => setTyped(e.target.value)} placeholder={tool.name} /></Field>
         {runner.tool === 'custom' && (
           <Field label="Command" hint="{prompt}, {dir} and {mcp} (the MCP settings file) are filled in. BINDERS_CARD and BINDERS_TOKEN are set.">
@@ -334,11 +444,14 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
                 </select>
               </Field>
               <div className="form-row">
-                <Field label="Model" hint={runner.tool === 'dsh' ? 'As provider/name, from its settings on that machine: azure/my-deployment, my-gateway/my-model. Empty is DeepSeek Harness’s own default.' : runner.tool === 'codex' ? 'Pick one, or type a provider’s deployment as provider/name (foundry/my-deployment). A name alone goes to your ChatGPT or OpenAI sign-in.' : models.length ? undefined : `Start a runner on a machine with ${tool.name} installed, and the models it finds are suggested here.`}>
-                  {/* Any name, with the models the runner found as suggestions: a provider's own (foundry/…) may not be listed. */}
-                  <input id="runner-model" list="runner-models" value={runner.model ?? ''} onChange={(e) => setRun({ model: e.target.value.trim() || undefined })} placeholder={`${tool.name}’s default`} autoComplete="off" />
-                  <datalist id="runner-models">{models.map((m) => <option key={m} value={m} />)}</datalist>
-                </Field>
+                {/* Binders' own agent's model is the one the hub holds for it, given from its card, not a name on the machine. */}
+                {runner.tool !== 'binders' && (
+                  <Field label="Model" hint={runner.tool === 'dsh' ? 'As provider/name, from its settings on that machine: azure/my-deployment, my-gateway/my-model. Empty is DeepSeek Harness’s own default.' : runner.tool === 'codex' ? 'Pick one, or type a provider’s deployment as provider/name (foundry/my-deployment). A name alone goes to your ChatGPT or OpenAI sign-in.' : models.length ? undefined : `Start a runner on a machine with ${tool.name} installed, and the models it finds are suggested here.`}>
+                    {/* Any name, with the models the runner found as suggestions: a provider's own (foundry/…) may not be listed. */}
+                    <input id="runner-model" list="runner-models" value={runner.model ?? ''} onChange={(e) => setRun({ model: e.target.value.trim() || undefined })} placeholder={`${tool.name}’s default`} autoComplete="off" />
+                    <datalist id="runner-models">{models.map((m) => <option key={m} value={m} />)}</datalist>
+                  </Field>
+                )}
                 <Field label="Time limit, minutes"><input id="runner-timeout" type="number" min={1} max={1440} value={runner.timeoutMinutes} onChange={(e) => setRun({ timeoutMinutes: Number(e.target.value) })} /></Field>
               </div>
               <Field label="Cards at once" group hint="Each in a worktree and branch of its own, never in your own checkout. Several agents can also work the same board.">
@@ -391,6 +504,7 @@ function AgentDialog({ agent, onClose, onMade }: { agent?: Agent; onClose: () =>
             </fieldset>
           </div>
         </details>
+        {problem && <p className="model-agent-result bad" role="alert"><TriangleAlert size={14} aria-hidden="true" /> {problem}</p>}
         <footer className="form-actions">
           <button type="button" className="button" onClick={onClose}>Cancel</button>
           <button type="submit" className="button primary" disabled={!name.trim()}>{agent ? 'Save' : 'Set up'}</button>

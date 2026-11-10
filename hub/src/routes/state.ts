@@ -159,11 +159,19 @@ export async function stateRoutes(app: FastifyInstance, context: Context) {
     const presence = (now: Record<string, unknown>) => socket.readyState === socket.OPEN && socket.send(JSON.stringify({ type: 'presence', presence: now }))
     presence(hub.presence())
     hub.on('presence', presence)
+    // Something came in through a listener, or was taken back: the page asks for the rows again.
+    const heard = () => socket.readyState === socket.OPEN && socket.send(JSON.stringify({ type: 'heard' }))
+    hub.on('heard', heard)
+    // The Brain finished a draft for a card that waits on someone: the page asks for them again.
+    const first = () => socket.readyState === socket.OPEN && socket.send(JSON.stringify({ type: 'first' }))
+    hub.on('first', first)
     const ping = setInterval(() => socket.readyState === socket.OPEN && socket.ping(), 25_000)
     socket.on('close', () => {
       terminals.off('change', terminalsOf)
       hub.off('entries', live)
       hub.off('presence', presence)
+      hub.off('heard', heard)
+      hub.off('first', first)
       clearInterval(ping)
     })
   })

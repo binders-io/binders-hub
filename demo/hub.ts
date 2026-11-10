@@ -12,11 +12,18 @@ import { MemoryLog } from '../hub/src/log.ts'
 import { Sealer } from '../hub/src/secrets.ts'
 import { buildServer } from '../hub/src/server.ts'
 import { Spaces, type Space, type SpaceInfo } from '../hub/src/spaces.ts'
+import { SpaceBrain } from '../hub/src/brain/brain.ts'
+import { BrainSettingsStore } from '../hub/src/brain/settings.ts'
+import { demoBrain } from './brain.ts'
+import { Inbox } from '../hub/src/listen/inbox.ts'
+import { FirstAnswers } from '../hub/src/brain/first.ts'
+import { EndpointAgents } from '../hub/src/agent/endpoint.ts'
 import { demoBinder, demoChanges, demoAgents, demoPeople } from './data.ts'
 
 // A hub to look at, and nothing else: everything it holds is invented (data.ts) and lives in this process. It reads no
 // settings from the environment, so it can't open a real hub's Redis, notes or keys, it listens on this machine only,
-// and its GitHub is a port nothing answers on, so no change it records can reach a repo.
+// and its GitHub is a port nothing answers on, so no change it records can reach a repo. Its Brain is a few answers
+// written down (brain.ts), not a model: nothing it's asked leaves this process.
 
 const nowhere = 'http://127.0.0.1:9'
 
@@ -27,12 +34,27 @@ class NoGitHub extends GitHubConnection {
   }
 }
 
+/** Harbor's listeners, and a few things they heard before anyone opened the page: all invented, like the rest. */
+async function heardSoFar(inbox: Inbox, owner: string) {
+  const mail = (await inbox.put(owner, undefined, { kind: 'post', name: 'Support mail', mode: 'on', folder: 'From outside' })).listener
+  const chat = (await inbox.put(owner, undefined, { kind: 'post', name: 'Team channel', mode: 'on', from: 'binder' })).listener
+  await inbox.put(owner, undefined, { kind: 'feed', name: 'Payments status page', url: 'https://status.example.com/feed', mode: 'watch' })
+  await inbox.take(mail.id, [
+    { sourceId: 'mail-1', title: 'Can I switch to annual mid-month?', text: 'Hi, we are on the monthly plan and would like to move to annual now. Do we lose what we already paid for this month?', sender: { name: 'Priya at Northwind' }, url: 'https://mail.example.com/t/1' },
+    { sourceId: 'mail-2', title: 'Invoice shows the wrong saving', text: 'Our annual receipt says we saved 10%, but the pricing page says two months free. Which is right?', sender: { name: 'Tom at Baker & Co' }, url: 'https://mail.example.com/t/2' },
+  ])
+  await inbox.take(chat.id, [{ sourceId: 'chat-1', title: 'Beta customers and the annual price', text: 'Reminder from the standup: beta customers keep their discount on annual plans until March. Someone should tell the api agent.', sender: { name: 'Jonas' } }])
+}
+
 export async function startDemoHub(port: number, webDir = resolve(import.meta.dirname, '../web/dist')) {
   const files = await mkdtemp(join(tmpdir(), 'binders-demo-'))
   const sealer = new Sealer(randomBytes(32).toString('hex'))
   const kv = new MemoryKV()
   const endpoints = { webUrl: nowhere, apiUrl: nowhere }
   const url = `http://127.0.0.1:${port}`
+  // No model is read from the environment: the Brain here is the stand-in, and nothing else.
+  const brains = await new BrainSettingsStore(new MemoryKV(), sealer, {}).load()
+  brains.useForTests(demoBrain)
 
   const start = async (id: string, info: SpaceInfo): Promise<Space> => {
     const github = new NoGitHub(new MemoryKV(), sealer, endpoints, {}, id)
@@ -42,18 +64,29 @@ export async function startDemoHub(port: number, webDir = resolve(import.meta.di
     // Who may change a locked note, as the hub proper says it: the Binder's owners and admins, and the hub's while it has no owner.
     hub.lockManager = (login) => spaces.mayManage(id, login, spaces.hubAdmin(login))
     const actions = new Actions(hub, github)
-    return { id, hub, actions, github, webhooks: undefined as never, filesDir: join(files, id) }
+    const brain = new SpaceBrain({ id, hub, kv: new MemoryKV(), settings: brains, embeds: false })
+    brain.start()
+    // Listeners can be set up and posted to here. No feed is ever read: this hub reaches nothing.
+    const inbox = new Inbox({ hub, kv: new MemoryKV(), sealer, member: (login) => demoPeople.includes(login) })
+    // What the Brain makes of the cards waiting on someone: drafted by the stand-in, as everything it says is.
+    const first = new FirstAnswers({ hub, settings: brains, kv: new MemoryKV(), place: () => ({ id, name: info.name, brain, url: () => '' }) })
+    // A model can be added as an agent here, and tried against the stand-in. None is started: nothing here does an agent's work.
+    const modelAgents = new EndpointAgents({ hub, actions, kv: new MemoryKV(), sealer, brain: brains })
+    return { id, hub, actions, github, webhooks: undefined as never, filesDir: join(files, id), brain, inbox, first, endpoints: modelAgents }
   }
 
   const spaces = new Spaces(kv, start)
   await spaces.load({ id: demoBinder.space, name: demoBinder.name, members: demoPeople.map((login, i) => ({ login, role: i ? 'member' : 'owner' })) })
   const auth = new Auth(kv, sealer, { github: () => undefined, allowed: () => ({ users: demoPeople, orgs: [] }), devLogin: () => true, oauth: () => undefined, endpoints })
-  const app = await buildServer(spaces, { auth }, { publicUrl: url, webDir })
+  const app = await buildServer(spaces, { auth, brain: brains }, { publicUrl: url, webDir })
   await app.listen({ port, host: '127.0.0.1' })
 
   // The agents show as listening, as they would with their runners on, for as long as this runs.
   const space = spaces.get(demoBinder.space)!
   const hub = space.hub
+  await heardSoFar(space.inbox!, demoPeople[0])
+  // What was just heard is searchable before anyone looks: the Brain's drafts may rest on it.
+  await space.brain!.caughtUp()
   for (const agent of demoAgents) hub.touch(agent, 1)
   const listening = setInterval(() => { for (const agent of demoAgents) hub.touch(agent) }, 30_000)
 

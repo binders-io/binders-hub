@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { Entry } from '../../../shared/state.ts'
-import type { Card, Stage } from '../../../shared/work.ts'
+import type { Card } from '../../../shared/work.ts'
 import { lockStops, type Folder, type Note } from '../../../shared/notes.ts'
 import { Refused, type Hub } from '../hub.ts'
 import type { KV } from '../kv.ts'
@@ -8,16 +8,21 @@ import { readerWords } from '../spaces.ts'
 import { log } from '../logger.ts'
 import { BrainIndex, type Hit, type IndexSource, type SourceKind } from './index.ts'
 import { captureNote, firstWords, hasSummary, transcriptOf, withSummary, withTranscript, worthSumming, type Capture } from './captures.ts'
-import { conversation, type Summary, type Turn } from './models.ts'
-import { askPerson, boardFor, boardRules, doRules, heardAnswer, isAsking, onlyTellRules, propose, proposalView, readDo, spoken, withoutMarks, type Asked, type Board, type Proposal, type WorkPlace } from './board.ts'
+import { answerRules, BrainUnavailable, citedParts, citeRule, conversation, type Answer, type BrainModel, type Passage, type Summary, type Turn } from './models.ts'
+import { runLoop } from '../../../shared/agent.ts'
+import type { Outcome } from '../../../shared/listen.ts'
+import { brainTools, SourceBook, toolRules, type Looked } from './tools.ts'
+import { takeView } from './viewBlock.ts'
+import { askPerson, boardFor, boardRules, doRules, heardAnswer, isAsking, offerPerson, offersIn, onlyTellRules, propose, proposalView, readAll, readDo, spoken, stageNames, withoutMarks, type Asked, type Board, type Proposal, type WorkPlace } from './board.ts'
 import type { BrainSettingsStore } from './settings.ts'
 import type { VectorFiles } from './vectorFiles.ts'
+import { viewFrom, viewRules, withOffers } from './view.ts'
+import { readView, withoutOffers, type View } from '../../../shared/view.ts'
+import { topFolder } from '../listen/inbox.ts'
 
 // A Binder's brain: the index of its notes and cards, kept up as they change, what's captured on a phone or Mac put in
 // as notes and summed up, and questions answered from it all. The index is the Binder's own, in its own store; a
 // question asked across several Binders asks each, and only those the person is in.
-
-const stageNames: Record<Stage, string> = { proposed: 'Proposed', ready: 'Ready', working: 'In progress', blocked: 'Blocked', review: 'In review', live: 'Done' }
 
 /** Where each kind of capture goes, when the sender doesn't say: the folders the Mac's Send to Hub uses. */
 export const captureFolders: Record<Capture['kind'], string> = { dictation: 'Dictations', conversation: 'Captures', meeting: 'Meetings', note: 'Inbox' }
@@ -289,17 +294,11 @@ export class SpaceBrain {
     const id = where.sourceId ? `note-cap-${short(`${binder.id}\u0000${where.sourceId}`, 16)}` : `note-cap-${randomUUID().replace(/-/g, '').slice(0, 16)}`
     const already = state.notes.find((n) => n.id === id)
     if (already) return { note: already, created: false, summarizing: false, written: Promise.resolve(undefined as Summary | undefined) }
-    const folderName = (where.folder?.trim() || captureFolders[capture.kind]).replace(/[/\\]+/g, ' ').slice(0, 80)
     const changes: Entry['change'][] = []
     // Its id comes from its name, so two captures arriving at once make one folder; once made, it's found by that id
     // wherever it was moved and whatever it was renamed, and left as people have it.
-    const folderId = `folder-${folderName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'inbox'}-${short(`${binder.id}\u0000${folderName.toLowerCase()}`, 8)}`
-    let folder = state.folders.find((f) => f.id === folderId)
-      ?? state.folders.find((f) => f.binderId === binder.id && !f.parentId && f.name.toLowerCase() === folderName.toLowerCase())
-    if (!folder) {
-      folder = { id: folderId, binderId: binder.id, name: folderName }
-      changes.push({ type: 'folder.put', folder })
-    }
+    const { folder, made } = topFolder(state, binder.id, where.folder?.trim() || captureFolders[capture.kind])
+    if (made) changes.push({ type: 'folder.put', folder })
     const title = capture.title?.trim().slice(0, 120) || firstWords(capture.text)
     const at = new Date().toISOString()
     const note: Note = { id, title, binderId: binder.id, folderId: folder.id, editedAt: at, editedBy: login, editors: [login], text: captureNote(capture, title), captured: capture.kind }
@@ -499,7 +498,15 @@ export class SpaceBrain {
     return this.inLine(login, async () => {
       // Its passages are cut: they're shown again from here, not searched.
       const result: AskResult = { ...turn.result, sources: turn.result.sources.map((s) => ({ ...s, text: s.text.slice(0, 2000) })) }
+      // A button is good for a few minutes: a kept turn keeps what was said, and none of its offers.
       delete result.proposal
+      delete result.proposals
+      const kept = result.view ? readView(result.view) : undefined
+      if (kept) {
+        const left = withoutOffers(kept)
+        if (left) result.view = left
+        else delete result.view
+      }
       const turns = [...(await this.thread(login)), { ...turn, result, at: new Date().toISOString() }].slice(-threadKept)
       await this.kv.set(threadKey(login), JSON.stringify(turns), threadDays * 86_400)
     })
@@ -576,7 +583,14 @@ export interface AskResult {
   /** Why there's no answer, in words, when the model couldn't give one. */
   problem?: string
   /** Something it would do, asked for in the question, for the person to answer with a button. */
+  /** What it offers to do, when it's one thing: kept for an app that shows one offer. */
   proposal?: ReturnType<typeof proposalView>
+  /** Everything it offers to do, each with a button of its own. On a page that draws views they're in the view too. */
+  proposals?: ReturnType<typeof proposalView>[]
+  /** What it shows beside its words (shared/view.ts): checked by the hub, its Things filled in from the hub's own state. */
+  view?: View
+  /** What it went and looked at on the way, when it worked in steps: for the page to say. */
+  looked?: Looked[]
 }
 
 /** One question to Ask and what came of it, as the hub keeps it for the person who asked. */
@@ -597,7 +611,7 @@ const threadKey = (login: string) => `ask-thread:${login.toLowerCase()}`
  * with an embeddings model, by what they mean; then the model's answer, citing them. Without a model, the passages.
  */
 /** The passages in these Binders that best match `query`: by its words and, with an embeddings model, by what it means. */
-async function find(settings: BrainSettingsStore, places: AskPlace[], query: string, most: number, embedWithinMs?: number) {
+export async function find(settings: BrainSettingsStore, places: AskPlace[], query: string, most: number, embedWithinMs?: number) {
   const embedder = settings.embedder()
   let vector: Float32Array | undefined
   if (embedder) {
@@ -664,9 +678,7 @@ const onlyReads = (places: AskPlace[]) => places.some((p) => p.work) && !mayDo(p
 /** What a model's line comes to: something to ask the person, or why it can't be. */
 function proposalFrom(wanted: Asked, board: Board, person: string): { proposal: Proposal } | { refused: string } {
   try {
-    const proposal = propose(wanted, board, person)
-    askPerson(proposal)
-    return { proposal }
+    return { proposal: propose(wanted, board, person) }
   } catch (err) {
     if (err instanceof Refused) return { refused: err.message }
     throw err
@@ -725,9 +737,11 @@ function searchFor(before: Turn[], question: string) {
 /**
  * `person`: who's asking, so it goes by how their work stands too. `may`: they can answer it here, so a question can
  * come to something it would do, which waits for their answer. `turns`: what was asked and answered before, for a
- * follow-up. `about`: a note the question is about, which the model has in full before anything found.
+ * follow-up. `about`: a note the question is about, which the model has in full before anything found. `views`: where
+ * it's asked can draw a view, so the model may end its answer with one. `loop`: a model that can call tools may look
+ * things up in steps before it answers (tools.ts), with `heard` to say what a place's listeners brought in.
  */
-export async function ask(settings: BrainSettingsStore, places: AskPlace[], question: string, options: { most?: number; onSources?: (sources: AskSource[]) => void; person?: string; may?: boolean; turns?: unknown; about?: { place: string; note: string } } = {}): Promise<AskResult> {
+export async function ask(settings: BrainSettingsStore, places: AskPlace[], question: string, options: { most?: number; onSources?: (sources: AskSource[]) => void; person?: string; may?: boolean; turns?: unknown; about?: { place: string; note: string }; views?: boolean; loop?: boolean; heard?: (place: string) => Promise<Outcome[]> } = {}): Promise<AskResult> {
   const asked = question.trim().slice(0, 2000)
   if (!asked) throw new Refused('Ask a question.')
   const before = earlier(options.turns)
@@ -737,7 +751,7 @@ export async function ask(settings: BrainSettingsStore, places: AskPlace[], ques
   const model = settings.model()
   // With no model, the passages are the answer, and they're for what was asked, not for what it follows.
   const found = await find(settings, where, searchFor(model ? before : [], asked), (options.most ?? 8) - (about ? 1 : 0))
-  const sources = about ? [about.source, ...found.sources.map((s) => ({ ...s, n: s.n + 1 }))] : found.sources
+  let sources = about ? [about.source, ...found.sources.map((s) => ({ ...s, n: s.n + 1 }))] : found.sources
   const passages = about ? [about.passage, ...found.passages] : found.passages
   const searchedBy = found.searchedBy
   options.onSources?.(sources)
@@ -745,30 +759,99 @@ export async function ask(settings: BrainSettingsStore, places: AskPlace[], ques
   if (!model || (!sources.length && !board)) return { sources, searchedBy, ...(model ? { model: model.label } : {}) }
   try {
     const may = !!options.may && !isAsking(asked) && mayDo(places)
-    const rules = [board ? `${boardRules}\n${may ? doRules : onlyTellRules}` : '', about ? noteRules : '', before.length ? conversationRules(before) : ''].filter(Boolean).join('\n') || undefined
-    const answer = await model.answer(asked, board ? [...passages, board.passage] : passages, rules)
-    const said = (words: string, proposal?: Proposal) => ({ answer: { text: words, parts: [{ text: words, sources: [] }] }, sources, model: answer.model ?? model.label, searchedBy, ...(proposal ? { proposal: proposalView(proposal) } : {}) })
-    // The board isn't a source to show: it's only what's so now. A line a model gave is taken out of what's shown.
-    let wanted: Asked | undefined
+    const rules = [board ? `${boardRules}\n${may ? doRules : onlyTellRules}` : '', about ? noteRules : '', options.views ? viewRules : '', before.length ? conversationRules(before) : ''].filter(Boolean).join('\n') || undefined
+    // A model that calls tools looks things up in steps, where that's asked for; any other answers in one go, as before.
+    const steps = !!options.loop && !about && !!model.step && (await model.steps?.().catch(() => false))
+    const stepped = steps ? await answerInSteps({ settings, model, places: where, asked, passages, board, rules, sources, person: options.person, heard: options.heard }) : undefined
+    const answer = stepped?.answer ?? await model.answer(asked, board ? [...passages, board.passage] : passages, rules)
+    // What it went and read is a source like what was found for it.
+    if (stepped) sources = stepped.sources
+    const said = (words: string) => ({ answer: { text: words, parts: [{ text: words, sources: [] }] }, sources, model: answer.model ?? model.label, searchedBy })
+    // The board isn't a source to show: it's only what's so now. Every line a model gave is taken out of what's shown,
+    // wherever it wrote it, and so are the board's marks.
+    const lines: Asked[] = []
     const parts = answer.parts.flatMap((part) => {
-      const read = readDo(part.text)
-      wanted ??= read.asked
-      if (read.asked && !read.words) return []
-      const text = read.asked ? read.words : part.text
+      const read = readAll(part.text)
+      lines.push(...read.lines)
+      if (read.lines.length && !read.words) return []
+      // A part ends where the next begins, often with a blank line: that stays, whatever was taken out of it.
+      const text = read.lines.length ? keepingEnd(part.text, read.words) : part.text
       return [{ text: board ? keepingEnd(text, withoutMarks(text, board)) : text, sources: part.sources.filter((s) => s < sources.length).map((s) => s + 1) }]
     })
-    if (wanted) {
-      if (may && board && options.person) {
-        const came = proposalFrom(wanted, board, options.person)
-        return 'proposal' in came ? said(came.proposal.what, came.proposal) : said(came.refused)
+    // What it offers to do: each line, and each Offer in its view, is made into an offer by the hub or refused in
+    // words. Only where the person told it to do something and can press a button; the same thing is offered once.
+    const mayOffer = may && !!board && !!options.person
+    const made = new Map<string, Proposal>()
+    const refused: string[] = []
+    const offer = (wanted: Asked): Proposal | undefined => {
+      if (!mayOffer || made.size >= 6) return undefined
+      const key = [wanted.verb, wanted.mark, wanted.rest, ...(wanted.also ?? []).flatMap((line) => [line.mark, line.rest])].join(' ').toLowerCase()
+      const came = made.get(key) ?? proposalFrom(wanted, board!, options.person!)
+      if ('refused' in came) {
+        if (!refused.includes(came.refused)) refused.push(came.refused)
+        return undefined
       }
-      // Asked about it, or asked where they can't answer: it's words or nothing, and nothing is done.
-      if (!parts.length) return said(options.may && onlyReads(places) ? readerWords : options.may ? 'That’s a question, so I’ve changed nothing. Tell me to do it, and I’ll check with you first.' : 'You can’t do that from here. Talk can, on the iPhone, and so can Ask on the hub.')
+      const proposal = 'proposal' in came ? came.proposal : came
+      // Two that come to the same thing (the same cards to stop, said two ways) are one offer.
+      const same = [...made.values()].find((one) => one.what === proposal.what)
+      made.set(key, same ?? proposal)
+      return same ?? proposal
     }
-    return { answer: { text: parts.map((p) => p.text).join('').trim(), parts }, sources, model: answer.model ?? model.label, searchedBy }
+    for (const wanted of offersIn(lines)) offer(wanted)
+    // What it shows: only where it was asked for, and only what reads as a view once the hub has filled in its Things
+    // and made its Offers.
+    const drawn = options.views && answer.view ? viewFrom(answer.view, board, places.flatMap((p) => (p.work ? [p.work] : [])), offer) : undefined
+    const proposals = [...new Set(made.values())]
+    const words = parts.map((p) => p.text).join('').trim()
+    if (lines.length && !mayOffer && !words) {
+      // Asked about it, or asked where they can't answer: it's words or nothing, and nothing is done.
+      return said(options.may && onlyReads(places) ? readerWords : options.may ? 'That’s a question, so I’ve changed nothing. Tell me to do it, and I’ll check with you first.' : 'You can’t do that from here. Talk can, on the iPhone, and so can the Brain on the hub.')
+    }
+    if (proposals.length && board) {
+      offerPerson(proposals)
+      // One offer can be answered in words too ("yes", out loud or typed); several need their buttons.
+      if (proposals.length === 1) askPerson(proposals[0])
+      const view = options.views ? withOffers(drawn, proposals, board) : drawn
+      // With nothing said beside its lines, what's said is what each would do, in the hub's words.
+      const text = words || proposals.map((proposal) => proposal.what).join('\n\n')
+      return { answer: { text, parts: words ? parts : [{ text, sources: [] }] }, sources, model: answer.model ?? model.label, searchedBy, proposal: proposalView(proposals[0]), proposals: proposals.map(proposalView), ...(view ? { view } : {}), ...(stepped?.looked.length ? { looked: stepped.looked } : {}) }
+    }
+    // Every line it gave was refused: why, after anything else it said.
+    if (lines.length && mayOffer && refused.length) {
+      const text = [words, ...refused].filter(Boolean).join('\n\n')
+      return { answer: { text, parts: [...parts, { text: `${words ? '\n\n' : ''}${refused.join('\n\n')}`, sources: [] }] }, sources, model: answer.model ?? model.label, searchedBy, ...(drawn ? { view: drawn } : {}) }
+    }
+    return { answer: { text: words, parts }, sources, model: answer.model ?? model.label, searchedBy, ...(drawn ? { view: drawn } : {}), ...(stepped?.looked.length ? { looked: stepped.looked } : {}) }
   } catch (err) {
     return { sources, model: model.label, searchedBy, problem: err instanceof Error ? err.message : String(err) }
   }
+}
+
+/** How many times the model is asked for one question, and how long the whole of it may take. */
+export const askSteps = { steps: 6, ms: 90_000 }
+
+/**
+ * An answer worked out in steps: the model is given what was found, as it is in one go, and may look further with its
+ * tools before it answers. Its words are read as any model's that numbers its sources: its view comes out first, then
+ * its citations. What it read with a tool is added to the sources, by the number the tool gave it.
+ */
+async function answerInSteps(given: { settings: BrainSettingsStore; model: BrainModel; places: AskPlace[]; asked: string; passages: Passage[]; board?: Board; rules?: string; sources: AskSource[]; person?: string; heard?: (place: string) => Promise<Outcome[]> }): Promise<{ answer: Answer; sources: AskSource[]; looked: Looked[] }> {
+  const { model, board } = given
+  const book = new SourceBook(given.sources)
+  const documents = given.passages.map((p, i) => `[${i + 1}] ${p.title}${p.context ? ` (${p.context})` : ''}\n${p.text}`).join('\n\n')
+  // How the work stands is given with the question, unnumbered: it's what's so now, not a source to cite.
+  const now = board ? `<document title="${board.passage.title}">\n${board.passage.context}\n${board.passage.text}\n</document>\n\n` : ''
+  const outcome = await runLoop({
+    model: { label: model.label, step: (input) => model.step!(input) },
+    system: [answerRules, citeRule, given.rules ?? '', toolRules].filter(Boolean).join('\n'),
+    ask: `${documents ? `<documents>\n${documents}\n</documents>\n\n` : ''}${now}${given.asked}`,
+    tools: brainTools({ settings: given.settings, places: given.places, person: given.person, board, book, heard: given.heard }),
+    limits: askSteps,
+  })
+  if (outcome.stopped === 'refused') throw new BrainUnavailable('The model declined to answer that.')
+  const { words, raw } = takeView(outcome.text)
+  const parts = citedParts(words, book.sources.length)
+  return { answer: { parts, text: parts.map((p) => p.text).join('').trim(), ...(raw ? { view: raw } : {}), ...(outcome.model ? { model: outcome.model } : {}) }, sources: book.sources, looked: book.looked }
 }
 
 /** What Talk on the iPhone hears back: the brain's reply, to read out, and the passages it had to go on. */
@@ -807,6 +890,8 @@ export async function talk(settings: BrainSettingsStore, places: AskPlace[], tur
   if (!may) return { reply: words || (onlyReads(places) ? readerWords : 'That’s a question, so I’ve changed nothing. Tell me to do it, and I’ll check with you first.'), sources, model: model.label }
   // What's read out is the hub's words for what would happen, whatever else the model said.
   const came = proposalFrom(asked, board, options.person)
+  // Out loud there's one thing to say yes to at a time: this one.
+  if ('proposal' in came) askPerson(came.proposal)
   return { reply: 'proposal' in came ? spoken(came.proposal) : came.refused, sources, model: model.label }
 }
 

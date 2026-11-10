@@ -39,7 +39,7 @@ afterEach(() => {
 })
 
 describe('axe', () => {
-  it.each(['#/home', '#/flow', '#/notes/n1', '#/changes', '#/delivery', '#/agents', '#/settings', '#/account', '#/ask', '#/work/c3'])('finds nothing on %s', async (hash) => {
+  it.each(['#/home', '#/flow', '#/notes/n1', '#/changes', '#/delivery', '#/agents', '#/settings', '#/account', '#/brain', '#/work/c3'])('finds nothing on %s', async (hash) => {
     await open(hash)
     expect(await violations()).toEqual([])
   })
@@ -134,17 +134,17 @@ describe('the palette', () => {
     expect(await violations()).toEqual([])
   })
 
-  it('puts Ask first for a question, and Enter asks it on the Ask screen', async () => {
+  it('puts Ask the Brain first for a question, and Enter asks it on the Brain', async () => {
     const asked = answering()
     const box = await opened()
     fireEvent.change(box, { target: { value: 'why did we pick Redis?' } })
-    expect((await screen.findAllByRole('option'))[0].textContent).toContain('Ask: why did we pick Redis?')
+    expect((await screen.findAllByRole('option'))[0].textContent).toContain('Ask the Brain: why did we pick Redis?')
     fireEvent.keyDown(box, { key: 'Enter' })
     await waitFor(() => expect(asked).toEqual(['why did we pick Redis?']))
-    expect(window.location.hash).toBe('#/ask')
+    expect(window.location.hash).toBe('#/brain')
   })
 
-  it('answers on the Ask screen with its Markdown shown, its citations in place and its sources one row each', async () => {
+  it('answers on the Brain with its Markdown shown, its citations in place and its sources one row each', async () => {
     const stand = vi.mocked(fetch).getMockImplementation()!
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
       const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } })
@@ -197,7 +197,7 @@ describe('the palette', () => {
     fireEvent.change(box, { target: { value: 'login' } })
     const options = await screen.findAllByRole('option')
     expect(options[0].textContent).toContain('Fix the login')
-    expect(options.some((o) => o.textContent?.includes('Ask: login'))).toBe(true)
+    expect(options.some((o) => o.textContent?.includes('Ask the Brain: login'))).toBe(true)
   })
 
   it('says which option is chosen while focus stays in the box', async () => {
@@ -227,7 +227,7 @@ describe('the palette', () => {
     fireEvent.change(box, { target: { value: 'nothing like this' } })
     // The page's toast has a polite region of its own, always there.
     await waitFor(() => expect(screen.getAllByRole('status').map((region) => region.textContent)).toContain('1 result'))
-    expect(screen.getByRole('option').textContent).toContain('Ask: nothing like this')
+    expect(screen.getByRole('option').textContent).toContain('Ask the Brain: nothing like this')
     expect(box.getAttribute('aria-activedescendant')).toBe('palette-option-0')
   })
 

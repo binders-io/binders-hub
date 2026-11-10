@@ -11,6 +11,13 @@ are taken from, so they never come from a real hub.
 - `hub.ts`: starts it. It keeps everything in this process and reads no settings from the environment, so it can't open a
   real hub's Redis, notes or keys. It listens on 127.0.0.1 only, and its GitHub is a port nothing answers on. The screens
   are told GitHub is connected, so they read as a set-up hub's, and nothing you approve or promote reaches a repo. It can't add machines: Add a machine on the Agents page says so.
+- `brain.ts`: its Brain. No model: a few answers written down (and, asked anything else, it looks in the notes in steps
+  as a model with tools would), put together from the hub's own board, so the Brain's page
+  answers and shows each kind of view (rows of agents and cards, a chart, a table, a drawing) with nothing set up. Try
+  "What needs me?", "What are my agents working on?", "How many cards are in each stage?", "Draw how the open work fits
+  together" and "stop the receipt work".
+- Its listeners (Settings → Listeners, and "Came in" on the Brain's rail): two addresses that can be posted to on this
+  machine, with a few things already heard, and a feed that is listed and never read, as this hub reaches nothing.
 - `shoot.ts`: takes the pictures.
 
 ## Set up

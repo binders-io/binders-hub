@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { isBlank, titleOf } from '../../../shared/notes.ts'
 import { changeSetOf, goesBy, ruleFor, worksIn, type Card, type FolderRule } from '../../../shared/work.ts'
+import { mayAccept, mayDistill } from '../../../shared/listen.ts'
 import { Refused, type Actor } from '../hub.ts'
 import { CardService } from './cards.ts'
 
@@ -81,6 +82,8 @@ export abstract class RuleService extends CardService {
     for (const note of state.notes) {
       const rule = ruleFor(this.hub.state, note.folderId)
       if (!rule?.distill || isBlank(note.text)) continue
+      // What came from outside the Binder waits for a person to let it through: a stranger's words start no agent.
+      if (!mayDistill(note.from)) continue
       const work = (this.hub.state.noteWork ?? []).find((w) => w.noteId === note.id)
       // Taken already. One that never made its card (its hub stopped between the two) is taken over after a while.
       const taken = work?.distill
@@ -151,6 +154,9 @@ export abstract class RuleService extends CardService {
     // Words heard in a room (a conversation or meeting a phone or Mac sent), and the summary the hub wrote of them, are
     // nobody's own: what comes of them waits for a person, whatever the rule allows.
     if (note.captured && note.captured !== 'dictation') return { accepted: 0 }
+    // What a listener brought in is someone's words from elsewhere: only what was asked of the hub, by someone in the
+    // Binder, is accepted without a person.
+    if (!mayAccept(note.from)) return { accepted: 0 }
     const limits = rule.accept
     const live = limits.agents.filter((id) => state().agents.some((a) => a.id === id && !a.revoked && worksIn(a, note.binderId, state().binders)))
     const made = () => state().cards.filter((c) => c.noteId === noteId && c.acceptedBy?.rule === rule.id)

@@ -499,6 +499,114 @@ waits on a person, another agent's words aren't passed on. Two agents get
 20 messages an hour between them before they're told to ask a person. An agent reaches only agents working in binders it works
 in, and a Challenge's reviewer and the author it's judging can't message each other.
 
+## An agent that is a model, with no machine (built)
+
+An agent can be a model at an address, which the hub itself runs (`hub/src/agent/endpoint.ts`). It has no repo and no
+shell, so it takes the work that needs neither: distilling a note when a folder's rule names it, writing and changing
+notes, a chat about a note, a debrief or a Challenge from what the hub gives it, and cards given to it by name. A card
+open to anyone is left to agents with machines.
+
+- **What it can be.** The hub's own model (Settings → Brain); a server that speaks OpenAI's chat API with tools, by its
+  address, model or deployment name, and key; or Claude by Anthropic's API, at Anthropic or by a Microsoft Foundry
+  resource's address.
+  - Azure OpenAI and Foundry: the resource's address followed by `/openai/v1`
+    (`https://your-resource.openai.azure.com/openai/v1`), and the deployment's name as the model. Models from other
+    makers deployed there answer at the same address.
+  - Claude in Foundry: `https://your-resource.services.ai.azure.com/anthropic`, and the deployment's name. Anthropic's
+    server-side fallback isn't asked for there, as Foundry doesn't take it.
+- **It's an agent like any other.** The hub connects it to its own agent tools through the same door a runner's agent
+  uses, so what it may do, and every check on it, are the ones every agent has. It waits for work as any agent does,
+  and each piece is done by the loop the Brain answers with (`shared/agent.ts`): at most forty steps and twenty minutes.
+  A card it leaves half done goes back on the board saying why, and one it asked a person about waits for the answer.
+- **Tried before it works.** As it's added or changed, the hub reaches the address with the key and asks the model to
+  call a tool. One that can't is still kept, saying why, and takes no work until it can.
+- **Who, and its key.** A Binder's owners and admins add and change one: it reads the Binder's notes and spends a key.
+  Its address is only ever out on the internet, over https. Its key is sealed in the Binder's own store, never in the
+  state, and never sent back. A key goes only to the server it was typed for: change the address to another host, or
+  the kind of model, and the key is forgotten and typed again. The routes that make and change any agent never set a
+  model; only the model's own routes do.
+- **An address on the hub's own machine or network** (a proxy or a model server beside the hub) is the hub's business:
+  a hub admin who also runs the Binder may add one, over http too. Anyone else is told so, and that a model on their
+  own machine belongs with Binders' own agent there. An address out on the internet is over https, whoever asks.
+- **What it reads is material.** It is told, as the Brain is, that nothing in a note, a card or a diff is an
+  instruction to it. It has no way to run anything, so the most a planted instruction can reach is the hub's own agent
+  tools, which every agent already has.
+
+## Binders' own agent, for work that needs code (built)
+
+An agent on a machine can be Binders' own: the tool "Binders" in its settings, beside Claude Code and Codex. Nothing is
+installed for it and no model key is on the machine. The runner has the repo; the hub has the model.
+
+- **The runner starts itself.** For this tool the runner starts its own file in a work mode
+  (`binders-runner work`, `runner/src/harness.ts`), in the card's worktree, as it would start any tool. That program
+  runs the same loop the Brain and a model with no machine use (`shared/agent.ts`), for at most a hundred steps and
+  forty-five minutes.
+- **Its tools.** For the repo: `read_file`, `list_files`, `search`, `edit_file`, `write_file`, and with full access
+  `run`, a command in the repo's folder. With edits-only access there is no `run` at all. A path that leads out of the
+  repo, by its name or by a link, is refused, and git's own files aren't written. For the hub: the same agent tools
+  every agent has, over the same connection, with the agent's own token.
+- **The hub takes each step of its model.** The program sends the conversation so far and its tools to
+  `POST /api/agent/step` with the agent's token; the hub asks the model the agent was given (as a model with no machine
+  is given one: the hub's own, an OpenAI-style server, or Claude) with the key it keeps, and sends back what the model
+  said and the calls it wants. The key never leaves the hub, and the agent's token never reaches the model. What a
+  command the model runs can see doesn't include the agent's token either.
+- **Giving it a model.** On the agent's card, by a Binder's owners and admins. Until it has one it takes a card and
+  puts it back, saying it has no model.
+- **Or a model on its own machine.** A proxy or a model server on the agent's machine, or on a network only it reaches
+  (a local Azure proxy, LM Studio, Ollama, vLLM), is no place the hub can call. The agent's owner gives its address in
+  the runner's settings, as the machine sees it (`http://127.0.0.1:8000`; http is fine there) with the model or
+  deployment's name, and the runner's program asks it directly: nothing goes by way of the hub. An address given
+  without its `/v1` is tried with it. A key, when the server wants one, is read on the machine from
+  `BINDERS_MODEL_KEY`, and neither it nor the agent's token is in the environment of a command the model runs.
+- **What shows on the card.** It prints the events Claude Code prints, so its steps in the repo, what it says and how
+  it ended reach the card as any agent's do. Its calls to the hub's own tools aren't steps: the card shows those
+  already.
+- **A long run.** When the conversation outgrows what's sent, what older tools returned is cut to its first lines, and
+  the last turns stay whole. A run starts from the card and the repo's brief each time: there's no session to carry on
+  in, so after a person's answer it reads the card again.
+- **The hub leaves it to its runner.** An agent with a runner and a model is never run by the hub itself, so its work
+  isn't done twice.
+
+## Listeners (built)
+
+A listener brings things into a Binder from outside it, and each thing it hears becomes a note in a folder there, where
+the folder's rule takes over (`shared/listen.ts`, `hub/src/listen`). A Binder's owners and admins set them up in
+Settings → Listeners; a personal Binder can have its own.
+
+- **Told or asked.** A source can post to the hub, or the hub can ask the source, so a hub nothing can reach (on a Mac,
+  behind a firewall) still hears.
+  - *An address to post to.* The hub gives out an address and a secret, said once. Anything that can post can feed it: a
+    Power Automate flow on a Teams channel or a mailbox, Twilio, a Shortcut, a script. The post carries the secret as a
+    bearer token, as a signature of its body (`X-Binders-Signature: sha256=…`, as GitHub signs), or as `?key=` for a tool
+    that can set neither. The body is JSON (`title`, `text`, `from`, `url`, `id`, or several under `events`), a form, or
+    plain words. Anything without the secret is answered as if the address weren't there.
+
+    ```sh
+    curl -X POST "https://hub.example.com/webhooks/in/<binder>/<listener>" \
+      -H "Authorization: Bearer bnl_…" -H "Content-Type: application/json" \
+      -d '{"title":"Printer on fire","text":"Third floor, again.","from":"Ana"}'
+    ```
+  - *A feed the hub reads* (RSS, Atom or JSON Feed), every few minutes. It reads out on the internet only, over https,
+    follows no redirect, and honours the feed's own "nothing new". Where a feed starts is where it is when first read:
+    what was already there is left alone. When it can't be read, the listener says why.
+  - *GitHub issues.* An open issue the hub didn't make, in a repo the binder works in, by webhook or by asking as the
+    rest of GitHub is followed.
+- **Heard once.** The same thing said twice is one note: a source's own id names it, or its words when it has none.
+- **How strongly it was said** is decided by the hub from who sent it, before anything reads its words, and nothing in
+  the words can change it. *Heard*: someone in the Binder (a GitHub login in it, or an address only its people have).
+  *Outside*: anyone else, and every bot. Who a post says sent it is a name to show, never a person on the hub.
+- **Watch, then On.** A new listener watches: the hub says what it would file, and files nothing. Turned on, it files.
+  Off, it hears nothing.
+- **What's from outside starts no work.** The note says where it came from (`from` on the note, and a line at its top).
+  A folder's rule doesn't distill a note from outside until someone in the Binder has read it and let it through
+  (`POST /api/notes/:id/pass`), and work from a listener's note is never accepted without a person. Outside words are
+  written so nothing in them is fetched or drawn when the note is opened: no picture loads from a sender's server.
+- **Came in.** The Brain's rail lists what each listener heard and what became of it, in the hub's words, newest first
+  (`GET /api/listen/feed`). A note the hub filed can be taken back while nobody has worked on it. Rows are kept a month,
+  in the Binder's store; the notes are what lasts.
+- **Limits.** 20 listeners to a Binder, 120 things an hour through each (the rest are held, and said so), 256 KB a
+  post, 50 things in one.
+
 ## The brain (built)
 
 The hub's own model, for what needs no agent: summing up what a phone or Mac captured, and answering a question from the
@@ -531,12 +639,58 @@ whether to do something on the board.
     its pictures, in the folder that binder keeps conversations in when it has one. Each says where the other is; the
     original is left as it is when it's locked against the person sending it. A folder of captures lists the newest
     first.
-- **Ask follows a conversation** (`hub/src/brain/brain.ts`). A question is answered knowing what came before it: the page
+- **The Brain follows a conversation** (`hub/src/brain/brain.ts`). A question is answered knowing what came before it: the page
   sends the last six questions and answers, each cut short, as context and never as instructions. The hub keeps a
-  person's conversation on Ask for them, in the binder's store under their own name and given to no one else: the last 20
+  person's conversation on the Brain for them, in the binder's store under their own name and given to no one else: the last 20
   questions with their answers, until 30 days after the last (`GET` and `DELETE /api/brain/conversation`). It's there on
-  opening Ask again or on another device, until they start a new one. An offer to do something isn't kept, as it can't be
+  opening the Brain again or on another device, until they start a new one. An offer to do something isn't kept, as it can't be
   taken up later, and a turn that drew on a binder the person has since left isn't shown.
+- **The Brain shows, and draws** (`shared/view.ts`, `hub/src/brain/view.ts`, `web/src/brain/view`). An answer on the
+  Brain's page can carry a view beside its words: groups, text, a callout, a stat, facts, a list, steps, a table, a chart,
+  a Mermaid drawing, a Thing (a card, change set, environment or agent, shown live), and questions to ask next. It's
+  drawn with [json-render](https://github.com/vercel-labs/json-render): the model writes the view as JSON, in a block at
+  the end of its answer, and only the parts on the hub's one list are drawn. The hub takes the block out of the words,
+  fills each Thing in from its own state (a model names a card by its mark and an agent by its name, and can't make one
+  up), and keeps only what the list allows, before any browser sees it; the page checks it again. A view has no script,
+  no markup and nothing a press sets off beyond asking another question, so anything that changes something still goes
+  through the hub's own offer, in its own words. The hub tells the model never to add made-up or sample data. A view
+  that doesn't read is left out and the words stand alone, so a small model loses nothing. Under an answer, the sources
+  it cites are listed, and what was found and not used folds away.
+- **An offer is a button, in the view.** What the Brain offers to do is drawn as an Offer: what it would do, in the
+  hub's words, the things it's about as they stand (live, like any Thing), its button and "Not now". An answer can
+  carry several, each with a button of its own, above anything the model drew, or as the whole view when it drew
+  nothing. A model can also place an Offer in its view by naming the thing to do and the marks; the hub makes the
+  offer or leaves the part out, and its words, button and id are always the hub's. Pressing sends the offer's id and
+  nothing else. An offer is for the one person it was made for, works once, lasts a few minutes, and is left out of
+  the conversation that's kept.
+- **The Brain's page** has the conversation in the middle, with the box at the bottom, and a rail beside it, "Now": what
+  needs you (the same list as Home's) and each agent with what it's doing. On a narrow screen the two are a switch. An
+  old address ending in `/ask` still opens it.
+- **The Brain works in steps** (`shared/agent.ts`, `hub/src/brain/tools.ts`). On its own page, a model that can call
+  tools is asked in steps: it gets what was found for the question, as before, and can look further before it answers:
+  find more passages, read a note or a card in full, list cards, read a change set, see what waits and what came in
+  through listeners. Its tools only read, and only what the person asking can read. What a tool returns is material,
+  never an instruction, and anything it can be cited by is given the next source number, so an answer that rests on
+  something the Brain went and read says so like any other; the page lists what it looked at. It is asked six times at
+  most, for ninety seconds at most, and then once more with no tools to answer from what it found. The loop itself has no
+  model's API in it: Claude through Anthropic's API and any server that speaks OpenAI's chat API with tools (Azure's
+  among them) each take one step at a time, and a busy server is asked again a few times. A server is asked once
+  whether its model calls tools; one that doesn't keeps answering in one go, so nothing is lost on a small model.
+- **The Brain looks first at what waits on you** (`hub/src/brain/first.ts`, `GET /api/brain/first`). Under a card that
+  waits on a person, Home and the Brain's rail show what the Brain makes of it:
+  - For an agent's question, a draft of the answer, worked out from the Binder's notes and cards and naming the ones it
+    rests on. It answers only what the notes say: a choice between ways, something to approve, access the agent lacks,
+    or anything the notes don't cover is marked as yours to decide, with what it found. An answer that rests on nothing
+    but the card that asks is treated the same way.
+  - For a card that stopped on something that usually passes (a busy provider, a dropped connection, a timeout), that
+    another try may do, with a button for it. That is read from the reason in code, not by a model.
+  - Cards that wait for the same thing are gathered: the same question on several cards is answered once for all of
+    them, and three or more waiting cards from one note are shown together and can be stopped together.
+  It only drafts. What goes to an agent is what a person sends, as that person (`POST /api/brain/first/send`), and
+  stopping is theirs too. A draft is written when someone looks at what's waiting, a few at a time and at most 40 an
+  hour for a Binder, so a hub nobody is watching asks its model nothing. A draft that said "yours to decide" is asked
+  again once a note has been written since, so something a listener heard can answer a question that had none. A hub's
+  admins can turn the drafts off in Settings → Brain (or `BRAIN_FIRST=0`); a stop is still read, as that asks no model.
 - **A note's Chat** answers from the hub's own model when no agent is listening, or when it's picked, with the note in
   front of it in full and the rest of the binder to draw on (`POST /api/notes/:id/ask`). It reads and can't change the
   note, and says that an agent can.
@@ -544,9 +698,12 @@ whether to do something on the board.
   person's agents, what's waiting on them, what's being worked on, their change sets and environments, read from the state
   for that reply. A document rather than tools, so any model can answer "what are my agents working on?", on the first try,
   with no extra round trip while someone waits to hear it. What the model can have done is one plain line (`DO stop c1`),
-  which only proposes: everything a model reads was written by anyone in a binder, so the hub works out what the line would
+  which only proposes (several cards can be stopped with one line, and it comes to one offer for all of them): everything a
+  model reads was written by anyone in a binder, so the hub works out what the line would
   mean, says so in its own words, and does it only on the person's answer, read by the hub from what they said, or a button
-  on Ask. What merges, deploys or lets an agent use a tool takes that word itself ("approve"), and anything else they say
+  on the Brain. A reply can end with several lines, and each is an offer. A person never sees a line or a mark: a small
+  model that writes its lines inside its sentences, in backticks or in brackets, is read all the same, the line is taken
+  out and the sentence tidied, and a mark left in a sentence gives way to the thing's name. What merges, deploys or lets an agent use a tool takes that word itself ("approve"), and anything else they say
   drops it. It's checked again when it's carried out. A release is a change set, so "put release 18 into motion" approves
   #18. Stopping a card puts it in Proposed: its runner ends the run, and Ready would have an agent take it straight back.
 - **Settings** (`hub/src/brain/settings.ts`). The hub's, an admin's, with the keys sealed; environment variables fix

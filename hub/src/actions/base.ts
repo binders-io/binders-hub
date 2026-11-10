@@ -82,7 +82,17 @@ export function checkedRunner(runner: Partial<RunnerSettings>): RunnerSettings {
   if (allow.length > 60) throw new Refused('Up to 60 commands it may run.')
   const odd = allow.find((r) => !allowRule.test(r))
   if (odd) throw new Refused(`“${odd.slice(0, 80)}” isn’t a Claude Code permission rule: a tool, and what it covers in brackets, like Bash(git:*).`)
-  return { tool, access, timeoutMinutes, ...(runner.held ? { held: true } : {}), ...(runner.cli ? { cli: true } : {}), ...(runner.live ? { live: true } : {}), ...(idle !== undefined ? { idleMinutes: idle } : {}), parallel, worktrees: true, model: runner.model?.trim() || undefined, command: tool === 'custom' ? runner.command!.trim() : undefined, workspace: runner.workspace?.trim() || undefined, ...(runner.commitAs === 'app' ? { commitAs: 'app' as const } : {}), ...(allow.length ? { allow } : {}) }
+  // Where Binders' own agent finds its model on its own machine: any address the machine can reach, http included, as
+  // it's the runner that calls it there and never the hub. It's the agent's owner who sets it, as with what it runs.
+  const modelUrl = tool === 'binders' ? runner.modelUrl?.trim() || undefined : undefined
+  if (modelUrl) {
+    let url: URL | undefined
+    try { url = new URL(modelUrl) } catch { url = undefined }
+    if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:') || modelUrl.length > 500) throw new Refused('The model’s address on the machine is a web address, such as http://127.0.0.1:8000.')
+    if (url.username || url.password) throw new Refused('The model’s address can’t have a name or password in it. A key goes in BINDERS_MODEL_KEY on the machine.')
+    if (!runner.model?.trim()) throw new Refused('Say which model, or which deployment, is at that address.')
+  }
+  return { tool, access, timeoutMinutes, ...(modelUrl ? { modelUrl } : {}), ...(runner.held ? { held: true } : {}), ...(runner.cli ? { cli: true } : {}), ...(runner.live ? { live: true } : {}), ...(idle !== undefined ? { idleMinutes: idle } : {}), parallel, worktrees: true, model: runner.model?.trim() || undefined, command: tool === 'custom' ? runner.command!.trim() : undefined, workspace: runner.workspace?.trim() || undefined, ...(runner.commitAs === 'app' ? { commitAs: 'app' as const } : {}), ...(allow.length ? { allow } : {}) }
 }
 
 /** What every part of the hub's actions stands on: the hub, GitHub, and finding what an action is about. */

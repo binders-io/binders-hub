@@ -9,6 +9,7 @@ import { attempt } from './Toast'
 import { ConfirmButton } from './ConfirmButton'
 import { citeMark, Rendered } from './Rendered'
 import { SettingsLink } from './SettingsLink'
+import { isModelAgent, modelReady } from './modelAgent'
 import { href } from '../route'
 import { useMayChangeBinder } from '../screens/settings/access'
 
@@ -81,7 +82,8 @@ export function NoteChat({ note, agents: given, initial, onFocusChange }: { note
   const [asking, setAsking] = useState<{ text: string; at: string }>()
   const list = useRef<HTMLOListElement>(null)
   const waiting = !!chat?.messages.length && chat.messages[chat.messages.length - 1].by !== agent?.id
-  const listening = agent ? isListening(agent) : false
+  // One the hub runs as a model has no runner to be listening: it picks a chat up when it's able to.
+  const listening = agent ? (isModelAgent(agent) ? modelReady(agent) : isListening(agent)) : false
   const busy = useHub((state) => (agent ? state.cards.find((c) => c.agentId === agent.id && c.stage === 'working') : undefined))
 
   useEffect(() => {

@@ -2020,7 +2020,8 @@ if (mode === 'permission-unanswered') {
     assert.match(notes[4].missing, /No terminal called nope/)
     assert.equal(notes[5].short.state, 'ended')
     assert.equal(set.stored().stage, 'live')
-    await new Promise((done) => setTimeout(done, 300))
+    // They end a moment after the card does: waited for, as a slow machine takes longer over it than a fast one.
+    for (let waited = 0; inside(runner).sessions.size && waited < 8000; waited += 50) await new Promise((done) => setTimeout(done, 50))
     assert.equal(inside(runner).sessions.size, 0, 'and they ended with it')
     await set.close()
   })

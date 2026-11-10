@@ -311,8 +311,12 @@ const decidedInTheRoute = ['POST /api/captures', 'POST /api/app/audio', 'POST /a
 const notAPersonsRequest = [
   'POST /auth/dev', 'POST /auth/logout', 'POST /oauth/register', 'POST /oauth/revoke', 'POST /oauth/authorize', 'POST /oauth/token',
   'POST /webhooks/jira/:space', 'POST /webhooks/github', 'POST /webhooks/github/:space', 'POST /mcp', 'POST /:space/mcp', 'DELETE /mcp', 'DELETE /:space/mcp',
+  // What a source posts to a listener: its listener's secret is the proof, and nobody is signed in.
+  'POST /webhooks/in/:space/:listener',
   // The hook lets these through unsigned: a machine’s own token or a line made earlier is the proof.
   'POST /api/machines/join', 'POST /api/brain/machines/join',
+  // An agent's own token asks for a step of its model: no person is signed in.
+  'POST /api/agent/step',
 ]
 /** Leaving is the one address with a person in it: taking yourself out is allowed, taking another isn’t. */
 const leaving = 'DELETE /api/spaces/:id/members/:login'

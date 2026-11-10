@@ -13,7 +13,7 @@ import { Webhooks } from '../src/webhooks.ts'
 import { IssuesSaver } from '../src/savers/issues.ts'
 import { BrainSettingsStore } from '../src/brain/settings.ts'
 import { ask, askText, SpaceBrain, talk, type AskPlace } from '../src/brain/brain.ts'
-import { answerIn, boardFor, isAsking, propose, readDo, takeProposal, withoutMarks, type WorkPlace } from '../src/brain/board.ts'
+import { answerIn, boardFor, isAsking, offersIn, propose, readAll, readDo, takeProposal, withoutMarks, type WorkPlace } from '../src/brain/board.ts'
 import type { BrainModel } from '../src/brain/models.ts'
 import type { Change } from '../../shared/state.ts'
 import { forAttention, waitingOn } from '../../shared/waiting.ts'
@@ -177,16 +177,59 @@ describe('how the work stands, for the brain', () => {
     assert.deepEqual(readDo('Do stop by the office.\nDO nothing at all'), { words: 'Do stop by the office.\nDO nothing at all', asked: undefined })
   })
 
+  it('reads a line a model put inside a sentence, in backticks or in brackets, and leaves the sentence to read on', () => {
+    // What a small model wrote to a person, word for word but for the marks: every one of these is a button, not words.
+    const reply = [
+      'Nothing is being worked on right now. You’d have to tell me which to act on:',
+      '',
+      'Stop the blocked cards: DO stop c1 c2 c3',
+      '',
+      'Stop the ready one too: add `c4`',
+      '',
+      'Change set #6 has no discard. Approve it (DO approve s6) to merge, or leave it as is.',
+    ].join('\n')
+    const read = readAll(reply)
+    assert.deepEqual(read.lines, [{ verb: 'stop', mark: 'c1', rest: 'c2 c3' }, { verb: 'approve', mark: 's6', rest: '' }])
+    assert.equal(read.words, ['Nothing is being worked on right now. You’d have to tell me which to act on:', '', 'Stop the blocked cards.', '', 'Stop the ready one too: add `c4`', '', 'Change set #6 has no discard. Approve it to merge, or leave it as is.'].join('\n'))
+    assert.ok(!/\bDO\b/.test(read.words), 'no line is left for a person to read')
+
+    assert.deepEqual(readAll('To stop it, use `DO stop c2`.').lines, [{ verb: 'stop', mark: 'c2', rest: '' }])
+    assert.equal(readAll('To stop it, use `DO stop c2`.').words, 'To stop it.')
+    assert.equal(readAll('Hold back what’s ready: add `DO stop c5 c6`').words, 'Hold back what’s ready.')
+    assert.deepEqual(readAll('I can tell it: DO tell c1 use the staging database').lines, [{ verb: 'tell', mark: 'c1', rest: 'use the staging database' }])
+    assert.deepEqual(readAll('- Stop both: DO stop c1, c2 and c3 if you want').lines, [{ verb: 'stop', mark: 'c1', rest: 'c2 c3' }])
+    assert.equal(readAll('- Stop both: DO stop c1, c2 and c3 if you want').words, '- Stop both: if you want.')
+    // A form quoted from its rules names nothing: it's taken out, and offers nothing.
+    assert.deepEqual(readAll('You could say DO stop MARK or (DO approve MARK).'), { words: 'You could.', lines: [] })
+    // In the order written, whichever way each was written.
+    assert.deepEqual(readAll('First (DO approve s6).\nDO stop c1').lines.map((line) => line.verb), ['approve', 'stop'])
+    // Words that aren't its line stay words.
+    assert.deepEqual(readAll('We DO need to stop by. Do approve of it.'), { words: 'We DO need to stop by. Do approve of it.', lines: [] })
+  })
+
+  it('makes a button of each thing a reply offers: cards named a line each are one, and a line naming several is its own', () => {
+    const stop = (mark: string, rest = '') => ({ verb: 'stop' as const, mark, rest })
+    assert.deepEqual(offersIn([stop('c1'), stop('c2'), stop('c3')]), [{ ...stop('c1'), also: [stop('c2'), stop('c3')] }])
+    assert.deepEqual(offersIn([stop('c1', 'c2 c3'), stop('c4')]), [stop('c1', 'c2 c3'), stop('c4')])
+    const approve = { verb: 'approve' as const, mark: 's6', rest: '' }
+    assert.deepEqual(offersIn([stop('c1', 'c2'), approve, approve, stop('c1', 'c2')]), [stop('c1', 'c2'), approve])
+    assert.equal(offersIn(Array.from({ length: 9 }, (_x, i) => ({ verb: 'tell' as const, mark: `c${i}`, rest: 'hello' }))).length, 6)
+  })
+
   it('takes the board’s marks out of what’s said, and leaves other words alone', async () => {
     const set = await setUp()
     try {
       const board = boardFor([set.place], 'you')
       assert.ok(board.targets.has('c1') && board.targets.has('c2') && board.targets.has('s18'))
       assert.equal(withoutMarks('Sonnet is waiting on you (six cards, c1–c2).', board), 'Sonnet is waiting on you (six cards).')
-      assert.equal(withoutMarks('Change set #18 [s18] is in review, and [c1] is ready.', board), 'Change set #18 is in review, and is ready.')
+      // A mark beside the name it stands for just goes; one on its own gives way to the thing's name.
+      assert.equal(withoutMarks('Change set #18 [s18] is in review, and [c1] is ready.', board), 'Change set #18 is in review, and “Move the database” is ready.')
+      assert.equal(withoutMarks('Stop the ready one too: add `c1`.', board), 'Stop the ready one too: add “Move the database”.')
+      assert.equal(withoutMarks('[c1] “Move the database” is waiting.', board), '“Move the database” is waiting.')
+      assert.equal(withoutMarks('Approve s18 when you’re ready.', board), 'Approve change set #18 when you’re ready.')
       assert.equal(withoutMarks('Files are in S3, on v2, and x9 is not a thing here.', board), 'Files are in S3, on v2, and x9 is not a thing here.')
       set.say('Sonnet has c1 and [c2].')
-      assert.equal((await talk(set.settings, set.places, [{ role: 'user', text: 'What is Sonnet on?' }], { person: 'you' })).reply, 'Sonnet has and.')
+      assert.equal((await talk(set.settings, set.places, [{ role: 'user', text: 'What is Sonnet on?' }], { person: 'you' })).reply, 'Sonnet has “Move the database” and “Clear the cache”.')
     } finally {
       await set.close()
     }
@@ -421,6 +464,85 @@ describe('what the brain can have done', () => {
       assert.equal((await talk(set.settings, set.places, [{ role: 'user', text: 'first note' }])).reply, 'From the notes.')
       assert.ok(!set.seen[0].passages.includes('What’s going on now'))
       assert.equal(set.seen[0].more, undefined)
+    } finally {
+      await set.close()
+    }
+  })
+})
+
+describe('stopping several cards at once', () => {
+  it('reads every line a model gave, the first as what it asks and the rest with it', () => {
+    assert.deepEqual(readDo('DO stop c1\nDO stop c2\nDO stop c3'), { words: '', asked: { verb: 'stop', mark: 'c1', rest: '', also: [{ verb: 'stop', mark: 'c2', rest: '' }, { verb: 'stop', mark: 'c3', rest: '' }] } })
+    assert.deepEqual(readDo('DO stop c1 c2, c3'), { words: '', asked: { verb: 'stop', mark: 'c1', rest: 'c2, c3' } })
+  })
+
+  it('comes to one thing to agree to, in the hub’s words, and stops each when they do', async () => {
+    const set = await setUp()
+    try {
+      const board = boardFor([set.place], 'you')
+      const [login, changelog, cache] = ['Fix the login page', 'Write the changelog', 'Clear the cache'].map((title) => marked(board.passage.text, title)!)
+      const proposal = propose(readDo(`DO stop ${login} ${changelog}, [${cache}]`).asked!, board, 'you')
+      assert.equal(proposal.what, 'Stop 3 cards: “Fix the login page”, “Write the changelog”, “Clear the cache”. They go to Proposed, where nothing picks them up.')
+      assert.equal(proposal.button, 'Stop all 3')
+      assert.equal(proposal.heavy, false)
+      assert.deepEqual(['working', 'waiting', 'allow'].map((id) => set.cardNow(id).stage), ['working', 'ready', 'working'], 'nothing happens until they say so')
+      assert.equal(await proposal.run(), 'Stopped 3 cards. They’re in Proposed.')
+      assert.deepEqual(['working', 'waiting', 'allow'].map((id) => set.cardNow(id).stage), ['proposed', 'proposed', 'proposed'])
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('takes a line for each card as it takes one line for all', async () => {
+    const set = await setUp()
+    try {
+      const board = boardFor([set.place], 'you')
+      const [login, changelog] = ['Fix the login page', 'Write the changelog'].map((title) => marked(board.passage.text, title)!)
+      assert.equal(propose(readDo(`DO stop ${login}\nDO stop ${changelog}`).asked!, board, 'you').button, 'Stop all 2')
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('leaves out what isn’t a card it can stop, and is the usual offer when one is left', async () => {
+    const set = await setUp()
+    try {
+      const board = boardFor([set.place], 'you')
+      const login = marked(board.passage.text, 'Fix the login page')!
+      const release = marked(board.passage.text, 'The November release')!
+      const one = propose(readDo(`DO stop ${login} ${release} c99 the lot please`).asked!, board, 'you')
+      assert.equal(one.button, 'Stop it', 'a change set, a mark that isn’t there and plain words aren’t cards')
+      assert.match(one.what, /^Stop “Fix the login page”/)
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('says how many it stopped when one moved on meanwhile', async () => {
+    const set = await setUp()
+    try {
+      const board = boardFor([set.place], 'you')
+      const [login, changelog] = ['Fix the login page', 'Write the changelog'].map((title) => marked(board.passage.text, title)!)
+      const proposal = propose(readDo(`DO stop ${login} ${changelog}`).asked!, board, 'you')
+      await set.hub.record({ kind: 'hub' }, { type: 'card.update', id: 'waiting', fields: { stage: 'live' } })
+      assert.equal(await proposal.run(), 'Stopped 1 of 2 cards: the others had moved on.')
+      assert.equal(set.cardNow('working').stage, 'proposed')
+      assert.equal(set.cardNow('waiting').stage, 'live')
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('is offered through Ask, with one button', async () => {
+    const set = await setUp()
+    try {
+      const board = boardFor([set.place], 'you').passage.text
+      const [login, changelog] = ['Fix the login page', 'Write the changelog'].map((title) => marked(board, title)!)
+      set.say(`DO stop ${login} ${changelog}`)
+      const result = await ask(set.settings, set.places, 'Stop the login page and the changelog', { person: 'you', may: true })
+      assert.equal(result.proposal?.button, 'Stop all 2')
+      assert.match(set.seen[0].more!, /DO stop MARK MARK MARK/)
+      assert.equal(set.cardNow('working').stage, 'working')
     } finally {
       await set.close()
     }

@@ -8,7 +8,8 @@ import type { Hub } from './hub.ts'
 import { readBody, readMetadata, withoutMetadata, type IssuesSaver } from './savers/issues.ts'
 import { log } from './logger.ts'
 import { whatsWrongWithWebhook } from './schemas.ts'
-import { handMove, sameRepo } from '../../shared/work.ts'
+import { binderRepos, handMove, sameRepo } from '../../shared/work.ts'
+import type { Inbox } from './listen/inbox.ts'
 
 // GitHub telling the hub what happened there: an issue edited or closed, a pull request opened or merged, a check
 // finished, a workflow run, a deployment. Each becomes changes in the log. A delivery whose signature doesn't match the
@@ -22,7 +23,7 @@ export function verify(secret: string, raw: Buffer, signature: string | undefine
 }
 
 interface Repo { full_name: string }
-interface IssueJSON { number: number; title: string; body: string | null; state: 'open' | 'closed'; html_url: string; pull_request?: unknown }
+interface IssueJSON { number: number; title: string; body: string | null; state: 'open' | 'closed'; html_url: string; pull_request?: unknown; created_at?: string; user?: { login?: string; type?: string } | null }
 type DeploymentPayload = {
   deployment_status: { state: string; environment_url?: string | null; log_url?: string | null; target_url?: string | null; created_at?: string; updated_at?: string }
   deployment: { environment: string; ref: string; sha: string; payload?: { version?: string } | string; transient_environment?: boolean }
@@ -36,6 +37,8 @@ export class Webhooks {
   private hub: Hub
   private actions: Actions
   private issues?: IssuesSaver
+  /** Where an issue the hub didn't make goes, when the Binder listens to GitHub. */
+  inbox?: Pick<Inbox, 'take'>
 
   constructor(hub: Hub, actions: Actions, issues?: IssuesSaver) {
     this.hub = hub
@@ -70,11 +73,34 @@ export class Webhooks {
     return this.hub.state.cards.find((c) => (meta?.card && c.id === meta.card) || (sameRepo(c.issue?.repo, repo) && c.issue?.number === number))
   }
 
+  /**
+   * An open issue the hub didn't make, in a repo one of its binders works in, goes to that binder's GitHub listener: who
+   * opened it is GitHub's own word, so someone in the Binder is heard and anyone else is from outside. Once for each
+   * issue, however many deliveries name it. True when a listener took it.
+   */
+  private async heardIssue(repo: string, issue: IssueJSON) {
+    if (!this.inbox || issue.state !== 'open') return false
+    const state = this.hub.state
+    const listener = (state.listeners ?? []).find((l) => l.kind === 'github' && l.mode !== 'off' && binderRepos(state.binders.find((b) => b.id === l.binderId)).some((r) => sameRepo(r, repo)))
+    if (!listener) return false
+    const login = issue.user?.login
+    await this.inbox.take(listener.id, [{
+      sourceId: `${repo.toLowerCase()}#${issue.number}`,
+      thread: `${repo.toLowerCase()}#${issue.number}`,
+      ...(issue.created_at ? { at: issue.created_at } : {}),
+      ...(login ? { sender: { login, ...(issue.user?.type === 'Bot' || login.endsWith('[bot]') ? { bot: true } : {}) } } : {}),
+      title: issue.title,
+      text: issue.body?.trim() ? issue.body : issue.title,
+      url: issue.html_url,
+    }])
+    return true
+  }
+
   private async issue({ action, issue, repository }: { action: string; issue: IssueJSON; repository: Repo }) {
     if (issue.pull_request) return 'ignored'
     const repo = repository.full_name
     const card = this.cardForIssue(repo, issue.number, issue.body)
-    if (!card) return 'no card'
+    if (!card) return (await this.heardIssue(repo, issue)) ? 'heard' : 'no card'
     const at = new Date().toISOString()
     if (action === 'edited') {
       if (this.issues?.isEcho(repo, issue.number, issue.title, issue.body ?? '')) return 'echo'

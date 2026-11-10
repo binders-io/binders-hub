@@ -16,7 +16,7 @@ import { askOfAgent, commentAskOfAgent, type JiraConnection } from './jira.ts'
 // The hub's MCP server: how an agent registered here finds work, takes it, says what it's doing, asks, and hands it
 // back with its pull request. One server per request (the transport is stateless), bound to the agent its token names.
 
-const instructions = `Binders is where this team's work lives: notes in binders, and cards on each binder's board that
+export const instructions = `Binders is where this team's work lives: notes in binders, and cards on each binder's board that
 come from them. You are one of the team's agents. Before working in a binder, read get_binder_context: its guide, its
 rules and where to look. Its notes are the team's knowledge base, and you help keep them: edit what you learn into them,
 and where a note is locked, propose_note_change.
@@ -93,6 +93,8 @@ const quiet = new Set<string>([
   'pr.put', 'pr.update', 'pr.delete', 'env.put', 'env.update', 'env.delete', 'run.put', 'run.delete',
   // What a folder does with its notes, and how a note's work is kept: read when a card is made, never to pick one.
   'rule.put', 'rule.delete', 'note.work', 'note.distill',
+  // What listens for a Binder, and a note from outside let through: no card is made by either.
+  'listener.put', 'listener.delete', 'note.pass',
 ])
 /** The lines on a card a person writes in, and the card moving: the kinds `resumeFor` reads for an agent to go on. */
 const spoken = new Set<string>(['answer', 'comment', 'moved'])

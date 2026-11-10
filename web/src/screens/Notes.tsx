@@ -2,15 +2,18 @@ import { space } from '../data/space'
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { ArrowUpRight, CalendarClock, Check, ChevronLeft, GitPullRequest, LoaderCircle, Lock, ChevronsLeft, ChevronsRight, ExternalLink, Maximize2, MessageSquare, Minimize2, PanelLeft, PanelRight, Sparkles, Trash2, X } from 'lucide-react'
+import { useKeyboardRoom } from '../components/useKeyboardRoom'
 import { stages } from '../data/model'
 import { isOnline, nameFor, sameFields, sameValues, useActions, useClock, useHub, useLiveNote, useNoteText, usePresence, type State } from '../data/store'
 import { linksOf, textOf } from '../data/noteText'
 import { cardPrompt } from '../data/prompts'
 import type { Card, Note } from '../data/model'
 import { ago, usePhone } from '../components/bits'
+import { isModelAgent, modelReady } from '../components/modelAgent'
 import { attempt, toast } from '../components/Toast'
 import { ConfirmButton } from '../components/ConfirmButton'
 import { NoteViews, type NoteView } from '../components/NoteViews'
+import { CameThrough } from '../components/CameThrough'
 import { call } from '../data/api'
 import { NoteControls, useMayChange } from '../components/NoteControls'
 import { AgentAvatar, Who, stageTone } from '../components/bits'
@@ -117,32 +120,6 @@ export function Notes({ id }: { id: string }) {
 const sameShape = sameFields<Note>('id', 'binderId', 'folderId', 'title')
 
 const isDistill = (title: string) => title.startsWith('Distill “')
-
-/**
- * While a note is being written on a phone, the page is as tall as what the keyboard leaves, so the caret and the
- * formatting bar stay above it. iOS slides the whole page up to show the caret instead: it's slid back.
- */
-function useKeyboardRoom(active: boolean) {
-  useEffect(() => {
-    const viewport = window.visualViewport
-    if (!active || !viewport) return
-    const root = document.documentElement
-    const fit = () => {
-      root.style.setProperty('--room', `${viewport.height}px`)
-      if (window.scrollY) window.scrollTo(0, 0)
-    }
-    root.classList.add('writing')
-    fit()
-    viewport.addEventListener('resize', fit)
-    viewport.addEventListener('scroll', fit)
-    return () => {
-      viewport.removeEventListener('resize', fit)
-      viewport.removeEventListener('scroll', fit)
-      root.classList.remove('writing')
-      root.style.removeProperty('--room')
-    }
-  }, [active])
-}
 
 function NoteScreen({ noteId, listFirst, onDeleted }: { noteId: string; listFirst: boolean; onDeleted: (noteId: string) => void }) {
   const store = useActions()
@@ -319,6 +296,7 @@ function NoteScreen({ noteId, listFirst, onDeleted }: { noteId: string; listFirs
             </>
           )}
         </NoteMeta>
+        <CameThrough noteId={note.id} />
         {note.locked && !mayChange && <p className="note-locked"><Lock size={13} /> Locked by @{note.locked.by}.{mayChangeBinder && ' Use the versions button to propose a change for review.'}</p>}
         {mayChange && !phone && <Toolbar editor={editor} raw={raw} onRaw={showRaw} />}
         <NoteEditor key={`${note.id}:${mayChange ? 'edit' : 'read'}`} noteId={note.id} binderId={note.binderId} folderId={note.folderId} editor={editor} raw={raw} readOnly={!mayChange} onFocusChange={setFocused} />
@@ -604,7 +582,7 @@ function DistillStatus({ card }: { card: Card }) {
   const [copied, setCopied] = useState(false)
   const taken = !!card.agentId
   const agent = agents.find((a) => a.id === (card.agentId ?? card.meantFor))
-  const listening = agent ? isOnline(agent) : agents.some((a) => !a.revoked && isOnline(a))
+  const listening = agent ? (isModelAgent(agent) ? modelReady(agent) : isOnline(agent)) : agents.some((a) => !a.revoked && isOnline(a))
   const name = agent?.name ?? 'an agent'
   const copy = async () => {
     await navigator.clipboard.writeText(cardPrompt(card.id)).catch(() => {})

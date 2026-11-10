@@ -9,6 +9,17 @@ const marks: Partial<Record<AgentTool, { path: string }>> = {
 const initials: Partial<Record<AgentTool, string>> = { codex: 'Cx', pi: 'π', amp: 'Am', goose: 'Gs', aider: 'Ai', custom: '>_' }
 
 export function ToolIcon({ tool, size = 20 }: { tool: AgentTool; size?: number }) {
+  // Binders' own: its page with two rings, drawn in lines so it takes the colour around it.
+  if (tool === 'binders') {
+    return (
+      <svg className="tool-icon" width={size} height={size} viewBox="0 0 64 64" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="5" strokeLinecap="round">
+        <rect x="18" y="8" width="34" height="48" rx="6" />
+        <path d="M28 24h14M28 33h11M28 42h7" />
+        <circle cx="18" cy="22" r="5" />
+        <circle cx="18" cy="42" r="5" />
+      </svg>
+    )
+  }
   const mark = marks[tool]
   if (mark) {
     return (

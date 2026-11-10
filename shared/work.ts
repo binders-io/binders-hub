@@ -2,6 +2,7 @@ import { tools, type AgentTool } from './agents.ts'
 import { trashKept } from './notes.ts'
 import { withTestResult, type Challenge, type Debrief, type TestResult, type WorktreeDiff } from './changeSet.ts'
 import { runsKept, type Schedule, type ScheduleRun } from './schedule.ts'
+import type { Listener } from './listen.ts'
 // The work: cards on a binder's board, the agents that take them, their pull requests, the change sets those are
 // approved in, and the environments they ship to. Like notes, all of it moves by changes in the hub's log, applied in
 // order with the same `applyWork` on the hub and in every browser.
@@ -14,6 +15,23 @@ const current = (stage: string | undefined) => (stage === 'shipping' ? 'live' : 
 
 export type Provider = 'claude' | 'openai' | 'copilot' | 'opencode' | 'dsh' | 'cursor' | 'gemini' | 'pi' | 'amp' | 'goose' | 'aider' | 'qwen' | 'other'
 
+/**
+ * An agent that is a model at an address, run by the hub: no machine, no repo, no shell. Its key is kept sealed in the
+ * Binder's own store, never here.
+ */
+export interface AgentEndpoint {
+  /** brain: the hub's own chat model. openai: a server that speaks OpenAI's chat API (Azure's among them). anthropic: Claude by Anthropic's API, at Anthropic or in Microsoft Foundry. */
+  kind: 'brain' | 'openai' | 'anthropic'
+  /** Where its model is: an OpenAI-style server's address ending in /v1, or a Foundry resource's /anthropic address. None for the hub's own, or for Anthropic itself. */
+  baseUrl?: string
+  /** The model, or the deployment's name. */
+  model?: string
+  /** What it takes: cards given to it by name (Distill among them), chats about a note, debriefs, Challenges. */
+  takes: { cards: boolean; chats: boolean; debriefs: boolean; challenges: boolean }
+  /** Whether its model called a tool when last asked to: one that can't does no work, and says why. */
+  ready?: { ok: boolean; why?: string; at: string }
+}
+
 /** How the Binders runner starts an agent for each card, set on the Agents page. */
 export interface RunnerSettings {
   /** The command line it runs: Claude Code, Codex, or one of your own. */
@@ -21,6 +39,14 @@ export interface RunnerSettings {
   /** full: no permission prompts at all; auto: Claude Code decides what's safe; edits: file edits only. */
   access: 'full' | 'auto' | 'edits'
   model?: string
+  /**
+   * For Binders' own agent: where its model is, when that's on the agent's own machine or a network only it reaches (a
+   * local proxy, LM Studio, Ollama, vLLM). A server that speaks OpenAI's chat API, by its address as the machine sees
+   * it, such as http://127.0.0.1:8000; `model` is the model or deployment there. The runner asks it itself, with a key
+   * from the machine's own BINDERS_MODEL_KEY when it needs one. With none, the hub takes each step of the model the
+   * agent was given there.
+   */
+  modelUrl?: string
   /** A card that runs longer is stopped and put back. */
   timeoutMinutes: number
   /** Minutes without a word from the agent before its run is stopped as stuck (15): a model it can't reach, a prompt
@@ -101,6 +127,8 @@ export interface Agent {
   revoked?: boolean
   /** How the Binders runner starts it, when it runs under one. */
   runner?: RunnerSettings
+  /** The model it is, when it has no machine and the hub runs it. */
+  endpoint?: AgentEndpoint
   /**
    * A person asked its runners to restart, on the newest runner the hub has: what they're running stops (cards go back
    * on the board), and they start again. A runner acts on one asked after it started.
@@ -537,6 +565,8 @@ export interface WorkState {
   /** Each repo's brief. Missing from logs written before there were any. */
   briefs?: RepoBrief[]
   folderRules?: FolderRule[]
+  /** What brings things in from outside (shared/listen.ts). Missing from logs written before there were any. */
+  listeners?: Listener[]
   noteWork?: NoteWork[]
   /** Cards deleted in the last 30 days, oldest first: the hub's, never in what a browser holds (shared/light.ts). */
   trashedCards?: TrashedCard[]
@@ -597,6 +627,8 @@ export type WorkChange =
   | { type: 'schedule.ran'; id: string; fields: Partial<Omit<Schedule, 'id' | 'runs'>>; run: ScheduleRun }
   | { type: 'rule.put'; rule: FolderRule }
   | { type: 'rule.delete'; id: string }
+  | { type: 'listener.put'; listener: Listener }
+  | { type: 'listener.delete'; id: string }
   | { type: 'note.work'; noteId: string; fields: Partial<Omit<NoteWork, 'noteId' | 'distill'>> }
   /** A note's automatic Distill taken: only the first counts, or one taking over from a `replaces` that never made its card. */
   | { type: 'note.distill'; noteId: string; rule: string; claim: string; at: string; cardId: string; made?: boolean; replaces?: string }
@@ -820,6 +852,10 @@ function applyWhole<S extends WorkState>(state: S, change: WorkChange): S {
       return { ...state, folderRules: upsert(state.folderRules ?? [], change.rule) }
     case 'rule.delete':
       return { ...state, folderRules: (state.folderRules ?? []).filter((r) => r.id !== change.id) }
+    case 'listener.put':
+      return { ...state, listeners: upsert(state.listeners ?? [], change.listener) }
+    case 'listener.delete':
+      return { ...state, listeners: (state.listeners ?? []).filter((l) => l.id !== change.id) }
     case 'note.work': {
       const was = (state.noteWork ?? []).find((w) => w.noteId === change.noteId) ?? { noteId: change.noteId }
       return { ...state, noteWork: [...(state.noteWork ?? []).filter((w) => w.noteId !== change.noteId), merge(was, change.fields)] }

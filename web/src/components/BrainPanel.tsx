@@ -18,6 +18,7 @@ interface BrainView {
   model?: string
   baseUrl?: string
   summarize: boolean
+  first?: boolean
   embeddingsBaseUrl?: string
   embeddingsModel?: string
   apiKeySet?: boolean
@@ -537,6 +538,11 @@ export function BrainPanel() {
             <div className="field">
               <span className="field-label">Sum up conversations and meetings {note('summarize')}</span>
               <Segmented id="brain-summarize" value={brain.summarize ? 'on' : 'off'} disabled={off('summarize') || brain.provider === 'off'} onChange={(on) => void save({ summarize: on === 'on' }, 'summarize')} choices={[['on', 'On'], ['off', 'Off']]} />
+            </div>
+            <div className="field">
+              <span className="field-label">Draft answers to agents’ questions {note('first')}</span>
+              <Segmented id="brain-first" value={brain.first === false ? 'off' : 'on'} disabled={off('first') || brain.provider === 'off'} onChange={(on) => void save({ first: on === 'on' }, 'first')} choices={[['on', 'On'], ['off', 'Off']]} />
+              <p className="field-hint">When someone looks at what’s waiting on them, the Brain drafts an answer from the Binder’s notes for them to send. Nothing goes to an agent until they press Send.</p>
             </div>
             <details className="by-address">
               <summary>Use Claude, or a server by its address</summary>

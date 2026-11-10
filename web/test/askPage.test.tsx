@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { phoneQuery } from '../src/components/bits'
 import type { UI } from '../src/ui'
 
-// Ask keeps what was asked and answered, and each question goes with the ones before it. The hub keeps the conversation,
+// The Brain keeps what was asked and answered, and each question goes with the ones before it. The hub keeps the conversation,
 // so a reload or another device finds it. An answer can become a note or a card. Home has a line that takes a question
 // there. What the page holds lives in the module, so each test loads a fresh one: a reload, in effect.
 
@@ -22,7 +22,7 @@ interface Kept { question: string; result: unknown; everywhere: boolean }
 async function load(answer: (question: string) => unknown = (question) => ({ answer: { text: '', parts: [{ text: `The answer to ${question}`, sources: [1, 2] }] }, sources: [source(1), source(2, { kind: 'card', id: 'c1', title: 'Fix [it]', url: '#/work/c1' }), source(3, { binder: 'b1', binderName: 'Binder', title: 'Far away', url: 'https://hub.test/b1/#/notes/n3' })], searchedBy: 'words and meaning', model: 'stand-in' }), kept: Kept[] = []) {
   vi.resetModules()
   const harness = await import('./harness')
-  const { Ask } = await import('../src/screens/Ask')
+  const { BrainScreen } = await import('../src/screens/Brain')
   const { UIContext } = await import('../src/ui')
   const { standInRoute } = harness
   harness.standInHub(() => harness.hubState({ binders: [{ id: 'b1', name: 'Binder' }, { id: 'b2', name: 'Other' }] }))
@@ -34,13 +34,13 @@ async function load(answer: (question: string) => unknown = (question) => ({ ans
     if (turns) kept.push({ question, result, everywhere })
     return result
   }) as { question: string; everywhere: boolean; turns: { role: string; text: string }[] }[]
-  const mountAsk = (provide: UI = ui(), props: { asked?: { question: string; at: number } } = {}) => harness.mount(<UIContext.Provider value={provide}><Ask {...props} /></UIContext.Provider>)
-  return { ...harness, Ask, UIContext, asked, kept, mountAsk }
+  const mountAsk = (provide: UI = ui(), props: { asked?: { question: string; at: number } } = {}) => harness.mount(<UIContext.Provider value={provide}><BrainScreen {...props} /></UIContext.Provider>)
+  return { ...harness, BrainScreen, UIContext, asked, kept, mountAsk }
 }
 
 /** Types a question in the box and sends it. */
 async function ask(question: string) {
-  fireEvent.change(screen.getByRole('textbox', { name: 'Ask your binders' }), { target: { value: question } })
+  fireEvent.change(screen.getByRole('textbox', { name: 'Ask or tell the Brain' }), { target: { value: question } })
   fireEvent.click(screen.getByRole('button', { name: 'Ask' }))
   await screen.findByRole('heading', { name: question })
   await waitFor(() => expect(screen.queryByText('Reading your notes and cards…')).toBeNull())
@@ -53,7 +53,7 @@ afterEach(() => {
   window.location.hash = ''
 })
 
-describe('Ask keeps the visit’s questions', () => {
+describe('the Brain keeps the visit’s questions', () => {
   it('lists each question with its answer above the box, oldest first', async () => {
     const { mountAsk } = await load()
     await mountAsk()
@@ -63,9 +63,9 @@ describe('Ask keeps the visit’s questions', () => {
     const [first, second] = [...document.querySelectorAll('.ask-result')]
     expect(first.textContent).toContain('The answer to What is the plan?')
     expect(second.textContent).toContain('The answer to Who owns it?')
-    const box = screen.getByRole('textbox', { name: 'Ask your binders' })
+    const box = screen.getByRole('textbox', { name: 'Ask or tell the Brain' })
     expect(second.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect((box as HTMLInputElement).value).toBe('')
+    expect((box as HTMLTextAreaElement).value).toBe('')
   })
 
   it('sends each question with the conversation before it, and says that it remembers', async () => {
@@ -162,7 +162,7 @@ describe('Ask keeps the visit’s questions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start over? Press again' }))
     await waitFor(() => expect(questions()).toEqual([]))
     expect(kept).toHaveLength(0)
-    expect(screen.getByRole('heading', { name: 'Ask your binders' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Brain' })).toBeTruthy()
     await ask('Two?')
     expect(asked.at(-1)).toEqual({ question: 'Two?', everywhere: false, turns: [] })
   })
@@ -276,7 +276,7 @@ describe('under an answer', () => {
 })
 
 describe('Home’s question line', () => {
-  it('takes a question to Ask, and clears', async () => {
+  it('takes a question to the Brain, and clears', async () => {
     const harness = await import('./harness')
     const { Home } = await import('../src/screens/Home')
     const { UIContext } = await import('../src/ui')
@@ -316,7 +316,7 @@ describe('Home’s question line', () => {
     expect(screen.queryByRole('textbox', { name: 'Ask your binders' })).toBeNull()
   })
 
-  it('in the app, asks the question on Ask', async () => {
+  it('in the app, asks the question on the Brain', async () => {
     const { standInRoute, standInHub, hubState, mount, settle } = await import('./harness')
     const App = (await import('../src/App')).default
     standInHub(() => hubState())
@@ -328,7 +328,7 @@ describe('Home’s question line', () => {
     fireEvent.change(line, { target: { value: 'Why Redis?' } })
     fireEvent.click(screen.getByRole('button', { name: 'Ask' }))
     await waitFor(() => expect(asked.map((a) => a.question)).toEqual(['Why Redis?']))
-    expect(window.location.hash).toBe('#/ask')
+    expect(window.location.hash).toBe('#/brain')
     expect(await screen.findByRole('heading', { name: 'Why Redis?' })).toBeTruthy()
   })
 })

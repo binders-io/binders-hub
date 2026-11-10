@@ -1,6 +1,7 @@
 import { nextRun } from '../../shared/schedule.ts'
 import type { Actions } from './actions.ts'
 import type { CopyKeeper } from './copies.ts'
+import type { FeedReader } from './listen/reader.ts'
 import { emptyTrash } from './history.ts'
 import type { Hub } from './hub.ts'
 import { log } from './logger.ts'
@@ -25,6 +26,8 @@ export class Scheduler {
   private ticking = false
   /** The Binder's daily copies: asked each tick whether one is due, and not waited for. */
   copies?: CopyKeeper
+  /** The feeds its listeners read: asked each tick which are due, and not waited for. */
+  feeds?: FeedReader
 
   private hub: Hub
   private actions: Actions
@@ -72,6 +75,7 @@ export class Scheduler {
       await this.actions.sendFinishedSets().catch((err: Error) => log.warn({ err }, 'Sending a note’s change set for review failed'))
       // A daily copy takes its own time, and fails on its own: it's started here and left to finish.
       if (this.copies) void this.copies.tick(now)
+      if (this.feeds) void this.feeds.look().catch((err: Error) => log.warn({ err }, 'Reading the listeners’ feeds failed'))
       // Looking at GitHub for deployments paces itself, a repo at a time with a pause between, so it isn't waited for here.
       if (this.actions.deliveryLooks) void this.actions.lookDue(now.getTime()).catch((err: Error) => log.warn({ err }, 'Looking for deployments failed'))
     } finally {

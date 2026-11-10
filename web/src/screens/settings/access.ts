@@ -44,6 +44,15 @@ export function useBinderAccess() {
 }
 
 /**
+ * Whether you're one of this Binder's owners or admins, as the hub says who you are: they alone add, try and change an
+ * agent that is a model at an address, since it reads the Binder's notes and spends a key. It asks no list of binders, so
+ * a card for each agent can ask it.
+ */
+export function useMayManageBinder() {
+  return useHub((state) => state.me?.role === 'owner' || state.me?.role === 'admin')
+}
+
+/**
  * Whether you may change the Binder you're in: not when you're a reader, who sees all of it and changes none of it. Every
  * control that changes something asks this. Until the hub has said who you are, you may, so nobody's controls flicker
  * away and back; a reader who presses one anyway is refused by the hub, in words that show as a toast.

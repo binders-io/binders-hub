@@ -30,6 +30,10 @@ import { SpaceBrain } from './brain/brain.ts'
 import { KeptKV, StateFile } from './kept.ts'
 import { VectorFiles, vectorBranch } from './brain/vectorFiles.ts'
 import type { Binder } from '../../shared/notes.ts'
+import { Inbox } from './listen/inbox.ts'
+import { FeedReader } from './listen/reader.ts'
+import { FirstAnswers } from './brain/first.ts'
+import { EndpointAgents } from './agent/endpoint.ts'
 
 // Everything comes from the environment (see README.md). GitHub is best set up from Settings, which makes a GitHub App
 // and keeps its keys here; the GITHUB_* variables set it up by hand instead, and win where both are set.
@@ -259,6 +263,8 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
   })
   const brain = new SpaceBrain({ id, hub, kv: ownKv, settings: brainSettings, embeds: !info.personal, files })
   brain.start()
+  // The Brain's first look at what waits on a person: drafts, kept in the Binder's store, written when someone looks.
+  const firstAnswers = new FirstAnswers({ hub, settings: brainSettings, kv: ownKv, place: () => ({ id, name: spaces.info(id)?.name ?? info.name, brain, url: () => '' }) })
   const notesDir = first ? notesRoot : dir('notes')
   const notes = new GitNotesSaver(hub, {
     dir: notesDir,
@@ -284,15 +290,25 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
     author: gitAuthor,
   })
   scheduler.copies = copies
+  // What comes in from outside: its listeners, what each hears, and the feeds read on the timer for a hub nothing reaches.
+  const inbox = new Inbox({ hub, kv: ownKv, sealer, member: (login) => !!spaces.roleOf(id, login) })
+  const feeds = new FeedReader({ hub, inbox, kv: ownKv })
+  webhooks.inbox = inbox
+  scheduler.feeds = feeds
   scheduler.start()
+  // Agents that are a model at an address, with no machine: the hub runs them, each as an agent like any other.
+  const modelAgents = new EndpointAgents({ hub, actions, kv: ownKv, sealer, brain: brainSettings, jira })
+  modelAgents.start()
   const running: Space = {
-    id, hub, actions, webhooks, github, notes, poller, issues, jira, jiraIssues, tell, filesDir: join(notesDir, 'files'), brain, copies,
+    id, hub, actions, webhooks, github, notes, poller, issues, jira, jiraIssues, tell, filesDir: join(notesDir, 'files'), brain, copies, inbox, feeds, first: firstAnswers, endpoints: modelAgents,
     stop: async () => {
       // First: the rest of stopping can take longer than a server gives it.
       await stateFile?.save().catch(() => undefined)
       scheduler.stop()
       await copies.stop()
       tell.stop()
+      void modelAgents.stop()
+      firstAnswers.stop()
       brain.stop()
       poller.stop()
       await notes.stop()
