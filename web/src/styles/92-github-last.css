@@ -1,0 +1,3 @@
+/* Settings → GitHub and its neighbours, last: rules that must come after the kit's. */
+/* An environment's repo in a section's card: its table runs to the card's edges, under the repo's name. */
+.section-card > .env-repo { padding: 0; }

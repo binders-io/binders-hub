@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConfirmButton } from '../src/components/ConfirmButton'
 import { ScheduleList } from '../src/components/Schedules'
 import { Agents } from '../src/screens/Agents'
+import { ContextMenuHost } from '../src/components/ContextMenu'
 import { agent, card, calledOn, hubState, mount, standInHub } from './harness'
 
 // The one way of asking before something that can't be taken back: the first press asks, the second does it, and
@@ -106,23 +107,27 @@ describe('a schedule’s bin', () => {
 describe('what an agent’s card asks before', () => {
   const working = () => hubState({ cards: [card('c1', 'working', { agentId: 'a1' }), card('c2', 'working', { agentId: 'a1' })] })
   const posts = () => calledOn().filter((c) => c.startsWith('POST /api/agents') || c.startsWith('DELETE /api/agents'))
+  // The rare ones are in the card's menu, which asks the same question in the item itself.
+  const fromMenu = async (item: string) => {
+    await mount(<><Agents /><ContextMenuHost /></>)
+    fireEvent.click(screen.getByRole('button', { name: `More for ${agent.name}` }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: item }))
+  }
 
   it('revokes only on the second press', async () => {
     standInHub(working)
-    await mount(<Agents />)
-    fireEvent.click(screen.getByRole('button', { name: `Revoke ${agent.name}` }))
+    await fromMenu('Revoke')
     expect(posts()).toEqual([])
-    fireEvent.click(screen.getByRole('button', { name: 'Revoke it? Press again' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Revoke it? Press again' }))
     await act(async () => {})
     expect(posts()).toEqual(['DELETE /api/agents/a1'])
   })
 
   it('says a new token cuts off the running runner, and makes it only on the second press', async () => {
     standInHub(working)
-    await mount(<Agents />)
-    fireEvent.click(screen.getByRole('button', { name: `New token for ${agent.name}` }))
+    await fromMenu('New token')
     expect(posts()).toEqual([])
-    fireEvent.click(screen.getByRole('button', { name: 'Cut off its runner? Press again' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Cut off its runner? Press again' }))
     await act(async () => {})
     expect(posts()).toEqual(['POST /api/agents/a1/token'])
   })
@@ -131,10 +136,9 @@ describe('what an agent’s card asks before', () => {
     const asked = vi.fn(() => true)
     vi.stubGlobal('confirm', asked)
     standInHub(() => ({ ...working(), agents: [{ ...agent, lastSeen: new Date().toISOString(), runnerSeen: { version: '99.0.0', parallel: 3, at: new Date().toISOString() } }] }))
-    await mount(<Agents />)
-    fireEvent.click(screen.getByRole('button', { name: `Restart ${agent.name}’s runner` }))
+    await fromMenu('Restart its runner')
     expect(posts()).toEqual([])
-    fireEvent.click(screen.getByRole('button', { name: 'Restart and stop 2 cards? Press again' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Restart and stop 2 cards? Press again' }))
     await act(async () => {})
     expect(posts()).toEqual(['POST /api/agents/a1/restart'])
     expect(asked).not.toHaveBeenCalled()

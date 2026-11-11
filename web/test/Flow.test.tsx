@@ -188,7 +188,12 @@ describe('what Distill proposed', () => {
 describe('what waits on you, at the top of the board', () => {
   const mine = { ...agent, name: 'Mine' }
   const sams = { ...agent, id: 'a2', name: 'Sam’s', owner: 'sam' }
-  const strip = () => document.querySelector('.attention') as HTMLElement
+  // One slim line over the board says how many and what; pressing it opens the list, the rows Home has.
+  const strip = () => document.querySelector('.waiting-strip') as HTMLElement | null
+  const list = () => {
+    fireEvent.click(strip()!)
+    return within(screen.getByRole('dialog', { name: 'Waiting on you' }))
+  }
   const open = (binder = 'all') => mount(<UIContext.Provider value={ui(binder)}><Flow /></UIContext.Provider>)
   const set: ChangeSet = { id: 'cs1', binderId: 'b1', number: 4, title: 'Login work', summary: '', state: 'review', prIds: ['o/r#1'], noteIds: [] }
   const env = (name: string, order: number, over: object = {}) => ({ id: `o/r#${name}`, repo: 'o/r', name, url: '', version: '1.0', changeSetIds: [], state: 'healthy', deployedAt: '', needsApproval: false, order, ...over })
@@ -197,22 +202,27 @@ describe('what waits on you, at the top of the board', () => {
     window.location.hash = ''
     standInHub(() => hubState({ agents: [mine], cards: [card('q1', 'blocked', { agentId: 'a1', needsYou: 'Left or right?', title: 'Which one' })] }))
     await open()
-    fireEvent.click(within(strip()).getByRole('button', { name: /Mine asks you/ }))
+    expect(strip()!.textContent).toContain('1 waiting on you')
+    expect(strip()!.textContent).toContain('1 question · Which one')
+    fireEvent.click(list().getByRole('button', { name: /Mine asks: Left or right\?/ }))
     expect(window.location.hash).toBe('#/work/q1')
   })
 
   it('leaves out a question that’s on someone else, which Home folds away', async () => {
     standInHub(() => hubState({ agents: [mine, sams], cards: [card('Sam’s question', 'blocked', { agentId: 'a2', needsYou: 'Up or down?', createdBy: 'sam' })] }))
     await open()
-    expect(within(strip()).queryByText(/asks you/)).toBeNull()
-    expect(within(strip()).queryByText('Sam’s question')).toBeNull()
+    expect(strip()).toBeNull()
   })
 
-  it('counts two questions in one button, going to the first', async () => {
+  it('counts two questions in one line, and lists them oldest first', async () => {
     window.location.hash = ''
     standInHub(() => hubState({ agents: [mine], cards: [card('first', 'blocked', { agentId: 'a1', needsYou: 'A?', updatedAt: '2026-11-01T00:00:00.000Z' }), card('second', 'blocked', { agentId: 'a1', needsYou: 'B?', updatedAt: '2026-11-02T00:00:00.000Z' })] }))
     await open()
-    fireEvent.click(within(strip()).getByRole('button', { name: /2 questions for you/ }))
+    expect(strip()!.textContent).toContain('2 waiting on you')
+    expect(strip()!.textContent).toContain('2 questions')
+    const rows = list().getAllByRole('button').filter((b) => /asks:/.test(b.textContent ?? ''))
+    expect(rows.map((b) => b.textContent)).toEqual([expect.stringContaining('A?'), expect.stringContaining('B?')])
+    fireEvent.click(rows[0])
     expect(window.location.hash).toBe('#/work/first')
   })
 
@@ -220,27 +230,37 @@ describe('what waits on you, at the top of the board', () => {
     window.location.hash = ''
     standInHub(() => hubState({ changeSets: [set] }))
     await open()
-    fireEvent.click(within(strip()).getByRole('button', { name: /Change set #4: Login work/ }))
+    expect(strip()!.textContent).toContain('1 to approve')
+    fireEvent.click(list().getByRole('button', { name: /Change set #4: Login work/ }))
     expect(window.location.hash).toBe('#/changes/cs1')
   })
 
   it('has no change set that’s still assembling with work left on it', async () => {
     standInHub(() => hubState({ changeSets: [{ ...set, state: 'assembling' }], pulls: [{ id: 'o/r#1', repo: 'o/r', number: 1, checks: [] }] as never, cards: [card('Still going', 'working', { prId: 'o/r#1' })] }))
     await open()
-    expect(within(strip()).queryByText(/Change set/)).toBeNull()
+    expect(strip()).toBeNull()
   })
 
   it('has a promotion Promote can make, and goes to Delivery', async () => {
     window.location.hash = ''
     standInHub(() => hubState({ environments: [env('staging', 0, { version: '1.1' }), env('production', 1, { needsApproval: true, deploy: { repo: 'o/r', workflow: 'deploy.yml', ref: 'main' } })] as never }))
     await open()
-    fireEvent.click(within(strip()).getByRole('button', { name: /Promote 1\.1 to production/i }))
+    fireEvent.click(list().getByRole('button', { name: /Promote 1\.1 to production/i }))
     expect(window.location.hash).toBe('#/delivery')
   })
 
   it('has nothing for an environment that only differs, with no workflow to promote with', async () => {
     standInHub(() => hubState({ environments: [env('staging', 0, { version: '1.1' }), env('production', 1, { needsApproval: true })] as never }))
     await open()
-    expect(within(strip()).queryByText(/Promote/)).toBeNull()
+    expect(strip()).toBeNull()
+  })
+
+  it('closes its list on Escape, back to the board', async () => {
+    standInHub(() => hubState({ changeSets: [set] }))
+    await open()
+    list()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(screen.getByRole('region', { name: 'Ready' })).toBeTruthy()
   })
 })

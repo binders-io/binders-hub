@@ -1,11 +1,13 @@
 import { useState } from 'react'
-import { CalendarClock, Pause, Play, Trash2, TriangleAlert, Zap } from 'lucide-react'
+import { AnimatePresence } from 'motion/react'
+import { CalendarClock, FileText, Pause, Play, Trash2, TriangleAlert, Zap } from 'lucide-react'
 import { cronPreset, defaultStaleHours, describeCron, nextRun, presetCron, weekdays, type Preset, type Schedule } from '../../../shared/schedule.ts'
 import { call } from '../data/api'
 import { nameFor, useStore } from '../data/store'
 import { href } from '../route'
 import { ConfirmButton } from './ConfirmButton'
 import { Dialog, Field } from './Dialog'
+import { MenuButton, Row, Rows, Status } from '../kit'
 import { attempt, toast } from './Toast'
 import { ago } from './bits'
 import { useMayChangeBinder } from '../screens/settings/access'
@@ -39,18 +41,22 @@ function upcoming(cron: string, tz: string, count = 3): { times: Date[]; error?:
 /** A note's schedules, and a form for a new one (or one being changed). */
 export function ScheduleDialog({ noteId, onClose }: { noteId: string; onClose: () => void }) {
   const { state } = useStore()
+  // A reader sees when each runs, and changes none of them.
+  const may = useMayChangeBinder()
   const note = state.notes.find((n) => n.id === noteId)
   const mine = (state.schedules ?? []).filter((s) => s.noteId === noteId)
-  const [editing, setEditing] = useState<Schedule | 'new' | undefined>(mine.length ? undefined : 'new')
+  const [editing, setEditing] = useState<Schedule | 'new' | undefined>(mine.length || !may ? undefined : 'new')
   return (
     <Dialog title={`Schedule “${note ? note.title : 'note'}”`} onClose={onClose} wide>
-      <p className="schedule-intro">Each time it runs, the hub puts this note on the board as a card, the note’s words as they are then its instructions, for the agent you pick. A run that isn’t done yet when the next is due makes that one skip.</p>
-      {mine.length > 0 && <ScheduleList schedules={mine} onEdit={(s) => setEditing(s)} showNote={false} />}
-      {editing ? (
-        <ScheduleForm key={editing === 'new' ? 'new' : editing.id} noteId={noteId} schedule={editing === 'new' ? undefined : editing} onDone={() => setEditing(undefined)} />
-      ) : (
-        <button type="button" className="button" onClick={() => setEditing('new')}><CalendarClock size={14} /> Add a schedule</button>
-      )}
+      <div className="schedule-dialog">
+        <p className="schedule-intro">Each time it runs, the hub puts this note on the board as a card, for the agent you pick: the note’s words as they are then are its instructions. A run still going when the next is due makes that one skip.</p>
+        {mine.length > 0 && <ScheduleList schedules={mine} onEdit={(s) => setEditing(s)} showNote={false} />}
+        {editing ? (
+          <ScheduleForm key={editing === 'new' ? 'new' : editing.id} noteId={noteId} schedule={editing === 'new' ? undefined : editing} onDone={() => setEditing(undefined)} />
+        ) : may && (
+          <div><button type="button" className="button" onClick={() => setEditing('new')}><CalendarClock size={14} aria-hidden="true" /> Add a schedule</button></div>
+        )}
+      </div>
     </Dialog>
   )
 }
@@ -164,6 +170,50 @@ function ScheduleForm({ noteId, schedule, onDone }: { noteId: string; schedule?:
   )
 }
 
+/** When a schedule next runs, or why it won't: none while it's off, and none for a rule that never comes round. */
+function nextOf(s: Schedule) {
+  try {
+    return s.enabled ? nextRun(s.cron, s.tz, new Date(Math.max(Date.now(), Date.parse(s.lastRun ?? s.createdAt)))) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Schedules as Settings lists them: a row each (its note, when and for whom, when it next runs), pressed to open its
+ * note's schedules, with what can be done to it behind a ⋯ for whoever may change the Binder.
+ */
+export function ScheduleRows({ schedules }: { schedules: Schedule[] }) {
+  const { state } = useStore()
+  const may = useMayChangeBinder()
+  const [open, setOpen] = useState<string>()
+  return (
+    <>
+      <Rows label="Schedules">
+        {schedules.map((s) => {
+          const note = state.notes.find((n) => n.id === s.noteId)
+          const next = nextOf(s)
+          const name = note ? note.title : 'A deleted note'
+          return (
+            <Row key={s.id} icon={<CalendarClock size={16} />} title={name}
+              meta={`${describeCron(s.cron)} · ${s.agentId ? nameFor(state, s.agentId) : 'any agent'} · ${s.failing ?? (s.enabled ? (next ? `next ${when(next, s.tz)}` : 'never comes round') : 'off')}`}
+              status={s.failing ? <Status tone="bad">Failing</Status> : s.enabled ? undefined : <Status tone="off">Off</Status>}
+              onPress={note ? () => setOpen(s.noteId) : undefined}
+              trailing={may ? <MenuButton label={`More for ${name}`} items={[
+                ...(note ? [{ label: 'Open the note', icon: <FileText size={14} />, onSelect: () => { window.location.hash = href({ screen: 'notes', id: s.noteId }) } }] : []),
+                { label: 'Run now', icon: <Zap size={14} />, onSelect: () => void attempt(() => call('POST', `/api/schedules/${s.id}/run`)).then((card) => { if (card) toast('On the board.') }) },
+                { label: s.enabled ? 'Turn off' : 'Turn on', icon: s.enabled ? <Pause size={14} /> : <Play size={14} />, onSelect: () => void attempt(() => call('PATCH', `/api/schedules/${s.id}`, { enabled: !s.enabled })) },
+                { separator: true },
+                { label: 'Delete', icon: <Trash2 size={14} />, danger: true, confirm: 'Delete it? Press again', onSelect: () => void attempt(() => call('DELETE', `/api/schedules/${s.id}`)) },
+              ]} /> : undefined} />
+          )
+        })}
+      </Rows>
+      <AnimatePresence>{open && <ScheduleDialog key={open} noteId={open} onClose={() => setOpen(undefined)} />}</AnimatePresence>
+    </>
+  )
+}
+
 /** Schedules as rows: when, for whom, what came of the last run, and what can be done to each. */
 export function ScheduleList({ schedules, onEdit, showNote = true }: { schedules: Schedule[]; onEdit?: (schedule: Schedule) => void; showNote?: boolean }) {
   const { state } = useStore()
@@ -174,12 +224,7 @@ export function ScheduleList({ schedules, onEdit, showNote = true }: { schedules
       {schedules.map((s) => {
         const note = state.notes.find((n) => n.id === s.noteId)
         const last = s.lastCardId ? state.cards.find((c) => c.id === s.lastCardId) : undefined
-        let next: Date | undefined
-        try {
-          next = s.enabled ? nextRun(s.cron, s.tz, new Date(Math.max(Date.now(), Date.parse(s.lastRun ?? s.createdAt)))) : undefined
-        } catch {
-          next = undefined
-        }
+        const next = nextOf(s)
         return (
           <li key={s.id} className={s.enabled ? '' : 'off'}>
             <CalendarClock size={16} />

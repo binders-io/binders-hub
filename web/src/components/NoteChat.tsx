@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { LoaderCircle, Send, Trash2 } from 'lucide-react'
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
+import { ArrowUp, LoaderCircle, Trash2 } from 'lucide-react'
 import type { Agent } from '../data/model'
 import type { Note } from '../../../shared/notes.ts'
 import { call } from '../data/api'
@@ -81,6 +81,7 @@ export function NoteChat({ note, agents: given, initial, onFocusChange }: { note
   /** The question the hub is answering, shown where its answer will be. */
   const [asking, setAsking] = useState<{ text: string; at: string }>()
   const list = useRef<HTMLOListElement>(null)
+  const box = useRef<HTMLTextAreaElement>(null)
   const waiting = !!chat?.messages.length && chat.messages[chat.messages.length - 1].by !== agent?.id
   // One the hub runs as a model has no runner to be listening: it picks a chat up when it's able to.
   const listening = agent ? (isModelAgent(agent) ? modelReady(agent) : isListening(agent)) : false
@@ -89,6 +90,17 @@ export function NoteChat({ note, agents: given, initial, onFocusChange }: { note
   useEffect(() => {
     list.current?.scrollTo({ top: list.current.scrollHeight, behavior: 'smooth' })
   }, [chat?.messages.length, chat?.doing, said.length, asking])
+
+  // The box grows with what's typed, from two lines to about six, then scrolls: as the Brain's does.
+  useLayoutEffect(() => {
+    const field = box.current
+    if (!field) return
+    field.style.height = 'auto'
+    const style = window.getComputedStyle(field)
+    const line = parseFloat(style.lineHeight) || 20
+    const room = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0)
+    field.style.height = `${Math.min(Math.max(field.scrollHeight, line * 2 + room), line * 6 + room)}px`
+  }, [text])
 
   const send = async (event?: FormEvent) => {
     event?.preventDefault()
@@ -212,18 +224,22 @@ export function NoteChat({ note, agents: given, initial, onFocusChange }: { note
         )}
       </ol>
       <form className="chat-input" onSubmit={send}>
-        <textarea
-          id="chat-text"
-          rows={2}
-          value={text}
-          placeholder={`Message ${name ?? 'the agent'}…`}
-          onChange={(e) => setText(e.target.value)}
-          onFocus={() => onFocusChange?.(true)}
-          onBlur={() => onFocusChange?.(false)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send() } }}
-        />
-        {/* Pressing it keeps focus in the box, so on a phone the keyboard stays and the page doesn't move from under the finger. */}
-        <button className="icon-button send" onMouseDown={(e) => e.preventDefault()} disabled={!text.trim() || sending} aria-label="Send"><Send size={15} /></button>
+        <div className="ask-box">
+          <textarea
+            id="chat-text"
+            ref={box}
+            rows={2}
+            value={text}
+            placeholder={`Message ${name ?? 'the agent'}…`}
+            aria-label={`Message ${name ?? 'the agent'}`}
+            onChange={(e) => setText(e.target.value)}
+            onFocus={() => onFocusChange?.(true)}
+            onBlur={() => onFocusChange?.(false)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send() } }}
+          />
+          {/* Pressing it keeps focus in the box, so on a phone the keyboard stays and the page doesn't move from under the finger. */}
+          <button type="submit" className="ask-send" onMouseDown={(e) => e.preventDefault()} disabled={!text.trim() || sending} aria-label="Send">{sending ? <LoaderCircle size={16} className="spin" /> : <ArrowUp size={16} strokeWidth={2.6} />}</button>
+        </div>
       </form>
     </div>
   )

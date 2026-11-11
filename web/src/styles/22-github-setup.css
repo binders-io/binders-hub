@@ -1,0 +1,22 @@
+/* ---------- Setting GitHub up ---------- */
+/* A line that says who can change a section, or that something can't be done here: used across Settings. */
+.setup-note { margin: 0; padding: var(--space-12) 14px; border-radius: var(--r); background: var(--fill-1); border: 1px solid var(--line); font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); }
+.setup-note b { color: var(--text); font-weight: 600; }
+
+/* The one step left once the app is made: its place in the setup, what to do, and the button that does it. */
+.gh-setup { display: flex; align-items: flex-start; gap: var(--space-16); }
+.gh-setup-icon { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: var(--r); background: var(--fill-2); color: var(--text); }
+.gh-setup-text { flex: 1; min-width: 0; display: grid; gap: var(--space-4); }
+.gh-setup-text h4 { margin: 0; font: 800 var(--font-16)/var(--leading-16) var(--display); }
+.gh-setup-text p { margin: 0; font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); }
+.gh-setup-text p b { color: var(--text); font-weight: 600; }
+.gh-setup-step { display: flex; align-items: center; gap: var(--space-12); font: 600 var(--font-12)/var(--leading-12) var(--body); }
+.gh-setup-bar { display: flex; gap: var(--space-4); width: 64px; }
+.gh-setup-bar i { flex: 1; height: 4px; border-radius: 2px; background: var(--fill-3); }
+.gh-setup-bar i.done { background: var(--progress); }
+.gh-setup-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-8); margin-top: var(--space-8); }
+
+/* Making an app of its own, as a step of the guided setup. */
+.gh-make { display: grid; gap: var(--space-16); }
+.gh-make fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+.gh-owner { display: flex; flex-wrap: wrap; gap: var(--space-8) var(--space-24); }

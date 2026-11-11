@@ -65,6 +65,76 @@
   --r-lg: 16px;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --shadow-pop: 0 24px 60px -20px var(--shadow-color), 0 0 0 1px var(--line-strong);
+  --shadow-sheet: 0 -18px 50px -20px var(--shadow-color), 0 0 0 1px var(--line);
+  /* Controls: a secondary button, a field, the chosen segment, a switch, a toast. */
+  --control-bg: #171717;
+  --control-hover: #202020;
+  --control-line: rgba(255, 255, 255, 0.13);
+  --field-bg: #0c0c0c;
+  --field-line: rgba(255, 255, 255, 0.15);
+  --field-line-hover: rgba(255, 255, 255, 0.26);
+  --selected: #262626;
+  --selected-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --switch-off: #3b3b3b;
+  --switch-thumb: #d4d4d4;
+  --switch-on: #fafafa;
+  --switch-thumb-on: #0a0a0a;
+  --toast-bg: #242424;
+  --toast-ink: #fafafa;
+  --danger-solid: #b4232f;
+  --control-shadow: none;
+  --row-hover: rgba(255, 255, 255, 0.035);
+  --skeleton: rgba(255, 255, 255, 0.07);
+  --skeleton-shine: rgba(255, 255, 255, 0.06);
+  --focus: #fafafa;
+  --focus-wash: rgba(255, 255, 255, 0.16);
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a3a3a3' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+
+  /* The scales. Space: 4, 8, 12, 16, 24, 32, 48. Type: 12, 13, 14 for text, 16, 20, 26, each with its line height.
+     Controls are 36 high with a mouse and 44 with a finger (the touch block below); small ones 28. */
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-48: 48px;
+  --font-12: 12px;
+  --font-13: 13px;
+  --font-14: 14px;
+  --font-16: 16px;
+  --font-20: 20px;
+  --font-26: 26px;
+  --leading-12: 16px;
+  --leading-13: 18px;
+  --leading-14: 20px;
+  --leading-16: 22px;
+  --leading-20: 26px;
+  --leading-26: 32px;
+  --control: 36px;
+  --control-sm: 28px;
+  --control-lg: 44px;
+  --r-xs: 5px;
+  --r-pill: 999px;
+  /* Layers, lowest first. */
+  --z-raised: 5;
+  --z-panel: 6;
+  --z-scrim: 20;
+  --z-drawer: 21;
+  --z-popover: 30;
+  --z-dialog: 31;
+  --z-menu-scrim: 39;
+  --z-menu: 40;
+  --z-toast: 60;
+  --z-context: 80;
+  --z-skip: 90;
+  /* One focus ring, and the motion: quiet, 150 to 220 ms, none for whoever asked for less. */
+  --focus-ring: 2px solid var(--focus);
+  --focus-offset: 2px;
+  --dur-fast: 150ms;
+  --dur: 180ms;
+  --dur-slow: 220ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 }
 /* Light: when the system is light and nothing was chosen, or when light was chosen. Layered: a tinted canvas, a deeper
    sidebar, white cards with a soft shadow; every text tone keeps 4.5:1 on each of them (WCAG AA). Both blocks match. */
@@ -84,8 +154,8 @@
     --line-strong: rgba(28, 39, 76, 0.22);
     --text: #0d1424;
     --text-2: #1f2a3d;
-    --muted: #475467;
-    --faint: #545e72;
+    --muted: #445064;
+    --faint: #5a6478;
     --fill-1: rgba(40, 56, 110, 0.04);
     --fill-2: rgba(40, 56, 110, 0.07);
     --fill-3: rgba(40, 56, 110, 0.13);
@@ -120,6 +190,28 @@
     --add-ink: #065f46;
     --del-bg: rgba(225, 29, 72, 0.09);
     --del-ink: #9f1239;
+    --control-bg: #ffffff;
+    --control-hover: #f5f7fb;
+    --control-line: rgba(28, 39, 76, 0.2);
+    --field-bg: #ffffff;
+    --field-line: rgba(28, 39, 76, 0.22);
+    --field-line-hover: rgba(28, 39, 76, 0.36);
+    --selected: #ffffff;
+    --selected-shadow: 0 1px 2px rgba(23, 32, 66, 0.12), 0 0 0 1px rgba(28, 39, 76, 0.08);
+    --switch-off: #c9d0de;
+    --switch-thumb: #ffffff;
+    --switch-on: #4338ca;
+    --switch-thumb-on: #ffffff;
+    --toast-bg: #1b2333;
+    --toast-ink: #f7f8fb;
+    --danger-solid: #be123c;
+    --control-shadow: 0 1px 1px rgba(23, 32, 66, 0.05);
+    --row-hover: rgba(40, 56, 110, 0.035);
+    --skeleton: rgba(40, 56, 110, 0.08);
+    --skeleton-shine: rgba(255, 255, 255, 0.6);
+    --focus: #4338ca;
+    --focus-wash: rgba(67, 56, 202, 0.18);
+    --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23445064' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
     color-scheme: light;
   }
 }
@@ -138,8 +230,8 @@
   --line-strong: rgba(28, 39, 76, 0.22);
   --text: #0d1424;
   --text-2: #1f2a3d;
-  --muted: #475467;
-  --faint: #545e72;
+  --muted: #445064;
+  --faint: #5a6478;
   --fill-1: rgba(40, 56, 110, 0.04);
   --fill-2: rgba(40, 56, 110, 0.07);
   --fill-3: rgba(40, 56, 110, 0.13);
@@ -174,6 +266,28 @@
   --add-ink: #065f46;
   --del-bg: rgba(225, 29, 72, 0.09);
   --del-ink: #9f1239;
+  --control-bg: #ffffff;
+  --control-hover: #f5f7fb;
+  --control-line: rgba(28, 39, 76, 0.2);
+  --field-bg: #ffffff;
+  --field-line: rgba(28, 39, 76, 0.22);
+  --field-line-hover: rgba(28, 39, 76, 0.36);
+  --selected: #ffffff;
+  --selected-shadow: 0 1px 2px rgba(23, 32, 66, 0.12), 0 0 0 1px rgba(28, 39, 76, 0.08);
+  --switch-off: #c9d0de;
+  --switch-thumb: #ffffff;
+  --switch-on: #4338ca;
+  --switch-thumb-on: #ffffff;
+  --toast-bg: #1b2333;
+  --toast-ink: #f7f8fb;
+  --danger-solid: #be123c;
+  --control-shadow: 0 1px 1px rgba(23, 32, 66, 0.05);
+  --row-hover: rgba(40, 56, 110, 0.035);
+  --skeleton: rgba(40, 56, 110, 0.08);
+  --skeleton-shine: rgba(255, 255, 255, 0.6);
+  --focus: #4338ca;
+  --focus-wash: rgba(67, 56, 202, 0.18);
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23445064' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   color-scheme: light;
 }
 
@@ -185,24 +299,30 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 400 14px/1.5 var(--body);
+  font: 400 var(--font-14)/1.5 var(--body);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
-input, textarea { font: inherit; color: inherit; }
-:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; border-radius: 6px; }
+input, textarea, select { font: inherit; color: inherit; }
+/* One ring for whatever a keyboard reaches. It follows the element's own corners. */
+:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 /* Headings and panes take focus to say where you are, not to be pressed. */
 [tabindex="-1"]:focus-visible { outline: none; }
 ::selection { background: var(--fill-3); }
 /* For a screen reader alone. */
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 /* Past the sidebar: out of sight until Tab reaches it. */
-.skip-link { position: fixed; z-index: 90; top: 8px; left: 8px; padding: 10px 14px; border-radius: 8px; background: var(--primary); color: var(--primary-ink); font-weight: 700; translate: 0 -200%; }
+.skip-link { position: fixed; z-index: var(--z-skip); top: var(--space-8); left: var(--space-8); padding: 10px 14px; border-radius: var(--r-sm); background: var(--primary); color: var(--primary-ink); font-weight: 700; translate: 0 -200%; }
 .skip-link:focus { translate: 0 0; }
 .num { font-variant-numeric: tabular-nums; }
 .mono { font-family: var(--mono); }
 * { scrollbar-width: thin; scrollbar-color: var(--fill-3) transparent; }
+
+/* A finger: every control is 44 high, small ones too. A mouse keeps 36 and 28. */
+@media (hover: none) {
+  :root { --control: 44px; --control-sm: 44px; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }

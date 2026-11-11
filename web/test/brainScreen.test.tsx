@@ -91,10 +91,10 @@ describe('the Brain’s name and address', () => {
     const App = (await import('../src/App')).default
     window.location.hash = '#/ask'
     await mount(<App />)
-    await settle(100)
+    // The Brain's screen, and all it draws with, is fetched when it's first shown, which takes as long as the machine takes.
+    expect(await screen.findByRole('log', { name: 'Conversation with the Brain' }, { timeout: 25_000 })).toBeTruthy()
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Brain')
-    expect(screen.getByRole('log', { name: 'Conversation with the Brain' })).toBeTruthy()
-  })
+  }, 40_000)
 })
 
 describe('the rail', () => {
@@ -232,7 +232,7 @@ describe('before anything is asked', () => {
     const { show } = await load()
     await show()
     expect(screen.getByRole('heading', { name: 'Brain' })).toBeTruthy()
-    expect(screen.getByText(/It answers from your notes and cards/).textContent).toContain('it asks you first')
+    expect(screen.getByText(/It answers from your notes/).textContent).toContain('it asks you first')
     expect(box().placeholder).toBe('Ask or tell the Brain…')
   })
 

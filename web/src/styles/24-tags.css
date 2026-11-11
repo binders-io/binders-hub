@@ -1,0 +1,5 @@
+/* A tag: a short label, a repo or a skill, squarer than a chip. */
+.tag { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: var(--r-xs); background: var(--fill-2); color: var(--text-2); font: 500 var(--font-12)/1 var(--body); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.tag.mono { font-family: var(--mono); font-size: 11.5px; }
+.tag.more { background: transparent; border: 1px dashed var(--line-strong); color: var(--muted); cursor: pointer; }
+.tag.more:hover { color: var(--text); }

@@ -1,0 +1,12 @@
+/* A phone on its side: every line of chrome costs a tenth of the screen. */
+@media (max-height: 500px) {
+  .topbar { height: 44px; }
+  .tabbar a { grid-auto-flow: column; gap: 6px; min-height: 44px; }
+  .tabbar a .count { top: 2px; left: auto; right: 4px; }
+  .flow-summary { padding-top: 6px; padding-bottom: 0; }
+  .attention { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .attention > * { flex: none; }
+  .column-hint { display: none; }
+  .dialog { top: 8px; max-height: calc(100dvh - 16px); }
+}
+

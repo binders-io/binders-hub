@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { LoaderCircle, Lock } from 'lucide-react'
 import { Github } from './Github'
 import { call } from '../data/api'
-import { signInHref, space } from '../data/space'
+import { space } from '../data/space'
 import { sectionHref } from '../screens/settings/sections'
 
 // A personal binder's repo: <login>/binders-notes, private, in their own GitHub account, where its notes sync. With the
@@ -45,44 +45,27 @@ export function PersonalRepo() {
   }, [])
 
   if (!status) return null
-  if (!status.oauth && !status.repo) {
-    return (
-      <section className="personal-repo">
-        <Github size={20} />
-        <div>
-          <b>Keep your notes in your own GitHub</b>
-          <p>Your personal binder is yours alone. Set up your own OAuth App and connect your GitHub, and its notes are kept in a private {status.suggested} in your account.</p>
-        </div>
-        <a className="button primary" href={sectionHref('github')}>Set it up</a>
-      </section>
-    )
-  }
   if (status.repo) {
     return (
-      <p className="personal-synced"><Lock size={13} /> Your personal Binder. Its notes sync to <a href={`https://github.com/${status.repo}`} target="_blank" rel="noreferrer">{status.repo}</a>.</p>
+      <p className="personal-synced"><Lock size={13} aria-hidden="true" /> Your personal binder. Its notes sync to <a href={`https://github.com/${status.repo}`} target="_blank" rel="noreferrer">{status.repo}</a>.</p>
     )
   }
+  // One line of what's left, and the one button that does it.
+  const setUp = !status.oauth
+  const line = setUp ? `In a private ${status.suggested}, in your own account, for you alone.`
+    : making ? `Making ${status.suggested}, private, in your GitHub account…`
+      : error ?? (!status.connected ? 'Connect your GitHub account: the hub makes the repo and pushes your notes to it.'
+        : 'Sign in with GitHub once more, so the hub can make the repo as you.')
   return (
-    <section className="personal-repo">
-      <Github size={20} />
-      <div>
-        <b>Sync your notes to {status.suggested}</b>
-        {making ? (
-          <p><LoaderCircle size={13} className="spin" /> Making {status.suggested}, private, in your GitHub account…</p>
-        ) : error ? (
-          <p className="bad">{error}</p>
-        ) : status.oauth && !status.connected ? (
-          <p>Your personal binder is yours alone. To keep its notes in a private repo in your own GitHub account, connect your GitHub account: GitHub asks to let this hub reach your repos, so it can make {status.suggested} and push your notes to it. You come back here and the repo is made.</p>
-        ) : !status.oauth && !status.installed ? (
-          <p>Your personal binder is yours alone. To keep its notes in a private repo in your GitHub account, install the hub’s GitHub App on your account. You come back here and the repo is made.</p>
-        ) : (
-          <p>Sign in with GitHub once more, so the hub can make the repo as you.</p>
-        )}
+    <section className="personal-repo" aria-label="Your notes on GitHub">
+      <span className="personal-repo-icon" aria-hidden="true"><Github size={18} /></span>
+      <div className="personal-repo-text">
+        <b>{setUp ? 'Keep your notes in your own GitHub' : `Sync your notes to ${status.suggested}`}</b>
+        <p className={error && !setUp ? 'bad' : undefined}>{making && <LoaderCircle size={13} className="spin" aria-hidden="true" />}{line}</p>
       </div>
-      {!making && status.oauth && !status.connected && <a className="button primary" href="/auth/github?personal=1">Connect my GitHub account</a>}
-      {!making && !status.oauth && !status.installed && status.installUrl && <a className="button primary" href={status.installUrl}>Install on my account</a>}
-      {!making && !status.oauth && status.installed && !status.signedIn && <a className="button primary" href={signInHref}>Sign in with GitHub</a>}
-      {!making && error && <button type="button" className="button" onClick={() => window.location.reload()}>Try again</button>}
+      {setUp && <a className="button small primary" href={sectionHref('github')}>Set it up</a>}
+      {!making && !setUp && !status.connected && !error && <a className="button small primary" href="/auth/github?personal=1">Connect my GitHub</a>}
+      {!making && error && <button type="button" className="button small" onClick={() => window.location.reload()}>Try again</button>}
     </section>
   )
 }

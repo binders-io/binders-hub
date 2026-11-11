@@ -22,6 +22,8 @@ export const AgentTerminal = screen(() => import('./screens/AgentTerminal'), 'Ag
 export const Settings = screen(() => import('./screens/Settings'), 'Settings')
 export const Account = screen(() => import('./screens/Account'), 'Account')
 export const BrainScreen = screen(() => import('./screens/Brain'), 'BrainScreen')
+/** The style guide, for whoever looks for it: never fetched ahead with the screens. */
+export const KitPage = lazy(() => import('./kit/KitPage').then((module) => ({ default: module.KitPage })))
 
 /**
  * Fetches every screen once the page is quiet. There's no service worker, so an open tab works offline only with what

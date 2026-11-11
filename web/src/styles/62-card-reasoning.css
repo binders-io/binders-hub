@@ -1,0 +1,6 @@
+/* The reasoning a debrief or Challenge asks for, beside its button. */
+.reasoning-pick { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+.gh-you { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: var(--r); border: 1px solid var(--amber-line); background: var(--amber-wash); font-size: 13px; color: var(--text-2); }
+.gh-you > svg { flex: none; color: var(--amber); }
+.gh-you span { flex: 1; }
+.gh-you .button { flex: none; }

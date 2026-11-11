@@ -111,7 +111,7 @@ export function SideAgents({ agents }: { agents: Agent[] }) {
           </div>
         )
       })}
-      {!agents.length && may && <a className="side-empty" href={href({ screen: 'agents' })}>Add a machine</a>}
+      {!agents.length && may && <a className="side-empty" href={href({ screen: 'agents' })}>Add an agent</a>}
     </div>
   )
 }

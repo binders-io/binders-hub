@@ -5,6 +5,7 @@ import { defaultRunner } from '../../shared/work.ts'
 import type { Agent } from '../src/data/model'
 import { isModelAgent, machineModelWords, modelOnMachine } from '../src/components/modelAgent'
 import { Agents } from '../src/screens/Agents'
+import { ContextMenuHost } from '../src/components/ContextMenu'
 import { agent, hubState, me, mount, settle, standInHub, standInRoute } from './harness'
 
 afterEach(() => {
@@ -25,8 +26,24 @@ const unready: Agent = { ...withModel, endpoint: { ...withModel.endpoint!, ready
 
 const boardWith = async (agents: Agent[], you: unknown = owner) => {
   standInHub(() => hubState({ agents }), you)
-  await mount(<Agents />)
+  await mount(<><Agents /><ContextMenuHost /></>)
 }
+/** The rare actions of an agent's card, in its menu, by their words. */
+const menuOf = async (name: string) => {
+  fireEvent.click(screen.getByRole('button', { name: `More for ${name}` }))
+  return (await screen.findAllByRole('menuitem')).map((item) => item.textContent)
+}
+const choose = (item: string) => fireEvent.click(screen.getByRole('menuitem', { name: item }))
+/** Add an agent, set up by hand. */
+const byHand = async () => {
+  fireEvent.click(screen.getAllByRole('button', { name: 'Add an agent' })[0])
+  const dialog = (await screen.findByRole('dialog', { name: 'Add an agent' })) as HTMLElement
+  fireEvent.click(within(dialog).getByRole('button', { name: /Set one up by hand/ }))
+  await within(dialog).findByRole('form', { name: 'Set up an agent' })
+  return dialog
+}
+/** What its card says it runs on and with: its machine, its tool, its model. */
+const where = () => [...document.querySelectorAll('.agent-where > span')].map((p) => p.textContent)
 const reply = (status: number, error: string) => new Response(JSON.stringify({ error }), { status, headers: { 'content-type': 'application/json' } })
 const pick = (dialog: HTMLElement, name: RegExp) => fireEvent.click(within(dialog).getByRole('radio', { name }))
 const type = (dialog: HTMLElement, label: RegExp, value: string) => fireEvent.change(within(dialog).getByLabelText(label), { target: { value } })
@@ -37,13 +54,12 @@ describe('an agent on a machine that has a model', () => {
     expect(isModelAgent({ ...withModel, runner: undefined })).toBe(true)
     await boardWith([withModel])
     expect(screen.getByRole('button', { name: 'Start the runner' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Restart Binders on studio-mac’s runner' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'New token for Binders on studio-mac' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Edit' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Revoke Binders on studio-mac' })).toBeTruthy()
+    // Its runner isn't connected, so there's nothing to restart from here: the card says to start it instead.
+    expect(await menuOf('Binders on studio-mac')).toEqual(['New token', 'Change its model', 'Revoke'])
     // Still named by its tool and machine, and not as one the hub runs.
     expect(document.body.textContent).not.toContain('Runs on this hub')
-    expect(document.querySelector('.agent-meta')!.textContent).toContain('Binders')
+    expect(where().slice(0, 2)).toEqual(['studio-mac', 'Binders'])
   })
 
   it('has its own mark on its avatar, not an initial', async () => {
@@ -52,13 +68,14 @@ describe('an agent on a machine that has a model', () => {
   })
 })
 
-describe('the Model row', () => {
-  it('says what its model is, and an owner can change it', async () => {
+describe('its model, on its card', () => {
+  it('says what its model is, and an owner can change it from its menu', async () => {
     await boardWith([withModel])
-    const row = screen.getByText('Model').nextElementSibling as HTMLElement
-    expect(row.textContent).toContain('gpt-deploy at your-resource.openai.azure.com')
-    expect(within(row).getByRole('button', { name: 'Change' })).toBeTruthy()
+    expect(where()).toContain('gpt-deploy at your-resource.openai.azure.com')
     expect(document.querySelector('.agent-warning.model-agent-warning')).toBeNull()
+    await menuOf('Binders on studio-mac')
+    choose('Change its model')
+    expect(await screen.findByRole('dialog', { name: 'Binders on studio-mac’s model' })).toBeTruthy()
   })
 
   it('shows why one that isn’t ready isn’t, with a way for an owner to put it right', async () => {
@@ -72,7 +89,7 @@ describe('the Model row', () => {
   it('says it has none yet, and an owner can give it one', async () => {
     await boardWith([onMachine])
     expect(screen.getByText(/No model yet\. It can’t work until it has one\./)).toBeTruthy()
-    expect(screen.getByText('Model').nextElementSibling!.textContent).toBe('None yet')
+    expect(where()).toEqual(['studio-mac', 'Binders'])
     fireEvent.click(screen.getByRole('button', { name: 'Give it a model' }))
     expect(await screen.findByRole('dialog', { name: 'Give Binders on studio-mac a model' })).toBeTruthy()
   })
@@ -85,21 +102,20 @@ describe('the Model row', () => {
     await boardWith([unready, { ...withModel, id: 'w2', name: 'Other' }], member)
     expect(screen.getByText('The key was refused: it is wrong or has run out.')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Put it right' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Change' })).toBeNull()
+    expect(await menuOf('Binders on studio-mac')).not.toContain('Change its model')
   })
 
-  it('is not shown for a machine agent of another tool', async () => {
+  it('is not asked for of a machine agent of another tool', async () => {
     await boardWith([{ ...agent, runner: defaultRunner }])
     expect(screen.queryByText(/No model yet/)).toBeNull()
-    expect(screen.queryByText('Model')).toBeNull()
+    expect(await menuOf('Agent')).not.toContain('Change its model')
   })
 })
 
 describe('setting up an agent with the Binders tool', () => {
   it('says where its model can be, and has no model box of its own', async () => {
     await boardWith([])
-    fireEvent.click(screen.getByRole('button', { name: 'Set one up by hand' }))
-    const dialog = (await screen.findByRole('dialog', { name: 'Set up an agent' })) as HTMLElement
+    const dialog = await byHand()
     expect(within(dialog).queryByLabelText(/^Model/)).toBeTruthy()
     fireEvent.click(within(dialog).getByRole('radio', { name: /^Binders/ }))
     expect(within(dialog).getByText('Binders’ own agent works in the repo on this machine. Nothing else is installed there. Its model is on the hub, or on the machine itself: choose below.')).toBeTruthy()
@@ -120,9 +136,13 @@ describe('setting up an agent with the Binders tool', () => {
 })
 
 describe('the dialog for a machine agent’s model', () => {
+  // Give it a model is a button on a card with none; Change is its menu's, for one that has one.
   const open = async (agents: Agent[], button: string) => {
     await boardWith(agents)
-    fireEvent.click(screen.getByRole('button', { name: button }))
+    if (button === 'Change') {
+      await menuOf(agents[0].name)
+      choose('Change its model')
+    } else fireEvent.click(screen.getByRole('button', { name: button }))
     return (await screen.findByRole('dialog')) as HTMLElement
   }
 
@@ -395,8 +415,7 @@ describe('Binders’ own agent with its model on its machine', () => {
   it('sets one up with its model on the machine, sending the address and model in its runner', async () => {
     await boardWith([])
     const made = standInRoute('POST', '/api/agents', () => ({ agent: local, token: 'tok' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Set one up by hand' }))
-    const dialog = (await screen.findByRole('dialog', { name: 'Set up an agent' })) as HTMLElement
+    const dialog = await byHand()
     fireEvent.click(within(dialog).getByRole('radio', { name: /^Binders/ }))
     expect(within(dialog).getByRole('radio', { name: /On the hub/ }).getAttribute('aria-checked')).toBe('true')
     pick(dialog, /On this machine/)
@@ -407,25 +426,23 @@ describe('Binders’ own agent with its model on its machine', () => {
     expect((made[0] as { runner: object }).runner).toMatchObject({ tool: 'binders', modelUrl: 'http://127.0.0.1:8000', model: 'local-model' })
   })
 
-  it('reads its model on its machine in the card, with no Change link and neither amber line', async () => {
+  it('reads its model on its machine in the card, with no Change and neither amber line', async () => {
     // Whatever model the card holds for it, and however that model is doing, is not the one used.
     await boardWith([{ ...local, endpoint: { ...unready.endpoint! } }])
-    const row = screen.getByText('Model').nextElementSibling as HTMLElement
-    expect(row.textContent).toBe('local-model at 127.0.0.1:8000, on its machine')
-    expect(within(row).queryByRole('button')).toBeNull()
+    expect(document.querySelector('.agent-model')!.textContent).toBe('local-model at 127.0.0.1:8000, on its machine')
     expect(document.querySelector('.agent-warning')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Put it right' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Give it a model' })).toBeNull()
     expect(screen.queryByText(/No model yet/)).toBeNull()
-    // The runner controls are still there.
-    expect(screen.getByRole('button', { name: 'New token for Binders on studio-mac' })).toBeTruthy()
+    // The runner controls are still there, and nothing to change its model with.
+    expect(await menuOf('Binders on studio-mac')).toEqual(['New token', 'Revoke'])
   })
 
   it('shows no “No model yet” line for one with an address and no model on the card, to a member too', async () => {
     await boardWith([local], member)
     expect(screen.queryByText(/No model yet/)).toBeNull()
     expect(screen.queryByText(/Ask one of this Binder’s owners/)).toBeNull()
-    expect(screen.getByText('Model').nextElementSibling!.textContent).toContain('on its machine')
+    expect(document.querySelector('.agent-model')!.textContent).toContain('on its machine')
   })
 
   it('still reads as before for one without an address', async () => {

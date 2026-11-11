@@ -1,0 +1,10 @@
+/* Notes additions */
+.distill-with select { width: auto; min-height: var(--control-sm); padding-top: 0; padding-bottom: 0; font-size: var(--font-13); }
+.distill-with a { color: var(--text); }
+.tree-new-binder { padding: 0 var(--space-4) var(--space-12); }
+.tree-new-binder input { width: 100%; }
+
+@media (max-width: 900px) {
+  .form-row { grid-template-columns: 1fr; }
+}
+

@@ -1,0 +1,44 @@
+/* A card's Challenge: the reviewer's pick beside its button, and its findings, worst first, under the debrief. */
+/* How hard it reasons, and who reviews: small choices beside the button that asks. */
+.challenge-ask { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.challenge-ask select { appearance: none; height: var(--control-sm); max-width: 100%; padding: 0 28px 0 var(--space-8); border-radius: var(--r-sm); border: 1px solid var(--control-line); background: var(--control-bg) var(--chevron) no-repeat right 6px center / 14px; color: var(--text-2); font: 600 var(--font-12)/1 var(--body); text-overflow: ellipsis; }
+.challenge-ask select:hover { border-color: var(--field-line-hover); }
+.findings { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.finding { padding: var(--space-12) 14px; border-radius: var(--r); border: 1px solid var(--line); border-left-width: 3px; background: var(--tile); display: grid; gap: 6px; }
+.finding.sev-high { border-left-color: var(--red); }
+.finding.sev-medium { border-left-color: var(--amber); }
+.finding.sev-low { border-left-color: var(--line-strong); }
+.finding-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--space-8); font-size: var(--font-12); }
+.finding-head .mono { font-size: var(--font-12); color: var(--text-2); overflow-wrap: anywhere; }
+.finding-sev, .finding-sure, .finding-kind { display: inline-flex; align-items: center; height: 20px; padding: 0 var(--space-8); border-radius: var(--r-pill); font: 600 var(--font-12)/1 var(--body); }
+.sev-high .finding-sev { color: var(--red); background: var(--red-wash); }
+.sev-medium .finding-sev { color: var(--amber); background: var(--amber-wash); }
+.sev-low .finding-sev { color: var(--muted); background: var(--fill-1); }
+.finding-sure.confirmed { color: var(--text); background: var(--fill-1); }
+.finding-sure.plausible { color: var(--muted); border: 1px dashed var(--line-strong); }
+.finding-kind { color: var(--muted); }
+.work-section.challenge .finding p { font-size: var(--font-14); }
+.work-section.challenge .finding-fix { color: var(--muted) !important; font-size: var(--font-13) !important; }
+.finding-reply { margin-top: 4px; padding: 6px 10px; border-radius: var(--r-sm); background: var(--fill-1); font-size: 13px; color: var(--text-2); }
+.finding-verdict { padding: 1px 7px; border-radius: var(--r-pill); font-weight: 700; font-size: var(--font-12); }
+.finding-reply.fixed .finding-verdict { color: var(--green); background: var(--green-wash); }
+.finding-reply.disagree .finding-verdict { color: var(--amber); background: var(--amber-wash); }
+.finding-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-16); margin-top: 2px; font-size: var(--font-13); }
+.finding-actions .text-button { display: inline-flex; align-items: center; gap: 5px; }
+.finding-actions .text-button:disabled { color: var(--muted); cursor: default; text-decoration: none; }
+.finding-actions.done { color: var(--muted); gap: 8px; }
+.finding-actions.done a { color: var(--text-2); }
+.finding.settled { background: var(--fill-1); }
+.finding.dismissed > p { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--line-strong); }
+.findings-link { font: 600 var(--font-12)/1.4 var(--body); color: var(--muted); white-space: nowrap; }
+.findings-link.high { color: var(--red); }
+@media (max-width: 600px) {
+  .work-section.challenge h2 { flex-wrap: wrap; row-gap: 8px; }
+  .work-section.challenge h2 .debrief-actions { margin-left: 0; width: 100%; }
+}
+.set-train { border: 1px solid var(--blue-line); background: var(--blue-wash); }
+.set-train svg { flex: none; margin-top: 2px; color: var(--blue); }
+.set-train ul { margin: 6px 0 0; padding-left: 18px; font-size: var(--font-13); color: var(--text-2); }
+.no-binder-list { list-style: none; margin: 0 0 6px; padding: 0; width: 100%; display: grid; gap: 8px; }
+.no-binder-list .button { width: 100%; justify-content: space-between; }
+

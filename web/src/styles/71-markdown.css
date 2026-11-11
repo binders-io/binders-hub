@@ -1,0 +1,37 @@
+/* Markdown to read: an answer, a passage. */
+.md { min-width: 0; width: 100%; overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 0.8em; }
+.md h3, .md h4, .md h5, .md h6 { margin: 1.3em 0 0.45em; font-family: var(--display); font-weight: 800; line-height: 1.3; color: var(--text); text-wrap: balance; }
+.md h3 { font-size: 1.2em; }
+.md h4 { font-size: 1.08em; }
+.md h5, .md h6 { font-size: 1em; }
+.md strong { font-weight: 700; color: var(--text); }
+.md a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: var(--line-strong); }
+.md a:hover { text-decoration-color: currentColor; }
+.md ul, .md ol { margin: 0 0 0.8em; padding-left: 1.45em; }
+.md ul ul, .md ul ol, .md ol ul, .md ol ol { margin-bottom: 0; }
+.md li { margin-block: 0.25em; padding-left: 0.1em; }
+.md li > p { margin-bottom: 0.3em; }
+.md li > p:last-child { margin-bottom: 0; }
+.md li::marker { color: var(--faint); }
+.md li.md-task { list-style: none; margin-left: -1.25em; }
+.md li.md-task input { margin: 0 0.4em 0 0; vertical-align: -1px; }
+.md blockquote { margin: 0 0 0.8em; padding: 2px 0 2px 14px; border-left: 3px solid var(--line-strong); color: var(--muted); }
+.md code { padding: 0.1em 0.35em; border-radius: 5px; background: var(--fill-2); font: 0.88em/1.4 var(--mono); color: var(--text); }
+.md pre { margin: 0 0 0.9em; padding: var(--space-12) var(--space-16); border-radius: var(--r-sm); background: var(--fill-1); border: 1px solid var(--line); overflow-x: auto; }
+.md pre code { padding: 0; background: none; font-size: var(--font-12); line-height: 1.55; overflow-wrap: normal; white-space: pre; }
+.md hr { margin: 1.2em 0; border: 0; border-top: 1px solid var(--line); }
+.md-table { margin: 0 0 0.9em; overflow-x: auto; }
+.md-table:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.md table { border-collapse: collapse; font-size: 0.93em; overflow-wrap: normal; }
+.md th, .md td { padding: 6px 12px; border: 1px solid var(--line); text-align: left; vertical-align: top; min-width: 80px; }
+.md th { font-weight: 700; color: var(--text); background: var(--fill-1); }
+.md-compact { font-size: var(--font-13); line-height: 1.55; color: var(--muted); }
+.md-compact p, .md-compact ul, .md-compact ol, .md-compact blockquote, .md-compact pre { margin-bottom: 0.5em; }
+.md-compact-heading { font-weight: 700; color: var(--text-2); }
+.md-compact strong { color: var(--text-2); }
+.brain-key { display: flex; gap: 6px; }
+.brain-key input { flex: 1; min-width: 0; }
+

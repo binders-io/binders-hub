@@ -1,0 +1,15 @@
+/* A finger: the ⋯ and the chips on a card are always there, small to see and a finger's width to press. */
+@media (hover: none) {
+  .card .card-menu-button, .card-dismiss { position: relative; opacity: 1; min-width: 0; min-height: 0; }
+  .card .card-menu-button::after, .card-dismiss::after { content: ""; position: absolute; inset: -10px; }
+  .debrief-chip { position: relative; min-width: 0; min-height: 0; }
+  .debrief-chip::after { content: ""; position: absolute; inset: -12px 0; }
+  /* A card's title is read, not pressed on its own: the whole card is the target. */
+  .card-open, .proposal-open { min-height: 0; min-width: 0; }
+}
+.side-agent.drop { outline: 2px dashed var(--text); outline-offset: -2px; }
+/* The tests' tally under a change set's title: a pill to see, a finger's height to press. */
+@media (hover: none) {
+  .tests-line { position: relative; min-height: 0; }
+  .tests-line::after { content: ""; position: absolute; inset: -12px 0; }
+}

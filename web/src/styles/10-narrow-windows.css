@@ -1,0 +1,18 @@
+/* ---------- Narrow windows ---------- */
+@media (max-width: 1180px) {
+  .notes { grid-template-columns: 232px minmax(0, 1fr) 320px; }
+}
+@media (max-width: 900px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  .sidebar { display: none; }
+  .notes { grid-template-columns: minmax(0, 1fr); }
+  .note-tree, .distill:not(.view) { display: none; }
+  .changes { grid-template-columns: minmax(0, 1fr); }
+  .envs { grid-template-columns: minmax(0, 1fr) !important; gap: 12px; }
+  .promote { flex-direction: row; }
+  .promote-line { height: 1.5px; width: auto; max-height: none; }
+  .drawer-section.two { grid-template-columns: 1fr; }
+  .run { grid-template-columns: 18px 64px minmax(0, 1fr) 70px; }
+  .run-repo, .run time { display: none; }
+}
+

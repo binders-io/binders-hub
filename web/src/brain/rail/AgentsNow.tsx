@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { Bot } from 'lucide-react'
 import type { Agent, Card } from '../../data/model'
 import { isListening, isOnline, useHub, usePresence } from '../../data/store'
 import { asksOf } from '../../../../shared/work.ts'
@@ -6,6 +7,7 @@ import { AgentAvatar } from '../../components/bits'
 import { href } from '../../route'
 import { useUI } from '../../ui'
 import { isModelAgent, modelReady } from '../../components/modelAgent'
+import { EmptyState, Row, Rows, Status } from '../../kit'
 import { RailSection } from './RailSection'
 
 /** What an agent is doing, in a line: waiting on you, working on a card, or idle. */
@@ -33,27 +35,22 @@ export function AgentsNow() {
   return (
     <RailSection id="agents" title="Agents" count={agents.length}>
       {sorted.length ? (
-        <ul className="brain-agents">
+        <Rows label="Agents">
           {sorted.map((agent) => {
             // One the hub runs as a model has no runner to be online: it's ready, or it needs attention.
             const hosted = isModelAgent(agent)
             const online = hosted ? modelReady(agent) : isOnline(agent)
             const line = agentLine(agent, cards)
             return (
-              <li key={agent.id}>
-                <a href={href({ screen: 'agents' })}>
-                  <AgentAvatar agent={agent} size={26} live={line.startsWith('Working')} />
-                  <span className="brain-agent-text">
-                    <span className="brain-agent-head"><b>{agent.name}</b><span className={`brain-online ${online ? 'on' : 'off'}`}><i aria-hidden="true" />{hosted ? (online ? 'Ready' : 'Needs attention') : online ? 'Online' : 'Offline'}</span></span>
-                    <span className="brain-agent-doing">{line}</span>
-                  </span>
-                </a>
-              </li>
+              <Row key={agent.id} href={href({ screen: 'agents' })} trailing="none"
+                icon={<AgentAvatar agent={agent} size={32} live={line.startsWith('Working')} />}
+                title={agent.name} meta={line}
+                status={<Status tone={online ? 'ok' : hosted ? 'bad' : 'off'}>{hosted ? (online ? 'Ready' : 'Needs attention') : online ? 'Online' : 'Offline'}</Status>} />
             )
           })}
-        </ul>
+        </Rows>
       ) : (
-        <p className="faint brain-rail-none">No agents yet.</p>
+        <EmptyState compact icon={<Bot size={18} />} title="No agents yet." />
       )}
     </RailSection>
   )

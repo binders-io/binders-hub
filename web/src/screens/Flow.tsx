@@ -1,19 +1,23 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react'
 import { LayoutGroup, motion, AnimatePresence } from 'motion/react'
-import { ArrowRight, ArrowUpRight, Check, ChevronDown, Eye, EyeOff, GitPullRequest, MessageCircleQuestion, Plus, Sparkles, type LucideIcon } from 'lucide-react'
+import { ArrowUpRight, Check, ChevronDown, ChevronRight, Eye, EyeOff, GitPullRequest, ListFilter, MessageCircleQuestion, OctagonAlert, Plus, Sparkles, X } from 'lucide-react'
 import { stages, type Agent, type Card, type Proposal, type Stage } from '../data/model'
 import { asksOf, cardNumber, mayTake, meantForNow } from '../../../shared/work.ts'
-import { nameFor, sameValues, useActions, useClock, useHub, type State } from '../data/store'
-import { forAttention, type WaitKind, type Waiting } from '../../../shared/waiting.ts'
-import { routeOf, useWaiting } from '../data/notify'
+import { nameFor, sameList, sameValues, useActions, useClock, useHub, type State } from '../data/store'
+import { forAttention, type Waiting } from '../../../shared/waiting.ts'
+import { useWaiting } from '../data/notify'
+import { useFirst } from '../data/first'
 import { heard } from '../data/sync'
-import { AgentAvatar, CheckDots, Progress, RepoTag, Who, ago, checksSummary, codeRepo, stageTone, stoppedBlock, stoppedWords } from '../components/bits'
+import { AgentAvatar, CheckGlyph, Progress, RepoTag, Who, ago, checksSummary, codeRepo, stageTone, stoppedBlock, stoppedWords } from '../components/bits'
 import { NewCardDialog } from '../components/NewCardDialog'
 import { useMayChangeBinder } from './settings/access'
 import { DebriefButton } from '../components/Debrief'
 import { CardMenu, cardMenuItems } from '../components/CardMenu'
-import { openMenu } from '../components/ContextMenu'
+import { openMenu, openMenuUnder, type MenuItem } from '../components/ContextMenu'
 import { attempt, toast } from '../components/Toast'
+import { WaitingItems } from '../components/Waiting'
+import { whatWaits } from '../components/waitingWords'
+import { Dialog, Skeleton } from '../kit'
 import { useUI } from '../ui'
 import { go, href } from '../route'
 
@@ -23,9 +27,6 @@ const noProposals: Proposal[] = []
 const doneShownMs = 30 * 24 * 3600_000
 const doneCutoff = () => Date.now() - doneShownMs
 const filterKey = 'binders-board-filter'
-/** The kinds of row that are a card asking a person something, which the strip says in one button. */
-const asks: WaitKind[] = ['question', 'stopped', 'permission']
-const rowIcons: Record<WaitKind, LucideIcon> = { question: MessageCircleQuestion, stopped: MessageCircleQuestion, permission: MessageCircleQuestion, findings: GitPullRequest, changeSet: GitPullRequest, proposals: Sparkles, noteChange: Sparkles, promotion: Check }
 const sameLogin = (a?: string, b?: string) => !!a && !!b && a.toLowerCase() === b.toLowerCase()
 
 /** Everything on its way from a note to production, one column per stage, with what's happening beside it. */
@@ -42,6 +43,8 @@ export function Flow() {
   const { binder } = useUI()
   const [adding, setAdding] = useState(false)
   const [feedOpen, setFeedOpen] = useState(false)
+  const [waitingOpen, setWaitingOpen] = useState(false)
+  const [viewOpen, setViewOpen] = useState(false)
   // What Distill proposed can be set aside to see the rest of the board. It's still waiting on you, so everything that
   // counts what's waiting (Home, the nav, the notes list) goes on counting it. This browser remembers.
   const [showDistilled, setShowDistilled] = useState(() => {
@@ -85,71 +88,68 @@ export function Flow() {
       return { stage, cards: olderShown ? all : recent, older: all.length - recent.length }
     })
   }, [shownCards, olderShown])
-  // What waits on you, as Home lists it: the same rows, each going where Home sends it. Questions, a card that stopped
-  // and a permission are one button, each of the rest has its own.
+  // What waits on you, as Home lists it: one slim line over the board, and the list itself a press away.
   const attention = forAttention(useWaiting(binder))
-  const asking = attention.filter((r) => asks.includes(r.kind))
-  const elsewhere = attention.filter((r) => !asks.includes(r.kind))
-  const askedBy = (row: Waiting) => {
-    const card = allCards.find((c) => c.id === row.about.id)
-    if (row.kind === 'stopped' || (card && stoppedBlock(card))) return card?.stopped ? stoppedWords(card.stopped.times) : 'Stopped twice'
-    return `${nameFor({ agents }, (row.kind === 'permission' ? card?.permission?.agent : card?.agentId) ?? '')} asks you`
-  }
   const board = useRef<HTMLDivElement>(null)
   const stageCounts = useMemo(() => columns.map(({ stage, cards: here }) => here.length + (stage.id === 'proposed' ? shownProposals.length : 0)), [columns, shownProposals])
+  const filtering = cards.length > 0 && (!!me || filterAgents.length > 0)
+  const activeName = active === 'mine' ? 'Mine' : agentOf ? filterAgents.find((a) => a.id === agentOf)?.name ?? 'Everyone' : 'Everyone'
+
+  // Over the board, the activity panel closes on Escape, as anything else laid over it does.
+  useEffect(() => {
+    if (!feedOpen) return
+    const close = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !event.defaultPrevented && !document.querySelector('[role="dialog"], [role="menu"]')) setFeedOpen(false)
+    }
+    window.addEventListener('keydown', close)
+    return () => window.removeEventListener('keydown', close)
+  }, [feedOpen])
+
+  // A phone has no room for a chip each: the same choices in a menu, the one shown ticked.
+  const viewItems = (): MenuItem[] => {
+    const tick = (on: boolean) => (on ? <Check size={14} /> : <span className="menu-tick-space" />)
+    return [
+      { label: 'Everyone', icon: tick(!active), onSelect: () => choose('') },
+      ...(me ? [{ label: 'Mine', icon: tick(active === 'mine'), onSelect: () => choose('mine') }] : []),
+      ...filterAgents.map((a) => ({ label: a.name, icon: tick(active === `agent:${a.id}`), onSelect: () => choose(`agent:${a.id}`) })),
+    ]
+  }
 
   return (
     <div className={`flow${feedOpen ? ' feed-open' : ''}`}>
       <div className="flow-main">
-        <div className="flow-summary">
-          <div className="attention">
-            {asking.length > 0 && (
-              // Questions are one line each here; the whole question and the answer box are on the card.
-              <button className="attention-card ready asks" onClick={() => go(routeOf(asking[0]))} title={asking.map((r) => `${r.title}: ${r.detail}`).join('\n\n')}>
-                <MessageCircleQuestion size={15} />
-                <span>
-                  <b>{asking.length === 1 ? askedBy(asking[0]) : `${asking.length} questions for you`}</b>
-                  <em>{asking.length === 1 ? asking[0].title : asking.map((r) => r.title).join(' · ')}</em>
-                </span>
-                <ArrowRight size={14} />
-              </button>
-            )}
-            {elsewhere.map((row) => {
-              const Icon = rowIcons[row.kind]
-              return (
-                <button key={row.id} className="attention-card ready" onClick={() => go(routeOf(row))}>
-                  <Icon size={15} />
-                  <span>
-                    <b>{row.title}</b>
-                    <em>{row.detail}</em>
-                  </span>
-                  <ArrowRight size={14} />
+        <div className="board-bar">
+          {attention.length > 0 && <WaitingStrip rows={attention} onOpen={() => setWaitingOpen(true)} />}
+          <div className="board-tools">
+            {filtering && (
+              <>
+                <div className="board-filters" role="group" aria-label="Show only">
+                  {me && <button type="button" aria-pressed={active === 'mine'} onClick={() => choose(active === 'mine' ? '' : 'mine')}>Mine</button>}
+                  {filterAgents.map((a) => {
+                    const key = `agent:${a.id}`
+                    return <button key={a.id} type="button" aria-pressed={active === key} onClick={() => choose(active === key ? '' : key)}><AgentAvatar agent={a} size={16} /> {a.name}</button>
+                  })}
+                </div>
+                <button type="button" className={`button small board-view${active ? ' on' : ''}`} aria-haspopup="menu" aria-expanded={viewOpen} aria-label={`Show only: ${activeName}`} onClick={(event) => { if (openMenuUnder(event, viewItems(), { onClose: () => setViewOpen(false) })) setViewOpen(true) }}>
+                  <ListFilter size={14} aria-hidden="true" /><span>{activeName}</span><ChevronDown size={14} aria-hidden="true" />
                 </button>
-              )
-            })}
-            {proposals.length > 0 && (
-              <button className="distilled-toggle" onClick={() => chooseDistilled(!showDistilled)}>
-                {showDistilled ? <EyeOff size={14} /> : <Eye size={14} />} {showDistilled ? 'Hide proposed' : `Show ${proposals.length} proposed`}
-              </button>
+              </>
             )}
-            <button className="feed-toggle" onClick={() => setFeedOpen(!feedOpen)} aria-expanded={feedOpen}>
-              <span className="live-dot" /> {feedOpen ? 'Hide activity' : 'Activity'}
-            </button>
-            {may && <button className="button primary" onClick={() => setAdding(true)} disabled={noBinders}><Plus size={14} /> New card</button>}
+            <div className="board-tools-end">
+              {proposals.length > 0 && (
+                <button type="button" className="button quiet small distilled-toggle" onClick={() => chooseDistilled(!showDistilled)}>
+                  {showDistilled ? <EyeOff size={14} aria-hidden="true" /> : <Eye size={14} aria-hidden="true" />}{showDistilled ? 'Hide proposed' : `Show ${proposals.length} proposed`}
+                </button>
+              )}
+              <button type="button" className="button quiet small feed-toggle" onClick={() => setFeedOpen(!feedOpen)} aria-expanded={feedOpen} aria-controls="board-feed">
+                <span className="live-dot" aria-hidden="true" />{feedOpen ? 'Hide activity' : 'Activity'}
+              </button>
+              {may && <button type="button" className="button primary board-new" onClick={() => setAdding(true)} disabled={noBinders}><Plus size={16} aria-hidden="true" /><span>New card</span></button>}
+            </div>
           </div>
         </div>
 
-        <StageChips counts={stageCounts} board={board} />
-
-        {cards.length > 0 && (me || filterAgents.length > 0) && (
-          <div className="board-filters" role="group" aria-label="Show only">
-            {me && <button type="button" aria-pressed={active === 'mine'} onClick={() => choose(active === 'mine' ? '' : 'mine')}>Mine</button>}
-            {filterAgents.map((a) => {
-              const key = `agent:${a.id}`
-              return <button key={a.id} type="button" aria-pressed={active === key} onClick={() => choose(active === key ? '' : key)}><AgentAvatar agent={a} size={16} /> {a.name}</button>
-            })}
-          </div>
-        )}
+        <StageSwitch counts={stageCounts} board={board} />
 
         <LayoutGroup>
           <div className="columns" ref={board}>
@@ -160,18 +160,54 @@ export function Flow() {
         </LayoutGroup>
       </div>
 
-      <Feed cards={cards} agents={agents} />
+      <Feed cards={cards} agents={agents} close={() => setFeedOpen(false)} />
 
-      <AnimatePresence>{adding && may && <NewCardDialog key="new" binderId={binder === 'all' ? undefined : binder} onClose={() => setAdding(false)} />}</AnimatePresence>
+      <AnimatePresence>
+        {adding && may && <NewCardDialog key="new" binderId={binder === 'all' ? undefined : binder} onClose={() => setAdding(false)} />}
+        {waitingOpen && <WaitingDialog key="waiting" rows={attention} onClose={() => setWaitingOpen(false)} />}
+      </AnimatePresence>
     </div>
+  )
+}
+
+/**
+ * What waits on you, in one line over the board: how many, and what they are. Pressing it opens the list, which is the
+ * same as Home's, each row going where Home sends it.
+ */
+function WaitingStrip({ rows, onOpen }: { rows: Waiting[]; onOpen: () => void }) {
+  // One thing waiting says which; several say what kinds.
+  const what = rows.length === 1 ? `${whatWaits(rows)} · ${rows[0].title}` : whatWaits(rows)
+  return (
+    <button type="button" className="waiting-strip" aria-haspopup="dialog" onClick={onOpen}>
+      <span className="waiting-strip-mark" aria-hidden="true" />
+      <b>{rows.length} waiting on you</b>
+      <span className="waiting-strip-what">{what}</span>
+      <ChevronRight size={16} className="waiting-strip-go" aria-hidden="true" />
+    </button>
+  )
+}
+
+/** The list the strip opens: a dialog on a wide window, a sheet on a phone, with the Brain's drafts where it has them. */
+function WaitingDialog({ rows, onClose }: { rows: Waiting[]; onClose: () => void }) {
+  const first = useFirst(rows)
+  const binders = useHub((state) => state.binders, sameList)
+  const { binder } = useUI()
+  return (
+    <Dialog title="Waiting on you" onClose={onClose}>
+      <div className="board-waiting">
+        <WaitingItems rows={rows} first={first} binders={binder === 'all' && binders.length > 1 ? binders : []} />
+      </div>
+    </Dialog>
   )
 }
 
 const shortTitles: Partial<Record<Stage, string>> = { working: 'Working', review: 'Review' }
 
-/** A phone's board is a column a screen: this says what's in the others, and goes to them. Hidden wider up, where they show. */
-function StageChips({ counts, board }: { counts: number[]; board: RefObject<HTMLDivElement | null> }) {
-  const row = useRef<HTMLElement>(null)
+/**
+ * A phone's board is a column a screen: this switch says what's in each stage and goes to it, and follows the board as
+ * it's swiped. Hidden wider up, where every column shows.
+ */
+function StageSwitch({ counts, board }: { counts: number[]; board: RefObject<HTMLDivElement | null> }) {
   const [at, setAt] = useState(0)
 
   useEffect(() => {
@@ -185,22 +221,16 @@ function StageChips({ counts, board }: { counts: number[]; board: RefObject<HTML
     return () => columns.removeEventListener('scroll', moved)
   }, [board])
 
-  // The chip for the column in view stays in view too. Set directly: it mustn't interrupt the board's own smooth scroll.
-  useEffect(() => {
-    const chip = row.current?.children[at] as HTMLElement | undefined
-    row.current?.scrollTo?.({ left: (chip?.offsetLeft ?? 0) - 14 })
-  }, [at])
-
   const go = (index: number) => {
     const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     board.current?.children[index]?.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', inline: 'start', block: 'nearest' })
   }
 
   return (
-    <nav className="stage-chips" aria-label="Stages" ref={row}>
+    <nav className="stage-chips" aria-label="Stages">
       {stages.map((stage, index) => (
         <button key={stage.id} type="button" aria-current={index === at ? 'true' : undefined} onClick={() => go(index)}>
-          <i className={`dot ${stageTone[stage.id]}`} />{shortTitles[stage.id] ?? stage.title}<span className="num">{counts[index]}</span>
+          <span className="stage-chip-name">{shortTitles[stage.id] ?? stage.title}</span><span className="num"><i className={`dot ${stageTone[stage.id]}`} aria-hidden="true" />{counts[index]}</span>
         </button>
       ))}
     </nav>
@@ -240,17 +270,19 @@ const Column = memo(function Column({ stage, cards, proposals, hidden, older, ol
     store.moveCard(id, stage.id)
     if (held && stage.id === 'ready') toast(`Took it from ${state.agents.find((a) => a.id === card?.agentId)?.name ?? 'the agent'} and stopped its run.`)
   }
+  const hint = `column-hint-${stage.id}`
   return (
-    <section className={`column ${stage.id}${drop ? ' drop' : ''}`} aria-label={stage.title}
+    <section className={`column ${stage.id}${drop ? ' drop' : ''}`} aria-label={stage.title} aria-describedby={hint}
       onDragOver={(e) => { if (may && dragging.current && (stage.id !== 'working' || pausedHere(dragging.current))) { e.preventDefault(); setDropOn(stage.id) } }}
       onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropOn(undefined) }}
       onDrop={(e) => { e.preventDefault(); setDropOn(undefined); if (may && dragging.current) dropCard(dragging.current); dragging.current = undefined }}>
-      <header>
-        <i className={`dot ${stageTone[stage.id]}`} />
+      {/* Its name and count; what the stage means is a hover away, and read out with it. */}
+      <header title={stage.hint}>
+        <i className={`dot ${stageTone[stage.id]}`} aria-hidden="true" />
         <h2>{stage.title}</h2>
         <span className="num">{count}</span>
       </header>
-      <p className="column-hint">{stage.hint}</p>
+      <p className="sr-only" id={hint}>{stage.hint}</p>
       <div className="column-cards">
         {stage.id === 'proposed' && (
           <AnimatePresence initial={false}>
@@ -265,7 +297,15 @@ const Column = memo(function Column({ stage, cards, proposals, hidden, older, ol
             <CardView card={card} stage={stage.id} />
           </div>
         ))}
-        {count === 0 && <div className="column-empty">{!loaded ? 'Loading…' : hidden ? `${hidden} proposed hidden` : 'Nothing here'}</div>}
+        {count === 0 && (!loaded
+          ? (
+            <div className="column-loading" role="status">
+              <span className="sr-only">Loading…</span>
+              <span className="card-skeleton" aria-hidden="true"><Skeleton width="40%" height={10} /><Skeleton lines={2} height={12} /></span>
+              <span className="card-skeleton" aria-hidden="true"><Skeleton width="30%" height={10} /><Skeleton width="80%" height={12} /></span>
+            </div>
+          )
+          : <div className="column-empty">{hidden ? `${hidden} proposed hidden` : 'Nothing here'}</div>)}
         {older > 0 && (
           <div className="column-more">
             <button type="button" className="text-button" onClick={toggleOlder}>{olderShown ? 'Hide older' : 'Show older'}</button>
@@ -286,7 +326,9 @@ const sizeNames: Record<Proposal['size'], string> = { S: 'Small', M: 'Medium', L
 function ProposalCard({ proposal: p, agent }: { proposal: Proposal; agent?: Agent }) {
   const store = useActions()
   const may = useMayChangeBinder()
-  const { openItem } = useUI()
+  const { openItem, binder: inBinder } = useUI()
+  // Which binder it's in says something only on a board of them all.
+  const everyBinder = inBinder === 'all'
   const binder = useHub((state) => state.binders.find((b) => b.id === p.binderId)?.name)
   const note = useHub((state) => state.notes.find((n) => n.id === p.noteId))
   const [open, setOpen] = useState(false)
@@ -308,9 +350,12 @@ function ProposalCard({ proposal: p, agent }: { proposal: Proposal; agent?: Agen
   return (
     <motion.div layout className="card proposal" initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.15 } }} transition={spring}>
       <div className="card-top">
-        <Sparkles size={12} className="amber" />
-        <span className="faint">From a note</span>
-        <span className="faint">· {binder}</span>
+        <span className="card-facts">
+          <span className="proposal-from"><Sparkles size={12} aria-hidden="true" />From a note</span>
+          {binder && everyBinder && <span>{binder}</span>}
+        </span>
+        {agent && <span className="proposal-for" title={`Meant for ${agent.name}`}><AgentAvatar agent={agent} size={18} /></span>}
+        {may && <button type="button" className="card-dismiss" aria-label="Dismiss" title="Dismiss" onClick={dismiss}><X size={14} /></button>}
       </div>
       <h3>
         <button type="button" className="proposal-open" aria-expanded={open} aria-controls={`proposal-${p.id}`} onClick={() => setOpen(!open)}>
@@ -319,30 +364,29 @@ function ProposalCard({ proposal: p, agent }: { proposal: Proposal; agent?: Agen
         </button>
       </h3>
       {open && (
-        <div className="proposal-body" id={`proposal-${p.id}`}>
-          <h4>Brief</h4>
-          <p>{p.brief || 'No brief.'}</p>
-          {p.doneWhen && <><h4>Done when</h4><p>{p.doneWhen}</p></>}
-          <h4>Size</h4>
-          <p>{sizeNames[p.size]}</p>
-          {p.quote && <><h4>From the note</h4><q>{p.quote}</q></>}
-          {note && <a className="link-row" href={href({ screen: 'notes', id: note.id })}>{note.title} <ArrowUpRight size={12} /></a>}
-        </div>
+        <dl className="proposal-body" id={`proposal-${p.id}`}>
+          <dt>Brief</dt>
+          <dd>{p.brief || 'No brief.'}</dd>
+          {p.doneWhen && <><dt>Done when</dt><dd>{p.doneWhen}</dd></>}
+          <dt>Size</dt>
+          <dd>{sizeNames[p.size]}</dd>
+          {agent && <><dt>For</dt><dd>{agent.name}</dd></>}
+          {p.quote && <><dt>From the note</dt><dd><q>{p.quote}</q></dd></>}
+          {note && <dd><a className="link-row" href={href({ screen: 'notes', id: note.id })}>{note.title} <ArrowUpRight size={12} aria-hidden="true" /></a></dd>}
+        </dl>
       )}
-      {(may || agent) && (
+      {may && (
         <div className="proposal-actions">
-          {may && <button className="mini-button primary" onClick={() => void accept()}>Accept</button>}
-          {may && <button className="mini-button" disabled={working} onClick={() => void editFirst()} title="Put it on the board in Proposed, where no agent takes it, and open it to change its words">Edit first</button>}
-          {may && <button className="mini-button" onClick={dismiss}>Dismiss</button>}
-          {agent && <AgentAvatar agent={agent} size={20} />}
+          <button type="button" className="button small primary" onClick={() => void accept()}>Accept</button>
+          <button type="button" className="button small" disabled={working} onClick={() => void editFirst()} title="Put it on the board in Proposed, where no agent takes it, and open it to change its words">Edit first</button>
         </div>
       )}
     </motion.div>
   )
 }
 
-/** What's been happening: every card's activity, newest first. */
-const Feed = memo(function Feed({ cards, agents }: { cards: Card[]; agents: Agent[] }) {
+/** What's been happening: every card's activity, newest first. Beside the board on a wide window, over it on the rest. */
+const Feed = memo(function Feed({ cards, agents, close }: { cards: Card[]; agents: Agent[]; close: () => void }) {
   useClock()
   const loaded = useHub((state) => heard(state.sync))
   const feed = useMemo(() => cards
@@ -350,10 +394,11 @@ const Feed = memo(function Feed({ cards, agents }: { cards: Card[]; agents: Agen
     .sort((a, b) => b.at.localeCompare(a.at))
     .slice(0, 40), [cards])
   return (
-    <aside className="feed" aria-label="Activity">
+    <aside className="feed" id="board-feed" aria-label="Activity">
       <header>
         <h2>Activity</h2>
-        <span className="live-dot" />
+        <span className="live-dot" aria-hidden="true" />
+        <button type="button" className="icon-button feed-close" aria-label="Close activity" onClick={close}><X size={16} /></button>
       </header>
       <ol>
         <AnimatePresence initial={false}>
@@ -362,7 +407,7 @@ const Feed = memo(function Feed({ cards, agents }: { cards: Card[]; agents: Agen
               <Who id={event.by} size={22} />
               <p>
                 <b>{nameFor({ agents }, event.by)}</b> {event.text.length > 120 ? `${event.text.slice(0, 120)}…` : event.text}
-                <button className="feed-card" onClick={() => go({ screen: 'work', id: event.card.id })}>{event.card.title}</button>
+                <button type="button" className="feed-card" onClick={() => go({ screen: 'work', id: event.card.id })}>{event.card.title}</button>
               </p>
               <time className="num">{ago(event.at)}</time>
             </motion.li>
@@ -388,6 +433,10 @@ function cardFacts(state: State, card: Card) {
   }
 }
 
+/**
+ * A card on the board: one quiet line of facts, its title, a line for what's happening when something is, and a foot
+ * with who has it and its pull request. What it waits for is in its colour and its line, so it shows across the room.
+ */
 const CardView = memo(function CardView({ card, stage }: { card: Card; stage: Stage }) {
   const store = useActions()
   const { openItem, splitCard } = useUI()
@@ -395,26 +444,28 @@ const CardView = memo(function CardView({ card, stage }: { card: Card; stage: St
   const split = splitCard && may ? () => splitCard(card.id) : undefined
   const select = useCallback((state: State) => cardFacts(state, card), [card])
   const { agent, pull, set, binder, noteTitle, untakeable } = useHub(select, sameValues)
+  const asks = asksOf(card)
+  const code = codeRepo(card, pull?.repo, binder?.repo)
+  const checks = pull && checksSummary(pull.checks)
 
   return (
     // The whole card opens it for a pointer, and its title's button for a keyboard or a screen reader: a button can't hold the card's others.
-    <motion.article layout layoutId={card.id} className={`card ${stage}${asksOf(card) ? ' asks' : ''}`} onClick={() => openItem(card.id)} onContextMenu={(e) => openMenu(e, cardMenuItems(card, store, openItem, split, may))} transition={spring} initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }}>
+    <motion.article layout layoutId={card.id} className={`card ${stage}${asks ? ' asks' : ''}${card.stopped || stoppedBlock(card) ? ' stopped' : ''}`} onClick={() => openItem(card.id)} onContextMenu={(e) => openMenu(e, cardMenuItems(card, store, openItem, split, may))} transition={spring} initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }}>
       <div className="card-top">
-        <span className="mono faint" title={card.jira ? `Its Jira issue: ${card.jira.key}` : card.issue ? `Its issue: #${card.issue.number} in ${card.issue.repo}` : undefined}>{cardNumber(card) ?? binder?.name}</span>
-        {(() => {
-          const code = codeRepo(card, pull?.repo, binder?.repo)
-          return code ? <RepoTag repo={code} title={pull ? `Its pull request is in ${code}` : `The binder’s repo: ${code}`} /> : null
-        })()}
-        {set && !card.jira && <span className="set-tag">CS-{set.number}</span>}
+        <span className="card-facts">
+          <span className="mono" title={card.jira ? `Its Jira issue: ${card.jira.key}` : card.issue ? `Its issue: #${card.issue.number} in ${card.issue.repo}` : undefined}>{cardNumber(card) ?? binder?.name}</span>
+          {code && <RepoTag repo={code} title={pull ? `Its pull request is in ${code}` : `The binder’s repo: ${code}`} />}
+          {set && !card.jira && <span className="set-tag" title={`In change set #${set.number}`}>CS-{set.number}</span>}
+        </span>
         <CardMenu card={card} open={openItem} split={split} />
       </div>
-      <h3><button type="button" className="card-open">{card.title}</button></h3>
+      <h3><button type="button" className="card-open"><span>{card.title}</span></button></h3>
       {card.stopped
-        ? <p className="card-stopped" title={`${stoppedWords(card.stopped.times)}: ${card.stopped.why}`}>{stoppedWords(card.stopped.times)}: {card.stopped.why}</p>
+        ? <p className="card-stopped" title={`${stoppedWords(card.stopped.times)}: ${card.stopped.why}`}><OctagonAlert size={12} aria-hidden="true" /><span>{stoppedWords(card.stopped.times)}: {card.stopped.why}</span></p>
         // Its long question says what to do, which its page does; the board says who it's waiting on, which isn't an agent.
-        : stoppedBlock(card) ? <p className="card-stopped">Stopped twice</p>
-        : asksOf(card) && <p className="card-asks">Asks: {asksOf(card)}</p>}
-      {card.stopped && !stoppedBlock(card) && asksOf(card) && <p className="card-asks">Asks: {asksOf(card)}</p>}
+        : stoppedBlock(card) ? <p className="card-stopped"><OctagonAlert size={12} aria-hidden="true" /><span>Stopped twice</span></p>
+        : asks && <p className="card-asks"><MessageCircleQuestion size={12} aria-hidden="true" /><span>Asks: {asks}</span></p>}
+      {card.stopped && !stoppedBlock(card) && asks && <p className="card-asks"><MessageCircleQuestion size={12} aria-hidden="true" /><span>Asks: {asks}</span></p>}
       {stage === 'working' && card.progress !== undefined && (
         <div className="card-work">
           <Progress value={card.progress} />
@@ -422,18 +473,24 @@ const CardView = memo(function CardView({ card, stage }: { card: Card; stage: St
         </div>
       )}
       <div className="card-foot">
-        {agent ? <AgentAvatar agent={agent} size={20} live={stage === 'working'} /> : <span className={untakeable ? 'unclaimed none' : 'unclaimed'} title={untakeable ? 'No agent works in this binder and its repo: set an agent’s binders and repos on the Agents page, or mean this card for one.' : undefined}>{stage === 'ready' ? (untakeable ? 'No agent can take it' : 'Any agent') : ''}</span>}
-        {pull ? (
-          <span className={`pr-mini ${checksSummary(pull.checks).state}`}>
-            <DebriefButton card={card} inline />
-            <span className="mono">#{pull.number}</span>
-            <CheckDots checks={pull.checks} />
-          </span>
-        ) : stage === 'working' || stage === 'review' ? (
-          <DebriefButton card={card} inline />
-        ) : (
-          <span className="from-note">{noteTitle}</span>
-        )}
+        <span className="card-who">
+          {agent
+            ? <AgentAvatar agent={agent} size={20} live={stage === 'working'} />
+            : <span className={untakeable ? 'unclaimed none' : 'unclaimed'} title={untakeable ? 'No agent works in this binder and its repo: set an agent’s binders and repos on the Agents page, or mean this card for one.' : undefined}>{stage === 'ready' ? (untakeable ? 'No agent can take it' : 'Any agent') : ''}</span>}
+        </span>
+        <span className="card-links">
+          {(pull || stage === 'working' || stage === 'review') && <DebriefButton card={card} inline />}
+          {pull && checks ? (
+            <span className={`pr-mini ${checks.state}`} title={`Pull request #${pull.number}: ${checks.text}`}>
+              <GitPullRequest size={12} aria-hidden="true" />
+              <span className="mono">#{pull.number}</span>
+              <CheckGlyph state={checks.state} size={12} />
+              <span className="sr-only">{checks.text}</span>
+            </span>
+          ) : stage !== 'working' && stage !== 'review' && noteTitle ? (
+            <span className="from-note" title={`From the note ${noteTitle}`}>{noteTitle}</span>
+          ) : null}
+        </span>
       </div>
     </motion.article>
   )

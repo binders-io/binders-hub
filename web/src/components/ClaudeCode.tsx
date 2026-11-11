@@ -13,8 +13,12 @@ export const claudeCodeName = 'binders-hub'
 /** The command that adds the hub to Claude Code, in every folder, as you: Claude Code signs in through the browser. */
 export const claudeCodeCommand = (url: string) => `claude mcp add --transport http --scope user ${claudeCodeName} ${url}`
 
-/** The hub in Claude Code: the one command to paste, and how Claude Code then signs in as you. */
-export function ClaudeCodeDialog({ onClose }: { onClose: () => void }) {
+/**
+ * The hub in Claude Code: the one command to paste, and how Claude Code then signs in as you. In its own dialog (from
+ * Your account and ⌘K) and as a step of adding an agent, where it says plainly it isn't one. `onLeave` closes whatever
+ * holds it when the link to Your account is followed.
+ */
+export function ClaudeCodeSteps({ onLeave }: { onLeave?: () => void }) {
   const me = useStore().state.me
   const command = claudeCodeCommand(me?.mcpUrl ?? new URL('/mcp', window.location.origin).toString())
   const [copied, setCopied] = useState(false)
@@ -24,16 +28,25 @@ export function ClaudeCodeDialog({ onClose }: { onClose: () => void }) {
     window.setTimeout(() => setCopied(false), 1600)
   }
   return (
-    <Dialog title="Add the hub to Claude Code" onClose={onClose}>
-      <div className="claude-code">
-        <p>Paste this in a terminal:</p>
+    <div className="claude-code">
+      <p>Paste this in a terminal:</p>
+      <div className="command">
         <pre className="mono">{command}</pre>
-        <button type="button" className="button primary" onClick={() => void copy()}>
-          {copied ? <Check size={14} /> : <Copy size={14} />} {copied ? 'Copied' : 'Copy the command'}
+        <button type="button" className="icon-button" onClick={() => void copy()} aria-label={copied ? 'Copied' : 'Copy the command'} title="Copy the command">
+          {copied ? <Check size={14} /> : <Copy size={14} />}
         </button>
-        <p>Then in Claude Code, type <code>/mcp</code>, pick {claudeCodeName} and sign in. A browser opens on the hub: tick the binders it may work in and allow it. There’s no token to copy.</p>
-        <p className="faint">It works in every folder, as you. The connection shows in <a href={href({ screen: 'account' })} onClick={onClose}>Your account</a>, where you can disconnect it.</p>
       </div>
+      <p>Then in Claude Code, type <code>/mcp</code>, pick {claudeCodeName} and sign in. A browser opens on the hub: tick the binders it may work in and allow it. There’s no token to copy.</p>
+      <p className="faint">It works in every folder, as you. The connection shows in <a href={href({ screen: 'account' })} onClick={onLeave}>Your account</a>, where you can disconnect it.</p>
+    </div>
+  )
+}
+
+/** The hub in Claude Code, in a dialog of its own. */
+export function ClaudeCodeDialog({ onClose }: { onClose: () => void }) {
+  return (
+    <Dialog title="Add the hub to Claude Code" onClose={onClose} footer={<button type="button" className="button primary" onClick={onClose}>Done</button>}>
+      <ClaudeCodeSteps onLeave={onClose} />
     </Dialog>
   )
 }

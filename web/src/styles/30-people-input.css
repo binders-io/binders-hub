@@ -1,0 +1,22 @@
+/* People from GitHub, as chips in one box, with what GitHub suggests under it as you type. */
+.people-input { position: relative; }
+.people-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: var(--control); padding: 3px 6px; border-radius: var(--r-sm); border: 1px solid var(--field-line); background: var(--field-bg); transition: border-color var(--dur-fast), box-shadow var(--dur-fast); }
+.people-chips:hover { border-color: var(--field-line-hover); }
+.people-input:focus-within .people-chips { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-wash); }
+.people-input.disabled .people-chips { opacity: 0.6; }
+/* The box is around its chips and its words: only one, whatever a field gives an input. */
+.people-chips input, .people-input .people-chips input { flex: 1; min-width: 140px; height: 28px; padding: 0 6px; border: 0; border-radius: 0; outline: none; background: none; box-shadow: none; font-size: var(--font-14); color: var(--text); }
+.people-input .people-chips input:focus { border: 0; box-shadow: none; }
+.person-chip { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 4px 0 9px; border-radius: var(--r-pill); background: var(--fill-3); font: 600 var(--font-12)/1 var(--mono); color: var(--text); }
+.person-chip button { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; color: var(--muted); }
+.person-chip button:hover { background: var(--fill-3); color: var(--text); }
+.person-chip.implied { background: transparent; border: 1px dashed var(--line-strong); padding-right: 9px; }
+.person-chip.implied em { font: 400 var(--font-12)/1 var(--body); font-style: normal; color: var(--faint); }
+.people-suggestions { position: absolute; z-index: var(--z-popover); top: calc(100% + 4px); left: 0; right: 0; list-style: none; margin: 0; padding: 4px; border-radius: var(--r); background: var(--pop-bg); box-shadow: var(--shadow-pop); max-height: 260px; overflow-y: auto; }
+.people-suggestions button { display: flex; align-items: center; gap: var(--space-8); width: 100%; min-height: 32px; padding: 4px var(--space-8); border-radius: var(--r-sm); text-align: left; font-size: var(--font-13); color: var(--muted); }
+.people-suggestions button.on { background: var(--fill-2); color: var(--text); }
+.people-suggestions img, .person-initial { width: 20px; height: 20px; border-radius: 50%; flex: none; }
+.person-initial { display: grid; place-items: center; background: var(--fill-3); font: 700 10px/1 var(--body); }
+.people-suggestions b { color: var(--text); font-family: var(--mono); font-size: var(--font-12); }
+.people-suggestions em { margin-left: auto; font-style: normal; font-size: var(--font-12); color: var(--faint); }
+@media (hover: none) { .people-suggestions button { min-height: 44px; } .person-chip button { width: 28px; height: 28px; } }

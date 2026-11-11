@@ -53,8 +53,8 @@ export function ChallengeButton({ card, inline = false, pick = false, className 
   }
   if (inline) {
     return (
-      <button type="button" aria-disabled={busy || !reviewers.length} className={`debrief-chip${busy ? ' busy' : ''}`} title={title} onClick={ask}>
-        <Swords size={11} /> {busy ? 'Challenging' : 'Challenge'}
+      <button type="button" aria-disabled={busy || !reviewers.length} aria-label={busy ? 'Challenging' : 'Challenge'} className={`debrief-chip${busy ? ' busy' : ''}`} title={title} onClick={ask}>
+        <Swords size={12} aria-hidden="true" /><span className="debrief-chip-label">{busy ? 'Challenging' : 'Challenge'}</span>
       </button>
     )
   }
@@ -100,14 +100,24 @@ function RepliesButton({ card, challenge }: { card: Card; challenge: Challenge }
 }
 
 /** The Challenge on the card's full screen: who's reviewing, or its findings worst first. */
-export function ChallengeView({ card, under = false }: { card: Card; under?: boolean }) {
+export function ChallengeView({ card, under = false, offer = false }: { card: Card; under?: boolean; offer?: boolean }) {
   const store = useStore()
   const { state } = store
   const may = useMayChangeBinder()
   // Whether it has waited long enough to be asked again changes with the time alone.
   useClock()
   const challenge = card.challenge
-  if (!challenge) return null
+  if (!challenge) {
+    // On a card's page, work that can be challenged has the section all the same, with the way to ask for one.
+    if (!offer || under || !may || !canChallenge(state, card)) return null
+    const set = setOfCard(state, card)
+    return (
+      <section className="work-section debrief challenge" aria-label="Challenge">
+        <h2>Challenge <span className="debrief-actions"><ChallengeButton card={card} pick className="button small" /></span></h2>
+        <p className="section-line">{set ? `A second agent reviews all of change set #${set.number}’s pull requests against their briefs, without the authors’ log, and says what’s wrong.` : 'A second agent reviews its diff against the brief, without the author’s log, and says what’s wrong.'}</p>
+      </section>
+    )
+  }
   const agent = nameFor(state, challenge.agentId)
   const reviewed = challenge.findings !== undefined
   const findings = [...(challenge.findings ?? [])].sort(byWorst)

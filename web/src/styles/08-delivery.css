@@ -1,0 +1,61 @@
+/* ---------- Delivery ---------- */
+/* Wider than most pages: a repo's environments stand in a line across it. */
+.delivery .delivery-column { width: min(1120px, 100%); }
+.delivery-empty { border-radius: var(--r-lg); border: 1px dashed var(--line-strong); }
+.delivery-repo { display: grid; gap: var(--space-12); min-width: 0; }
+.delivery-repo-name { margin: 0; font: 800 var(--font-16)/var(--leading-16) var(--display); }
+.delivery-repo-name a { color: inherit; text-decoration: none; display: inline-flex; align-items: center; gap: 5px; overflow-wrap: anywhere; }
+.delivery-repo-name a:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+/* A repo's environments as a line of stages, with what moves a version on between them. */
+.envs { display: flex; align-items: stretch; min-width: 0; }
+.env { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: var(--space-16) 18px; border-radius: var(--r-lg); background: var(--tile); box-shadow: var(--tile-shadow); border: 1px solid var(--line); transition: border-color var(--dur-slow), box-shadow var(--dur-slow); }
+.env.deploying { border-color: var(--blue-line); box-shadow: 0 0 0 4px var(--blue-wash); }
+.env.waiting { border-color: var(--amber-line); }
+.env.failed { border-color: color-mix(in srgb, var(--red) 55%, transparent); }
+.env header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
+.env h3 { margin: 0; font: 800 var(--font-16)/var(--leading-16) var(--display); text-transform: capitalize; overflow-wrap: anywhere; }
+.env-version { min-height: 40px; display: flex; align-items: center; overflow: hidden; position: relative; }
+.env-version b { display: block; font: 800 var(--font-26)/var(--leading-26) var(--display); letter-spacing: -0.03em; overflow-wrap: anywhere; }
+.env-none { font-size: var(--font-14); color: var(--muted); }
+.env-url { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: var(--font-12); color: var(--muted); text-decoration: none; overflow-wrap: anywhere; }
+.env-url:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.env-behind { margin: 0; font-size: var(--font-13); line-height: var(--leading-13); color: var(--text-2); }
+.env-progress { display: flex; align-items: center; gap: 10px; font-size: var(--font-12); color: var(--blue); }
+.env-sets { list-style: none; margin: 0; padding: 10px 0 0; border-top: 1px solid var(--line); display: grid; gap: 6px; align-content: start; }
+.env-sets a { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-13); color: var(--text-2); text-decoration: none; }
+.env-sets a:hover { color: var(--text); }
+.env-sets .mono { font-size: var(--font-12); color: var(--text); margin-right: 6px; }
+.env footer { display: flex; flex-wrap: wrap; gap: var(--space-4) var(--space-12); margin-top: auto; padding-top: var(--space-4); font-size: var(--font-12); color: var(--muted); }
+.env footer a { color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; gap: 3px; }
+.env footer a:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.promote { flex: 0 0 108px; display: flex; align-items: center; justify-content: center; padding: 0 6px; }
+.promote-line { flex: 1; height: 2px; min-width: 8px; border-radius: 1px; background: var(--line-strong); }
+.promote.ready .promote-line { background: var(--amber); opacity: 0.7; }
+.promote .button { flex: none; }
+.promote .confirm-button.sure { height: auto; min-height: var(--control-sm); padding: 6px 8px; white-space: normal; text-align: center; line-height: 1.25; }
+.promote-arrow { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--line-strong); color: var(--muted); }
+.promote.ready .promote-arrow { border-color: var(--amber-line); color: var(--amber); }
+
+/* The runs that took it there: a table on a wide window, rows on a phone. */
+.run-target { display: inline-flex; align-items: center; gap: var(--space-8); min-width: 0; max-width: 100%; }
+.run-target svg { flex: none; }
+.run-target .mono { font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-13); color: var(--text); }
+.run-target a { text-decoration: none; }
+.run-target a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.workflow { display: inline-flex; align-items: center; height: 22px; padding: 0 var(--space-8); border-radius: var(--r-xs); background: var(--fill-2); color: var(--muted); font: 600 var(--font-12)/1 var(--body); }
+.workflow.deploy { color: var(--text); }
+.workflow.preview { background: var(--blue-wash); color: var(--blue); }
+.running-bar { display: inline-block; width: 64px; height: 4px; border-radius: 2px; vertical-align: middle; background: linear-gradient(90deg, transparent, var(--blue), transparent); background-size: 200% 100%; animation: shimmer 1.1s linear infinite; }
+
+/* Narrow: the environments one under another, joined downwards. */
+@media (max-width: 900px) {
+  .envs { flex-direction: column; }
+  .env { flex: none; }
+  .envs .promote { flex: none; flex-direction: column; height: auto; padding: var(--space-4) 0; }
+  .promote .promote-line { flex: none; width: 2px; height: 14px; min-width: 0; max-height: none; }
+  .promote-arrow svg { transform: rotate(90deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .running-bar { animation: none; }
+}

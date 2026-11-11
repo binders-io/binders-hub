@@ -266,6 +266,17 @@ describe('under an answer', () => {
     expect(screen.queryByRole('button', { name: 'Make a card' })).toBeNull()
   })
 
+  it('says an offer’s words once, in its card, when they’re the answer’s too', async () => {
+    const what = 'Stop “Fix login”. It goes to Proposed, where nothing picks it up.'
+    const offer = { root: 'all', elements: { all: { type: 'Stack', props: {}, children: ['o'] }, o: { type: 'Offer', props: { id: 'o1', what, button: 'Stop it' }, children: [] } } }
+    const { mountAsk } = await load(() => ({ answer: { text: what, parts: [{ text: what, sources: [] }] }, sources: [], searchedBy: 'words', view: offer }))
+    await mountAsk()
+    await ask('stop the login work')
+    const card = await screen.findByRole('region', { name: 'Stop it' })
+    expect(within(card).getByText(what)).toBeTruthy()
+    expect(screen.getAllByText(what)).toHaveLength(1)
+  })
+
   it('has neither where the hub offers to do something instead', async () => {
     const { mountAsk } = await load(() => ({ answer: { text: 'Stop it.', parts: [{ text: 'Stop it.', sources: [] }] }, sources: [], searchedBy: 'words', proposal: { id: 'p1', what: 'Stop it.', button: 'Stop it' } }))
     await mountAsk()
@@ -301,8 +312,10 @@ describe('Home’s question line', () => {
     const { UIContext } = await import('../src/ui')
     harness.standInHub()
     await harness.mount(<UIContext.Provider value={ui({ askQuestion: () => {} })}><Home /></UIContext.Provider>)
+    // It's the page header's one action: the first thing on the page, after the greeting.
     const home = document.querySelector('.home')!
-    expect(home.firstElementChild).toBe(screen.getByRole('textbox', { name: 'Ask your binders' }).closest('form'))
+    expect(home.firstElementChild?.classList.contains('page-header')).toBe(true)
+    expect(home.firstElementChild!.querySelector('.page-action form')).toBe(screen.getByRole('textbox', { name: 'Ask your binders' }).closest('form'))
     const waiting = screen.getByRole('region', { name: 'Waiting on you' })
     expect(screen.getByRole('textbox', { name: 'Ask your binders' }).compareDocumentPosition(waiting) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })

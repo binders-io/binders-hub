@@ -1,0 +1,18 @@
+/* A card's page: what it asks, and the words to and from its agent. */
+.permission-what { margin: 0; max-height: 200px; overflow: auto; padding: 10px 12px; border-radius: var(--r-sm); background: var(--fill-2); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--font-12); line-height: 1.5; }
+.now-who { font-size: var(--font-14); }
+.permission-actions { display: flex; flex-wrap: wrap; gap: var(--space-8); }
+.conversation { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-12); }
+.conversation li { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; }
+.conversation li > div { min-width: 0; padding: 10px 14px; border-radius: var(--r); background: var(--fill-1); border: 1px solid var(--line); }
+.conversation li.question > div { border-color: var(--amber-line); }
+.conversation-head { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; font-size: var(--font-13); line-height: var(--leading-13); }
+.conversation-head b { font-weight: 700; }
+.conversation time { font-size: var(--font-12); color: var(--faint); }
+.conversation p { margin: var(--space-4) 0 0; font-size: var(--font-14); line-height: var(--leading-14); color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The one box for words to the card. */
+.reply { display: flex; flex-wrap: wrap; gap: var(--space-8); }
+.reply input { flex: 1 1 260px; min-width: 0; }
+.reply .button { flex: none; }
+.card-controls { display: flex; flex-wrap: wrap; gap: 6px; }
+.card-controls select { width: auto; }

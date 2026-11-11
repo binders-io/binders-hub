@@ -44,14 +44,16 @@ export function leftOut(added: number, refused: { repo: string; why: string }[])
  * properties. `single` keeps one, for a binder's cards; a binder's agents and each agent keep several, and can take every
  * match of a filter at once. `within`, when given, is all there is to pick from (an agent picks among its `binders`'
  * repos), and nothing else can be added. A name GitHub doesn't list can otherwise still be typed in and added with Enter.
+ * `filters={false}` leaves the topic and property filters out, for a place that offers them as ways of their own.
  */
-export function RepoInput({ id, value, single = false, placeholder, within, binders, onChange }: {
+export function RepoInput({ id, value, single = false, placeholder, within, binders, filters = true, onChange }: {
   id: string
   value: string[]
   single?: boolean
   placeholder?: string
   within?: string[]
   binders?: string[]
+  filters?: boolean
   onChange: (repos: string[]) => void
 }) {
   // Where this binder's GitHub App's repos are changed, for the line that says only those can be linked.
@@ -277,7 +279,7 @@ export function RepoInput({ id, value, single = false, placeholder, within, bind
           <button type="button" className="text-button" onClick={() => { onChange([]); setShowAll(false) }}>Remove all</button>
         </div>
       )}
-      {showInput && (topics.length > 0 || properties.length > 0 || filtered) && (
+      {filters && showInput && (topics.length > 0 || properties.length > 0 || filtered) && (
         <div className="repo-filters">
           {(topics.length > 0 || topic) && (
             <select id={`${id}-topic`} aria-label="Filter by topic" value={topic} onChange={(e) => filterBy(() => setTopic(e.target.value))}>

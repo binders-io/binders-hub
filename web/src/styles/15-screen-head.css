@@ -1,0 +1,19 @@
+/* ---------- Screens with a header ---------- */
+/* A screen's title, its line and its actions: the older markup of the kit's PageHeader, looking the same. */
+.screen-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-16) var(--space-24); flex-wrap: wrap; margin-bottom: var(--space-24); }
+.head-actions { display: flex; flex-wrap: wrap; gap: var(--space-8); }
+.screen-head h2 { margin: 0 0 var(--space-4); font: 800 var(--font-26)/var(--leading-26) var(--display); letter-spacing: -0.02em; }
+.screen-head p { margin: 0; max-width: 62ch; color: var(--muted); font-size: var(--font-14); line-height: var(--leading-14); }
+.empty-screen { grid-column: 1 / -1; display: grid; justify-items: start; align-content: start; gap: var(--space-8); padding: var(--space-48) clamp(20px, 4vw, 56px); color: var(--muted); }
+.empty-screen h2 { margin: 0; font: 800 var(--font-20)/var(--leading-20) var(--display); color: var(--text); }
+.empty-screen p { margin: 0 0 6px; max-width: 520px; font-size: var(--font-14); line-height: var(--leading-14); }
+.screen-failed { justify-items: start; }
+.screen-failed h2, .screen-failed p { text-wrap: pretty; }
+.screen-failed-why { margin-bottom: 10px; max-width: 640px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--fill-2); color: var(--text-2); font-size: 12.5px; overflow-wrap: anywhere; }
+.screen-failed.whole { min-height: 100dvh; align-content: center; padding-inline: clamp(24px, 12vw, 160px); }
+/* Shown only once a screen has taken long enough to notice: most arrive first. */
+.screen-loading { margin: 0; padding: var(--space-48) clamp(20px, 4vw, 56px); color: var(--faint); font-size: var(--font-13); animation: screen-loading 0.15s ease-out 0.2s both; }
+@keyframes screen-loading { from { opacity: 0; } to { opacity: 1; } }
+.screen.moving { opacity: 0.6; transition: opacity 0.15s ease-out 0.2s; }
+
+@media (max-width: 600px) { .screen-head h2 { font-size: var(--font-20); line-height: var(--leading-20); } }

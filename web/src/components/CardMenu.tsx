@@ -1,11 +1,12 @@
 import { createElement } from 'react'
-import { ArrowUpRight, GitFork, Link2, MoreHorizontal, Send, Square, Trash2 } from 'lucide-react'
+import { ArrowUpRight, GitFork, Link2, Send, Square, Trash2 } from 'lucide-react'
 import type { Card } from '../data/model'
 import { useActions, type Actions } from '../data/store'
 import { href } from '../route'
 import { attempt, failure, toast } from './Toast'
 import { AgentAvatar } from './bits'
-import { openMenuUnder, type MenuItem } from './ContextMenu'
+import type { MenuItem } from './ContextMenu'
+import { MenuButton } from '../kit/MenuButton'
 import { useMayChangeBinder } from '../screens/settings/access'
 
 /** Where a person can move a card by hand. The card's page and its ⋯ menu both list these, so they can't differ. */
@@ -80,15 +81,16 @@ export function cardMenuItems(card: Card, store: Actions, open: (id: string) => 
   ]
 }
 
-/** A card's ⋯ on the board: the same menu as a right-click on it, drawn under the button. */
+/**
+ * A card's ⋯ on the board: the same menu as a right-click on it, drawn under the button. Its items are made as it opens,
+ * so they follow the card as it is then. A press on it doesn't open the card it sits on.
+ */
 export function CardMenu({ card, open, split }: { card: Card; open: (id: string) => void; split?: () => void }) {
   const store = useActions()
   const may = useMayChangeBinder()
   return (
     <div className="card-menu" onClick={(e) => e.stopPropagation()}>
-      <button type="button" className="card-menu-button" aria-label={`Actions for ${card.title}`} aria-haspopup="menu" onClick={(event) => openMenuUnder(event, cardMenuItems(card, store, open, split, may))}>
-        <MoreHorizontal size={15} />
-      </button>
+      <MenuButton className="card-menu-button" label={`Actions for ${card.title}`} items={() => cardMenuItems(card, store, open, split, may)} />
     </div>
   )
 }

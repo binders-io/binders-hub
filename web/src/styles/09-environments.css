@@ -1,0 +1,19 @@
+/* The environments of each repo, in Settings: a table each, under the repo's name, and a dialog to change one. */
+.env-repo { display: grid; min-width: 0; }
+.env-repo-name { margin: 0; padding: var(--space-12) var(--space-16) var(--space-4); font: 700 var(--font-13)/var(--leading-13) var(--body); }
+.env-repo-name a { color: inherit; text-decoration: none; display: inline-flex; align-items: center; gap: var(--space-4); overflow-wrap: anywhere; }
+.env-repo-name a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.env-repo-name svg { color: var(--muted); }
+.env-look { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-8) var(--space-16); font-size: var(--font-13); color: var(--muted); }
+.env-none { margin: 0; font-size: var(--font-13); color: var(--muted); }
+.env-none a { color: var(--text); font-weight: 600; }
+.env-dialog { display: grid; gap: var(--space-16); min-width: 0; }
+.env-dialog .settings-changeable { gap: var(--space-16); }
+.env-dialog-what { margin: 0; font-size: var(--font-13); color: var(--muted); overflow-wrap: anywhere; }
+.env-dialog .field-head .field-label { flex: none; }
+.env-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: var(--space-12); }
+.env-deploy { display: grid; gap: var(--space-8); padding-top: var(--space-16); border-top: 1px solid var(--line); }
+.env-deploy-title { font: 700 var(--font-13)/var(--leading-13) var(--body); color: var(--text); }
+.env-deploy .field-hint { margin: 0; }
+.env-add { display: grid; gap: var(--space-16); }
+@media (max-width: 600px) { .env-look .button { flex: 1 1 100%; } }

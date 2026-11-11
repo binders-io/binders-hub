@@ -1,0 +1,12 @@
+.status-dot.listening { box-shadow: 0 0 0 3px var(--green-wash); animation: pulse 2s ease-in-out infinite; }
+.agent-state.running .status-dot.listening { box-shadow: 0 0 0 3px var(--blue-wash); }
+
+/* The agent form: its tool and name, and everything else under More. */
+.runner-fields { gap: var(--space-12); padding-top: var(--space-16); border-top: 1px solid var(--line); }
+.agent-more > summary { display: flex; align-items: center; gap: 6px; width: fit-content; min-height: var(--control-sm); padding-right: 4px; cursor: pointer; list-style: none; border-radius: var(--r-sm); font: 600 var(--font-13)/1 var(--body); color: var(--muted); }
+.agent-more > summary::-webkit-details-marker { display: none; }
+.agent-more > summary:hover { color: var(--text); }
+.agent-more > summary svg { transition: transform var(--dur-fast) var(--ease-out); }
+.agent-more[open] > summary svg { transform: rotate(90deg); }
+.agent-more-fields { display: grid; gap: var(--space-16); padding-top: var(--space-12); }
+@media (prefers-reduced-motion: reduce) { .agent-more > summary svg { transition: none; } }

@@ -8,6 +8,7 @@ import { openOnDistill } from '../src/components/notesLayout'
 import { StoreProvider, useActions } from '../src/data/store'
 import type { Marks } from '../src/editor/workMarks'
 import { Notes } from '../src/screens/Notes'
+import { ContextMenuHost } from '../src/components/ContextMenu'
 
 // A note on a phone has its chat and its Distill: three views of one note, each filling the screen, and a way in to
 // Distill from elsewhere. Also what happens to a note that's gone, and to one nobody wrote in.
@@ -255,19 +256,21 @@ describe('a note that isn’t there', () => {
 
   it('says nothing about a note you delete yourself', async () => {
     standInHub(() => world({ notes: [note('n1', '# One\n\nwords'), note('n2', '# Two\n\nwords')] }))
-    await mount(<><Grab /><Notes id="n1" /></>)
-    fireEvent.click(screen.getByRole('button', { name: 'Delete this note' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Delete this note for good? Press again' }))
+    await mount(<><Grab /><Notes id="n1" /><ContextMenuHost /></>)
+    fireEvent.click(screen.getByRole('button', { name: 'More for this note' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete this note' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete this note for good? Press again' }))
     expect(actions.current().notes.map((n) => n.id)).toEqual(['n2'])
     expect(screen.queryByText('That note isn’t here any more')).toBeNull()
   })
 })
 
 describe('deleting a note from its screen', () => {
-  it('asks first, in the button, and says what goes', async () => {
-    await mount(<><Grab /><Notes id="n1" /></>)
-    fireEvent.click(screen.getByRole('button', { name: 'Delete this note' }))
-    expect(screen.getByRole('button', { name: 'Delete this note for good? Press again' })).toBeTruthy()
+  it('asks first, in its menu, and says what goes', async () => {
+    await mount(<><Grab /><Notes id="n1" /><ContextMenuHost /></>)
+    fireEvent.click(screen.getByRole('button', { name: 'More for this note' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete this note' }))
+    expect(await screen.findByRole('menuitem', { name: 'Delete this note for good? Press again' })).toBeTruthy()
     expect(actions.current().notes.map((n) => n.id)).toEqual(['n1'])
   })
 })

@@ -1,0 +1,36 @@
+/* Signing in, a hub that can't be reached, and a binder you're not in: the mark, the name, one line and what to do,
+   in the middle of the screen, with which hub this is at its foot. */
+.sign-in { height: 100%; overflow-y: auto; display: grid; grid-template-rows: minmax(0, 1fr) auto; justify-items: center; padding: var(--space-24) var(--space-16) calc(var(--space-16) + env(safe-area-inset-bottom, 0px)); background: radial-gradient(ellipse 50% 40% at 50% 38%, var(--fill-1), transparent 70%), var(--bg); }
+.sign-in-card { align-self: center; width: min(360px, 100%); display: grid; justify-items: center; gap: var(--space-24); padding: var(--space-48) 0; text-align: center; }
+.sign-in-card .logo { filter: drop-shadow(0 8px 24px var(--shadow-color)); }
+.sign-in-words { display: grid; gap: var(--space-8); }
+.sign-in-card h1 { margin: 0; font: 800 var(--font-26)/var(--leading-26) var(--display); letter-spacing: -0.02em; text-wrap: balance; overflow-wrap: anywhere; }
+.sign-in-line { margin: 0; font-size: var(--font-14); line-height: var(--leading-14); color: var(--muted); text-wrap: balance; }
+.sign-in-problem { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); }
+.sign-in-problem svg { color: var(--red); }
+.sign-in-actions { width: 100%; display: grid; gap: var(--space-12); }
+.sign-in-actions .button.big { width: 100%; }
+.sign-in-actions:empty { display: none; }
+.sign-in-waiting .skeleton { border-radius: var(--r-sm) !important; }
+.sign-in-dev { display: grid; gap: var(--space-12); }
+.sign-in-or { display: flex; align-items: center; gap: var(--space-12); font-size: var(--font-12); line-height: var(--leading-12); color: var(--faint); }
+.sign-in-or::before, .sign-in-or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.sign-in-note { margin: 0; font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); text-wrap: pretty; }
+.sign-in-name { display: flex; gap: var(--space-8); }
+.sign-in-name .input { flex: 1; min-width: 0; height: var(--control-lg); }
+.sign-in-name .button { flex: none; height: var(--control-lg); }
+.sign-in-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px; font-size: var(--font-12); line-height: var(--leading-12); color: var(--faint); text-align: center; }
+.sign-in-foot b { color: var(--muted); font-weight: 600; }
+.sign-in-foot .text-button { display: inline-flex; align-items: center; gap: 4px; min-height: 28px; font-size: var(--font-12); color: var(--muted); }
+.sign-in-foot .text-button:hover { color: var(--text); }
+/* Your binders, when this address isn't one of them: a card of rows, each a way in. */
+.sign-in-binders { list-style: none; margin: 0; padding: 0; width: 100%; border-radius: var(--r-lg); border: 1px solid var(--line); background: var(--tile); box-shadow: var(--tile-shadow); overflow: clip; text-align: left; }
+.sign-in-binders li + li { border-top: 1px solid var(--line); }
+.sign-in-binders a { display: flex; align-items: center; gap: var(--space-12); min-height: 56px; padding: var(--space-8) var(--space-12); color: var(--text); text-decoration: none; transition: background var(--dur-fast); }
+.sign-in-binders a:hover { background: var(--row-hover); }
+.sign-in-binders a:focus-visible { outline-offset: -2px; }
+.sign-in-binders a > svg { flex: none; color: var(--faint); }
+.sign-in-binder-mark { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: var(--r-sm); background: var(--fill-3); font: 800 var(--font-14)/1 var(--display); }
+.sign-in-binder-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.sign-in-binder-text b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 var(--font-14)/var(--leading-14) var(--body); }
+.sign-in-binder-text .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-12); color: var(--faint); }

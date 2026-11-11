@@ -1,0 +1,39 @@
+/* An agent's card: who it is and how it stands, what it's doing, two lines of facts, Details, and its actions. */
+.agent-card { display: flex; flex-direction: column; gap: var(--space-12); min-width: 0; padding: var(--space-16); border-radius: var(--r-lg); border: 1px solid var(--line); background: var(--tile); box-shadow: var(--tile-shadow); }
+.agent-card > header { display: flex; align-items: center; gap: var(--space-12); min-width: 0; }
+.agent-name { min-width: 0; display: grid; gap: 2px; }
+.agent-card h3 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 800 var(--font-16)/var(--leading-16) var(--display); }
+.agent-meta { display: flex; flex-wrap: wrap; align-items: center; font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); }
+.agent-piece { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.agent-piece:not(:last-child)::after { content: "·"; margin: 0 6px; color: var(--faint); }
+.agent-state { color: var(--text-2); }
+.agent-state.waiting { color: var(--amber); }
+.agent-state.running { color: var(--blue); }
+.agent-state.bad { color: var(--red); }
+.agent-state.off { color: var(--muted); }
+.status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+.status-dot.online { background: var(--green); }
+.agent-state.waiting .status-dot { background: var(--amber); }
+.agent-state.running .status-dot { background: var(--blue); }
+.agent-state.bad .status-dot { background: var(--red); }
+
+/* What it's doing: the card it works on or asks about, each a link to it. */
+.agent-doing { display: grid; gap: var(--space-8); min-width: 0; padding: 10px var(--space-12); border-radius: var(--r); background: var(--fill-1); font-size: var(--font-14); line-height: var(--leading-14); }
+.agent-doing.busy { background: var(--blue-wash); }
+.agent-doing.asks { background: var(--amber-wash); }
+.agent-doing a { display: grid; gap: 2px; min-width: 0; text-decoration: none; color: var(--text); }
+.agent-doing a b { font: 600 var(--font-12)/var(--leading-12) var(--body); color: var(--blue); }
+.agent-doing.asks a b { color: var(--amber); }
+.agent-doing a span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-doing a:hover span { text-decoration: underline; text-underline-offset: 3px; }
+.agent-idle { color: var(--muted); }
+
+/* Two lines of facts, an icon each: where it runs and with what, and its repos (or what it takes). */
+.agent-facts { margin: 0; display: grid; gap: 6px; min-width: 0; font-size: var(--font-13); line-height: var(--leading-13); color: var(--text-2); }
+.agent-facts > div { display: flex; align-items: center; gap: var(--space-8); min-width: 0; }
+.agent-facts dt { flex: none; display: grid; place-items: center; color: var(--faint); }
+.agent-facts dd { flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-facts dd .mono { font-size: var(--font-12); }
+.agent-where > span:not(:last-child)::after { content: "·"; margin: 0 6px; color: var(--faint); font-family: var(--body); }
+.agent-where .agent-model { color: var(--muted); }
+.chip-group { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }

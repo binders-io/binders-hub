@@ -51,22 +51,24 @@ afterEach(() => {
   window.location.hash = ''
 })
 
-const cardText = 'Everything in this binder as one file: its notes, its board, its change sets and its history. Not its connections to GitHub or Jira, no tokens, and not the pictures and files in notes, which are kept with the notes.'
+const inCopy = 'A copy has its notes, its board, its change sets and its history. Not its connections to GitHub or Jira, no tokens, and not the pictures and files in notes, which are kept with the notes.'
 
-describe('the card to download a copy', () => {
+describe('the row to download a copy', () => {
   it.each<[Role, boolean]>([['owner', true], ['admin', true], ['member', false], ['reader', false]])('is shown to a %s: %s', async (role, shown) => {
     hub({ role, section: 'general' })
     await mount(<Settings />)
     await screen.findByLabelText('Name')
-    await waitFor(() => expect(!!screen.queryByRole('heading', { name: 'Download a copy' })).toBe(shown))
-    expect(!!screen.queryByText(cardText)).toBe(shown)
+    await waitFor(() => expect(!!screen.queryByRole('heading', { name: 'Copies' })).toBe(shown))
+    expect(!!screen.queryByText(inCopy)).toBe(shown)
   })
 
   it('says what is in a copy and what is not, and has a plain link to this binder’s copy that saves as a file', async () => {
     hub({ section: 'general' })
     await mount(<Settings />)
-    const card = (await screen.findByRole('heading', { name: 'Download a copy' })).closest('section')!
-    expect(within(card).getByText(cardText)).toBeTruthy()
+    const card = (await screen.findByRole('heading', { name: 'Copies' })).closest('section')!
+    expect(within(card).getByText('Download a copy')).toBeTruthy()
+    // What's in it is behind its own line, for whoever wants it.
+    expect(within(card).getByText(inCopy).closest('details')!.querySelector('summary')!.textContent).toBe('What’s in a copy')
     const link = within(card).getByRole('link', { name: 'Download a copy' })
     expect(link.getAttribute('href')).toBe('/api/spaces/acme/copy')
     expect(link.hasAttribute('download')).toBe(true)
@@ -75,6 +77,11 @@ describe('the card to download a copy', () => {
 
 describe('the daily copy in the repo, in How work flows', () => {
   const switchName = 'Keep a daily copy of the whole binder in acme/api'
+  /** The daily copy's row opens its dialog, with the rest of what it says. */
+  const details = async () => {
+    fireEvent.click(await screen.findByRole('button', { name: /^Keep a daily copy/ }))
+    return within(screen.getByRole('dialog', { name: 'A daily copy' }))
+  }
 
   it('is off until turned on, with its lines, and turning it on saves at once', async () => {
     const { posted } = hub({ section: 'flow', copies: { days: 7, inRepo: { on: false, repo: 'acme/api', branch: 'binders-copies' } } })
@@ -82,9 +89,11 @@ describe('the daily copy in the repo, in How work flows', () => {
     const copies = await screen.findByRole('checkbox', { name: switchName })
     expect((copies as HTMLInputElement).checked).toBe(false)
     expect(copies.hasAttribute('disabled')).toBe(false)
-    const row = copies.closest('.issues-row')!
-    expect(row.textContent).toContain('On branch binders-copies. Seven days are kept. Anyone who can read acme/api can read them.')
-    expect(within(row as HTMLElement).queryByText(/Last copy/)).toBeNull()
+    expect(screen.getByText('Off. Seven days would be kept in acme/api.')).toBeTruthy()
+    const dialog = await details()
+    expect(dialog.getByText(/On branch/).textContent).toBe('On branch binders-copies. Seven days are kept. Anyone who can read acme/api can read them.')
+    expect(dialog.queryByText(/Last copy/)).toBeNull()
+    fireEvent.click(dialog.getByRole('button', { name: 'Done' }))
     fireEvent.click(copies)
     await screen.findByText('Saved')
     await waitFor(() => expect(JSON.stringify(posted)).toContain('"copies":true'))
@@ -111,20 +120,23 @@ describe('the daily copy in the repo, in How work flows', () => {
   it('says when the last copy was made, once it is on', async () => {
     hub({ section: 'flow', part: { repo: 'acme/api', repos: ['acme/api'], copies: true }, copies: { days: 7, inRepo: { on: true, repo: 'acme/api', branch: 'binders-copies', at: hoursAgo(3) } } })
     await mount(<Settings />)
-    expect(await screen.findByText('Last copy 3h ago.')).toBeTruthy()
+    expect(await screen.findByText('In acme/api, on binders-copies · last copy 3h ago')).toBeTruthy()
+    expect((await details()).getByText('Last copy 3h ago.')).toBeTruthy()
   })
 
   it('says nothing of a last copy while it is off', async () => {
     hub({ section: 'flow', copies: { days: 7, inRepo: { on: false, branch: 'binders-copies', at: hoursAgo(3) } } })
     await mount(<Settings />)
     await screen.findByRole('checkbox', { name: switchName })
-    expect(screen.queryByText(/Last copy/)).toBeNull()
+    expect(screen.queryByText(/last copy/i)).toBeNull()
+    expect((await details()).queryByText(/Last copy/)).toBeNull()
   })
 
   it('shows the hub’s words when the push failed, as a problem', async () => {
     hub({ section: 'flow', part: { repo: 'acme/api', repos: ['acme/api'], copies: true }, copies: { days: 7, inRepo: { on: true, repo: 'acme/api', branch: 'binders-copies', failed: 'GitHub refused the push: no access to acme/api.' } } })
     await mount(<Settings />)
-    const line = await screen.findByText('GitHub refused the push: no access to acme/api.')
+    expect((await screen.findByRole('button', { name: /^Keep a daily copy/ })).textContent).toContain('Failing')
+    const line = (await details()).getByText('GitHub refused the push: no access to acme/api.')
     expect(line.className).toContain('problem')
     expect(screen.queryByText(/Last copy/)).toBeNull()
   })
@@ -132,13 +144,13 @@ describe('the daily copy in the repo, in How work flows', () => {
   it('says the hub keeps seven days on its own disk, with when the last one was', async () => {
     hub({ section: 'flow', copies: { days: 7, latest: { at: hoursAgo(5), bytes: 1200, version: 40 } } })
     await mount(<Settings />)
-    expect(await screen.findByText('The hub also keeps seven days of copies on its own disk. Last one 5h ago.')).toBeTruthy()
+    expect((await details()).getByText('The hub also keeps seven days of copies on its own disk. Last one 5h ago.')).toBeTruthy()
   })
 
   it('says it without a last one when there is none yet, and to a member of the binder too, whatever the switch says', async () => {
     hub({ section: 'flow', role: 'member', part: {} })
     await mount(<Settings />)
-    expect(await screen.findByText('The hub also keeps seven days of copies on its own disk.')).toBeTruthy()
+    expect((await details()).getByText('The hub also keeps seven days of copies on its own disk.')).toBeTruthy()
   })
 })
 
@@ -147,27 +159,49 @@ describe('New binder from a copy', () => {
   const opened = async (over: Parameters<typeof hub>[0] extends infer T ? Partial<T> : never = {}) => {
     const set = hub({ hubAdmin: true, section: 'hubbinders', list: [listed('acme', 'Acme')], ...over } as Parameters<typeof hub>[0])
     await mount(<Settings />)
-    fireEvent.click(await screen.findByRole('button', { name: 'New binder from a copy' }))
-    return { ...set, dialog: await screen.findByRole('dialog', { name: 'New binder from a copy' }) }
+    return { ...set, dialog: await fromACopy() }
+  }
+  /** New binder, then From a copy, in its guided dialog. */
+  const fromACopy = async () => {
+    fireEvent.click(await screen.findByRole('button', { name: 'New binder' }))
+    const dialog = await screen.findByRole('dialog', { name: 'New binder' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'From a copy' }))
+    await within(dialog).findByRole('heading', { name: 'Which copy?' })
+    return dialog
   }
 
-  it('is for the hub’s admins, above the list', async () => {
+  it('is for the hub’s admins, the one button in the header, above the table', async () => {
     hub({ hubAdmin: true, section: 'hubbinders', list: [listed('acme', 'Acme')] })
     await mount(<Settings />)
-    const button = await screen.findByRole('button', { name: 'New binder from a copy' })
-    const list = screen.getByRole('list', { name: 'Binders on this hub' })
-    expect(button.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    const button = await screen.findByRole('button', { name: 'New binder' })
+    expect(button.closest('.page-header')).toBeTruthy()
+    const table = screen.getByRole('table', { name: 'Binders on this hub' })
+    expect(button.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     cleanup()
     hub({ hubAdmin: false, section: 'general' })
     await mount(<Settings />)
     await screen.findByLabelText('Name')
-    expect(screen.queryByRole('button', { name: 'New binder from a copy' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'New binder' })).toBeNull()
+  })
+
+  it('offers an empty binder or one from a copy, and an empty one names its owner', async () => {
+    hub({ hubAdmin: true, section: 'hubbinders', list: [listed('acme', 'Acme')] })
+    await mount(<Settings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'New binder' }))
+    const dialog = await screen.findByRole('dialog', { name: 'New binder' })
+    expect(within(dialog).getByRole('heading', { name: 'Start it from what?' })).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'An empty binder Recommended' }))
+    expect(await within(dialog).findByRole('heading', { name: 'Its name and owner' })).toBeTruthy()
+    expect(within(dialog).getByLabelText('Its owner')).toBeTruthy()
+    expect(within(dialog).getByText('@you')).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Back' }))
+    expect(await within(dialog).findByRole('button', { name: 'From a copy' })).toBeTruthy()
   })
 
   it('is there when the hub has no binders', async () => {
     hub({ hubAdmin: true, section: 'hubbinders', list: [] })
     await mount(<Settings />)
-    expect(await screen.findByRole('button', { name: 'New binder from a copy' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'New binder' })).toBeTruthy()
     expect(screen.getByText('No binders on this hub yet.')).toBeTruthy()
   })
 
@@ -220,8 +254,7 @@ describe('New binder from a copy', () => {
       return stand(url, init)
     }))
     await mount(<Settings />)
-    fireEvent.click(await screen.findByRole('button', { name: 'New binder from a copy' }))
-    const dialog = await screen.findByRole('dialog', { name: 'New binder from a copy' })
+    const dialog = await fromACopy()
     fireEvent.change(within(dialog).getByLabelText('The copy'), { target: { files: [fileNamed('copy-2026-11-09.binder-copy.json.gz')] } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Make the binder' }))
     const busy = await within(dialog).findByRole('button', { name: 'Making it…' })
@@ -239,11 +272,12 @@ describe('New binder from a copy', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Make the binder' }))
     await waitFor(() => expect(said).toContain('Made Copy from the copy.'))
     expect(await within(dialog).findByText('It doesn’t write to GitHub until that’s turned on in its Settings.')).toBeTruthy()
+    expect(within(dialog).getByRole('heading', { name: 'It’s made' })).toBeTruthy()
     expect(within(dialog).getByRole('link', { name: 'Open Copy' }).getAttribute('href')).toBe('/copy/#/home')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-    const rows = within(screen.getByRole('list', { name: 'Binders on this hub' })).getAllByRole('listitem')
-    expect(rows.map((r) => r.querySelector('b')!.textContent)).toEqual(['Acme', 'Copy'])
+    const rows = within(screen.getByRole('table', { name: 'Binders on this hub' })).getAllByRole('row').slice(1)
+    expect(rows.map((r) => r.querySelector('td')!.textContent)).toEqual(['Acme', 'Copy'])
   })
 
   it('shows the hub’s own words when it refuses, and keeps the dialog and what was chosen for another try', async () => {
@@ -252,7 +286,7 @@ describe('New binder from a copy', () => {
     fireEvent.change(within(dialog).getByLabelText('The copy'), { target: { files: [fileNamed('notes-2026-11-09.binder-copy.json.gz')] } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Make the binder' }))
     await waitFor(() => expect(said).toContain('That is not a copy of a binder.'))
-    expect(screen.getByRole('dialog', { name: 'New binder from a copy' })).toBeTruthy()
+    expect(screen.getByRole('dialog', { name: 'New binder' })).toBeTruthy()
     expect(within(dialog).getByLabelText('Name')).toHaveProperty('value', 'Notes')
     expect(within(dialog).getByRole('button', { name: 'Make the binder' }).hasAttribute('disabled')).toBe(false)
     expect(within(dialog).queryByText(/doesn’t write to GitHub/)).toBeNull()

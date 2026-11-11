@@ -1,9 +1,10 @@
-import type { RefObject } from 'react'
+import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { startCompletion } from '@codemirror/autocomplete'
 import { Bold, Code, Eye, EyeOff, Heading1, Heading2, Italic, Link, List, ListChecks, ListOrdered, Minus, Network, Quote, SquareCode, Strikethrough, Table, Link2 } from 'lucide-react'
 import { insertBlock, insertLink, mermaidTemplate, setLinePrefix, tableTemplate, toggleWrap } from './commands'
 import type { EditorHandle } from './MarkdownEditor'
 import type { EditorView } from '@codemirror/view'
+import { MenuButton, type MenuItem } from '../kit'
 
 interface Tool {
   label: string
@@ -46,37 +47,82 @@ const groups: Tool[][] = [
   ],
 ]
 
+/** How wide a tool is, and what a group adds for the line between it and the next: as 06-notes.css draws them. */
+const toolWidth = 30
+const groupGap = 13
+const moreWidth = 32
+
+/** How many of the groups fit in a width, the rest going to the ⋯; all of them when nothing has been measured. */
+function groupsThatFit(width: number, fixed: number) {
+  if (width <= 0) return groups.length
+  const widths = groups.map((group) => group.length * toolWidth + groupGap)
+  if (widths.reduce((sum, w) => sum + w, fixed) <= width) return groups.length
+  let used = fixed + moreWidth
+  let fit = 0
+  for (const w of widths) {
+    if (used + w > width) break
+    used += w
+    fit++
+  }
+  return fit
+}
+
 /**
- * The formatting toolbar over the editor, and Show Markdown at its end. On a phone it's under the words while they're
- * being written, over the keyboard, with a way to put the keyboard away.
+ * The formatting toolbar over the editor, and Show Markdown at its end: one row of grouped buttons, and what doesn't fit
+ * in a ⋯ at its end, so it's never more than one row. On a phone it's under the words while they're being written, over
+ * the keyboard, with a way to put the keyboard away, and it scrolls sideways instead.
  */
 export function Toolbar({ editor, raw, onRaw, onDone }: { editor: RefObject<EditorHandle | null>; raw: boolean; onRaw: (raw: boolean) => void; onDone?: () => void }) {
+  const bar = useRef<HTMLDivElement>(null)
+  const markdown = useRef<HTMLButtonElement>(null)
+  const [fit, setFit] = useState(groups.length)
+  useLayoutEffect(() => {
+    const row = bar.current
+    if (!row || onDone || typeof ResizeObserver === 'undefined') return
+    const measure = () => setFit(groupsThatFit(row.clientWidth, (markdown.current?.offsetWidth ?? 0) + 8))
+    measure()
+    const watch = new ResizeObserver(measure)
+    watch.observe(row)
+    return () => watch.disconnect()
+  }, [onDone])
+  const run = (tool: Tool) => {
+    const view = editor.current?.view()
+    if (view) tool.run(view)
+  }
+  const shown = onDone ? groups : groups.slice(0, fit)
+  const rest = onDone ? [] : groups.slice(fit)
+  const overflow = (): MenuItem[] => rest.flatMap((group, index) => [
+    ...(index ? [{ separator: true as const }] : []),
+    ...group.map((tool) => {
+      const Icon = tool.icon
+      return { label: tool.label, icon: <Icon size={14} />, onSelect: () => run(tool) }
+    }),
+  ])
   return (
-    <div className={`md-toolbar${onDone ? ' docked' : ''}`} role="toolbar" aria-label="Formatting">
-      {groups.map((group, index) => (
+    <div ref={bar} className={`md-toolbar${onDone ? ' docked' : ''}`} role="toolbar" aria-label="Formatting">
+      {shown.map((group, index) => (
         <div key={index} className="md-tool-group">
           {group.map((tool) => {
             const Icon = tool.icon
             return (
               <button
                 key={tool.label}
+                type="button"
                 className="md-tool"
                 title={tool.keys ? `${tool.label}  ${tool.keys}` : tool.label}
                 aria-label={tool.label}
                 onMouseDown={(event) => event.preventDefault()}
-                onClick={() => {
-                  const view = editor.current?.view()
-                  if (view) tool.run(view)
-                }}
+                onClick={() => run(tool)}
               >
-                <Icon size={15} />
+                <Icon size={16} />
               </button>
             )
           })}
         </div>
       ))}
-      <button className={`md-tool md-raw${raw ? ' on' : ''}`} onMouseDown={(event) => event.preventDefault()} onClick={() => onRaw(!raw)} aria-pressed={raw} title={raw ? 'Hide the Markdown' : 'Show the Markdown on every line'}>
-        {raw ? <EyeOff size={15} /> : <Eye size={15} />}
+      {rest.length > 0 && <MenuButton className="md-tool md-more" label="More formatting" items={overflow} />}
+      <button ref={markdown} type="button" className={`md-tool md-raw${raw ? ' on' : ''}`} onMouseDown={(event) => event.preventDefault()} onClick={() => onRaw(!raw)} aria-pressed={raw} title={raw ? 'Hide the Markdown' : 'Show the Markdown on every line'}>
+        {raw ? <EyeOff size={16} /> : <Eye size={16} />}
         <span>Markdown</span>
       </button>
       {onDone && <button type="button" className="md-tool md-done" onClick={onDone}>Done</button>}

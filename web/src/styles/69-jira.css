@@ -1,0 +1,31 @@
+/* Settings → Jira: the guided connection's steps, and bringing existing work in. */
+.jira-step { display: grid; gap: var(--space-16); min-width: 0; }
+.jira-step > p { margin: 0; }
+.jira-group { display: grid; gap: var(--space-8); margin: 0; padding: 0; border: 0; min-width: 0; }
+.jira-group > legend { padding: 0 0 var(--space-8); }
+.jira-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr)); gap: var(--space-12); }
+.jira-grid .jira-wide { grid-column: 1 / -1; }
+.jira-grid .field-label { text-transform: capitalize; }
+.jira-check { display: flex; align-items: flex-start; gap: var(--space-8); cursor: pointer; }
+.jira-check input { flex: none; margin-top: 3px; }
+.jira-check > span { display: grid; gap: 2px; font-size: var(--font-14); }
+.jira-check b { font-weight: 600; }
+.jira-import { display: grid; gap: var(--space-16); min-width: 0; }
+.jira-import > p { margin: 0; }
+.jira-features { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--r); overflow: clip; }
+.jira-features[aria-busy="true"] { padding: var(--space-16); }
+.jira-features li + li { border-top: 1px solid var(--line); }
+.jira-features label { display: grid; grid-template-columns: auto 88px minmax(0, 1fr) auto; align-items: start; gap: var(--space-4) var(--space-12); padding: var(--space-12) var(--space-16); cursor: pointer; transition: background var(--dur-fast); }
+.jira-features label:hover { background: var(--row-hover); }
+.jira-features input { margin-top: 3px; }
+.jira-feature-key { font-size: var(--font-13); color: var(--text-2); padding-top: 1px; }
+.jira-feature-text { display: grid; gap: 2px; min-width: 0; }
+.jira-feature-text b { font-weight: 600; font-size: var(--font-14); overflow-wrap: anywhere; }
+.jira-feature-text em { font-style: normal; font-size: var(--font-13); color: var(--muted); overflow-wrap: anywhere; }
+.jira-feature-status { font-size: var(--font-12); color: var(--muted); white-space: nowrap; padding-top: 2px; }
+@media (max-width: 600px) {
+  .jira-features label { grid-template-columns: auto minmax(0, 1fr); }
+  .jira-feature-key { grid-column: 2; }
+  .jira-feature-text { grid-column: 2; }
+  .jira-feature-status { grid-column: 2; }
+}

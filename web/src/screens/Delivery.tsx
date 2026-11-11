@@ -1,7 +1,7 @@
-import { Fragment } from 'react'
+import { Fragment, type CSSProperties } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { ArrowRight, ArrowUpRight, Globe, ShieldCheck } from 'lucide-react'
-import { environmentBefore, promotion, repoEnvironments, sameRepo, type EnvState } from '../../../shared/work.ts'
+import { ArrowRight, ArrowUpRight, Globe, Rocket, ShieldCheck } from 'lucide-react'
+import { environmentBefore, promotion, repoEnvironments, sameRepo, type EnvState, type Run } from '../../../shared/work.ts'
 import type { Environment, HubState } from '../data/model'
 import { useStore } from '../data/store'
 import { attempt, toast } from '../components/Toast'
@@ -10,6 +10,7 @@ import { ConfirmButton } from '../components/ConfirmButton'
 import { LookButton, environmentRepos, howEnvironmentsArrive } from '../components/Environments'
 import { useBinderAccess, useMayChangeBinder } from './settings/access'
 import { href } from '../route'
+import { DataTable, EmptyState, PageHeader, Section, Status, type Column, type Tone } from '../kit'
 
 const spring = { type: 'spring', stiffness: 380, damping: 34 } as const
 
@@ -44,6 +45,34 @@ function behindWords(state: Pick<HubState, 'pulls' | 'environments'>, env: Envir
   return left ? `${pulls(left)} on ${before.name} ${left === 1 ? 'isn’t' : 'aren’t'} here yet` : `Up to date with ${before.name}`
 }
 
+/** How an environment stands, as the kit's pill says it. */
+const stateTone: Record<EnvState, Tone> = { healthy: 'ok', deploying: 'running', waiting: 'waiting', failed: 'bad' }
+
+/** How long a run took, in words: "3m 24s". */
+const took = (seconds: number) => `${Math.floor(seconds / 60) ? `${Math.floor(seconds / 60)}m ` : ''}${seconds % 60}s`
+
+const runColumns: Column<Run>[] = [
+  {
+    key: 'target', header: 'Run', phone: 'title', width: '44%',
+    text: (run) => `${run.target} ${run.workflow} ${run.repo}`,
+    cell: (run) => {
+      const link = webAddress(run.url)
+      return (
+        <span className="run-target">
+          <CheckGlyph state={run.state} />
+          {link ? <a className="mono" href={link} target="_blank" rel="noreferrer">{run.target}</a> : <span className="mono">{run.target}</span>}
+          <span className="sr-only">, {runWords[run.state]}</span>
+        </span>
+      )
+    },
+  },
+  { key: 'workflow', header: 'Kind', width: '96px', cell: (run) => <span className={`workflow ${run.workflow}`}>{run.workflow}</span> },
+  { key: 'repo', header: 'Repo', cell: (run) => run.repo.split('/')[1] },
+  { key: 'took', header: 'Took', width: '110px', align: 'end', cell: (run) => (run.state === 'running' ? <span className="running-bar" role="img" aria-label="Running" /> : <span className="num">{took(run.seconds)}</span>) },
+  { key: 'when', header: 'When', width: '96px', align: 'end', cell: (run) => <time className="num" dateTime={run.at}>{ago(run.at)}</time> },
+]
+const runWords: Record<Run['state'], string> = { passed: 'passed', failed: 'failed', running: 'running', queued: 'waiting to run' }
+
 /** For each repo a binder works in, the environments GitHub deploys it to and what's on each, and the runs that took it there. */
 export function Delivery() {
   const store = useStore()
@@ -54,121 +83,106 @@ export function Delivery() {
   const repos = environmentRepos(state.environments)
 
   return (
-    <div className="delivery">
-      {repos.length ? (
-        <div className="delivery-note">
-          <p className="faint">{howEnvironmentsArrive}</p>
-          {may && <LookButton />}
-        </div>
-      ) : (
-        <section className="delivery-empty">
-          <p>Nothing has been deployed from this binder’s repos yet. When GitHub reports a deployment from one of them, it shows here by itself.</p>
-          {may && <LookButton className="button primary" />}
-        </section>
-      )}
+    <div className="page delivery">
+      <div className="page-column delivery-column">
+        <PageHeader title="Delivery" lead={repos.length ? howEnvironmentsArrive : undefined} action={repos.length && may ? <LookButton /> : undefined} />
 
-      {repos.map((repo) => {
-        const list = repoEnvironments(state, repo)
-        return (
-          <section key={repo.toLowerCase()} className="delivery-repo" aria-label={`${repo}’s environments`}>
-            <h2 className="delivery-repo-name">
-              <a href={`https://github.com/${repo}`} target="_blank" rel="noreferrer">{repo} <ArrowUpRight size={13} aria-hidden="true" /></a>
-            </h2>
-            <div className="envs" style={{ gridTemplateColumns: list.map(() => 'minmax(0, 1fr)').join(' 96px ') }}>
-              {list.map((env, index) => {
-                const next = list[index + 1]
-                const move = next && promotion(state, next)
-                const served = webAddress(env.url)
-                const run = webAddress(env.logUrl)
-                return (
-                  <Fragment key={env.id}>
-                    <motion.section layout className={`env ${env.state}`} transition={spring}>
-                      <header>
-                        <h3>{env.name}</h3>
-                        <span className={`env-state ${env.state}`}>
-                          <i aria-hidden="true" />
-                          {stateWords[env.state]}
-                        </span>
-                      </header>
-                      <div className="env-version">
-                        {env.version ? (
-                          <AnimatePresence mode="popLayout" initial={false}>
-                            <motion.b key={env.version} className="num" initial={{ y: 14, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: -14, opacity: 0 }} transition={spring}>
-                              {env.version}
-                            </motion.b>
-                          </AnimatePresence>
-                        ) : <span className="env-none">Nothing deployed yet</span>}
-                      </div>
-                      {served && <a className="env-url mono" href={served} target="_blank" rel="noreferrer"><Globe size={12} aria-hidden="true" /> {served.replace(/^https?:\/\//i, '')}</a>}
-                      {env.state === 'deploying' && env.progress !== undefined && (
-                        <div className="env-progress">
-                          <Progress value={env.progress} />
-                          <span className="num">{Math.round(env.progress * 100)}%</span>
+        {!repos.length && (
+          <section className="delivery-empty" aria-label="Nothing deployed yet">
+            <EmptyState icon={<Rocket size={20} />} title="Nothing has been deployed from this binder’s repos yet."
+              line="When GitHub reports a deployment from one of them, it shows here by itself."
+              action={may ? <LookButton className="button primary" /> : undefined} />
+          </section>
+        )}
+
+        {repos.map((repo) => {
+          const list = repoEnvironments(state, repo)
+          return (
+            <section key={repo.toLowerCase()} className="delivery-repo" aria-label={`${repo}’s environments`}>
+              <h2 className="delivery-repo-name">
+                <a href={`https://github.com/${repo}`} target="_blank" rel="noreferrer">{repo} <ArrowUpRight size={13} aria-hidden="true" /></a>
+              </h2>
+              <div className="envs" style={{ '--envs': list.length } as CSSProperties}>
+                {list.map((env, index) => {
+                  const next = list[index + 1]
+                  const move = next && promotion(state, next)
+                  const served = webAddress(env.url)
+                  const run = webAddress(env.logUrl)
+                  return (
+                    <Fragment key={env.id}>
+                      <motion.section layout className={`env ${env.state}`} transition={spring}>
+                        <header>
+                          <h3>{env.name}</h3>
+                          <Status tone={stateTone[env.state]}>{stateWords[env.state]}</Status>
+                        </header>
+                        <div className="env-version">
+                          {env.version ? (
+                            <AnimatePresence mode="popLayout" initial={false}>
+                              <motion.b key={env.version} className="num" initial={{ y: 14, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: -14, opacity: 0 }} transition={spring}>
+                                {env.version}
+                              </motion.b>
+                            </AnimatePresence>
+                          ) : <span className="env-none">Nothing deployed yet</span>}
+                        </div>
+                        {served && <a className="env-url mono" href={served} target="_blank" rel="noreferrer"><Globe size={12} aria-hidden="true" /> {served.replace(/^https?:\/\//i, '')}</a>}
+                        {env.state === 'deploying' && env.progress !== undefined && (
+                          <div className="env-progress">
+                            <Progress value={env.progress} />
+                            <span className="num">{Math.round(env.progress * 100)}%</span>
+                          </div>
+                        )}
+                        <p className="env-behind">{behindWords(state, env)}</p>
+                        {env.changeSetIds.length > 0 && (
+                          <ul className="env-sets" aria-label={`Change sets on ${env.name}`}>
+                            {env.changeSetIds.map((id) => {
+                              const set = state.changeSets.find((c) => c.id === id)
+                              return set && (
+                                <li key={id}>
+                                  <a href={href({ screen: 'changes', id })}><span className="mono">CS-{set.number}</span> {set.title}</a>
+                                </li>
+                              )
+                            })}
+                          </ul>
+                        )}
+                        {(env.deployedAt || run) && (
+                          <footer>
+                            {env.deployedAt && <span>Deployed <time dateTime={env.deployedAt}>{deployedWords(env.deployedAt)}</time></span>}
+                            {run && <a href={run} target="_blank" rel="noreferrer">See the run on GitHub <ArrowUpRight size={11} aria-hidden="true" /></a>}
+                          </footer>
+                        )}
+                      </motion.section>
+                      {next && (
+                        <div className={`promote${move ? ' ready' : ''}`}>
+                          <span className="promote-line" aria-hidden="true" />
+                          {move && mayPromote ? (
+                            <ConfirmButton
+                              className="button primary small"
+                              question={`Promote ${move.version} to ${next.name}? Press again`}
+                              label={`Promote ${move.version} to ${next.name}`}
+                              onConfirm={() => void attempt(async () => {
+                                await store.promote(next.id)
+                                toast(`Asked GitHub to deploy ${move.version} to ${next.name}.`)
+                              })}
+                            >
+                              <ShieldCheck size={14} aria-hidden="true" /> Promote
+                            </ConfirmButton>
+                          ) : <span className="promote-arrow" aria-hidden="true"><ArrowRight size={14} /></span>}
+                          <span className="promote-line" aria-hidden="true" />
                         </div>
                       )}
-                      <p className="env-behind">{behindWords(state, env)}</p>
-                      <ul className="env-sets">
-                        {env.changeSetIds.map((id) => {
-                          const set = state.changeSets.find((c) => c.id === id)
-                          return set && (
-                            <li key={id}>
-                              <a href={href({ screen: 'changes', id })}><span className="mono">CS-{set.number}</span> {set.title}</a>
-                            </li>
-                          )
-                        })}
-                      </ul>
-                      <footer className="faint">
-                        {env.deployedAt && <span>Deployed <time dateTime={env.deployedAt}>{deployedWords(env.deployedAt)}</time></span>}
-                        {run && <a href={run} target="_blank" rel="noreferrer">See the run on GitHub <ArrowUpRight size={11} aria-hidden="true" /></a>}
-                      </footer>
-                    </motion.section>
-                    {next && (
-                      <div className="promote">
-                        <span className={`promote-line${move ? ' ready' : ''}`} />
-                        {move && mayPromote ? (
-                          <ConfirmButton
-                            className="button primary"
-                            question={`Promote ${move.version} to ${next.name}? Press again`}
-                            label={`Promote ${move.version} to ${next.name}`}
-                            onConfirm={() => void attempt(async () => {
-                              await store.promote(next.id)
-                              toast(`Asked GitHub to deploy ${move.version} to ${next.name}.`)
-                            })}
-                          >
-                            <ShieldCheck size={14} aria-hidden="true" /> Promote
-                          </ConfirmButton>
-                        ) : <ArrowRight className="promote-arrow" size={14} aria-hidden="true" />}
-                        <span className={`promote-line${move ? ' ready' : ''}`} />
-                      </div>
-                    )}
-                  </Fragment>
-                )
-              })}
-            </div>
-          </section>
-        )
-      })}
+                    </Fragment>
+                  )
+                })}
+              </div>
+            </section>
+          )
+        })}
 
-      <section className="runs">
-        <header>
-          <h2>Runs</h2>
-          <span className="faint">{state.me?.github.webhooks ? 'From GitHub Actions' : 'GitHub\u2019s webhooks aren\u2019t set up, so runs show when the hub records them'}</span>
-        </header>
-        <ol>
-          <AnimatePresence initial={false}>
-            {state.runs.map((run) => (
-              <motion.li key={run.id} layout initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} transition={spring} className={`run ${run.state}`}>
-                <CheckGlyph state={run.state} />
-                <span className={`workflow ${run.workflow}`}>{run.workflow}</span>
-                <span className="run-target mono">{run.target}</span>
-                <span className="run-repo faint">{run.repo.split('/')[1]}</span>
-                <span className="run-time num">{run.state === 'running' ? <span className="running-bar" /> : `${Math.floor(run.seconds / 60) ? `${Math.floor(run.seconds / 60)}m ` : ''}${run.seconds % 60}s`}</span>
-                <time className="faint">{ago(run.at)}</time>
-              </motion.li>
-            ))}
-          </AnimatePresence>
-        </ol>
-      </section>
+        <Section level={2} title="Runs" className="runs" lead={state.me?.github.webhooks ? 'From GitHub Actions.' : 'GitHub’s webhooks aren’t set up, so runs show when the hub records them.'}>
+          <DataTable label="Runs" columns={runColumns} rows={state.runs} rowKey={(run) => run.id} pageSize={25}
+            empty={<EmptyState compact icon={<Rocket size={18} />} title="No runs yet" line="They show here as GitHub Actions reports them." />} />
+        </Section>
+      </div>
     </div>
   )
 }

@@ -138,7 +138,7 @@ describe('why a card stopped, on the board', () => {
   it('is one line on the card, with how often', async () => {
     standInHub(() => hubState({ cards: [card('Ran long', 'ready', { stopped: { why: 'Ran out of time.', at: daysAgo(0), times: 1 } })] }))
     await board()
-    const line = within(column('Ready')).getByText('Stopped once: Ran out of time.')
+    const line = within(column('Ready')).getByText('Stopped once: Ran out of time.').closest('p')!
     expect(line.className).toBe('card-stopped')
     expect(line.getAttribute('title')).toBe('Stopped once: Ran out of time.')
   })
@@ -148,10 +148,10 @@ describe('why a card stopped, on the board', () => {
     await board()
     expect(within(column('Blocked')).getByText('Stopped twice: Signed out of Claude Code.')).toBeTruthy()
     expect(screen.queryByText(/Asks:/)).toBeNull()
-    // The line at the top of the board that names who asks.
-    const attention = document.querySelector('.attention-card.asks') as HTMLElement
-    expect(within(attention).getByText('Stopped twice')).toBeTruthy()
-    expect(within(attention).queryByText(/asks you/)).toBeNull()
+    // The line at the top of the board says what waits: a card that stopped, not that an agent asks.
+    const strip = document.querySelector('.waiting-strip') as HTMLElement
+    expect(strip.textContent).toContain('1 stopped card · Stuck')
+    expect(strip.textContent).not.toMatch(/asks/)
   })
 
   it('says it for a card the hub blocked before it kept the reason, from its question', async () => {
@@ -165,7 +165,7 @@ describe('why a card stopped, on the board', () => {
     standInHub(() => hubState({ agents: [mine], cards: [card('Question', 'blocked', { agentId: 'a1', needsYou: 'Left or right?' })] }))
     await board()
     expect(within(column('Blocked')).getByText('Asks: Left or right?')).toBeTruthy()
-    expect(screen.getByText('Mine agent asks you')).toBeTruthy()
+    expect((document.querySelector('.waiting-strip') as HTMLElement).textContent).toContain('1 question · Question')
   })
 })
 

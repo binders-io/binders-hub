@@ -1,0 +1,68 @@
+/* ---------- Forms and dialogs ---------- */
+/* A dialog: over a scrim in the middle of a wide window, a sheet from the bottom on a phone (below). Its name, Back and
+   Close at the top and its buttons at the bottom stay in view however long it is, on a phone on its side too: only the
+   body scrolls. */
+.dialog { position: fixed; top: 12vh; left: 50%; translate: -50% 0; z-index: var(--z-dialog); width: min(520px, calc(100vw - 32px)); max-height: 76dvh; display: flex; flex-direction: column; overflow: hidden; border-radius: var(--r-lg); background: var(--pop-bg); box-shadow: var(--shadow-pop); }
+.dialog.small { width: min(420px, calc(100vw - 32px)); }
+.dialog.wide, .dialog.large { width: min(720px, calc(100vw - 32px)); }
+.dialog > header { flex: none; display: flex; align-items: center; gap: var(--space-8); min-height: 64px; padding: var(--space-16) var(--space-12) var(--space-12) var(--space-24); }
+.dialog > header:has(.dialog-back) { padding-left: var(--space-12); }
+.dialog > header h2 { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.dialog > header > .icon-button { margin-left: auto; }
+.dialog-back { display: inline-flex; align-items: center; gap: 2px; height: 32px; padding: 0 10px 0 4px; border-radius: var(--r-sm); font: 600 var(--font-13)/1 var(--body); color: var(--muted); }
+.dialog-back:hover { background: var(--fill-2); color: var(--text); }
+.dialog-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 var(--space-24); }
+.dialog-body:not(:has(.form-actions)) { padding-bottom: var(--space-24); }
+.dialog:has(.dialog-foot) .dialog-body { padding-bottom: var(--space-16); }
+.dialog h2 { margin: 0; font: 800 var(--font-20)/var(--leading-20) var(--display); letter-spacing: -0.01em; }
+/* The footer: its buttons, the main one last, kept at the bottom whatever the body holds. */
+.dialog-foot { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-8); padding: var(--space-12) var(--space-24) var(--space-16); border-top: 1px solid var(--line); background: var(--pop-solid); }
+.dialog-foot > .dialog-foot-start { margin-right: auto; }
+
+/* A form: a column of fields, each its name over a box as wide as the form. */
+.form { display: grid; gap: var(--space-16); }
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-12); }
+.swarm-part { display: grid; gap: 6px; }
+.field { display: grid; gap: 6px; border: 0; padding: 0; margin: 0; min-width: 0; }
+/* A field's name: in sentence case, as it reads. Small capitals are kept for the rare eyebrow over a title. */
+.field-label { font: 500 var(--font-13)/var(--leading-13) var(--body); color: var(--text-2); }
+.field-hint { font-size: var(--font-12); line-height: var(--leading-12); color: var(--muted); }
+.eyebrow { margin: 0; font: 700 var(--font-12)/var(--leading-12) var(--body); letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
+/* A box to type in or choose from: the same height as a button, a quiet frame, and the ring of focus when it has it. */
+.input, .select, .textarea,
+.field input:not([type='checkbox'], [type='radio'], [type='range'], [type='file'], [type='color']), .field textarea, .field select, .reply input, .binder-list input, .binder-add > input, .sign-in-dev input, .tree-new-binder input, .card-controls select, .distill-with select {
+  width: 100%; height: var(--control); padding: 0 12px; border-radius: var(--r-sm); border: 1px solid var(--field-line); background: var(--field-bg); color: var(--text); font-size: var(--font-14); line-height: var(--leading-14); outline: none; transition: border-color var(--dur-fast), box-shadow var(--dur-fast); }
+.textarea, .field textarea { height: auto; min-height: 84px; padding: 8px 12px; resize: vertical; line-height: 1.5; }
+.select, .field select, .card-controls select, .distill-with select { appearance: none; padding-right: 34px; background-image: var(--chevron); background-repeat: no-repeat; background-position: right 10px center; background-size: 16px; text-overflow: ellipsis; }
+.input::placeholder, .textarea::placeholder, .field input::placeholder, .field textarea::placeholder { color: var(--faint); }
+.input:hover:not(:disabled, :focus), .select:hover:not(:disabled, :focus), .textarea:hover:not(:disabled, :focus), .field :is(input, textarea, select):hover:not(:disabled, :focus, [type='checkbox'], [type='radio']) { border-color: var(--field-line-hover); }
+.input:focus, .select:focus, .textarea:focus, .field input:focus, .field textarea:focus, .field select:focus, .reply input:focus, .binder-list input:focus, .binder-add > input:focus, .sign-in-dev input:focus, .tree-new-binder input:focus, .card-controls select:focus, .distill-with select:focus { border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-wash); }
+.input:disabled, .select:disabled, .textarea:disabled, .field :is(input, textarea, select):disabled { opacity: 0.55; cursor: not-allowed; }
+.input[aria-invalid='true'], .field [aria-invalid='true'] { border-color: var(--red); }
+input[type='checkbox'], input[type='radio'] { accent-color: var(--primary); }
+.checks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.check { display: inline-flex; align-items: center; gap: var(--space-8); font-size: var(--font-14); color: var(--text-2); }
+.check input { accent-color: var(--primary); width: 16px; height: 16px; margin: 0; }
+.form-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-8); margin-top: var(--space-4); }
+.dialog .form-actions { position: sticky; bottom: 0; z-index: 2; margin: var(--space-8) calc(-1 * var(--space-24)) 0; padding: var(--space-12) var(--space-24) var(--space-16); border-top: 1px solid var(--line); background: var(--pop-solid); }
+a.button { text-decoration: none; }
+/* Where a toast sits; how it looks is with the toasts further down. */
+.toast { position: fixed; bottom: 24px; left: 50%; translate: -50% 0; z-index: var(--z-toast); max-width: min(520px, calc(100vw - 32px)); padding: 10px 12px 10px 16px; border-radius: var(--r); background: var(--toast-bg); color: var(--toast-ink); font-size: var(--font-14); box-shadow: var(--shadow-pop); cursor: pointer; }
+
+/* A phone: the dialog is a sheet from the bottom, rounded at the top, up to most of the screen, clear of the home bar,
+   with its buttons in a column at the bottom, the main one last and in reach of a thumb. */
+@media (max-width: 600px) {
+  .dialog, .dialog.small, .dialog.wide, .dialog.large { top: auto; bottom: 0; left: 0; right: 0; translate: none; width: 100%; max-height: 92dvh; border-radius: var(--r-lg) var(--r-lg) 0 0; background: var(--pop-solid); box-shadow: var(--shadow-sheet); }
+  .dialog::before { content: ""; position: absolute; top: 6px; left: 50%; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: var(--line-strong); pointer-events: none; }
+  .dialog > header { min-height: 60px; padding: var(--space-16) var(--space-8) var(--space-8) var(--space-16); }
+  .dialog > header:has(.dialog-back) { padding-left: var(--space-8); }
+  .dialog-body { padding: 0 var(--space-16); }
+  .dialog-body:not(:has(.form-actions)) { padding-bottom: calc(var(--space-24) + env(safe-area-inset-bottom, 0px)); }
+  .dialog:has(.dialog-foot) .dialog-body { padding-bottom: var(--space-16); }
+  .dialog-foot, .dialog .form-actions { flex-direction: column; align-items: stretch; padding: var(--space-12) var(--space-16) calc(var(--space-16) + env(safe-area-inset-bottom, 0px)); }
+  .dialog .form-actions { margin-inline: calc(-1 * var(--space-16)); }
+  .dialog-foot > .dialog-foot-start { margin-right: 0; }
+  .dialog-foot .button, .dialog .form-actions .button { width: 100%; }
+  /* With a sheet up, a toast says its piece at the top, off the sheet's buttons. */
+  body:has(.dialog) .toast { top: calc(var(--space-12) + env(safe-area-inset-top, 0px)); bottom: auto; }
+}

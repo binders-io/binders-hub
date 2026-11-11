@@ -1,0 +1,19 @@
+.binder-switcher { position: relative; }
+.binder-switcher .brand { width: 100%; min-height: 48px; text-align: left; border-radius: var(--r); padding: 6px; transition: background var(--dur-fast); }
+.binder-switcher .brand:hover { background: var(--fill-1); }
+.binder-switcher .brand div { flex: 1; min-width: 0; }
+.binder-switcher .brand b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.binder-switcher .brand span.mono { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
+.binder-switcher .brand > svg:last-child { flex: none; }
+.binder-menu { position: absolute; z-index: var(--z-popover); top: calc(100% + 6px); left: 0; right: 0; list-style: none; margin: 0; padding: var(--space-4); border-radius: var(--r); background: var(--pop-bg); box-shadow: var(--shadow-pop); max-height: 60vh; -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); overflow-y: auto; }
+.binder-menu button, .binder-menu a { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 40px; padding: 6px 8px; border-radius: var(--r-sm); text-align: left; color: var(--text); text-decoration: none; }
+.binder-menu button:hover, .binder-menu a:hover { background: var(--fill-2); }
+.binder-menu-head { padding: 8px 8px 4px; font: 600 var(--font-12)/var(--leading-12) var(--body); }
+.binder-initial { flex: none; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; background: var(--fill-3); font: 800 12px/1 var(--display); }
+.binder-menu-name { flex: 1; min-width: 0; display: grid; }
+.binder-menu-name b { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.binder-menu-name em { font-style: normal; font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* What waits in the other binders: a dot on the switcher's button, and the number beside each binder that has some. */
+.binder-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--amber); }
+.binder-waiting { flex: none; background: var(--amber-wash); color: var(--amber); }
+.binder-menu-sep { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); }

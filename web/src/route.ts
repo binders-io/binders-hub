@@ -16,6 +16,8 @@ export type Route =
   | { screen: 'brain' }
   /** You: who you're signed in as, your GitHub and your apps, the same in every binder. */
   | { screen: 'account' }
+  /** The style guide: every piece of the kit and every base class in its states. Linked from nowhere. */
+  | { screen: 'kit' }
 
 export function parse(hash: string): Route {
   const [screen, id, sid] = hash.replace(/^#\/?/, '').split('/')
@@ -26,7 +28,7 @@ export function parse(hash: string): Route {
   if (screen === 'agents' || screen === 'account') return { screen }
   // The page was called Ask before it was the Brain: an address that ends in /ask still opens it.
   if (screen === 'brain' || screen === 'ask') return { screen: 'brain' }
-  if (screen === 'delivery') return { screen }
+  if (screen === 'delivery' || screen === 'kit') return { screen }
   if (screen === 'work' && id) return { screen, id }
   if (screen === 'flow') return { screen }
   return { screen: 'home' }

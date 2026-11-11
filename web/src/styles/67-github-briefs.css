@@ -1,0 +1,23 @@
+/* A repo's brief, in its dialog in Settings → GitHub. (A card's own brief, on its page, is another .brief-card.) */
+.brief-card { display: grid; gap: 10px; min-width: 0; }
+.repo-dialog .brief-card { gap: var(--space-16); }
+.brief-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) var(--space-8); min-width: 0; }
+.brief-status { margin: 0; font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); overflow-wrap: anywhere; }
+.brief-head .brief-status { flex: 1 1 200px; }
+.brief-status.live { color: var(--text-2); }
+.brief-status.bad { color: var(--red); }
+.brief-note { display: inline-flex; align-items: center; gap: 6px; width: fit-content; font-size: var(--font-13); font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.brief-text summary { width: fit-content; cursor: pointer; font-size: var(--font-13); font-weight: 600; }
+.brief-text pre { margin: var(--space-8) 0 0; max-height: 320px; overflow: auto; padding: var(--space-12); border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--bg); font: var(--font-12)/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.brief-write { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-8); }
+.brief-write .field { flex: 1 1 220px; min-width: 0; }
+.brief-lessons { display: grid; gap: var(--space-8); }
+.brief-lessons ul { margin: 0; padding: 0; list-style: none; display: grid; border: 1px solid var(--line); border-radius: var(--r-sm); }
+.brief-lessons li { display: flex; align-items: flex-start; gap: var(--space-8); padding: var(--space-8) var(--space-4) var(--space-8) var(--space-12); font-size: var(--font-13); line-height: var(--leading-13); }
+.brief-lessons li + li { border-top: 1px solid var(--line); }
+.brief-lessons li > span { flex: 1; min-width: 0; padding-top: 6px; overflow-wrap: anywhere; }
+.brief-lessons p { margin: 0; font-size: var(--font-13); }
+.brief-lesson-add { display: flex; gap: var(--space-8); }
+.brief-lesson-add input { flex: 1; min-width: 0; }
+.brief-forget { display: flex; }
+.brief-forget .text-button { color: var(--red); }

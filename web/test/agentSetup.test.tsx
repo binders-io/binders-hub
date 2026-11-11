@@ -10,11 +10,18 @@ import { agent, hubState, mount, settle, standInHub, standInRoute } from './harn
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
+/** Add an agent, set up by hand: its step, in the dialog. */
+const byHand = async () => {
+  fireEvent.click(screen.getAllByRole('button', { name: 'Add an agent' })[0])
+  const dialog = (await screen.findByRole('dialog', { name: 'Add an agent' })) as HTMLElement
+  fireEvent.click(within(dialog).getByRole('button', { name: /Set one up by hand/ }))
+  await within(dialog).findByRole('form', { name: 'Set up an agent' })
+  return dialog
+}
 const setUp = async (agents = [agent]) => {
   standInHub(() => hubState({ agents }))
   await mount(<Agents />)
-  fireEvent.click(screen.getByRole('button', { name: /Set one up by hand/ }))
-  return (await screen.findByRole('dialog', { name: 'Set up an agent' })) as HTMLElement
+  return byHand()
 }
 const more = (dialog: HTMLElement) => dialog.querySelector('details.agent-more') as HTMLDetailsElement
 const nameBox = () => document.getElementById('agent-name') as HTMLInputElement
@@ -29,8 +36,7 @@ describe('setting up an agent is short', () => {
   it('points at the binder’s repos in Settings → GitHub, as a link, when it has some', async () => {
     standInHub(() => hubState({ agents: [], binders: [{ id: 'b1', name: 'Binder', repos: ['acme/api', 'acme/web'] }] }))
     await mount(<Agents />)
-    fireEvent.click(screen.getByRole('button', { name: /Set one up by hand/ }))
-    const dialog = (await screen.findByRole('dialog', { name: 'Set up an agent' })) as HTMLElement
+    const dialog = await byHand()
     const link = within(dialog).getByRole('link', { name: 'Settings → GitHub', hidden: true })
     expect(link.getAttribute('href')).toBe('#/settings/github')
     expect(link.closest('.field-hint')!.textContent).toContain('Among its binder’s 2 repos (Settings → GitHub)')
@@ -109,12 +115,12 @@ describe('setting up an agent is short', () => {
     expect(accessLines.full).toMatch(/without asking anyone/)
   })
 
-  it('shows each agent’s access in words on its card', async () => {
+  it('shows each agent’s access in words on its card, under Details', async () => {
     const run = { tool: 'claude' as const, access: 'full' as const, timeoutMinutes: 60, worktrees: true }
     standInHub(() => hubState({ agents: [{ ...agent, name: 'Wide', runner: run }, { ...agent, id: 'a2', name: 'Narrow', runner: { ...run, access: 'edits' } }, { ...agent, id: 'a3', name: 'Middle', runner: { ...run, access: 'auto' } }] }))
     await mount(<Agents />)
     const card = (name: string) => screen.getByRole('heading', { name }).closest('article')!
-    const access = (name: string) => card(name).querySelector('.agent-meta .agent-access')?.textContent
+    const access = (name: string) => card(name).querySelector('details .agent-details .agent-access')?.textContent
     expect(access('Wide')).toContain('Full access')
     expect(access('Narrow')).toContain('Edits only')
     expect(access('Middle')).toContain('Auto')
@@ -139,7 +145,7 @@ describe('the token that is shown once', () => {
     expect(screen.getByText('bnd_secret')).toBeTruthy()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
     // It fades out first, which takes longer when the machine is busy.
-    await waitFor(() => expect(screen.queryByText('bnd_secret')).toBeNull(), { timeout: 3000 })
+    await waitFor(() => expect(screen.queryByText('bnd_secret')).toBeNull(), { timeout: 10_000 })
   })
 
   it('leaves every other dialog closing on a tap outside', async () => {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 // The renderer for a view: each part of shared/view.ts drawn as words and marks, never as markup a model wrote. Mermaid is
 // stood in for, so a diagram's drawing and its failure can both be shown without loading it.
@@ -32,6 +32,9 @@ async function draw(given: unknown, onAsk?: (question: string) => void) {
   const { BrainView } = await load()
   return render(<BrainView view={given} onAsk={onAsk} />)
 }
+
+// The renderer and all it draws with are read once before the first test, so that test isn't the one that waits for it.
+beforeAll(async () => { await load() }, 60_000)
 
 afterEach(() => {
   cleanup()

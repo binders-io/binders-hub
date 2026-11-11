@@ -1,0 +1,11 @@
+/* The board, a card, change sets and delivery, last: rules that replace ones in files kept for other screens, here
+   until they're moved where they belong. */
+
+/* 53-phone.css gives the change sets a row of chips over the set; a phone now has the list or the set, one at a time,
+   so the one area takes the whole height. */
+@media (max-width: 900px) {
+  .changes { grid-template-rows: minmax(0, 1fr); }
+  .set { padding: var(--space-16) var(--space-16) var(--space-48); }
+}
+/* 53-phone.css: "Show the other N lines" under a long file. */
+.file-more { display: block; width: 100%; padding: 10px var(--space-16); border-top: 1px solid var(--line); font: 600 var(--font-13)/1 var(--body); color: var(--muted); text-align: left; }

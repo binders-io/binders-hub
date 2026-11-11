@@ -39,8 +39,9 @@ export function DebriefButton({ card, inline = false, className = 'button' }: { 
   }
   if (inline) {
     return (
-      <button type="button" aria-disabled={busy} className={`debrief-chip${busy ? ' busy' : ''}`} title={title} onClick={ask}>
-        <ClipboardList size={11} /> {busy ? 'Debriefing' : 'Debrief'}
+      // Its word goes when the card is too narrow for it, so the button is named apart from what it shows.
+      <button type="button" aria-disabled={busy} aria-label={busy ? 'Debriefing' : 'Debrief'} className={`debrief-chip${busy ? ' busy' : ''}`} title={title} onClick={ask}>
+        <ClipboardList size={12} aria-hidden="true" /><span className="debrief-chip-label">{busy ? 'Debriefing' : 'Debrief'}</span>
       </button>
     )
   }
@@ -94,7 +95,7 @@ export function SetDebriefButton({ set, className = 'button' }: { set: ChangeSet
  * A debrief: a change set's (on its page, or on one of its cards, as the card's copy of it), or a card's own. Who's
  * writing it, or its five sections; out of date once new commits land.
  */
-export function DebriefView({ card, set }: { card?: Card; set?: ChangeSet }) {
+export function DebriefView({ card, set, offer = false }: { card?: Card; set?: ChangeSet; offer?: boolean }) {
   const store = useStore()
   const { state } = store
   const may = useMayChangeBinder()
@@ -104,7 +105,16 @@ export function DebriefView({ card, set }: { card?: Card; set?: ChangeSet }) {
   const inSet = set ?? (card ? setOfCard(state, card) : undefined)
   // A set's keeps its last sections while it's written again; a card from before it was in a set shows its own.
   const debrief = set ? set.debrief : inSet?.debrief ?? card?.debrief
-  if (!debrief) return null
+  if (!debrief) {
+    // On a card's page, a card that can be debriefed has the section all the same, with the way to ask for one.
+    if (!offer || !card || !may || !debriefable(card.stage)) return null
+    return (
+      <section className="work-section debrief" aria-label="Debrief">
+        <h2>Debrief <span className="debrief-actions"><DebriefButton card={card} className="button small" /></span></h2>
+        <p className="section-line">{inSet ? `An agent reads all of change set #${inSet.number}’s pull requests together and says what they do, what changed and how to try it.` : 'An agent reads what this card’s work proposes and says what it does, what changed and how to try it.'}</p>
+      </section>
+    )
+  }
   // Whose it is: the set's, or the card's own from before it was in one.
   const of = set ?? (inSet?.debrief ? inSet : undefined)
   const title = of ? `change set ${of.number}` : card!.title

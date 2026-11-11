@@ -1,5 +1,5 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AnimatePresence } from 'motion/react'
+import { AnimatePresence, MotionConfig } from 'motion/react'
 import { AlertTriangle, Bot, Brain, FileText, LayoutDashboard, GitPullRequestArrow, Menu, Monitor, Moon, Rocket, Search, Settings as SettingsIcon, Sun, Workflow, X } from 'lucide-react'
 import { isOnline, sameValues, useActions, useClock, useHub, type State } from './data/store'
 import { Kbd, PersonAvatar, leaveCard, usePhone } from './components/bits'
@@ -13,7 +13,7 @@ import { useMayChangeBinder } from './screens/settings/access'
 import { Toast } from './components/Toast'
 import { SideAgents } from './components/SideAgents'
 import { openRow, useNotifications, useWaiting, waitingFor } from './data/notify'
-import { Account, AgentTerminal, Agents, BrainScreen, ChangeSets, Delivery, Flow, Home, Notes, prefetchScreens, Settings, Work } from './lazyScreens'
+import { Account, AgentTerminal, Agents, BrainScreen, ChangeSets, Delivery, Flow, Home, KitPage, Notes, prefetchScreens, Settings, Work } from './lazyScreens'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { UIContext, type UI } from './ui'
 import { SignIn } from './screens/SignIn'
@@ -49,10 +49,13 @@ const nav: { route: Route; label: string; icon: typeof Workflow; key: string }[]
   { route: { screen: 'settings' }, label: 'Settings', icon: SettingsIcon, key: '8' },
 ]
 
-/** A phone's tab bar: the screens used most, by a short name. The rest, the Brain among them, are in the menu. */
-const tabs: { screen: Route['screen']; label: string }[] = [{ screen: 'home', label: 'Home' }, { screen: 'notes', label: 'Notes' }, { screen: 'flow', label: 'Board' }, { screen: 'changes', label: 'Changes' }, { screen: 'agents', label: 'Agents' }]
+/**
+ * A phone's tab bar: the screens a thumb wants most, the Brain second as the place to ask and decide. Change sets,
+ * Delivery and Settings are in the menu, whose button says when something waits there.
+ */
+const tabs: { screen: Route['screen']; label: string }[] = [{ screen: 'home', label: 'Home' }, { screen: 'brain', label: 'Brain' }, { screen: 'flow', label: 'Board' }, { screen: 'notes', label: 'Notes' }, { screen: 'agents', label: 'Agents' }]
 
-const titles: Record<Route['screen'], string> = { home: 'Home', flow: 'Board', notes: 'Notes', changes: 'Change sets', delivery: 'Delivery', work: 'Card', agents: 'Agents', terminal: 'Terminal', settings: 'Settings', account: 'Your account', brain: 'Brain' }
+const titles: Record<Route['screen'], string> = { home: 'Home', flow: 'Board', notes: 'Notes', changes: 'Change sets', delivery: 'Delivery', work: 'Card', agents: 'Agents', terminal: 'Terminal', settings: 'Settings', account: 'Your account', brain: 'Brain', kit: 'Style guide' }
 
 type Theme = 'system' | 'light' | 'dark'
 
@@ -123,6 +126,9 @@ function countsIn(state: State, binder: string): Partial<Record<Route['screen'],
 /** What a badge counts, for a hover. */
 const countTitle = (screen: Route['screen'], n: number) => (screen === 'agents' ? `${n} online` : `${n} waiting on you`)
 
+/** What waits in the screens a phone keeps in its menu, for a dot on the menu's button. */
+const inMenu = (counts: Partial<Record<Route['screen'], number>>) => nav.filter((n) => n.route.screen !== 'agents' && !tabs.some((t) => t.screen === n.route.screen)).reduce((sum, n) => sum + (counts[n.route.screen] ?? 0), 0)
+
 export default function App() {
   const [route, moving] = useRoute()
   const store = useActions()
@@ -133,11 +139,14 @@ export default function App() {
   const waiting = useHub((state) => state.sync.pending.length)
   const me = useHub((state) => state.me)
   const [palette, setPalette] = useState(false)
-  // On a phone the sidebar is a menu, opened from the top bar and closed by going anywhere.
-  const [menu, setMenu] = useState(false)
+  // On a phone the sidebar is a menu, opened from the top bar and closed by going anywhere: it belongs to the screen it
+  // was opened on, so the browser's Back closes it as a link in it does.
+  const [menuOn, setMenuOn] = useState<string>()
+  const setMenu = (open: boolean) => setMenuOn(open ? href(route) : undefined)
+  const menu = menuOn === href(route)
   const [theme, setTheme] = useTheme()
   const binderName = useBinderName()
-  // Whoever is signed in, large in the top bar: as big as the bar comfortably holds, a little less on a phone's shorter bar.
+  // A phone has a top bar with the binder's name, a tab bar, and the sidebar as a menu.
   const phone = usePhone()
   const menuOpen = menu && phone
   const menuButton = useRef<HTMLButtonElement>(null)
@@ -233,15 +242,22 @@ export default function App() {
     )
   }
 
+  const waitingInMenu = phone ? inMenu(counts) : 0
+
   return (
     <UIContext.Provider value={ui}>
+      {/* Whoever asked for less motion gets fades, with nothing sliding or growing. */}
+      <MotionConfig reducedMotion="user">
       <div className={`app${menuOpen ? ' menu-open' : ''}${route.screen === 'terminal' ? ' terminal-open' : ''}`}>
         {/* A button, as a link to #main would be a route. */}
         <button type="button" className="skip-link" onClick={() => content.current?.focus()}>Skip to the content</button>
         {menuOpen && <button type="button" className="menu-scrim" aria-label="Close the menu" onClick={() => setMenu(false)} />}
         <aside ref={sidebar} className="sidebar" aria-label="Sidebar" {...(menuOpen ? { role: 'dialog', 'aria-modal': true, 'aria-label': 'Menu', tabIndex: -1 } : {})} onClick={(e) => { if ((e.target as HTMLElement).closest('a')) setMenu(false) }}>
-          <BinderSwitcher binder={binder} onPick={setBinder} />
-          <button className="search-button" onClick={() => setPalette(true)}>
+          <div className="sidebar-top">
+            <BinderSwitcher binder={binder} onPick={setBinder} />
+            {menuOpen && <button type="button" className="icon-button sidebar-close" onClick={() => setMenu(false)} aria-label="Close the menu"><X size={18} /></button>}
+          </div>
+          <button type="button" className="search-button" onClick={() => setPalette(true)}>
             <Search size={14} /> <span>Search or ask</span> <Kbd>⌘K</Kbd>
           </button>
           <nav className="nav" aria-label="Screens">
@@ -276,7 +292,11 @@ export default function App() {
 
         <main className="main" inert={menuOpen}>
           <header className="topbar">
-            <button type="button" ref={menuButton} className="icon-button menu-button" onClick={() => setMenu(true)} aria-label="Menu" aria-expanded={menuOpen}><Menu size={19} /></button>
+            <button type="button" ref={menuButton} className="icon-button menu-button" onClick={() => setMenu(true)} aria-label="Menu" aria-describedby={waitingInMenu ? 'menu-waiting' : undefined} aria-expanded={menuOpen}>
+              <Menu size={20} />
+              {waitingInMenu > 0 && <i className="menu-dot" />}
+            </button>
+            {waitingInMenu > 0 && <span id="menu-waiting" className="sr-only">{waitingInMenu === 1 ? '1 thing waits on you in the menu' : `${waitingInMenu} things wait on you in the menu`}</span>}
             <div className="topbar-heading">
               {/* The switcher is in the menu, three taps away: the binder's name says where you are, and opens it. */}
               {phone && <button type="button" className="topbar-binder" onClick={() => setMenu(true)} aria-haspopup="dialog" aria-expanded={menuOpen} aria-label={`${binderName}: open the menu`}>{binderName}</button>}
@@ -286,7 +306,7 @@ export default function App() {
             <button type="button" className="icon-button topbar-search" onClick={() => setPalette(true)} aria-label="Search or ask"><Search size={18} /></button>
             <div className="presence">
               {unlinked && <a className="gh-pill" href={href({ screen: 'account' })} aria-label="GitHub not connected" title="This binder’s GitHub App is set up, but you haven’t connected to it: you can’t link repos to agents, approve or merge as yourself until you do."><Github size={13} /> <span>GitHub not connected</span></a>}
-              {me && <a className={`me${route.screen === 'account' ? ' on' : ''}${unlinked ? ' unlinked' : ''}`} href={href({ screen: 'account' })} aria-current={route.screen === 'account' ? 'page' : undefined} title={`Your account: signed in as ${me.user.login}${unlinked ? ', not connected to this binder’s GitHub' : me.github.token ? ', connected to this binder’s GitHub' : ''}`} aria-label="Your account"><PersonAvatar id={me.user.login} size={phone ? 34 : 38} /></a>}
+              {me && <a className={`me${route.screen === 'account' ? ' on' : ''}${unlinked ? ' unlinked' : ''}`} href={href({ screen: 'account' })} aria-current={route.screen === 'account' ? 'page' : undefined} title={`Your account: signed in as ${me.user.login}${unlinked ? ', not connected to this binder’s GitHub' : me.github.token ? ', connected to this binder’s GitHub' : ''}`} aria-label="Your account"><PersonAvatar id={me.user.login} size={32} /></a>}
             </div>
           </header>
           <UpdateFailed />
@@ -306,6 +326,7 @@ export default function App() {
                 {route.screen === 'settings' && <Settings />}
                 {route.screen === 'account' && <Account />}
                 {route.screen === 'brain' && <BrainScreen asked={asked} />}
+                {route.screen === 'kit' && <KitPage />}
               </Suspense>
             </ErrorBoundary>
           </div>
@@ -318,7 +339,7 @@ export default function App() {
             const on = route.screen === t.screen || (t.screen === 'flow' && route.screen === 'work')
             return (
               <a key={t.screen} href={href(item.route)} className={on ? 'on' : undefined} aria-current={on ? 'page' : undefined}>
-                <Icon size={20} strokeWidth={on ? 2.4 : 2} />
+                <i className="tab-icon" aria-hidden="true"><Icon size={20} strokeWidth={on ? 2.3 : 2} /></i>
                 <span>{t.label}</span>
                 {counts[t.screen] ? <em className={`count count-${t.screen}`} title={countTitle(t.screen, counts[t.screen]!)}>{counts[t.screen]}</em> : null}
               </a>
@@ -332,6 +353,7 @@ export default function App() {
         <Toast />
         <ContextMenuHost />
       </div>
+      </MotionConfig>
     </UIContext.Provider>
   )
 }

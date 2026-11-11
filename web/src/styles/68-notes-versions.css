@@ -1,0 +1,19 @@
+/* A note's lock, versions and proposals */
+.note-locked { display: flex; align-items: center; gap: var(--space-8); margin: 0 0 var(--space-12); padding: var(--space-8) var(--space-12); border-radius: var(--r); background: var(--fill-1); border: 1px solid var(--line); font-size: var(--font-13); color: var(--text-2); }
+.tree-lock { flex: none; opacity: 0.6; }
+.note-review-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-12); margin-bottom: var(--space-12); border-bottom: 1px solid var(--line); }
+.note-review-tabs { border-bottom: 0; }
+.note-proposal { display: flex; flex-direction: column; gap: var(--space-8); padding: var(--space-12) 0; border-top: 1px solid var(--line); }
+.note-proposal:first-of-type { border-top: 0; }
+.note-proposal p { margin: 0; overflow-wrap: anywhere; }
+.note-proposal-said { font-size: var(--font-13); }
+.note-proposal-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-8); }
+.note-diff { max-height: 320px; overflow: auto; font-size: var(--font-12); border-radius: var(--r-sm); border: 1px solid var(--line); }
+.note-diff .d-line { display: flex; gap: 8px; padding: 0 8px; }
+.note-diff .d-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.note-versions { display: flex; flex-direction: column; gap: var(--space-12); }
+.note-versions ol { list-style: none; margin: 0; padding: 0; max-height: 240px; overflow: auto; }
+.note-version { display: flex; flex-wrap: wrap; gap: var(--space-8); width: 100%; padding: var(--space-8); border: 0; border-radius: var(--r-sm); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.note-version:hover { background: var(--fill-1); }
+.note-version.on { background: var(--fill-2); }
+

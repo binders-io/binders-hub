@@ -1,0 +1,23 @@
+/* The sidebar's agents: who's working on what, under each. */
+.side-agent-group { border-radius: var(--r-sm); }
+.side-agent-group.drop { outline: 2px dashed var(--text); outline-offset: -2px; }
+.side-agent-row { display: flex; align-items: center; gap: 2px; }
+.side-agent-toggle { display: grid; place-items: center; flex: none; width: 16px; height: 24px; margin-right: -4px; color: var(--faint); }
+.side-agent-toggle svg { transition: transform 0.15s; }
+.side-agent-toggle svg.open { transform: rotate(90deg); }
+.side-agents .side-agent { flex: 1; min-width: 0; padding: 5px 6px; }
+.side-agent-text span.asks { color: var(--amber, #e5a50a); font-weight: 600; }
+.side-terminal { display: grid; place-items: center; flex: none; width: 26px; height: 26px; border-radius: 7px; color: var(--faint); }
+.side-terminal:hover, .side-terminal:focus-visible { color: var(--text); background: var(--fill-1); }
+.side-agent-items { list-style: none; margin: 0 0 4px; padding: 0 0 0 36px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; }
+.side-agent-items a { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 3px 6px; border-radius: 6px; font-size: 12px; color: var(--muted); }
+.side-agent-items a:hover { background: var(--fill-1); color: var(--text); }
+.side-agent-items a span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-agent-items a.asks { color: var(--amber, #e5a50a); }
+.side-item-icon { flex: none; }
+.side-item-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: 0.8; }
+.side-agents a, .side-agents a:hover { text-decoration: none; color: inherit; }
+.side-agent-items a { color: var(--muted); }
+.side-agents .side-agent-items a:hover { color: var(--text); }
+.side-agents .side-agent-items a.asks { color: var(--amber, #e5a50a); }
+

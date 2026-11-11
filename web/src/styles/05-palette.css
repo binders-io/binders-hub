@@ -1,0 +1,19 @@
+/* ---------- Palette ---------- */
+.palette { position: fixed; top: 14vh; left: 50%; width: min(640px, calc(100vw - 32px)); translate: -50% 0; z-index: var(--z-dialog); border-radius: var(--r-lg); background: var(--pop-bg); box-shadow: var(--shadow-pop); overflow: hidden; }
+.palette-input { display: flex; align-items: center; gap: var(--space-12); padding: 0 var(--space-16); height: 56px; border-bottom: 1px solid var(--line); color: var(--faint); }
+.palette-input input { flex: 1; min-width: 0; height: 100%; background: none; border: 0; outline: none; font-size: var(--font-16); color: var(--text); }
+.palette-input input::placeholder { color: var(--faint); }
+.palette-list { padding: var(--space-4) 6px 6px; max-height: 56dvh; overflow-y: auto; }
+.palette-list:empty { display: none; }
+.palette-list h4 { margin: 10px 10px 4px; font: 600 var(--font-12)/var(--leading-12) var(--body); color: var(--faint); }
+.palette-list button { display: flex; align-items: center; gap: var(--space-12); width: 100%; height: 40px; padding: 0 10px; border-radius: var(--r-sm); text-align: left; color: var(--text-2); font-size: var(--font-14); }
+.palette-list button > svg:first-child { flex: none; color: var(--muted); }
+.palette-list button span { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.palette-list button.with-detail { height: auto; min-height: 40px; padding-block: 8px; }
+.palette-list button small { display: block; margin-top: 2px; font-size: 12px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; }
+.palette-list button em { flex: none; max-width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: normal; font-size: 12px; color: var(--faint); }
+.palette-list button.on { background: var(--fill-2); color: var(--text); }
+.palette-list button.on svg:first-child { color: var(--text); }
+.palette-list .enter { color: var(--faint); }
+.palette-empty { margin: 0; padding: var(--space-24); text-align: center; color: var(--faint); font-size: var(--font-13); }
+

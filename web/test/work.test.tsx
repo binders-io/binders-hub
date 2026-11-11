@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { appCss } from './css'
 import { calledOn, card, hubState, mount, standInHub, standInRoute } from './harness'
 import { Toast } from '../src/components/Toast'
 import { ContextMenuHost, openMenu } from '../src/components/ContextMenu'
@@ -369,27 +368,31 @@ describe('a card’s words', () => {
 
 describe('the card’s page at one column', () => {
   // jsdom has no layout, so this reads the order the page asks for in app.css, and that the page's parts carry it.
-  const css = readFileSync(resolve(__dirname, '../src/app.css'), 'utf8')
+  const css = appCss()
   const narrow = css.split('@media (max-width: 1180px)').find((block) => block.includes('.brief-card { order'))!
   const order = (selector: string) => Number(new RegExp(`(?:^|\\n)\\s*${selector.replace('.', '\\.')} \\{ order: (\\d+)`).exec(narrow)?.[1])
 
-  it('starts with what the card is, then what’s happening now and the answer box, then the rest', () => {
-    expect(order('.brief-card')).toBeLessThan(order('.now-card'))
-    expect(order('.now-card')).toBeLessThan(order('.conversation-section'))
-    expect(order('.conversation-section')).toBeLessThan(order('.sdlc'))
-    expect(order('.sdlc')).toBeLessThan(order('.work-section, .side-card, .sdlc'))
+  it('starts with what’s happening now and the answer box, then the brief, then where it is, then the rest', () => {
+    expect(order('.now-card')).toBeLessThan(order('.brief-card'))
+    expect(order('.brief-card')).toBeLessThan(order('.sdlc'))
+    expect(order('.sdlc')).toBeLessThan(order('.work-section, .work-history'))
+    expect(order('.work-section, .work-history')).toBeLessThan(order('.side-card'))
     expect(narrow).toMatch(/\.work-body, \.work-main, \.work-side \{ display: contents; \}/)
   })
 
-  it('has the parts that order names: the brief and done-when, the now card, and the conversation with the reply box', async () => {
+  it('has the parts that order names: the brief and done-when, and the now card with the question and the reply box', async () => {
     standInHub(() => hubState({ cards: [card('c1', 'blocked', { agentId: 'a1', needsYou: 'Left or right?', brief: 'The brief', doneWhen: 'It is done' })] }))
     await page('c1')
     const brief = document.querySelector('.side-card.brief-card')!
     expect(within(brief as HTMLElement).getByText('Brief')).toBeTruthy()
     expect(within(brief as HTMLElement).getByText('The brief')).toBeTruthy()
     expect(within(brief as HTMLElement).getByText('Done when')).toBeTruthy()
-    expect(document.querySelector('.now-card.asks')).toBeTruthy()
-    expect(within(document.querySelector('.conversation-section') as HTMLElement).getByRole('textbox')).toBeTruthy()
+    const now = document.querySelector('.now-card.asks') as HTMLElement
+    expect(within(now).getByText('Left or right?')).toBeTruthy()
+    expect(within(now).getByRole('textbox')).toBeTruthy()
+    // Said once: the question is at the top, and there's no other box for words.
+    expect(screen.getAllByText('Left or right?')).toHaveLength(1)
+    expect(document.querySelector('.conversation-section')).toBeNull()
   })
 })
 
@@ -597,5 +600,36 @@ describe('Send back and the pull request’s state', () => {
     standInHub(inReview({ state: 'open' }))
     await page('c1')
     expect(screen.getByRole('button', { name: 'Send back to Agent' })).toBeTruthy()
+  })
+})
+
+describe('the debrief and the Challenge on a card’s page', () => {
+  it('are sections with a way to ask for them before either has been written, under the same kind of heading', async () => {
+    standInHub(inReview())
+    await page('c1')
+    const debrief = screen.getByRole('region', { name: 'Debrief' })
+    const challenge = screen.getByRole('region', { name: 'Challenge' })
+    expect(within(debrief).getByRole('heading', { level: 2 }).textContent).toMatch(/^Debrief/)
+    expect(within(challenge).getByRole('heading', { level: 2 }).textContent).toMatch(/^Challenge/)
+    expect(within(debrief).getByRole('button', { name: /^Debrief$/ })).toBeTruthy()
+    expect(within(challenge).getByRole('button', { name: /^Challenge$/ })).toBeTruthy()
+  })
+
+  it('aren’t there for a card that has nothing to read yet', async () => {
+    standInHub(() => hubState({ cards: [card('c1', 'ready')] }))
+    await page('c1')
+    expect(screen.queryByRole('region', { name: 'Debrief' })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Challenge' })).toBeNull()
+  })
+})
+
+describe('the facts of a card', () => {
+  it('are one block: who made it, its repo, branch, pull request and checks', async () => {
+    standInHub(inReview({ checks: [{ name: 'test', state: 'passed', seconds: 12 }] }))
+    await page('c1')
+    const facts = document.querySelector('.details-card dl') as HTMLElement
+    expect([...facts.querySelectorAll('dt')].map((d) => d.textContent)).toEqual(expect.arrayContaining(['Repo', 'Branch', 'Pull request', 'Checks', 'Deployed']))
+    expect(within(facts).getByRole('link', { name: /web#7/ }).getAttribute('href')).toBe('https://github.com/acme/web/pull/7')
+    expect(within(facts).getByText('test')).toBeTruthy()
   })
 })

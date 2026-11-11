@@ -1,0 +1,8 @@
+/* The hub was updated since the page was opened: one line, and a reload. */
+.new-version { display: flex; align-items: center; gap: var(--space-12); min-height: 48px; padding: 6px clamp(16px, 3vw, 24px); border-bottom: 1px solid var(--line); background: var(--blue-wash); font-size: var(--font-13); color: var(--text); }
+.new-version > span { flex: 1; min-width: 0; }
+.new-version .button { height: var(--control-sm); }
+
+/* Someone who can read a binder and not change it: one quiet line at the top of every screen. */
+.reader-line { margin: 0; padding: var(--space-8) clamp(16px, 3vw, 24px); border-bottom: 1px solid var(--line); font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); }
+

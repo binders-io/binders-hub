@@ -1,0 +1,17 @@
+/* Change sets: whether each pull request merges, and what the hub is doing while it merges them. */
+.set-stopped, .set-train { display: flex; gap: var(--space-12); align-items: flex-start; margin: var(--space-24) 0 0; padding: var(--space-12) var(--space-16); border-radius: var(--r); color: var(--text); }
+.set-stopped { border: 1px solid var(--amber-line); background: var(--amber-wash); }
+.set-stopped svg { flex: none; margin-top: 2px; color: var(--amber); }
+.set-stopped b, .set-train b { font-size: var(--font-14); line-height: var(--leading-14); }
+.set-stopped p, .set-train p { margin: 2px 0 0; font-size: var(--font-13); line-height: var(--leading-13); color: var(--text-2); }
+.merge-pill { flex: none; display: inline-flex; align-items: center; height: 22px; padding: 0 var(--space-8); border-radius: var(--r-pill); font: 600 var(--font-12)/1 var(--body); background: var(--fill-2); color: var(--muted); }
+.merge-pill.clean { color: var(--green); background: var(--green-wash); }
+.merge-pill.behind { color: var(--amber); background: var(--amber-wash); }
+.merge-pill.conflicts { color: var(--red); background: var(--red-wash); }
+.merge-pill.blocked { color: var(--amber); background: var(--amber-wash); }
+.merge-fix { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px var(--space-16); border-top: 1px solid var(--line); font-size: var(--font-13); color: var(--text-2); }
+.merge-fix.conflicts { background: var(--red-wash); }
+.merge-fix span { flex: 1; min-width: 200px; }
+.work-section.debrief h2 .debrief-actions { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-8) var(--space-12); align-items: center; }
+.work-section.debrief .text-button { display: inline-flex; align-items: center; gap: 5px; }
+.work-section.debrief p a { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); }

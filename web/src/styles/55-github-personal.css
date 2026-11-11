@@ -1,0 +1,36 @@
+/* ---------- A personal Binder's repo ---------- */
+/* On Home: one slim row, what's left and the one button that does it. */
+.personal-repo { display: flex; align-items: center; gap: var(--space-12); flex-wrap: wrap; margin-bottom: var(--space-16); padding: var(--space-12) var(--space-16); border-radius: var(--r-lg); border: 1px solid var(--blue-line); background: var(--blue-wash); }
+.personal-repo-icon { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: var(--r-sm); background: var(--fill-2); color: var(--blue); }
+.personal-repo-text { flex: 1 1 240px; min-width: 0; display: grid; gap: 2px; }
+.personal-repo b { font-size: var(--font-14); line-height: var(--leading-14); }
+.personal-repo p { margin: 0; display: flex; align-items: center; gap: 6px; font-size: var(--font-13); line-height: var(--leading-13); color: var(--text-2); }
+.personal-repo p.bad { color: var(--red); }
+.personal-synced { display: flex; align-items: center; gap: 6px; margin: 0 0 var(--space-12); font-size: var(--font-13); color: var(--muted); }
+.personal-synced a { color: var(--text-2); }
+/* In Settings → GitHub: the three steps as rows, each marked with its number until it's done. */
+.step-num { font: 800 var(--font-13)/1 var(--display); color: var(--text-2); }
+.personal-oauth { display: grid; gap: var(--space-16); }
+.personal-steps { margin: 0; padding-left: 18px; display: grid; gap: var(--space-12); font-size: var(--font-14); line-height: var(--leading-14); color: var(--text-2); }
+.personal-steps li { display: grid; gap: var(--space-8); justify-items: start; }
+.personal-steps li::marker { color: var(--muted); font-weight: 700; }
+.personal-steps .input { width: min(260px, 100%); }
+.personal-owner { display: flex; align-items: center; gap: var(--space-8) var(--space-16); flex-wrap: wrap; }
+@media (max-width: 600px) { .personal-repo > .button { flex: 1 1 100%; } }
+
+.runner-token { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.runner-token p { flex: 1 1 260px; margin: 0; }
+.runner-how { margin: 4px 0 8px; width: max-content; }
+
+.oauth-app { display: grid; gap: 10px; margin-bottom: 14px; }
+.oauth-app h3 { margin: 0; font: 800 15px/1.3 var(--display); }
+.oauth-app p { margin: 0; font-size: 13px; }
+.oauth-on { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; color: var(--text-2); }
+.oauth-on svg { color: var(--green); flex: none; }
+.oauth-steps { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 13px; color: var(--text-2); }
+.oauth-steps .mono { overflow-wrap: anywhere; }
+.oauth-actions { display: flex; align-items: center; gap: 14px; }
+.oauth-steps li { display: grid; gap: 6px; justify-items: start; }
+.oauth-owner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.oauth-owner input:not([type]) { width: 180px; }
+

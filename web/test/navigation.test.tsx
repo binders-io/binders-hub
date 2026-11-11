@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { card, hubState, me, mount, settle, standInHub, standInRoute } from './harness'
 import App from '../src/App'
@@ -76,15 +76,38 @@ describe('the board’s name', () => {
 describe('on a phone', () => {
   beforeEach(asPhone)
 
-  it('has Home, Notes, Board, Changes and Agents in the tab bar, the rest in the menu', async () => {
+  it('has Home, the Brain, Board, Notes and Agents in the tab bar, Change sets and the rest in the menu', async () => {
     await open('#/flow')
     const bar = within(screen.getByRole('navigation', { name: 'Main screens' }))
-    expect(bar.getAllByRole('link').map(nameOf)).toEqual(['Home', 'Notes', 'Board', 'Changes', 'Agents'])
+    expect(bar.getAllByRole('link').map(nameOf)).toEqual(['Home', 'Brain', 'Board', 'Notes', 'Agents'])
     expect(bar.getByRole('link', { name: /^Board/ }).getAttribute('aria-current')).toBe('page')
-    expect(bar.queryByRole('link', { name: /^Brain/ })).toBeNull()
+    expect(bar.getByRole('link', { name: /^Brain/ }).getAttribute('href')).toBe('#/brain')
+    expect(bar.queryByRole('link', { name: /^Change/ })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Menu' }))
     const menu = within(await screen.findByRole('dialog', { name: 'Menu' }))
-    expect(menu.getByRole('link', { name: /^Brain/ }).getAttribute('href')).toBe('#/brain')
+    expect(menu.getByRole('link', { name: /^Change sets/ }).getAttribute('href')).toBe('#/changes')
+  })
+
+  it('closes the menu when the screen changes from outside it, as the browser’s Back does', async () => {
+    await open('#/flow')
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }))
+    expect(await screen.findByRole('dialog', { name: 'Menu' })).toBeTruthy()
+    act(() => { window.location.hash = '#/notes'; window.dispatchEvent(new HashChangeEvent('hashchange')) })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Menu' })).toBeNull())
+  })
+
+  it('puts a dot on the menu’s button when something waits in a screen only the menu has', async () => {
+    standInHub(() => hubState({ binders: [{ id: 'b1', name: 'Binder' }], changeSets: [{ id: 'cs1', binderId: 'b1', number: 4, title: 'Login work', summary: '', state: 'review', prIds: ['o/r#1'], noteIds: [] }] }), spaces)
+    asPhone()
+    await open('#/home')
+    const button = screen.getByRole('button', { name: 'Menu' })
+    expect(button.querySelector('.menu-dot')).toBeTruthy()
+    expect(document.getElementById(button.getAttribute('aria-describedby')!)!.textContent).toBe('1 thing waits on you in the menu')
+    cleanup()
+    standInHub(() => hubState({ binders: [{ id: 'b1', name: 'Binder' }] }), spaces)
+    asPhone()
+    await open('#/home')
+    expect(screen.getByRole('button', { name: 'Menu' }).querySelector('.menu-dot')).toBeNull()
   })
 
   it('says which binder you’re in beside the screen’s name, and opens the menu when it’s pressed', async () => {
@@ -96,6 +119,15 @@ describe('on a phone', () => {
     expect(screen.queryByRole('dialog', { name: 'Menu' })).toBeNull()
     fireEvent.click(where)
     expect(await screen.findByRole('dialog', { name: 'Menu' })).toBeTruthy()
+  })
+})
+
+describe('the style guide', () => {
+  it('is at #/kit, with the kit’s pieces, and linked from nowhere', async () => {
+    await open('#/kit')
+    expect(await screen.findByRole('heading', { level: 2, name: 'The kit' }, { timeout: 10_000 })).toBeTruthy()
+    expect(document.querySelector('.topbar-title')?.textContent).toBe('Style guide')
+    expect(document.querySelector('a[href="#/kit"]')).toBeNull()
   })
 })
 
@@ -113,20 +145,24 @@ describe('Add to Claude Code', () => {
     expect(screen.queryByRole('button', { name: 'Add to Claude Code' })).toBeNull()
   })
 
-  it('is on the Agents page, beside Add a machine, and opens its dialog', async () => {
+  it('is on the Agents page, one of the ways in Add an agent, said not to be an agent', async () => {
     await open('#/agents')
-    const buttons = screen.getByRole('button', { name: 'Add a machine' }).parentElement!
-    const add = within(buttons).getByRole('button', { name: 'Add to Claude Code' })
-    fireEvent.click(add)
-    const dialog = await screen.findByRole('dialog', { name: 'Add the hub to Claude Code' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Add an agent' }))
+    const way = await screen.findByRole('button', { name: /Use this hub from Claude Code/ })
+    expect(way.textContent).toContain('It isn’t an agent: it takes no cards.')
+    fireEvent.click(way)
+    const dialog = await screen.findByRole('dialog', { name: 'Add an agent' })
+    expect(await within(dialog).findByRole('heading', { name: 'Paste one command' })).toBeTruthy()
     expect(dialog.querySelector('pre')?.textContent).toBe(`claude mcp add --transport http --scope user binders-hub ${window.location.origin}/mcp`)
   })
 
-  it('is on Your account, where it talks about connecting a terminal', async () => {
+  it('is on Your account, the first way to connect a client, with the same command', async () => {
     standInRoute('GET', '/api/tokens', () => ({ tokens: [] }))
     await open('#/account')
-    fireEvent.click(await screen.findByRole('button', { name: 'Add to Claude Code' }))
-    expect(await screen.findByRole('dialog', { name: 'Add the hub to Claude Code' })).toBeTruthy()
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect a client' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Connect a client' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Claude Code Recommended' }))
+    expect(dialog.querySelector('pre')?.textContent).toBe(`claude mcp add --transport http --scope user binders-hub ${window.location.origin}/mcp`)
   })
 })
 

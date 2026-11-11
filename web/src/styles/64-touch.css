@@ -1,0 +1,35 @@
+/* ---------- A finger: 44px to press wherever there's a touchscreen. A mouse keeps the denser sizes. ---------- */
+@media (hover: none) {
+  button, select, summary, textarea, input:not([type='checkbox'], [type='radio'], [type='range']),
+  a.button, .text-button, .nav a, .settings-nav a, .settings-back, .tree-row, .side-agent-items a, .side-agents .side-agent, .agent-doing a, .check, .switch { min-height: 44px; }
+  button, .presence a.me, .side-terminal { min-width: 44px; }
+  .presence a.me, .side-terminal { min-height: 44px; }
+  .note-delete { justify-content: center; }
+  .text-button { display: inline-flex; align-items: center; }
+  .agent-doing a { align-content: center; }
+  .presence a.me { align-items: center; justify-content: center; }
+  /* The avatar sits inside a 44px target here: keep the mark on the picture, not the target's corner. */
+  .presence a.me.unlinked::after { right: 4px; bottom: 4px; }
+  .gh-pill { position: relative; min-width: 44px; justify-content: center; }
+  .gh-pill::after { content: ""; position: absolute; inset: -8px 0; }
+  .tree-filter { height: 44px; }
+  .switch, .check { align-items: center; }
+  /* Every row's ⋯ stays: there's no hover to bring anything up. */
+  .tree-more, .tree-row > .tree-more:not(:focus-visible) { position: static; translate: none; flex: none; width: 44px; opacity: 1; background: none; pointer-events: auto; }
+  .tree-row:hover .tree-actions { display: none; }
+  .tree-row:hover .tree-count { display: inline; }
+  /* iOS zooms the page into any field under 16px, and leaves it there. */
+  input:not([type='checkbox'], [type='radio'], [type='range']), textarea, select { font-size: 16px !important; }
+  /* Keys there's no keyboard for. */
+  .kbd { display: none; }
+}
+/* The smallest phones: the long titles need the room, and an offline pill still shows. */
+@media (max-width: 360px) {
+  .live-pill.live { display: none; }
+}
+@media (max-width: 600px) {
+  .binder-card-head, .member-list li { flex-wrap: wrap; }
+  .binder-name { flex: 1 1 100%; }
+  .palette { top: 12px; }
+  .palette-list { max-height: 50dvh; }
+}

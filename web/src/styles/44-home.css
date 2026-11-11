@@ -1,0 +1,119 @@
+/* Home: a greeting with the question line, the counts, the day's activity, the agents at work, and what waits on you */
+.home-page .page-column.home { width: min(1240px, 100%); gap: var(--space-24); }
+@media (min-width: 601px) {
+  .home > .page-header { align-items: center; }
+  .home > .page-header .page-action { flex: 0 1 460px; min-width: 280px; }
+}
+.home-agents .section-head { align-items: center; }
+.home-ask { width: 100%; }
+.home-ask .ask-box { padding-left: var(--space-16); gap: var(--space-12); }
+.home-ask .ask-box > svg { flex: none; }
+
+/* The counts: four of one height, each a number, its name and one line that never wraps (it's whole on hover). */
+.home-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-12); }
+.stat { --tone: var(--text); position: relative; overflow: hidden; display: grid; grid-template-rows: auto auto auto; gap: var(--space-8); justify-items: start; align-content: start; min-width: 0; padding: var(--space-16); border-radius: var(--r-lg); border: 1px solid var(--line); background: linear-gradient(150deg, color-mix(in srgb, var(--tone) 9%, transparent), transparent 58%), var(--tile); box-shadow: var(--tile-shadow); text-align: left; color: var(--text); transition: border-color var(--dur-fast), background-color var(--dur-fast); }
+.stat::before { content: ""; position: absolute; inset: 0 0 auto; height: 2px; background: var(--tone); opacity: 0.8; }
+.stat.blue { --tone: var(--blue); }
+.stat.amber { --tone: var(--amber); }
+.stat.green { --tone: var(--green); }
+.stat:not(.blue, .amber, .green) { background: var(--tile); }
+.stat:not(.blue, .amber, .green)::before { opacity: 0; }
+.stat:not(:disabled):hover { border-color: color-mix(in srgb, var(--tone) 45%, var(--line)); }
+.stat:disabled { cursor: default; }
+.stat:focus-visible { border-radius: var(--r-lg); }
+.stat-head { display: flex; align-items: center; gap: var(--space-8); width: 100%; min-width: 0; }
+.stat-icon { display: grid; place-items: center; width: 24px; height: 24px; flex: none; border-radius: var(--r-sm); color: var(--tone); background: color-mix(in srgb, var(--tone) 14%, transparent); }
+.stat-label { min-width: 0; font: 600 var(--font-13)/var(--leading-13) var(--body); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stat-go { margin-left: auto; flex: none; color: var(--faint); transition: color var(--dur-fast), transform var(--dur-fast); }
+.stat:hover .stat-go { color: var(--tone); transform: translate(2px, -2px); }
+.stat b { font: 800 var(--font-26)/var(--leading-26) var(--display); letter-spacing: -0.02em; color: var(--tone); }
+.stat:not(.blue, .amber, .green) b { color: var(--text); }
+.stat-detail { width: 100%; min-width: 0; margin-top: calc(-1 * var(--space-4)); font-size: var(--font-12); line-height: var(--leading-12); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stat.zero { background: var(--tile); }
+.stat.zero::before { opacity: 0; }
+.stat.zero b { color: var(--faint); }
+.stat.zero .stat-icon { color: var(--faint); background: var(--fill-2); }
+.stat.zero .stat-detail { color: var(--faint); }
+
+/* The agents beside what waits on you and what's been happening. */
+.home-body { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: var(--space-24); align-items: start; }
+.home-side { display: grid; gap: var(--space-24); align-content: start; min-width: 0; }
+.home-panels { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); gap: var(--space-12); align-items: start; }
+
+/* An agent at work: a calm panel, who and how it stands, the card it holds, and its last few steps. */
+.agent-tile { display: grid; gap: var(--space-12); align-content: start; min-width: 0; padding: var(--space-16); border-radius: var(--r-lg); border: 1px solid var(--line); background: var(--tile); box-shadow: var(--tile-shadow); }
+.agent-tile.asks { border-color: var(--amber-line); }
+.agent-tile.off { opacity: 0.75; }
+.agent-tile.loading { gap: var(--space-16); }
+.agent-tile header { display: flex; align-items: center; gap: var(--space-12); min-width: 0; }
+.agent-tile-who { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.agent-tile h3 { margin: 0; font: 700 var(--font-14)/var(--leading-14) var(--body); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-tile-who span { font-size: var(--font-12); line-height: var(--leading-12); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-8); }
+.tile-cards button { display: grid; gap: var(--space-4); width: 100%; padding: var(--space-12); border-radius: var(--r); background: var(--fill-1); text-align: left; transition: background-color var(--dur-fast); }
+.tile-cards button:hover { background: var(--fill-2); }
+.tile-card-title { display: flex; align-items: center; gap: var(--space-4); min-width: 0; color: var(--text); }
+.tile-card-title b { min-width: 0; font: 600 var(--font-14)/var(--leading-14) var(--body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile-card-title svg { flex: none; color: var(--faint); }
+.tile-cards button:hover .tile-card-title svg { color: var(--text); }
+.tile-card-doing { font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-tile.asks .tile-card-doing { color: var(--text-2); }
+.tile-cards .progress { margin-top: var(--space-4); }
+/* Its last steps: small, quiet, one line each, along a thin rule; what it said is in words, not code. */
+.tile-steps { list-style: none; margin: 0; padding: 0 0 0 var(--space-12); display: grid; gap: var(--space-4); border-left: 2px solid var(--line); font: 400 var(--font-12)/var(--leading-12) var(--mono); color: var(--muted); }
+.tile-steps li { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile-steps b { font-weight: 600; color: var(--text-2); }
+.tile-steps em { font-style: normal; color: var(--faint); }
+.tile-steps li.said { font-family: var(--body); color: var(--text-2); }
+.agent-tile footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-4) var(--space-12); padding-top: var(--space-12); border-top: 1px solid var(--line); font-size: var(--font-12); line-height: var(--leading-12); color: var(--faint); }
+.home-free .rows-icon { background: none; }
+/* Kept as it was: other screens' pulsing dots have used this one since it was first written here. */
+@keyframes pulse { 50% { opacity: 0.35; } }
+.home-empty { border-radius: var(--r-lg); border: 1px solid var(--line); background: var(--tile); box-shadow: var(--tile-shadow); }
+
+.home .home-waiting h2 { font: 800 var(--font-16)/var(--leading-16) var(--display); }
+
+/* What's been happening: a line each, in one card. */
+.home-happening .home-feed { list-style: none; margin: 0; padding: 0; display: grid; }
+.home-feed li { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: var(--space-12); align-items: start; padding: var(--space-12) var(--space-16); }
+.home-feed li + li { border-top: 1px solid var(--line); }
+.home-feed p { margin: 0; font-size: var(--font-13); line-height: var(--leading-13); color: var(--text-2); overflow-wrap: anywhere; }
+.home-feed b { font-weight: 700; color: var(--text); }
+.feed-card { display: inline; padding: 0; color: var(--text); font: inherit; font-weight: 600; text-align: left; text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+.feed-card:hover { text-decoration-color: currentColor; }
+.home-feed time { font-size: var(--font-12); line-height: var(--leading-13); color: var(--faint); white-space: nowrap; }
+.home-happening .home-feed-more { display: block; width: 100%; padding: var(--space-12) var(--space-16); font-size: var(--font-13); text-align: left; color: var(--muted); }
+.home-happening .home-feed-more:hover { color: var(--text); background: var(--row-hover); }
+
+ul.waiting { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+ul.waiting li > button { display: flex; gap: 9px; width: 100%; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--fill-1); text-align: left; color: var(--text); }
+ul.waiting li > button:hover { border-color: var(--line-strong); }
+ul.waiting li > button > span { display: grid; min-width: 0; }
+ul.waiting li > button b { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ul.waiting li > button em { font-style: normal; font-size: 12px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+ul.waiting li > button small { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 2px; font-size: 11.5px; color: var(--faint); }
+ul.waiting li > button > svg { flex: none; margin-top: 2px; }
+.home-waiting { display: grid; gap: 10px; align-content: start; scroll-margin-top: 8px; }
+.home-waiting:focus { outline: none; }
+.home-waiting h2 { margin: 0; font: 800 14px/1.2 var(--display); }
+.waiting-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 14px; }
+.waiting-head .switch { font-size: 12.5px; color: var(--muted); }
+.notify-note { margin: 4px 0 0; font-size: 12px; }
+.waiting-none { margin: 0; font-size: 13px; }
+.waiting-group { display: grid; gap: 6px; }
+.waiting-group h3 { margin: 2px 0 0; font: 600 var(--font-12)/var(--leading-12) var(--body); color: var(--muted); }
+.waiting-others { display: grid; gap: 6px; }
+.waiting-others summary { display: flex; align-items: center; gap: 6px; padding: 4px 0; cursor: pointer; list-style: none; font: 700 12.5px/1.2 var(--body); color: var(--muted); }
+.waiting-others summary::-webkit-details-marker { display: none; }
+.waiting-others summary svg { transition: transform 0.15s; }
+.waiting-others[open] summary svg { transform: rotate(90deg); }
+.waiting-others summary:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; border-radius: 4px; }
+@media (max-width: 1100px) { .home-body { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 760px) { .home-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) {
+  .home > .page-header .page-lead { display: none; }
+  .stat { padding: var(--space-12); gap: var(--space-4); }
+  .stat b { font-size: var(--font-20); line-height: var(--leading-20); }
+  .stat-detail { margin-top: 0; }
+  .home-feed li { padding-inline: var(--space-12); }
+}

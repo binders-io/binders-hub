@@ -1,0 +1,57 @@
+/* An agent's tool in a terminal: the page is the terminal, under one slim bar of its agent and its tabs. */
+.agent-terminal { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: var(--space-12) var(--space-16) var(--space-16); }
+.term-bar { display: flex; align-items: flex-end; gap: var(--space-8); min-width: 0; height: 40px; flex: none; }
+.term-back { display: grid; place-items: center; flex: none; width: 32px; height: 32px; margin-bottom: 4px; border-radius: var(--r-sm); color: var(--muted); }
+.term-back:hover { background: var(--hover); color: var(--text); }
+.term-who { display: flex; align-items: center; gap: var(--space-8); flex: 0 1 auto; min-width: 0; max-width: 240px; height: 32px; margin: 0 var(--space-8) 4px 0; }
+.term-who h2 { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 700 var(--font-14)/var(--leading-14) var(--body); }
+.term-where { flex: 0 1 auto; min-width: 0; margin: 0 0 10px auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-12); color: var(--muted); }
+.term-where .mono { font-size: var(--font-12); }
+/* A tab per terminal open on the agent's machine; the one shown joins the terminal under it. */
+.term-tabs { display: flex; align-items: flex-end; gap: var(--space-4); flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.term-tab { display: flex; align-items: center; flex: none; max-width: 240px; height: 34px; border: 1px solid transparent; border-bottom: 0; border-radius: var(--r-sm) var(--r-sm) 0 0; color: var(--muted); }
+.term-tab:hover { background: var(--hover); color: var(--text); }
+.term-tab.on { background: #0e0f14; color: #e4e4ea; border-color: var(--line); }
+.term-tab.ended { opacity: 0.6; }
+.term-tab > button[role="tab"] { display: flex; align-items: center; gap: 6px; min-width: 0; height: 100%; padding: 0 4px 0 var(--space-12); font: 600 var(--font-13)/1 var(--body); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: inherit; }
+.term-tab > button[role="tab"]:focus-visible { outline-offset: -2px; border-radius: var(--r-sm); }
+.term-tab-close { display: grid; place-items: center; width: 22px; height: 22px; margin-right: 6px; border-radius: var(--r-xs); color: inherit; opacity: 0.6; }
+.term-tab-close:hover, .term-tab-close:focus-visible { opacity: 1; background: color-mix(in srgb, currentColor 14%, transparent); }
+.term-tab-add { display: grid; place-items: center; flex: none; width: 32px; height: 32px; margin-bottom: 1px; border-radius: var(--r-sm); color: var(--muted); }
+.term-tab-add:hover { color: var(--text); background: var(--hover); }
+.term-views { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.term-view { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: var(--space-8); }
+.term-view[hidden] { display: none; }
+.term-empty { flex: 1; display: grid; place-content: center; border: 1px dashed var(--line-strong); border-radius: var(--r-lg); }
+.term-note { display: flex; align-items: center; gap: var(--space-8); margin: 0; min-height: 40px; padding: 6px 6px 6px var(--space-12); border-radius: var(--r-sm); font-size: var(--font-13); line-height: var(--leading-13); background: var(--surface-2); border: 1px solid var(--line); color: var(--muted); }
+.term-note > svg { flex: none; }
+.term-note > span { flex: 1; min-width: 0; }
+.term-note.error { color: var(--red); border-color: var(--red); background: var(--red-wash); }
+.term-note .button { flex: none; }
+.term-box { flex: 1; min-height: 0; padding: 10px 4px 4px var(--space-12); border-radius: 0 var(--r) var(--r) var(--r); background: #0e0f14; border: 1px solid var(--line); overflow: hidden; }
+.term-box .xterm { height: 100%; background: transparent; }
+.term-box .xterm-viewport { background: transparent !important; }
+/* The keys a phone's keyboard lacks, in a row that scrolls. */
+.term-keys { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; flex: none; padding: 2px 0; }
+.term-keys button { flex: none; display: grid; place-items: center; min-width: 44px; height: 38px; padding: 0 10px; border-radius: var(--r-sm); border: 1px solid var(--line-strong); background: var(--control-bg); color: var(--text); font: 700 var(--font-13)/1 var(--mono); touch-action: manipulation; user-select: none; -webkit-user-select: none; }
+.term-keys button:active { background: var(--surface-2); }
+.term-keys button.on { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
+/* A phone: the terminal takes the screen. Its back and its agent sit in the tab row, the main tabs go, and with the
+   keyboard up the app's top bar goes too and the terminal is lifted above it. */
+@media (max-width: 700px) {
+  .agent-terminal { padding: 6px var(--space-8) calc(var(--space-8) + env(safe-area-inset-bottom, 0px) + var(--keyboard, 0px)); }
+  .term-bar { gap: var(--space-4); height: 38px; }
+  .term-who { margin-right: var(--space-4); }
+  .term-who h2, .term-where { display: none; }
+  .term-tab { max-width: 46vw; }
+  .term-box { padding: 6px 2px 2px 6px; border-radius: 0 var(--r-sm) var(--r-sm) var(--r-sm); }
+  .term-view { gap: 6px; }
+  .app.terminal-open .tabbar { display: none; }
+  body.keyboard-open .app.terminal-open .topbar, body.keyboard-open .app.terminal-open .update-failed { display: none; }
+  .term-note { font-size: var(--font-12); }
+}
+@media (hover: none) {
+  .term-keys button { height: 44px; }
+  .term-back, .term-tab-add { width: 44px; height: 38px; margin-bottom: 0; }
+  .term-tab-close { width: 32px; height: 32px; margin-right: 2px; }
+}

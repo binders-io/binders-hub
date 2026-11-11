@@ -1,0 +1,25 @@
+/* Beside a note: the chat, under the kit's tabs, and its box, which is the Brain's. */
+.note-chat { display: flex; flex-direction: column; gap: var(--space-12); min-height: 0; flex: 1; }
+.note-chat .distill-with { display: flex; align-items: center; gap: var(--space-8); }
+.note-chat .distill-with select { flex: 1; }
+.chat-messages { list-style: none; margin: 0; padding: 0; display: grid; align-content: start; gap: var(--space-16); flex: 1; min-height: 120px; overflow-y: auto; }
+.chat-messages li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: var(--space-8); }
+.chat-messages li > div { min-width: 0; }
+/* What you said, in a block; what the agent or the hub said, as words on the page. */
+.chat-messages li.from-person > div { padding: var(--space-8) var(--space-12); border-radius: var(--r); background: var(--fill-2); }
+.chat-messages p { margin: 2px 0 0; font-size: var(--font-13); line-height: var(--leading-13); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2); }
+.chat-messages .thinking p { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--muted); }
+.chat-who { font-size: var(--font-12); color: var(--text); }
+.chat-who time { color: var(--faint); margin-left: var(--space-4); }
+.chat-empty { display: block !important; padding: var(--space-12); border-radius: var(--r); border: 1px dashed var(--line-strong); font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); }
+.chat-reads { margin: 0; font-size: var(--font-12); line-height: var(--leading-12); }
+.chat-reads a { color: var(--text); font-weight: 700; }
+.chat-messages li .md { padding: 0; border: 0; border-radius: 0; background: none; font-size: var(--font-13); line-height: 1.55; color: var(--text-2); }
+.chat-messages .md p { margin: var(--space-4) 0 0; white-space: normal; }
+.chat-messages .md ul, .chat-messages .md ol { margin: var(--space-4) 0 0; padding-left: 18px; }
+.chat-messages .chat-sources { font-size: var(--font-12); margin-top: var(--space-8); }
+.chat-messages .chat-sources a { color: var(--muted); }
+.chat-cite { display: inline-grid; place-items: center; min-width: 16px; height: 16px; margin: 0 1px 0 3px; padding: 0 4px; border-radius: var(--r-xs); background: var(--fill-2); border: 1px solid var(--line-strong); font: 700 11px/1 var(--body); color: var(--text); text-decoration: none; vertical-align: 1px; }
+.chat-cite:hover, .chat-cite:focus-visible { background: var(--fill-3); }
+.chat-input .ask-box { align-items: flex-end; }
+.branch-input { width: 150px; height: 26px; padding: 0 7px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font-size: 12.5px; }

@@ -15,7 +15,7 @@ function Controls() {
   const current = useHub((state) => state.notes.find((n) => n.id === 'n1'))
   const mayChange = useMayChange(current ?? { id: 'n1' })
   if (!current) return null
-  return <><NoteControls note={current} mayChange={mayChange} /><output data-testid="may">{String(mayChange)}</output></>
+  return <><NoteControls note={current} mayChange={mayChange} /><output data-testid="may">{String(mayChange)}</output><ContextMenuHost /></>
 }
 
 function hubWith(mayChange: boolean, over: object = {}) {
@@ -102,6 +102,28 @@ describe('a note’s controls on a phone', () => {
   })
 })
 
+describe('a note’s controls over it on a wide window', () => {
+  it('are its versions as a button, and the rest in its menu with what the screen adds', async () => {
+    hubWith(true)
+    const more = vi.fn()
+    function Bar() {
+      const current = useHub((state) => state.notes.find((n) => n.id === 'n1'))
+      const mayChange = useMayChange(current ?? { id: 'n1' })
+      if (!current) return null
+      return <><NoteControls note={current} mayChange={mayChange} bar more={[{ label: 'Schedule it', onSelect: more }]}><button type="button">Full screen</button></NoteControls><ContextMenuHost /></>
+    }
+    await mount(<Bar />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'More for this note' })).toBeTruthy())
+    expect(screen.getByRole('button', { name: 'Versions and suggested changes' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Full screen' })).toBeTruthy()
+    expect(screen.getByText('Locked')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'More for this note' }))
+    await waitFor(() => expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Unlock', 'Make it the binder’s guide', 'Copy link', 'Schedule it']))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Schedule it' }))
+    expect(more).toHaveBeenCalledOnce()
+  })
+})
+
 describe('a locked note’s controls', () => {
   it('lets who may change it accept what’s suggested', async () => {
     const sent = hubWith(true)
@@ -119,7 +141,11 @@ describe('a locked note’s controls', () => {
     await mount(<Controls />)
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith('/api/notes/n1/access', expect.anything()))
     expect(screen.getByTestId('may').textContent).toBe('false')
-    expect((screen.getByRole('button', { name: 'Locked' }) as HTMLButtonElement).disabled).toBe(true)
+    // Locked says so over the note; its menu offers to unlock it, and won't.
+    expect(screen.getByText('Locked')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'More for this note' }))
+    expect((await screen.findByRole('menuitem', { name: 'Unlock' })).hasAttribute('disabled')).toBe(true)
+    fireEvent.keyDown(window, { key: 'Escape' })
     fireEvent.click(screen.getByRole('button', { name: 'Versions and suggested changes' }))
     expect(screen.queryByRole('button', { name: 'Accept' })).toBeNull()
 
@@ -146,7 +172,8 @@ describe('a locked note’s controls', () => {
   it('makes a note the binder’s guide', async () => {
     const { posted } = standInHub(() => hubState({ notes: [note('n1', '# Guide')] }))
     await mount(<Controls />)
-    fireEvent.click(screen.getByRole('button', { name: 'Binder guide' }))
+    fireEvent.click(screen.getByRole('button', { name: 'More for this note' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Make it the binder’s guide' }))
     await waitFor(() => expect(posted.flatMap((p) => p.changes).some(({ change }) => change.type === 'binder.put' && change.binder.guideNoteId === 'n1')).toBe(true))
   })
 })

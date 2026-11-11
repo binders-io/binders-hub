@@ -5,6 +5,9 @@ import { hubState, me, mount, standInHub } from './harness'
 import App from '../src/App'
 import { Settings } from '../src/screens/Settings'
 
+/** The table's rows, under its header. */
+const tableRows = () => within(screen.getByRole('table', { name: 'Binders on this hub' })).getAllByRole('row').slice(1)
+
 // A binder's settings are its owners' and admins'; the hub's admins run the hub, and look after a binder only while it
 // has no owner. What Settings says of that, and the hub's own list of binders where an owner is named.
 
@@ -134,7 +137,7 @@ describe('the hub’s Binders section', () => {
     const hubs = within(nav()).getByRole('group', { name: 'This hub' })
     expect(within(hubs).getByRole('link', { name: 'Binders' }).getAttribute('href')).toBe('#/settings/hubbinders')
     await waitFor(() => expect(open()).toBe('Binders'))
-    expect(screen.getByText('Every binder on this hub and who owns it. Name an owner for one that has none.')).toBeTruthy()
+    expect(screen.getByText('Every binder on this hub, and who owns it.')).toBeTruthy()
   })
 
   it('is not listed for anyone else', async () => {
@@ -168,7 +171,7 @@ describe('the hub’s Binders section', () => {
     expect(window.location.hash).toBe('#/settings/hubbinders')
   })
 
-  it('lists each binder with its address, owners and people, those with no owner first and marked', async () => {
+  it('lists each binder in a table, with its owners and people, those with no owner first and marked', async () => {
     hub({
       hubAdmin: true, section: 'hubbinders',
       list: [
@@ -178,19 +181,41 @@ describe('the hub’s Binders section', () => {
       ],
     })
     await mount(<Settings />)
-    const list = await screen.findByRole('list', { name: 'Binders on this hub' })
-    const rows = within(list).getAllByRole('listitem')
-    expect(rows.map((r) => r.querySelector('b')!.textContent)).toEqual(['Lonely', 'Orphan', 'Acme'])
+    await screen.findByRole('table', { name: 'Binders on this hub' })
+    const rows = tableRows()
+    expect(rows.map((r) => r.querySelector('td')!.textContent)).toEqual(['Lonely', 'Orphan', 'Acme'])
     expect(within(rows[0]).getByText('No owner')).toBeTruthy()
     expect(within(rows[1]).getByText('No owner')).toBeTruthy()
     expect(within(rows[2]).queryByText('No owner')).toBeNull()
-    expect(within(rows[2]).getByText(`${window.location.origin}/acme`)).toBeTruthy()
-    expect(within(rows[2]).getByText(/Owned by @ana and @bo · 5 people/)).toBeTruthy()
-    expect(within(rows[1]).getByText(/Admins @sam · 3 people/)).toBeTruthy()
-    expect(within(rows[0]).getByText(/Nobody runs it · 0 people/)).toBeTruthy()
-    // A binder you're in links to it; one you're not in is only listed.
-    expect(within(rows[2]).getByRole('link', { name: 'Acme' }).getAttribute('href')).toBe('/acme/#/home')
-    expect(within(rows[0]).queryByRole('link', { name: 'Lonely' })).toBeNull()
+    expect(within(rows[2]).getByText('@ana and @bo')).toBeTruthy()
+    expect(within(rows[2]).getByText('5 people')).toBeTruthy()
+    expect(within(rows[0]).getByText('Nobody')).toBeTruthy()
+    // Pressing a row says the rest: its address, who runs it, and the way in for a binder you're in.
+    fireEvent.click(within(rows[2]).getByRole('button', { name: 'Name an owner for Acme' }))
+    let dialog = await screen.findByRole('dialog', { name: 'Name an owner' })
+    expect(within(dialog).getByText(`${window.location.origin}/acme`)).toBeTruthy()
+    expect(within(dialog).getByText(/Owned by @ana and @bo · 5 people/)).toBeTruthy()
+    expect(within(dialog).getByRole('link', { name: /Open Acme/ }).getAttribute('href')).toBe('/acme/#/home')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    fireEvent.click(within(tableRows()[1]).getByRole('button', { name: 'Name an owner for Orphan' }))
+    dialog = await screen.findByRole('dialog', { name: 'Name an owner' })
+    expect(within(dialog).getByText(/Admins @sam · 3 people/)).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    // One you're not in is only listed: there's no way into it.
+    fireEvent.click(within(tableRows()[0]).getByRole('button', { name: 'Name an owner for Lonely' }))
+    dialog = await screen.findByRole('dialog', { name: 'Name an owner' })
+    expect(within(dialog).getByText(/Nobody runs it · 0 people/)).toBeTruthy()
+    expect(within(dialog).queryByRole('link', { name: /Open Lonely/ })).toBeNull()
+  })
+
+  it('opens the dialog from anywhere on a row, as well as from its name', async () => {
+    hub({ hubAdmin: true, section: 'hubbinders', list: [listed({ id: 'acme', name: 'Acme', yours: true })] })
+    await mount(<Settings />)
+    await screen.findByRole('table', { name: 'Binders on this hub' })
+    fireEvent.click(within(tableRows()[0]).getAllByRole('cell')[2])
+    expect(await screen.findByRole('dialog', { name: 'Name an owner' })).toBeTruthy()
   })
 
   it('says so when the hub has no binders', async () => {
@@ -228,9 +253,9 @@ describe('the hub’s Binders section', () => {
     await waitFor(() => expect(said).toContain('Made @carol an owner of Lonely.'))
     expect(sent).toEqual([{ method: 'PUT', url: '/api/hub/binders/lonely/owners/carol' }])
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-    const row = screen.getByRole('list', { name: 'Binders on this hub' })
-    expect(within(row).queryByText('No owner')).toBeNull()
-    expect(within(row).getByText(/Owned by @carol/)).toBeTruthy()
+    const table = screen.getByRole('table', { name: 'Binders on this hub' })
+    expect(within(table).queryByText('No owner')).toBeNull()
+    expect(within(table).getByText('@carol')).toBeTruthy()
   })
 
   it('shows the hub’s own words when it refuses, and keeps the dialog for another try', async () => {

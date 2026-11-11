@@ -1,0 +1,76 @@
+/* ---------- Bits ---------- */
+.avatar { display: inline-grid; place-items: center; flex: none; color: #fff; position: relative; }
+.avatar.agent i { display: block; background: #fff; mask-size: contain; mask-repeat: no-repeat; mask-position: center; -webkit-mask-size: contain; -webkit-mask-repeat: no-repeat; -webkit-mask-position: center; }
+.avatar.agent { box-shadow: inset 0 0 0 1px var(--fill-3); }
+.avatar.agent.live::after { content: ""; position: absolute; inset: -3px; border-radius: inherit; border: 1.5px solid var(--blue); opacity: 0.8; animation: ring 1.8s ease-in-out infinite; }
+@keyframes ring { 0%, 100% { opacity: 0.25; transform: scale(0.98); } 50% { opacity: 0.9; transform: scale(1.04); } }
+.avatar.person { border-radius: 50%; font-family: var(--display); font-weight: 800; box-shadow: 0 0 0 2px var(--bg); }
+.avatar.system { border-radius: 50%; background: var(--surface-3); color: var(--green); }
+.avatar.system.ship { color: var(--text); }
+.ship-glyph { width: 8px; height: 8px; border-radius: 2px; background: currentColor; transform: rotate(45deg); }
+
+.glyph.passed { color: var(--green); }
+.glyph.failed { color: var(--red); }
+.glyph.running { color: var(--blue); }
+.glyph.queued { color: var(--faint); }
+.spin { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.check-dots { display: inline-flex; gap: 3px; }
+.check-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); opacity: 0.5; }
+.check-dots i.passed { background: var(--green); opacity: 1; }
+.check-dots i.failed { background: var(--red); opacity: 1; }
+.check-dots i.running { background: var(--blue); opacity: 1; animation: blink 1s ease-in-out infinite; }
+@keyframes blink { 50% { opacity: 0.35; } }
+
+.repo-tag { font-size: 11px; color: var(--muted); padding: 1px 6px; border-radius: 5px; background: var(--fill-2); }
+.progress { display: block; height: 4px; border-radius: 2px; background: var(--fill-3); overflow: hidden; flex: 1; }
+.progress i { display: block; height: 100%; border-radius: inherit; background: var(--progress); transition: width 0.9s var(--ease); position: relative; }
+.progress i::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent); animation: sheen 1.6s ease-in-out infinite; }
+@keyframes sheen { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+
+.faint { color: var(--faint); }
+.amber { color: var(--amber); }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.dot.amber, .chip.amber i, .stage-pill.amber i, .work-chip.amber i, .segments i.amber { background: var(--amber); }
+.dot.faint, .chip.faint i, .stage-pill.faint i, .work-chip.faint i, .segments i.faint { background: var(--faint); }
+.dot.blue, .chip.blue i, .stage-pill.blue i, .work-chip.blue i, .segments i.blue { background: var(--blue); }
+.dot.violet, .chip.violet i, .stage-pill.violet i, .work-chip.violet i, .segments i.violet { background: var(--violet); }
+.dot.accent, .chip.accent i, .stage-pill.accent i, .work-chip.accent i, .segments i.accent { background: var(--primary); }
+.dot.green, .chip.green i, .stage-pill.green i, .work-chip.green i, .segments i.green { background: var(--green); }
+.dot.red, .chip.red i, .stage-pill.red i, .work-chip.red i, .segments i.red { background: var(--red); }
+
+/* Buttons. One height a size (36, small 28, big 44, and 44 for a finger), one radius, and the same states everywhere:
+   a shade up on hover, a touch smaller pressed, the focus ring, and half strength when it can't be pressed. A mini
+   button is a small one, under its old name. */
+.button, .mini-button { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: var(--space-8); height: var(--control); padding: 0 14px; border-radius: var(--r-sm); border: 1px solid var(--control-line); background: var(--control-bg); color: var(--text); font: 600 var(--font-13)/1.2 var(--body); box-shadow: var(--control-shadow); transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast), opacity var(--dur-fast), transform 0.1s; }
+.button svg, .mini-button svg { flex: none; }
+.button:hover:not(:disabled), .mini-button:hover:not(:disabled) { background: var(--control-hover); border-color: var(--field-line-hover); }
+.button:active:not(:disabled), .mini-button:active:not(:disabled) { transform: scale(0.98); }
+.button.primary, .mini-button.primary { background: var(--primary); border-color: transparent; color: var(--primary-ink); box-shadow: none; }
+.button.primary:hover:not(:disabled), .mini-button.primary:hover:not(:disabled) { background: var(--primary-hover); border-color: transparent; }
+/* Quiet: a button that isn't the point of the screen, with no frame until it's under the pointer. */
+.button.quiet { background: transparent; border-color: transparent; box-shadow: none; color: var(--muted); }
+.button.quiet:hover:not(:disabled) { background: var(--fill-2); border-color: transparent; color: var(--text); }
+.button.danger, .mini-button.danger { color: var(--red); }
+.button.danger:hover:not(:disabled), .mini-button.danger:hover:not(:disabled) { background: var(--red-wash); border-color: color-mix(in srgb, var(--red) 35%, transparent); }
+.button.danger.primary { background: var(--danger-solid); border-color: transparent; color: #fff; }
+.button.danger.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--danger-solid) 88%, #000); }
+.button.small, .mini-button { height: var(--control-sm); padding: 0 10px; gap: 6px; font-size: var(--font-12); }
+.button.big { height: var(--control-lg); padding: 0 18px; font-size: var(--font-14); }
+.button:disabled, .mini-button:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+/* Words that act, in a line of text: underlined when the pointer is on them. */
+.text-button { font: 600 var(--font-13)/1.3 var(--body); color: var(--text); text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px; transition: text-decoration-color var(--dur-fast), color var(--dur-fast); }
+.text-button:hover:not(:disabled) { text-decoration-color: currentColor; }
+.text-button:disabled { color: var(--faint); cursor: not-allowed; }
+/* An icon alone: it needs an aria-label, and a data-tip says the same on hover. */
+.icon-button { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: var(--r-sm); color: var(--muted); transition: background var(--dur-fast), color var(--dur-fast); }
+.icon-button:hover:not(:disabled) { background: var(--fill-2); color: var(--text); }
+.icon-button:active:not(:disabled) { background: var(--fill-3); }
+.icon-button:disabled { opacity: 0.4; cursor: not-allowed; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+/* A chip: a small fact in a pill, with an optional dot for its state. */
+.chip { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 3px 10px; border-radius: var(--r-pill); background: var(--fill-2); font: 500 var(--font-12)/var(--leading-12) var(--body); color: var(--muted); }
+.chip i { width: 6px; height: 6px; border-radius: 50%; }
+.sep { display: inline-block; width: 3px; height: 3px; border-radius: 50%; background: var(--faint); margin: 0 10px; vertical-align: middle; }
+

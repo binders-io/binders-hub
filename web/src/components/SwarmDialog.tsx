@@ -1,7 +1,7 @@
-import { useState, type FormEvent } from 'react'
+import { useId, useState, type FormEvent } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import { useStore } from '../data/store'
-import { Dialog } from './Dialog'
+import { Dialog, Field } from './Dialog'
 import { attempt } from './Toast'
 
 interface Part {
@@ -20,6 +20,7 @@ export function SwarmDialog({ cardId, onClose }: { cardId: string; onClose: () =
     { title: '', brief: '', agent: '' },
   ])
   const [busy, setBusy] = useState(false)
+  const formId = useId()
 
   if (!card) return null
   const change = (index: number, field: keyof Part, value: string) =>
@@ -41,33 +42,42 @@ export function SwarmDialog({ cardId, onClose }: { cardId: string; onClose: () =
     if (split) onClose()
   }
 
+  const ready = parts.filter((p) => p.title.trim()).length >= 2
   return (
-    <Dialog title={`Split “${card.title}”`} onClose={onClose} wide>
-      <form className="form" onSubmit={submit}>
-        <p className="faint">
-          Each part becomes a card of its own, for the agent it names, with this card’s brief behind its own. This card waits for every part, and is done when they all are.
-        </p>
+    <Dialog title={`Split “${card.title}”`} onClose={onClose} size="large" footer={
+      <>
+        <button type="button" className="button" onClick={onClose}>Cancel</button>
+        <button type="submit" form={formId} className="button primary" disabled={busy || !ready}>Split it</button>
+      </>
+    }>
+      <form className="form swarm-form" id={formId} onSubmit={submit}>
+        <p className="swarm-lead">Each part becomes a card of its own, with this card’s brief behind it. This card waits for every part, and is done when they all are.</p>
         {parts.map((part, index) => (
-          <div key={index} className="swarm-part">
-            <div className="form-row">
-              <input aria-label={`Part ${index + 1} title`} value={part.title} onChange={(e) => change(index, 'title', e.target.value)} placeholder={`Part ${index + 1} — what it does`} />
-              <select aria-label={`Part ${index + 1} agent`} value={part.agent} onChange={(e) => change(index, 'agent', e.target.value)}>
+          // Each part a group of its own, named by its heading, so its three boxes read as that part's.
+          <div key={index} className="swarm-part" role="group" aria-labelledby={`${formId}-part-${index}`}>
+            <div className="swarm-part-head">
+              <h3 id={`${formId}-part-${index}`}>Part {index + 1}</h3>
+              {parts.length > 2 && (
+                <button type="button" className="button quiet small" aria-label={`Remove part ${index + 1}`} onClick={() => remove(index)}><Trash2 size={13} aria-hidden="true" />Remove</button>
+              )}
+            </div>
+            <Field label="What it does">
+              <input value={part.title} onChange={(e) => change(index, 'title', e.target.value)} />
+            </Field>
+            <Field label="For">
+              <select value={part.agent} onChange={(e) => change(index, 'agent', e.target.value)}>
                 <option value="">Any agent</option>
                 {state.agents.filter((a) => !a.revoked).map((a) => (
                   <option key={a.id} value={a.name}>{a.name}</option>
                 ))}
               </select>
-              {parts.length > 2 && (
-                <button type="button" className="icon-button" aria-label={`Remove part ${index + 1}`} onClick={() => remove(index)}><Trash2 size={13} /></button>
-              )}
-            </div>
-            <textarea aria-label={`Part ${index + 1} brief`} rows={2} value={part.brief} onChange={(e) => change(index, 'brief', e.target.value)} placeholder="What this part covers (optional; this card’s brief goes with it)" />
+            </Field>
+            <Field label="What it covers" hint="Only if it needs more than this card’s brief.">
+              <textarea rows={2} value={part.brief} onChange={(e) => change(index, 'brief', e.target.value)} />
+            </Field>
           </div>
         ))}
-        <button type="button" className="text-button" onClick={add}><Plus size={13} /> Another part</button>
-        <div>
-          <button className="button primary" disabled={busy || parts.filter((p) => p.title.trim()).length < 2}>Split it</button>
-        </div>
+        <button type="button" className="button small swarm-add" onClick={add}><Plus size={14} aria-hidden="true" />Another part</button>
       </form>
     </Dialog>
   )

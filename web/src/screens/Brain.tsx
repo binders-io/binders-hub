@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { AnimatePresence } from 'motion/react'
-import { ArrowUp, ArrowUpRight, Brain, Check, ChevronDown, FileText, LoaderCircle, MessageSquarePlus, SquareKanban } from 'lucide-react'
+import { ArrowUp, ArrowUpRight, Bot, Brain, Check, ChevronDown, Eye, FileText, Hand, LoaderCircle, MessageSquarePlus, Network, SquareKanban, Zap, type LucideIcon } from 'lucide-react'
 import { call } from '../data/api'
 import { useActions, useHub } from '../data/store'
 import { useMayChangeBinder } from './settings/access'
@@ -48,8 +48,13 @@ function useNarrow() {
 /** What an answer draws under its words. It's loaded when the first one is shown: most answers have none. */
 const BrainView = lazy(() => import('../brain/view/BrainView'))
 
-/** What a person can start with, before anything is asked. */
-const starters = ['What needs me?', 'What are my agents working on?', 'What’s in review?', 'Draw how the open work fits together']
+/** What a person can start with, before anything is asked: one of each kind of answer it gives. */
+const starters: { text: string; icon: LucideIcon }[] = [
+  { text: 'What needs me?', icon: Hand },
+  { text: 'What are my agents working on?', icon: Bot },
+  { text: 'What’s in review?', icon: Eye },
+  { text: 'Draw how the open work fits together', icon: Network },
+]
 
 interface Source {
   n: number
@@ -182,18 +187,25 @@ function Proposed({ proposal }: { proposal: Proposal }) {
     setBusy(false)
     if (done) setSaid(done.said)
   }
+  // Drawn as a view's offer is: one card, what it would do, and its two buttons with the main one last.
   return (
-    <div className="ask-do">
-      <p>{proposal.what}</p>
+    <section className={`ask-do view-offer${said ? ' answered' : ''}`} aria-label={proposal.button}>
+      <div className="view-offer-head">
+        <span className="view-offer-icon" aria-hidden="true"><Zap size={15} /></span>
+        <p className="view-offer-what">{proposal.what}</p>
+      </div>
       {said ? (
-        <p className="ask-did" role="status"><Check size={14} /> {said}</p>
+        <p className="view-offer-did ask-did" role="status"><Check size={14} aria-hidden="true" /> {said}</p>
       ) : (
-        <div className="ask-do-buttons">
-          <button type="button" className="button primary" disabled={busy} onClick={() => void answer(true)}>{busy ? <LoaderCircle size={14} className="spin" /> : null} {proposal.button}</button>
-          <button type="button" className="button" disabled={busy} onClick={() => void answer(false)}>Not now</button>
+        <div className="view-offer-foot">
+          <span className="view-offer-note">Nothing changes until you press.</span>
+          <div className="view-offer-buttons ask-do-buttons">
+            <button type="button" className="button" disabled={busy} onClick={() => void answer(false)}>Not now</button>
+            <button type="button" className="button primary" disabled={busy} onClick={() => void answer(true)}>{busy ? <LoaderCircle size={14} className="spin" aria-hidden="true" /> : null} {proposal.button}</button>
+          </div>
         </div>
       )}
-    </div>
+    </section>
   )
 }
 
@@ -224,12 +236,12 @@ function Answer({ turn, onNote, onCard, onAsk, mayKeep }: { turn: Turn; onNote: 
       {some.map(({ first, passages }) => (
         <li key={`${first.binder}:${first.kind}:${first.id}`} className={passages.some((p) => p.n === shown) ? 'shown' : undefined}>
           <div className="ask-source-head">
-            {first.kind === 'note' ? <FileText size={14} /> : <SquareKanban size={14} />}
+            <span className="ask-ns num">{passages.map((p) => <span key={p.n} className="ask-n">{p.n}</span>)}</span>
+            {first.kind === 'note' ? <FileText size={14} aria-hidden="true" /> : <SquareKanban size={14} aria-hidden="true" />}
             <a className="ask-source-title" href={linkOf(first)}>
               {first.title}
               {!linkOf(first).startsWith('#') && <ArrowUpRight size={12} />}
             </a>
-            <span className="ask-ns num">{passages.map((p) => <span key={p.n} className="ask-n">{p.n}</span>)}</span>
           </div>
           {(first.context || turn.everywhere) && <p className="ask-source-where faint">{first.context ?? first.binderName}</p>}
           {passages.map((p) => (
@@ -246,11 +258,14 @@ function Answer({ turn, onNote, onCard, onAsk, mayKeep }: { turn: Turn; onNote: 
 
   // What it offers to do is in its view, each offer a button with the things it's about: then the words are shown too,
   // and the view under them. A hub that gave one offer and no view of it is shown the old way, the offer alone.
-  const offersDrawn = useMemo(() => {
+  const offers = useMemo(() => {
     const read = result.view != null ? readView(result.view) : undefined
-    return !!read && viewOffers(read).length > 0
+    return read ? viewOffers(read) : []
   }, [result])
-  const offerAlone = !!result.proposal && !offersDrawn
+  const offerAlone = !!result.proposal && !offers.length
+  // When the words are an offer's own, its card says them: once is enough.
+  const flat = (text: string) => text.replace(/\s+/g, ' ').trim()
+  const saidByOffer = !!result.answer && offers.some((offer) => flat(offer.what) === flat(answerText(result.answer!.parts)))
   // Its view, if the hub gave it one, drawn under the words. Asking from it sends that question as the next one.
   const drawn = result.view != null ? <Suspense fallback={null}><BrainView view={result.view} onAsk={onAsk} /></Suspense> : null
 
@@ -264,45 +279,53 @@ function Answer({ turn, onNote, onCard, onAsk, mayKeep }: { turn: Turn; onNote: 
         </>
       ) : result.answer ? (
         <>
-          <Rendered
-            className="ask-answer"
-            text={answerMarkdown(result.answer.parts)}
-            cite={(n) => <button type="button" className="ask-cite" title={titles.get(n)} onClick={() => toSource(n)} aria-label={`Source ${n}${titles.get(n) ? `: ${titles.get(n)}` : ''}`}>{n}</button>}
-          />
-          {drawn}
-          {may && (
-            <div className="ask-keep">
-              <button type="button" className="button" disabled={!mayKeep} onClick={() => onNote(turn)}><FileText size={14} /> Save as a note</button>
-              <button type="button" className="button" disabled={!mayKeep} onClick={() => onCard(turn)}><SquareKanban size={14} /> Make a card</button>
-            </div>
+          {!saidByOffer && (
+            <Rendered
+              className="ask-answer"
+              text={answerMarkdown(result.answer.parts)}
+              cite={(n) => <button type="button" className="ask-cite" title={titles.get(n)} onClick={() => toSource(n)} aria-label={`Source ${n}${titles.get(n) ? `: ${titles.get(n)}` : ''}`}>{n}</button>}
+            />
           )}
+          {drawn}
         </>
       ) : (
         <p className="setup-note">
           {!result.sources.length ? 'Nothing in your binders matches that.' : result.problem ? `No answer: ${result.problem} The passages that match best are below.` : <>The hub has no model to answer with yet, so here are the passages that match best. An admin can set one up in <SettingsLink section="brain" />.</>}
         </p>
       )}
-      {!offerAlone && !!result.looked?.length && (
-        <details className="ask-read ask-looked">
-          <summary>Looked at <span className="num">{result.looked.length}</span></summary>
-          <ul>
-            {result.looked.map((one, i) => <li key={i}>{one.what}</li>)}
-          </ul>
-        </details>
-      )}
       {!offerAlone && used.length > 0 && (
-        <>
+        <div className="ask-sources-block">
           <h3 className="ask-sources-title">Sources</h3>
           {list(used)}
-        </>
+        </div>
       )}
-      {!offerAlone && unused.length > 0 && (
-        <details className="ask-read">
-          <summary>Also read <span className="num">{unused.length}</span></summary>
-          {list(unused)}
-        </details>
+      {!offerAlone && (!!result.looked?.length || unused.length > 0) && (
+        <div className="ask-reads">
+          {!!result.looked?.length && (
+            <details className="ask-read ask-looked">
+              <summary>Looked at <span className="num">{result.looked.length}</span></summary>
+              <ul>
+                {result.looked.map((one, i) => <li key={i}>{one.what}</li>)}
+              </ul>
+            </details>
+          )}
+          {unused.length > 0 && (
+            <details className="ask-read">
+              <summary>Also read <span className="num">{unused.length}</span></summary>
+              {list(unused)}
+            </details>
+          )}
+        </div>
       )}
-      <p className="faint ask-how"><Brain size={12} /> Found by {result.searchedBy}{result.model ? `, answered by ${result.model}` : ''}.</p>
+      <div className="ask-foot-line">
+        {!offerAlone && result.answer && may && (
+          <div className="ask-keep">
+            <button type="button" className="button small quiet" disabled={!mayKeep} onClick={() => onNote(turn)}><FileText size={14} /> Save as a note</button>
+            <button type="button" className="button small quiet" disabled={!mayKeep} onClick={() => onCard(turn)}><SquareKanban size={14} /> Make a card</button>
+          </div>
+        )}
+        <p className="ask-how"><Brain size={12} aria-hidden="true" /> Found by {result.searchedBy}{result.model ? `, answered by ${result.model}` : ''}.</p>
+      </div>
     </section>
   )
 }
@@ -467,7 +490,7 @@ export function BrainScreen({ asked: fromPalette }: { asked?: { question: string
   return (
     <div className={`brain${narrow ? ' narrow' : ''}`}>
       {narrow && (
-        <div className="brain-switch" role="group" aria-label="Show">
+        <div className="segmented brain-switch" role="group" aria-label="Show">
           <button type="button" aria-pressed={tab === 'talk'} onClick={() => setTab('talk')}>Talk</button>
           <button type="button" aria-pressed={tab === 'now'} onClick={() => setTab('now')}>Now{needs > 0 && <> <span className="count brain-count alert">{needs}</span></>}</button>
         </div>
@@ -477,10 +500,16 @@ export function BrainScreen({ asked: fromPalette }: { asked?: { question: string
           <div className="brain-column">
             {empty && (
               <header className="ask-intro">
+                <span className="ask-intro-icon" aria-hidden="true"><Brain size={22} /></span>
                 <h2>Brain</h2>
-                <p>It answers from your notes and cards, and from how the work stands now. It can do things too, such as stop a card or start a release, and it asks you first.</p>
+                <p>It answers from your notes, your cards and how the work stands, and it can act on them too: it asks you first.</p>
                 <div className="brain-starters">
-                  {starters.map((text) => <button key={text} type="button" className="brain-starter" onClick={() => askNext(text)}>{text}</button>)}
+                  {starters.map(({ text, icon: Icon }) => (
+                    <button key={text} type="button" className="brain-starter" onClick={() => askNext(text)}>
+                      <Icon size={16} aria-hidden="true" />
+                      <span>{text}</span>
+                    </button>
+                  ))}
                 </div>
               </header>
             )}
@@ -532,9 +561,10 @@ export function BrainScreen({ asked: fromPalette }: { asked?: { question: string
                 <span aria-hidden="true" />
                 Every binder I’m in
               </label>
-              {!empty && <ConfirmButton className="button ask-new" question="Start over? Press again" disabled={!!pending} onConfirm={() => void startOver()}><MessageSquarePlus size={14} /> New conversation</ConfirmButton>}
+              {empty
+                ? <p className="ask-follows">It remembers this conversation, so you can ask a follow-up.</p>
+                : <ConfirmButton className="button small quiet ask-new" question="Start over? Press again" disabled={!!pending} onConfirm={() => void startOver()}><MessageSquarePlus size={14} /> New conversation</ConfirmButton>}
             </div>
-            <p className="faint ask-follows">It remembers this conversation, so you can ask a follow-up.</p>
           </div>
         </form>
       </div>

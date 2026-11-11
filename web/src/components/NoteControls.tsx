@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { BookMarked, Ellipsis, History, Link2, Lock, LockOpen, Send, Sparkles } from 'lucide-react'
 import { guideMost } from '../../../shared/guide.ts'
 import { lineDiff, fromMarkdown, type Note, type NoteProposal } from '../../../shared/notes.ts'
@@ -8,6 +8,7 @@ import { useActions, useHub, useNoteText } from '../data/store'
 import { sizeOf, textOf } from '../data/noteText'
 import { openMenuUnder, type MenuItem } from './ContextMenu'
 import { Dialog } from './Dialog'
+import { MenuButton } from '../kit'
 import { href } from '../route'
 import { attempt, failure, toast } from './Toast'
 import { useMayChangeBinder } from '../screens/settings/access'
@@ -245,10 +246,12 @@ function NoteReview({ note, mayChange, onClose, opening }: { note: Note; mayChan
         ? <ProposeForm note={note} now={now} start={proposing} onDone={() => { setProposing(undefined); setTab('proposals') }} />
         : (
           <>
-            <div className="note-review-tabs" role="tablist">
-              <button type="button" role="tab" aria-selected={tab === 'proposals'} className={`button${tab === 'proposals' ? ' primary' : ''}`} onClick={() => setTab('proposals')}>Suggested changes</button>
-              <button type="button" role="tab" aria-selected={tab === 'versions'} className={`button${tab === 'versions' ? ' primary' : ''}`} onClick={() => setTab('versions')}>Versions</button>
-              {note.locked && !mayChange && !reads && <button type="button" className="button" disabled={now === undefined} onClick={() => now !== undefined && setProposing(now)}>Suggest a change</button>}
+            <div className="note-review-head">
+              <div className="tabs note-review-tabs" role="tablist">
+                <button type="button" role="tab" aria-selected={tab === 'proposals'} onClick={() => setTab('proposals')}>Suggested changes</button>
+                <button type="button" role="tab" aria-selected={tab === 'versions'} onClick={() => setTab('versions')}>Versions</button>
+              </div>
+              {note.locked && !mayChange && !reads && <button type="button" className="button small" disabled={now === undefined} onClick={() => now !== undefined && setProposing(now)}>Suggest a change</button>}
             </div>
             {tab === 'versions'
               ? <Versions note={note} now={now} mayChange={mayChange} onPropose={setProposing} />
@@ -267,11 +270,15 @@ function GuideLength({ noteId }: { noteId: string }) {
     const note = state.notes.find((n) => n.id === noteId)
     return !!note && sizeOf(note) > guideMost
   })
-  return long ? <span className="note-guide-long" title={`Agents are given the first ${guideMost.toLocaleString()} characters, and can read the rest`}>Long for a guide</span> : null
+  return long ? <span className="note-flag warn" title={`Agents are given the first ${guideMost.toLocaleString()} characters, and can read the rest`}>Long for a guide</span> : null
 }
 
-/** The note's guide, lock and history buttons; on a phone, one button for them all, with what `more` adds. */
-export function NoteControls({ note, mayChange, more }: { note: Note; mayChange: boolean; more?: MenuItem[] }) {
+/**
+ * A note's own controls. Over a note on a wide window (`bar`, or nothing given): what it is (the binder's guide, locked,
+ * and what `flags` adds), its versions as a button, what `children` adds, and the rest in a ⋯ menu with what `more`
+ * adds. On a phone (`more` without `bar`): one ⋯ button for all of it.
+ */
+export function NoteControls({ note, mayChange, more, bar = false, flags, children }: { note: Note; mayChange: boolean; more?: MenuItem[]; bar?: boolean; flags?: ReactNode; children?: ReactNode }) {
   const store = useActions()
   // A reader gets what reads: the versions and the link. The guide, the lock, Send to and Sum up change the Binder.
   const reads = !useMayChangeBinder()
@@ -283,12 +290,12 @@ export function NoteControls({ note, mayChange, more }: { note: Note; mayChange:
   useSyncExternalStore(watchSumming, () => isSumming(note.id))
   const guide = binder?.guideNoteId === note.id
   const lockTitle = note.locked
-    ? mayChange ? `Locked by @${note.locked.by}: only they and this Binder’s owners and admins can change it. Unlock it` : `Locked by @${note.locked.by}: suggest changes for review`
+    ? mayChange ? `Locked by @${note.locked.by}: only they and this Binder’s owners and admins can change it` : `Locked by @${note.locked.by}: suggest changes for review`
     : 'Lock it: others, agents included, can only suggest changes'
   const toggleGuide = () => store.updateBinder(note.binderId, { guideNoteId: guide ? '' : note.id })
   const toggleLock = () => void attempt(() => call('POST', `/api/notes/${note.id}/lock`, { locked: !note.locked }))
   const openReview = () => setReview(open || note.locked ? 'proposals' : 'versions')
-  if (more) {
+  if (more && !bar) {
     // Made when the menu opens, from the note as it is then: whether it can be summed up is read from its text.
     const items = (): MenuItem[] => [
       { label: open ? `Review ${open} suggested change${open === 1 ? '' : 's'}` : 'Versions and suggested changes', icon: <History size={14} />, onSelect: openReview },
@@ -309,12 +316,29 @@ export function NoteControls({ note, mayChange, more }: { note: Note; mayChange:
       </>
     )
   }
+  // The rarer things are in the menu, made when it opens, as on a phone.
+  const items = (): MenuItem[] => [
+    ...(reads ? [] : [
+      { label: note.locked ? 'Unlock' : 'Lock', icon: note.locked ? <LockOpen size={14} /> : <Lock size={14} />, disabled: !!note.locked && !mayChange, onSelect: toggleLock },
+      { label: guide ? 'Stop using as the guide' : 'Make it the binder’s guide', icon: <BookMarked size={14} />, onSelect: toggleGuide },
+    ]),
+    { label: 'Copy link', icon: <Link2 size={14} />, onSelect: () => copyNoteLink(note.id) },
+    ...(reads ? [] : sendAndSumItems(store.current().notes.find((n) => n.id === note.id) ?? note, targets)),
+    ...(more?.length ? [{ separator: true as const }, ...more] : []),
+  ]
   return (
     <>
-      {!reads && <button type="button" className={`icon-button${guide ? ' on' : ''}`} aria-pressed={guide} onClick={toggleGuide} title={guide ? 'This is the binder’s guide: every agent here reads it first. Stop using it as the guide' : 'Make this the binder’s guide: every agent here reads it first'} aria-label="Binder guide"><BookMarked size={15} /></button>}
-      {!reads && <button type="button" className={`icon-button${note.locked ? ' on' : ''}`} aria-pressed={!!note.locked} disabled={!!note.locked && !mayChange} onClick={toggleLock} title={lockTitle} aria-label={note.locked ? 'Locked' : 'Lock'}>{note.locked ? <Lock size={15} /> : <LockOpen size={15} />}</button>}
-      <button type="button" className={`icon-button${open ? ' on' : ''}`} onClick={openReview} title={open ? `${open} suggested change${open === 1 ? '' : 's'} to review` : 'Versions and suggested changes'} aria-label="Versions and suggested changes"><History size={15} />{open > 0 && <i className="waiting num">{open}</i>}</button>
-      {guide && <GuideLength noteId={note.id} />}
+      {(guide || note.locked || flags) && (
+        <span className="note-flags">
+          {note.locked && <span className="note-flag" title={lockTitle}><Lock size={13} aria-hidden="true" /> Locked</span>}
+          {guide && <span className="note-flag" title="Every agent in this binder reads it first"><BookMarked size={13} aria-hidden="true" /> Binder’s guide</span>}
+          {guide && <GuideLength noteId={note.id} />}
+          {flags}
+        </span>
+      )}
+      <button type="button" className={`icon-button note-versions-button${open ? ' on' : ''}`} onClick={openReview} title={open ? `${open} suggested change${open === 1 ? '' : 's'} to review` : 'Versions and suggested changes'} aria-label="Versions and suggested changes"><History size={16} />{open > 0 && <i className="waiting num">{open}</i>}</button>
+      {children}
+      <MenuButton className="note-more" label="More for this note" items={items} />
       {review && <NoteReview note={note} mayChange={mayChange} opening={review} onClose={() => setReview(undefined)} />}
     </>
   )

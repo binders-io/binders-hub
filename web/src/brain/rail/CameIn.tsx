@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Inbox, Mail } from 'lucide-react'
 import { loadFeed, undoRow, useHeard, type Outcome } from '../../data/listen'
 import { useHub } from '../../data/store'
 import { askedWords } from '../../components/bits'
@@ -6,6 +7,7 @@ import { SettingsLink } from '../../components/SettingsLink'
 import { useMayChangeBinder } from '../../screens/settings/access'
 import { href } from '../../route'
 import { HubError } from '../../data/api'
+import { EmptyState, Skeleton, Status } from '../../kit'
 import { RailSection } from './RailSection'
 
 /** How many rows show at first, and the most "Show more" reveals. */
@@ -15,7 +17,8 @@ const mostRows = 30
 /**
  * The rail's third part: what came in through the Binder's listeners, newest first, and what the hub did with each.
  * It asks again whenever the hub says something was heard or taken back. A row that became a note opens it and, for
- * people who can change the Binder, can be taken back.
+ * people who can change the Binder, can be taken back. Each is a row as the kit draws them: its title, where it came
+ * from, the hub's line, and when, with Undo at its end.
  */
 export function CameIn() {
   const [rows, setRows] = useState<Outcome[]>([])
@@ -53,36 +56,39 @@ export function CameIn() {
     <RailSection id="came" title="Came in" count={rows.length}>
       {shown.length ? (
         <>
-          <ul className="brain-came">
+          <ul className="rows brain-came">
             {shown.map((row) => {
               const noted = row.did === 'noted'
               const titleId = `brain-came-${row.id}`
               return (
-                <li key={row.id} className={`brain-came-row${noted ? '' : ' quiet'}`}>
-                  <div className="brain-came-from">
-                    <b>{row.listenerName}</b>
-                    {row.sender && <span className="brain-came-sender">{row.sender}</span>}
-                    {row.strength === 'outside' && <span className="brain-came-tag">From outside</span>}
+                <li key={row.id} className={`rows-item brain-came-row${noted ? '' : ' quiet'}`}>
+                  <span className="rows-icon" aria-hidden="true">{noted ? <Inbox size={16} /> : <Mail size={16} />}</span>
+                  <div className="brain-came-text">
+                    <div className="brain-came-title" id={titleId}>{noted && row.note ? <a href={href({ screen: 'notes', id: row.note })}>{row.title}</a> : row.title}</div>
+                    <div className="brain-came-from">
+                      <b>{row.listenerName}</b>
+                      {row.sender && <span className="brain-came-sender">{row.sender}</span>}
+                      {row.strength === 'outside' && <Status tone="waiting">From outside</Status>}
+                    </div>
+                    <div className="brain-came-line">{row.line}</div>
+                    {refused?.id === row.id && <p className="brain-came-refused" role="alert">{refused.why}</p>}
                   </div>
-                  <div className="brain-came-title" id={titleId}>{noted && row.note ? <a href={href({ screen: 'notes', id: row.note })}>{row.title}</a> : row.title}</div>
-                  <div className="brain-came-line">{row.line}</div>
-                  <div className="brain-came-foot">
+                  <div className="brain-came-end">
                     <time dateTime={row.at}>{askedWords(row.at)}</time>
                     {noted && mayChange && <button type="button" className="text-button brain-came-undo" aria-describedby={titleId} disabled={undoing === row.id} onClick={() => void undo(row)}>Undo</button>}
                   </div>
-                  {refused?.id === row.id && <p className="brain-came-refused" role="alert">{refused.why}</p>}
                 </li>
               )
             })}
           </ul>
-          {!more && rows.length > firstRows && <button type="button" className="text-button brain-came-more" onClick={() => setMore(true)}>Show more</button>}
+          {!more && rows.length > firstRows && <button type="button" className="brain-came-more" onClick={() => setMore(true)}>Show more</button>}
         </>
       ) : !loaded ? (
-        <p className="faint brain-rail-none">Loading…</p>
+        <div className="brain-rail-loading" role="status" aria-label="Loading"><Skeleton lines={2} /></div>
       ) : failed ? (
-        <p className="faint brain-rail-none">Couldn’t load what came in.</p>
+        <EmptyState compact icon={<Inbox size={18} />} title="Couldn’t load what came in." action={<button type="button" className="button small" onClick={load}>Try again</button>} />
       ) : (
-        <p className="faint brain-rail-none">Nothing has come in.{mayManage && <> Add a listener in <SettingsLink section="listeners" />.</>}</p>
+        <EmptyState compact icon={<Inbox size={18} />} title="Nothing has come in." line={mayManage ? <>Add a listener in <SettingsLink section="listeners" />.</> : undefined} />
       )}
     </RailSection>
   )
