@@ -1,0 +1,77 @@
+/* A card's debrief: the button on cards and beside pull request links, and its five sections on the card. */
+.debrief-chip { flex: none; display: inline-flex; align-items: center; gap: var(--space-4); height: 22px; padding: 0 var(--space-8) 0 6px; border-radius: var(--r-pill); border: 1px solid var(--line-strong); font: 600 var(--font-12)/1 var(--body); color: var(--muted); cursor: pointer; white-space: nowrap; transition: background var(--dur-fast), color var(--dur-fast); }
+.debrief-chip:hover { color: var(--text); background: var(--fill-2); }
+.debrief-chip.busy { color: var(--blue); border-color: var(--blue-line); cursor: default; }
+/* On a card too narrow for its word, the chip is its icon; its name stays the same. */
+@container card (max-width: 200px) {
+  .card .debrief-chip { width: 22px; padding: 0; justify-content: center; }
+  .card .debrief-chip-label { display: none; }
+}
+.work-section.debrief h2 .debrief-actions { margin-left: auto; }
+.work-section.debrief > .faint.small { margin: 0; font-size: var(--font-12); line-height: var(--leading-12); color: var(--muted); }
+.work-section.debrief h3 { margin: var(--space-8) 0 0; font: 700 var(--font-13)/var(--leading-13) var(--body); color: var(--text); }
+.work-section.debrief p { margin: 0; font-size: var(--font-14); line-height: var(--leading-14); color: var(--text-2); white-space: pre-line; }
+.debrief-status { padding: 10px var(--space-12); border-radius: var(--r-sm); font-size: var(--font-13) !important; line-height: var(--leading-13) !important; }
+.debrief-status.working { background: var(--blue-wash); border: 1px solid var(--blue-line); }
+.debrief-status.failed { background: var(--red-wash); color: var(--red); }
+.debrief-status.moved { background: var(--amber-wash); border: 1px solid var(--amber-line); color: var(--text) !important; }
+.debrief-status.moved .debrief-chip { margin-left: 4px; vertical-align: baseline; }
+.debrief-since { margin: 0; padding: 10px var(--space-12); border-radius: var(--r-sm); background: var(--fill-1); border-left: 3px solid var(--amber); }
+.debrief-since h3:first-child { margin-top: 0 !important; }
+.debrief-commits { list-style: none; margin: var(--space-8) 0 0; padding: 0; display: grid; gap: var(--space-4); font-size: var(--font-13); color: var(--text-2); }
+.debrief-commits code { font-family: var(--mono); font-size: var(--font-12); color: var(--muted); }
+.debrief-changes { margin: 0; display: grid; gap: 6px; }
+.debrief-changes div { display: grid; grid-template-columns: minmax(90px, 160px) minmax(0, 1fr); gap: var(--space-12); font-size: var(--font-14); line-height: var(--leading-14); }
+.debrief-changes dt { font-weight: 700; }
+.debrief-changes dd { margin: 0; color: var(--text-2); }
+.debrief-against { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.debrief-against li { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: var(--space-12); align-items: baseline; font-size: var(--font-14); line-height: var(--leading-14); }
+.debrief-against li div { display: grid; gap: 2px; }
+.debrief-against li div span { color: var(--muted); font-size: var(--font-13); }
+.debrief-mark { display: inline-flex; align-items: center; gap: var(--space-4); justify-self: start; height: 22px; padding: 0 var(--space-8); border-radius: var(--r-pill); font-weight: 700; font-size: var(--font-12); white-space: nowrap; }
+.debrief-against li.mark-met .debrief-mark { color: var(--green); background: var(--green-wash); }
+.debrief-against li.mark-partly .debrief-mark { color: var(--amber); background: var(--amber-wash); }
+.debrief-against li.mark-not .debrief-mark { color: var(--red); background: var(--red-wash); }
+.debrief-look { margin: 0; padding-left: 18px; display: grid; gap: var(--space-4); font-size: var(--font-14); line-height: var(--leading-14); color: var(--text-2); }
+.debrief-try { font-family: var(--mono); font-size: var(--font-12) !important; line-height: 1.6 !important; padding: 10px var(--space-12); border-radius: var(--r-sm); background: var(--fill-2); overflow-wrap: anywhere; }
+
+/* A debrief's functional test plan: each test's point, steps and what to expect, and whether it passed for whoever ran it. */
+.test-plan { margin-top: var(--space-8); display: grid; gap: var(--space-8); }
+.work-section.debrief .test-plan h3 { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.test-plan h3 .text-button { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-size: var(--font-12); }
+.test-tally, .tests-line { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 20px; background: var(--fill-1); color: var(--text-2); font: 700 11px/1 var(--body); letter-spacing: 0; text-transform: none; }
+.test-tally.passed, .tests-line.passed { color: var(--green); background: var(--green-wash); }
+.test-tally.failed, .tests-line.failed { color: var(--red); background: var(--red-wash); }
+.tests-line { border: 0; cursor: pointer; }
+.tests { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.test { display: grid; gap: 6px; padding: var(--space-12) 14px; border-radius: var(--r); border: 1px solid var(--line); background: var(--tile); box-shadow: var(--tile-shadow); font-size: var(--font-14); line-height: var(--leading-14); }
+.test.passed { border-color: var(--green-line); }
+.test.failed { border-color: var(--red); }
+.test-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.test-head b { font-weight: 700; color: var(--text); }
+.test-id { color: var(--muted); font-family: var(--mono); font-size: var(--font-12); }
+.test-risk { padding: 1px 7px; border-radius: 20px; font-size: 11px; font-weight: 700; }
+.test-risk.risk-high { color: var(--red); background: var(--red-wash); }
+.test-risk.risk-medium { color: var(--amber); background: var(--amber-wash); }
+.test-risk.risk-low { color: var(--text-2); background: var(--fill-1); }
+.test-point { color: var(--muted); font-size: var(--font-13) !important; }
+.test-setup span, .test-expect span { display: inline-block; min-width: 56px; color: var(--muted); font: 600 var(--font-12)/1 var(--body); }
+.test-steps { margin: 0; padding-left: 20px; display: grid; gap: 3px; color: var(--text-2); }
+.test-expect { color: var(--text); }
+.test-result { display: inline-flex; align-items: center; gap: 6px; font-size: var(--font-13) !important; font-weight: 700; }
+.test-result.passed { color: var(--green); }
+.test-result.failed { color: var(--red); }
+.test-actions { display: flex; gap: 6px; }
+.test-pass, .test-fail { display: inline-flex; align-items: center; gap: 5px; height: var(--control-sm); padding: 0 11px; border-radius: var(--r-sm); border: 1px solid var(--control-line); background: var(--control-bg); font-weight: 600; font-size: var(--font-12); color: var(--text); }
+.test-pass.on { color: var(--green); border-color: var(--green-line); background: var(--green-wash); }
+.test-fail.on { color: var(--red); border-color: var(--red); background: var(--red-wash); }
+.test-note { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.test-note input { flex: 1 1 220px; min-width: 0; height: var(--control-sm); padding: 0 10px; border-radius: var(--r-sm); border: 1px solid var(--field-line); background: var(--field-bg); color: var(--text); font: inherit; font-size: var(--font-13); }
+@media (max-width: 700px) { .test { padding: 11px 12px; } .test-plan h3 .text-button { margin-left: 0; } }
+.tasks { max-height: min(420px, 52vh); overflow-y: auto; overscroll-behavior: contain; }
+.tasks li { padding: 6px 12px; row-gap: 1px; }
+.tasks .task-icon { width: 22px; height: 22px; }
+.tasks .task-text { font-size: var(--font-13); }
+.tasks .task-result { font-size: var(--font-12); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* A label sits close to what it names, and further from what came before. */
+.work-section.debrief > h3 + * { margin-top: -6px; }

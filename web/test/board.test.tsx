@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { card, hubState, mount, standInHub } from './harness'
+import { agent, card, hubState, mount, standInHub } from './harness'
 import { ContextMenuHost } from '../src/components/ContextMenu'
 import { Flow } from '../src/screens/Flow'
 import { UIContext } from '../src/ui'
@@ -106,5 +106,43 @@ describe('the stages on a phone', () => {
     columns.scrollLeft = 900
     fireEvent.scroll(columns)
     expect(await within(stages()).findByRole('button', { current: true })).toBe(stage(/Blocked/))
+  })
+})
+
+describe('the board’s tools', () => {
+  const two = () => hubState({ agents: [{ ...agent, name: 'Builder' }], cards: [card('Built by it', 'working', { agentId: 'a1' }), card('Nobody’s')] })
+
+  it('has the filters in a menu too, for a phone, ticking the one shown and narrowing the board as the chips do', async () => {
+    standInHub(two)
+    await opened()
+    const view = screen.getByRole('button', { name: 'Show only: Everyone' })
+    expect(view.getAttribute('aria-haspopup')).toBe('menu')
+    fireEvent.click(view)
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Everyone', 'Mine', 'Builder'])
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Builder' }))
+    expect(screen.queryByText('Nobody’s')).toBeNull()
+    expect(within(screen.getByRole('group', { name: 'Show only' })).getByRole('button', { name: 'Builder' }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: 'Show only: Builder' })).toBeTruthy()
+  })
+
+  it('opens the activity over the board, and closes it from its own button and on Escape', async () => {
+    await opened()
+    const toggle = screen.getByRole('button', { name: 'Activity' })
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(document.querySelector('.flow')!.className).toContain('feed-open')
+    fireEvent.click(screen.getByRole('button', { name: 'Close activity' }))
+    expect(document.querySelector('.flow')!.className).not.toContain('feed-open')
+    fireEvent.click(screen.getByRole('button', { name: 'Activity' }))
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(document.querySelector('.flow')!.className).not.toContain('feed-open')
+  })
+
+  it('names each column’s stage by its title and says what it means with it', async () => {
+    await opened()
+    const ready = screen.getByRole('region', { name: 'Ready' })
+    expect(document.getElementById(ready.getAttribute('aria-describedby')!)!.textContent).toBe('An agent can take these')
+    expect(ready.querySelector('header')!.getAttribute('title')).toBe('An agent can take these')
   })
 })

@@ -1,0 +1,9 @@
+/* ---------- The live feed: beside the board on wide windows, a panel you open on the rest ---------- */
+@media (min-width: 1700px) {
+  .flow { grid-template-columns: minmax(0, 1fr) 300px; }
+  .feed-toggle, .feed-close { display: none !important; }
+}
+@media (max-width: 1699px) {
+  .feed { display: none; position: absolute; top: 0; right: 0; bottom: 0; width: min(340px, 100%); z-index: var(--z-panel); background: var(--bg-raised); box-shadow: -30px 0 60px -20px var(--shadow-color); }
+  .flow.feed-open .feed { display: flex; }
+}

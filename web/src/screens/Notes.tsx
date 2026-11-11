@@ -1,7 +1,7 @@
 import { space } from '../data/space'
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { ArrowUpRight, CalendarClock, Check, ChevronLeft, GitPullRequest, LoaderCircle, Lock, ChevronsLeft, ChevronsRight, ExternalLink, Maximize2, MessageSquare, Minimize2, PanelLeft, PanelRight, Sparkles, Trash2, X } from 'lucide-react'
+import { ArrowUpRight, CalendarClock, Check, ChevronLeft, CircleAlert, CloudOff, FileQuestion, FileText, GitPullRequest, LoaderCircle, Lock, ChevronsLeft, ChevronsRight, ExternalLink, Maximize2, MessageSquare, Minimize2, PanelLeft, PanelRight, Sparkles, Trash2, X } from 'lucide-react'
 import { useKeyboardRoom } from '../components/useKeyboardRoom'
 import { stages } from '../data/model'
 import { isOnline, nameFor, sameFields, sameValues, useActions, useClock, useHub, useLiveNote, useNoteText, usePresence, type State } from '../data/store'
@@ -11,7 +11,6 @@ import type { Card, Note } from '../data/model'
 import { ago, usePhone } from '../components/bits'
 import { isModelAgent, modelReady } from '../components/modelAgent'
 import { attempt, toast } from '../components/Toast'
-import { ConfirmButton } from '../components/ConfirmButton'
 import { NoteViews, type NoteView } from '../components/NoteViews'
 import { CameThrough } from '../components/CameThrough'
 import { call } from '../data/api'
@@ -31,6 +30,7 @@ import { openMenu } from '../components/ContextMenu'
 import { cardMenuItems } from '../components/CardMenu'
 import { ScheduleDialog } from '../components/Schedules'
 import { useMayChangeBinder } from './settings/access'
+import { EmptyState, Skeleton } from '../kit'
 
 const spring = { type: 'spring', stiffness: 380, damping: 34 } as const
 
@@ -86,14 +86,11 @@ export function Notes({ id }: { id: string }) {
     return (
       <div className="notes empty">
         {!phone && <NoteTree currentId="" />}
-        <div className="empty-screen">
+        <div className="notes-empty">
           {loaded ? (
-            <>
-              <h2>That note isn’t here any more</h2>
-              <p>It may have been deleted, or moved out of reach.</p>
-              <a className="button primary" href={href({ screen: 'notes', id: '' })}>Go to your notes</a>
-            </>
-          ) : <p role="status">Opening the note…</p>}
+            <EmptyState icon={<FileQuestion size={20} />} title="That note isn’t here any more" line="It may have been deleted, or moved out of reach."
+              action={<a className="button primary" href={href({ screen: 'notes', id: '' })}>Go to your notes</a>} />
+          ) : <p className="notes-opening" role="status">Opening the note…</p>}
         </div>
       </div>
     )
@@ -102,10 +99,10 @@ export function Notes({ id }: { id: string }) {
     return (
       <div className="notes empty">
         <NoteTree currentId="" />
-        <div className="empty-screen">
-          <h2>No notes yet</h2>
-          <p>{!mayChangeBinder ? 'Nothing has been written in this binder yet.' : binders.length ? 'Write one, then Distill it into work for your agents.' : 'Make a binder first: “New binder…” is in the switcher at the top left.'}</p>
-          {binders[0] && mayChangeBinder && <button className="button primary" onClick={() => go({ screen: 'notes', id: store.addNote(binders[0].id) })}>New note</button>}
+        <div className="notes-empty">
+          <EmptyState icon={<FileText size={20} />} title="No notes yet"
+            line={!mayChangeBinder ? 'Nothing has been written in this binder yet.' : binders.length ? 'Write one, then Distill it into work for your agents.' : 'Make a binder first: “New binder…” is in the switcher at the top left.'}
+            action={binders[0] && mayChangeBinder && <button type="button" className="button primary" onClick={() => go({ screen: 'notes', id: store.addNote(binders[0].id) })}>New note</button>} />
         </div>
       </div>
     )
@@ -282,18 +279,30 @@ function NoteScreen({ noteId, listFirst, onDeleted }: { noteId: string; listFirs
               ] : []} />
             </>
           ) : (
-            <>
-              <span className="view-buttons">
-                <NoteControls note={note} mayChange={mayChange} />
-                {focus === 'none' && <button type="button" className="icon-button" onClick={() => change({ treeOpen: !layout.treeOpen })} title={layout.treeOpen ? 'Hide the notes list' : 'Show the notes list'} aria-label={layout.treeOpen ? 'Hide the notes list' : 'Show the notes list'}><PanelLeft size={15} /></button>}
-                {focus === 'none' && <button type="button" className="icon-button" onClick={() => change({ sideOpen: !layout.sideOpen })} title={layout.sideOpen ? 'Hide the chat and Distill' : 'Show the chat and Distill'} aria-label={layout.sideOpen ? 'Hide the side panel' : 'Show the side panel'}><PanelRight size={15} /></button>}
-                {!popped && <button type="button" className="icon-button" onClick={() => setFocus(focus === 'note' ? 'none' : 'note')} title={focus === 'note' ? 'Leave full screen (Esc)' : 'Full screen'} aria-label={focus === 'note' ? 'Leave full screen' : 'Full screen'}>{focus === 'note' ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>}
-                {mayChangeBinder && <button type="button" className={`icon-button${scheduled ? ' on' : ''}`} onClick={() => setScheduling(true)} title={scheduled ? `Scheduled: ${scheduled} schedule${scheduled === 1 ? '' : 's'}` : 'Schedule it: run this note as a card on a timer'} aria-label="Schedule"><CalendarClock size={15} /></button>}
-                {mayChangeBinder && <button type="button" className={`icon-button${ownSet ? ' on' : ''}`} aria-pressed={ownSet} onClick={toggleOwnSet} title={ownSet ? 'This note’s work gets its own change set. Click to add it to the open one instead.' : 'This note’s work joins the open change set. Click to give it its own.'} aria-label="Own change set"><GitPullRequest size={15} /></button>}
-                {!popped && <button type="button" className="icon-button" onClick={() => popOut('note', note.id)} title="Open in a window of its own" aria-label="Pop out"><ExternalLink size={15} /></button>}
-              </span>
-              {mayChangeBinder && <ConfirmButton className="note-delete" question="Delete this note for good? Press again" label="Delete this note" title="Delete this note" onConfirm={deleteThis}><Trash2 size={14} /></ConfirmButton>}
-            </>
+            <span className="view-buttons">
+              {/* What the note is and what's done to it, then how the screen is laid out; the rare things in its ⋯. */}
+              <NoteControls note={note} mayChange={mayChange} bar
+                flags={mayChangeBinder && (scheduled > 0 || ownSet) ? (
+                  <>
+                    {scheduled > 0 && <button type="button" className="note-flag" onClick={() => setScheduling(true)} title="Run as a card on a timer. Press to see its schedules"><CalendarClock size={13} aria-hidden="true" /> Scheduled</button>}
+                    {ownSet && <span className="note-flag" title="This note’s work gets a change set of its own"><GitPullRequest size={13} aria-hidden="true" /> Own change set</span>}
+                  </>
+                ) : undefined}
+                more={[
+                  ...(mayChangeBinder ? [
+                    { label: scheduled ? `Schedules (${scheduled})` : 'Schedule it', icon: <CalendarClock size={14} />, onSelect: () => setScheduling(true) },
+                    { label: ownSet ? 'Join the open change set' : 'Give it its own change set', icon: <GitPullRequest size={14} />, onSelect: toggleOwnSet },
+                  ] : []),
+                  ...(!popped ? [{ label: 'Open in a window of its own', icon: <ExternalLink size={14} />, onSelect: () => popOut('note', note.id) }] : []),
+                  ...(mayChangeBinder ? [{ separator: true as const }, { label: 'Delete this note', icon: <Trash2 size={14} />, danger: true, confirm: 'Delete this note for good? Press again', onSelect: deleteThis }] : []),
+                ]}>
+                <span className="note-layout-buttons">
+                  {focus === 'none' && <button type="button" className="icon-button" onClick={() => change({ treeOpen: !layout.treeOpen })} title={layout.treeOpen ? 'Hide the notes list' : 'Show the notes list'} aria-label={layout.treeOpen ? 'Hide the notes list' : 'Show the notes list'}><PanelLeft size={16} /></button>}
+                  {focus === 'none' && <button type="button" className="icon-button" onClick={() => change({ sideOpen: !layout.sideOpen })} title={layout.sideOpen ? 'Hide the chat and Distill' : 'Show the chat and Distill'} aria-label={layout.sideOpen ? 'Hide the side panel' : 'Show the side panel'}><PanelRight size={16} /></button>}
+                  {!popped && <button type="button" className="icon-button" onClick={() => setFocus(focus === 'note' ? 'none' : 'note')} title={focus === 'note' ? 'Leave full screen (Esc)' : 'Full screen'} aria-label={focus === 'note' ? 'Leave full screen' : 'Full screen'}>{focus === 'note' ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>}
+                </span>
+              </NoteControls>
+            </span>
           )}
         </NoteMeta>
         <CameThrough noteId={note.id} />
@@ -307,19 +316,19 @@ function NoteScreen({ noteId, listFirst, onDeleted }: { noteId: string; listFirs
       {showSide && <aside className={`distill${phone ? ' view' : ''}`} aria-label={phone ? (panel === 'chat' ? 'Chat about the note' : 'Distill the note') : 'Beside the note'}>
         {!phone && focus === 'none' && <div className="resize-handle" onPointerDown={drag('side')} onDoubleClick={() => change({ wide: !layout.wide })} role="separator" aria-orientation="vertical" aria-label="Resize the side panel" />}
         {!phone && <div className="side-head">
-          <div className="side-tabs" role="tablist">
-            <button role="tab" aria-selected={side === 'chat'} className={side === 'chat' ? 'on' : ''} onClick={() => chooseSide('chat')}><MessageSquare size={14} /> Chat</button>
-            {mayChangeBinder && <button role="tab" aria-selected={side === 'distill'} className={side === 'distill' ? 'on' : ''} onClick={() => chooseSide('distill')}><Sparkles size={14} /> Distill</button>}
+          <div className="tabs side-tabs" role="tablist">
+            <button type="button" role="tab" aria-selected={side === 'chat'} onClick={() => chooseSide('chat')}><MessageSquare size={14} aria-hidden="true" /> Chat</button>
+            {mayChangeBinder && <button type="button" role="tab" aria-selected={side === 'distill'} onClick={() => chooseSide('distill')}><Sparkles size={14} aria-hidden="true" /> Distill{fresh.length > 0 && <i className="waiting num">{fresh.length}</i>}</button>}
           </div>
-          {focus === 'none' && <button type="button" className="icon-button" onClick={() => change({ wide: !layout.wide })} title={layout.wide ? 'Narrower' : 'Wider'} aria-label={layout.wide ? 'Narrower' : 'Wider'}>{layout.wide ? <ChevronsRight size={15} /> : <ChevronsLeft size={15} />}</button>}
-          {!popped && <button type="button" className="icon-button" onClick={() => { chooseSide('chat'); setFocus(focus === 'chat' ? 'none' : 'chat') }} title={focus === 'chat' ? 'Leave full screen (Esc)' : 'Chat full screen'} aria-label={focus === 'chat' ? 'Leave full screen' : 'Chat full screen'}>{focus === 'chat' ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>}
-          {!popped && <button type="button" className="icon-button" onClick={() => popOut('chat', note.id)} title="Chat in a window of its own" aria-label="Pop out the chat"><ExternalLink size={15} /></button>}
+          {focus === 'none' && <button type="button" className="icon-button" onClick={() => change({ wide: !layout.wide })} title={layout.wide ? 'Narrower' : 'Wider'} aria-label={layout.wide ? 'Narrower' : 'Wider'}>{layout.wide ? <ChevronsRight size={16} /> : <ChevronsLeft size={16} />}</button>}
+          {!popped && <button type="button" className="icon-button" onClick={() => { chooseSide('chat'); setFocus(focus === 'chat' ? 'none' : 'chat') }} title={focus === 'chat' ? 'Leave full screen (Esc)' : 'Chat full screen'} aria-label={focus === 'chat' ? 'Leave full screen' : 'Chat full screen'}>{focus === 'chat' ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>}
+          {!popped && <button type="button" className="icon-button" onClick={() => popOut('chat', note.id)} title="Chat in a window of its own" aria-label="Pop out the chat"><ExternalLink size={16} /></button>}
         </div>}
         {!phone && focus === 'chat' && <p className="chat-about">About <a href={href({ screen: 'notes', id: note.id })} onClick={() => setFocus('none')}>{note.title}</a></p>}
         {panel === 'chat' ? <NoteChat key={note.id} note={note} agents={agents} initial={chosen} onFocusChange={setChatFocused} /> : <>
-        <header>
-          <h2><Sparkles size={15} /> Distill</h2>
-          <button className="button primary" onClick={() => chosen && void attempt(() => store.distill(note.id, chosen.id))} disabled={distilling || !chosen}>
+        <header className="distill-head">
+          <h2><Sparkles size={16} aria-hidden="true" /> Distill</h2>
+          <button type="button" className="button primary small" onClick={() => chosen && void attempt(() => store.distill(note.id, chosen.id))} disabled={distilling || !chosen}>
             {distilling ? 'Reading…' : items.length || proposals.length ? 'Distill again' : 'Distill'}
           </button>
         </header>
@@ -384,7 +393,7 @@ function NoteScreen({ noteId, listFirst, onDeleted }: { noteId: string; listFirs
               )
             })}
           </AnimatePresence>
-          {!proposals.length && !distilling && <p className="distill-empty">Distill reads this note into work items, each with who it’s for. Nothing reaches the board until you accept it.</p>}
+          {!proposals.length && !distilling && <EmptyState compact icon={<Sparkles size={18} />} title="Nothing proposed yet" line="Distill reads this note into work items, each with who it’s for. Nothing reaches the board until you accept it." />}
         </div>
         </>}
       </aside>}
@@ -471,9 +480,10 @@ function NoteLoading({ failed, offline, again }: { failed: boolean; offline: boo
     const timer = window.setTimeout(() => setLate(true), 200)
     return () => window.clearTimeout(timer)
   }, [])
-  if (offline) return <p className="note-loading faint" role="status">This note isn’t on this device yet. It loads when you’re back online.</p>
-  if (failed) return <p className="note-loading" role="alert">This note couldn’t be loaded. <button type="button" className="text-button" onClick={again}>Try again</button></p>
-  return late ? <p className="note-loading faint" role="status">Loading…</p> : null
+  if (offline) return <div className="note-loading"><EmptyState compact icon={<CloudOff size={18} />} title="This note isn’t on this device yet. It loads when you’re back online." /></div>
+  if (failed) return <div className="note-loading" role="alert"><EmptyState compact icon={<CircleAlert size={18} />} title="This note couldn’t be loaded." action={<button type="button" className="button small" onClick={again}>Try again</button>} /></div>
+  // The note's shape while its words come: a title and a few lines.
+  return late ? <div className="note-loading" role="status"><span className="sr-only">Loading…</span><Skeleton width="55%" height={30} /><Skeleton lines={4} height={14} /></div> : null
 }
 
 /**

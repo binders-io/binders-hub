@@ -1,0 +1,93 @@
+/* ---------- This binder's GitHub ---------- */
+/* The page: how it's connected, then its repos, each a section. */
+.gh-sections { display: grid; gap: var(--space-32); min-width: 0; }
+.gh-sections > .setup-note, .gh-sections > .setup-warning { margin-bottom: calc(-1 * var(--space-16)); }
+
+/* Another binder's app, by the installations this person can reach. */
+.gh-offers { display: grid; gap: var(--space-16); }
+.gh-offer { display: grid; gap: var(--space-8); }
+.gh-offer-name { margin: 0; font-size: var(--font-14); }
+.gh-installs { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--r); overflow: clip; }
+.gh-installs li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-12); min-height: 52px; padding: var(--space-8) var(--space-12) var(--space-8) var(--space-16); }
+.gh-installs li + li { border-top: 1px solid var(--line); }
+.gh-install-text { min-width: 0; font-size: var(--font-14); overflow-wrap: anywhere; }
+.gh-install-text .faint { font-size: var(--font-13); }
+.gh-lost b { font-weight: 700; }
+
+/* The app's and its reach's dialogs. */
+.gh-dialog { display: grid; gap: var(--space-24); min-width: 0; }
+.gh-dialog-lead { margin: 0; font-size: var(--font-14); line-height: var(--leading-14); color: var(--muted); }
+.gh-dialog-lead b { color: var(--text); font-weight: 600; }
+.gh-dialog-part { display: grid; gap: var(--space-8); }
+.gh-dialog-part > p { margin: 0; font-size: var(--font-13); }
+.gh-dialog-title { margin: 0; font: 700 var(--font-13)/var(--leading-13) var(--body); color: var(--text); }
+.gh-problems { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-8); }
+.gh-problems li { display: flex; gap: var(--space-8); align-items: flex-start; padding: 10px var(--space-12); border-radius: var(--r); border: 1px solid var(--amber-line); background: var(--amber-wash); font-size: var(--font-13); line-height: var(--leading-13); color: var(--text-2); }
+.gh-problems li svg { flex: none; color: var(--amber); margin-top: 2px; }
+.gh-problems a { color: var(--text); }
+.gh-fine { display: flex; align-items: center; gap: 6px; margin: 0; font-size: var(--font-13); color: var(--text-2); }
+.gh-fine svg { flex: none; color: var(--green); }
+.gh-reach { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--r); overflow: clip; }
+.gh-reach li { display: grid; gap: var(--space-4); padding: var(--space-12) var(--space-16); }
+.gh-reach li + li { border-top: 1px solid var(--line); }
+.gh-reach-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-12); min-height: 28px; }
+.gh-reach-head b { font-size: var(--font-14); overflow-wrap: anywhere; }
+.gh-reach p { margin: 0; font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); }
+.gh-reach .field-hint a, .gh-problems a, .gh-dialog-lead a { display: inline-flex; align-items: center; gap: 2px; }
+
+/* The repos table: a lock or a globe before each name. */
+.repo-cell { display: inline-flex; align-items: center; gap: var(--space-8); min-width: 0; max-width: 100%; vertical-align: middle; }
+.repo-cell .repo-icon { flex: none; color: var(--muted); }
+.repo-cell-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* One repo's dialog: what it is, what it's for, and its brief. */
+.repo-dialog { display: grid; gap: var(--space-24); min-width: 0; }
+.repo-dialog-what { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) var(--space-8); margin: 0; font-size: var(--font-13); color: var(--muted); }
+.repo-dialog-what .repo-icon { flex: none; }
+.repo-dialog-what > span { min-width: 0; overflow-wrap: anywhere; }
+.repo-dialog-what a { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; color: var(--text); font-weight: 600; }
+.repo-dialog-part { display: grid; gap: var(--space-12); min-width: 0; }
+.repo-dialog-part + .repo-dialog-part { padding-top: var(--space-24); border-top: 1px solid var(--line); }
+.repo-dialog-title { margin: 0; font: 700 var(--font-13)/var(--leading-13) var(--body); color: var(--text); }
+.repo-uses { display: grid; gap: var(--space-12); }
+.repo-uses + .repo-uses { padding-top: var(--space-12); border-top: 1px solid var(--line); }
+.repo-uses-binder { font-size: var(--font-13); }
+.repo-use { display: grid; gap: var(--space-4); }
+.repo-use-head { display: flex; align-items: center; gap: var(--space-8); min-height: 28px; }
+.repo-use .field-hint { padding-left: 46px; }
+
+/* Add repos: the picker has room for its list, and what a topic or a property finds. */
+.repo-add { display: grid; gap: var(--space-16); }
+.repo-add-pick { min-height: 300px; align-content: start; }
+.repo-matches { display: grid; gap: var(--space-8); }
+.repo-matches-count { margin: 0; font-size: var(--font-13); color: var(--text-2); }
+.repo-match-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.repo-match-list .faint { align-self: center; font-size: var(--font-12); }
+
+/* The repo picker's list, its filters and what it says (the picker is used on other pages too). */
+.people-suggestions .repo-hint { padding: var(--space-8) 10px; font-size: var(--font-12); color: var(--faint); border-top: 1px solid var(--line); }
+.people-suggestions .repo-hint a { color: var(--text-2); }
+.people-suggestions .repo-hint, .people-suggestions .repo-status { margin: 0; }
+.people-suggestions .repo-status { padding: var(--space-8) 10px; font-size: var(--font-13); color: var(--muted); }
+.people-suggestions .repo-retry { color: var(--text); font-weight: 700; }
+.people-suggestions button.unlinkable { cursor: not-allowed; }
+.people-suggestions button.unlinkable b { color: var(--muted); font-weight: 500; }
+.repo-chips-more { display: flex; gap: 14px; margin-top: 6px; }
+.repo-filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-8); margin-top: var(--space-8); }
+.repo-filters select { flex: 1 1 150px; width: auto; min-width: 0; height: var(--control); padding: 0 var(--space-8); border-radius: var(--r-sm); border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font-size: var(--font-13); }
+.repo-filters .faint { flex-basis: 100%; font-size: var(--font-12); }
+@media (max-width: 760px) {
+  .repo-input .people-suggestions button { flex-wrap: wrap; row-gap: 2px; }
+  .repo-input .people-suggestions em { flex-basis: 100%; margin-left: 0; white-space: normal; }
+  .repo-input .people-suggestions em:empty { display: none; }
+}
+@media (max-width: 600px) {
+  .gh-setup { flex-direction: column; }
+  .gh-setup-actions > * { flex: 1 1 auto; }
+  .gh-installs li { flex-wrap: wrap; }
+  .gh-installs li .button { flex: 1 1 100%; }
+  .repo-dialog-what a { margin-left: 0; }
+}
+@media (hover: none) {
+  .repo-filters select, .repo-filters .button, .repo-chips-more button, .repo-input .people-suggestions button { min-height: 44px; }
+}

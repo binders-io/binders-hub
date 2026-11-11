@@ -1,12 +1,15 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import { Check, Copy, TriangleAlert } from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { AnimatePresence } from 'motion/react'
+import { Check, Copy, Inbox, Plus, Rss, TriangleAlert, Webhook } from 'lucide-react'
 import { call } from '../../data/api'
 import { loadListeners, type ListenerView, type ListenView } from '../../data/listen'
 import type { ListenerKind } from '../../../../shared/listen.ts'
 import { useHub } from '../../data/store'
 import { useUI } from '../../ui'
 import { ConfirmButton } from '../../components/ConfirmButton'
-import { attempt } from '../../components/Toast'
+import { attempt, toast } from '../../components/Toast'
+import { Github } from '../../components/Github'
+import { Dialog, EmptyState, Guided, Row, Rows, Section, Skeleton, Status, type GuidedOption, type GuidedStep } from '../../kit'
 import { Saved, WhoCan } from './shared'
 import { useBinderAccess, useSaved } from './access'
 
@@ -30,10 +33,23 @@ const modeLine = (mode: Mode, folder: string) =>
 /** A secret the hub has just made: said once, and kept only here until it's dismissed. */
 interface NewSecret { id: string; name: string; address: string; secret: string }
 
+/** A listener's kind, as an icon. */
+const kindIcon = (kind: ListenerKind, size = 16) => (kind === 'post' ? <Webhook size={size} /> : kind === 'feed' ? <Rss size={size} /> : <Github size={size} />)
+
+/** Off, Watch or On, as a state. A feed it can't read is failing whatever it's in. */
+function modeStatus(listener: ListenerView) {
+  if (listener.failing) return <Status tone="bad" title={listener.failing}>Can’t read it</Status>
+  if (listener.mode === 'on') return <Status tone="ok">On</Status>
+  if (listener.mode === 'watch') return <Status tone="waiting">Watch</Status>
+  return <Status tone="off">Off</Status>
+}
+
 /**
- * This binder's listeners: what brings things into it from outside, each in Off, Watch or On, with where its notes go.
- * Everyone here can read them; the hub says who may change them. A post address's secret is shown once, when it is made
- * or remade, and is held only in this component's state, never written down or put in an address.
+ * This binder's listeners: what brings things into it from outside, each a row in Off, Watch or On with where its notes
+ * go, opening to change it. Add a listener is one button, guided: what kind, then its name and folder, then for an
+ * address to post to, its secret. Everyone here can read them; the hub says who may change them. A post address's
+ * secret is shown once, when it is made or remade, and is held only in this component's state, never written down or
+ * put in an address: in the dialog it was made in, or on the page if that dialog is closed before it's dismissed.
  */
 export function Listeners() {
   const { managers } = useBinderAccess()
@@ -43,10 +59,16 @@ export function Listeners() {
   const [view, setView] = useState<ListenView>()
   const [failed, setFailed] = useState(false)
   const [secret, setSecret] = useState<NewSecret>()
+  const [open, setOpen] = useState<string>()
+  const [adding, setAdding] = useState(false)
   const several = binders.length > 1
   const load = () => void loadListeners().then((found) => { setView(found); setFailed(false) }).catch(() => setFailed(true))
   useEffect(load, [])
-  if (!view) return failed ? <p className="faint">Couldn’t load the listeners. Try again in a moment.</p> : null
+  if (!view) {
+    return failed
+      ? <EmptyState icon={<TriangleAlert size={20} />} title="Couldn’t load the listeners" line="The hub didn’t answer just now." action={<button type="button" className="button" onClick={load}>Try again</button>} />
+      : <div className="section-card listen-loading" aria-busy="true"><Skeleton lines={3} /></div>
+  }
   const may = view.mayManage
 
   const replace = (listener: ListenerView) => setView((was) => was && { ...was, listeners: was.listeners.map((l) => (l.id === listener.id ? { ...l, ...listener } : l)) })
@@ -60,6 +82,7 @@ export function Listeners() {
   const remove = async (listener: ListenerView) => {
     const done = await attempt(async () => { await call('DELETE', `/api/listen/${listener.id}`); return true })
     if (!done) return
+    setOpen(undefined)
     setView((was) => was && { ...was, listeners: was.listeners.filter((l) => l.id !== listener.id) })
     setSecret((was) => (was?.id === listener.id ? undefined : was))
   }
@@ -72,79 +95,93 @@ export function Listeners() {
     if (made && listener.address) setSecret({ id: listener.id, name: listener.name, address: listener.address, secret: made })
   }
   const binderName = (id: string) => binders.find((b) => b.id === id)?.name ?? 'Another binder'
+  const opened = view.listeners.find((l) => l.id === open)
+  const addButton = <button type="button" className="button small" onClick={() => setAdding(true)}><Plus size={14} aria-hidden="true" />Add a listener</button>
 
   return (
-    <>
-      <p className="listen-intro">
-        Each thing a listener hears becomes a note in a folder here. A new
-        one starts in Watch: the hub says what it would file and files nothing, until you turn it On.
-      </p>
+    <div className="gh-sections">
       <WhoCan may={may} managers={managers} />
-      {secret && <SecretBlock key={secret.id + secret.secret} {...secret} onDone={() => setSecret(undefined)} />}
-      <section className="settings-part">
-        <h3 className="settings-sub">Your listeners</h3>
+      {/* A secret whose dialog was closed before it was dismissed stays here, unmissable, until it is. */}
+      {secret && !adding && open !== secret.id && <SecretBlock key={secret.id + secret.secret} {...secret} onDone={() => setSecret(undefined)} />}
+      <Section title="Your listeners" lead="Each thing a listener hears becomes a note in a folder here." action={may && view.listeners.length ? addButton : undefined}
+        more={<p>A new one starts in Watch: the hub says what it would file in Came in, and files nothing, until you turn it On. What comes from outside this binder waits for someone here to let it through before a folder’s rule starts work from it.</p>}>
         {view.listeners.length ? (
-          <ul className="binder-cards">
+          <Rows label="Listeners">
             {view.listeners.map((listener) => (
-              <ListenerCard key={listener.id} listener={listener} may={may} where={several ? binderName(listener.binderId) : undefined}
-                saved={(key) => <Saved show={shown(`${listener.id}-${key}`)} />}
-                onChange={(fields, key) => change(listener.id, fields, key)} onRemove={() => void remove(listener)} onRemake={() => void remake(listener)} />
+              <Row key={listener.id} icon={kindIcon(listener.kind)} title={listener.name}
+                meta={`Notes go to ${listener.folder}${several ? ` in ${binderName(listener.binderId)}` : ''} · ${kindName[listener.kind]}`}
+                status={modeStatus(listener)} onPress={() => setOpen(listener.id)} />
             ))}
-          </ul>
-        ) : <p className="faint">No listeners yet. Nothing comes into this binder from outside it.</p>}
-      </section>
-      {may && <AddListener binders={binders} first={shownBinder !== 'all' && binders.some((b) => b.id === shownBinder) ? shownBinder : binders[0]?.id} onAdded={added} />}
-    </>
+          </Rows>
+        ) : <EmptyState compact icon={<Inbox size={18} />} title="No listeners yet" line="Nothing comes into this binder from outside it." action={may ? addButton : undefined} />}
+      </Section>
+      <AnimatePresence>
+        {opened && (
+          <ListenerDialog key={opened.id} listener={opened} may={may} where={several ? binderName(opened.binderId) : undefined}
+            secret={secret?.id === opened.id ? secret : undefined} onSecretDone={() => setSecret(undefined)}
+            saved={(key) => <Saved show={shown(`${opened.id}-${key}`)} />}
+            onChange={(fields, key) => change(opened.id, fields, key)} onRemove={() => void remove(opened)} onRemake={() => void remake(opened)} onClose={() => setOpen(undefined)} />
+        )}
+        {adding && <AddListener key="add" binders={binders} first={shownBinder !== 'all' && binders.some((b) => b.id === shownBinder) ? shownBinder : binders[0]?.id} secret={secret} onAdded={added} onSecretDone={() => setSecret(undefined)} onClose={() => setAdding(false)} />}
+      </AnimatePresence>
+    </div>
   )
 }
 
-function ListenerCard({ listener, may, where, saved, onChange, onRemove, onRemake }: {
+/** One listener: everything about it, to change for whoever may, and to read for anyone else. */
+function ListenerDialog({ listener, may, where, secret, onSecretDone, saved, onChange, onRemove, onRemake, onClose }: {
   listener: ListenerView
   may: boolean
   /** The binder's name, when this binder has more than one. */
   where?: string
+  /** Its new secret, while it's showing. */
+  secret?: NewSecret
+  onSecretDone: () => void
   saved: (key: string) => ReactNode
   onChange: (fields: Partial<Pick<ListenerView, 'mode' | 'folder' | 'from' | 'url' | 'everyMinutes'>>, key: string) => Promise<boolean>
   onRemove: () => void
   onRemake: () => void
+  onClose: () => void
 }) {
   const id = `listen-${listener.id}`
+  if (secret) {
+    return (
+      <Dialog title={listener.name} onClose={onClose} closeOnlyFromButton footer={<button type="button" className="button primary" onClick={onSecretDone}>I’ve copied it</button>}>
+        <SecretPart {...secret} />
+      </Dialog>
+    )
+  }
   return (
-    <li className="settings-card listen-card">
-      <div className="listen-head">
-        <div className="listen-title">
-          <b className="listen-name">{listener.name}</b>
-          <span className="listen-kind">{kindName[listener.kind]}{where ? ` · ${where}` : ''}</span>
+    <Dialog title={listener.name} onClose={onClose} footer={(
+      <>
+        {may && <ConfirmButton className="button danger dialog-foot-start" question="Remove it? Press again" label={`Remove ${listener.name}`} onConfirm={onRemove}>Remove</ConfirmButton>}
+        {may && listener.kind === 'post' && <ConfirmButton question="New secret? The old one stops. Press again" label={`New secret for ${listener.name}`} onConfirm={onRemake}>New secret</ConfirmButton>}
+        <button type="button" className="button primary" onClick={onClose}>Done</button>
+      </>
+    )}>
+      <div className="listen-card">
+        <p className="listen-kind">{kindIcon(listener.kind, 14)}<span>{kindName[listener.kind]}{where ? ` · ${where}` : ''}</span></p>
+        <div className="field">
+          <span className="field-label" id={`${id}-mode-label`}>Hearing</span>
+          {may ? (
+            <div className="segmented listen-modes" role="radiogroup" aria-labelledby={`${id}-mode-label`}>
+              {modes.map(([mode, label]) => (
+                <button key={mode} type="button" role="radio" aria-checked={listener.mode === mode} className={listener.mode === mode ? 'on' : ''} onClick={() => listener.mode !== mode && void onChange({ mode }, 'mode')}>{label}</button>
+              ))}
+            </div>
+          ) : <b className="listen-mode-name">{modes.find(([mode]) => mode === listener.mode)?.[1]}</b>}
+          <span className="field-head"><span className="field-hint" id={`${id}-mode-line`}>{modeLine(listener.mode, listener.folder)}</span>{saved('mode')}</span>
         </div>
-      </div>
 
-      <div className="field">
-        <span className="field-label" id={`${id}-mode-label`}>Hearing</span>
         {may ? (
-          <div className="segmented listen-modes" role="radiogroup" aria-labelledby={`${id}-mode-label`}>
-            {modes.map(([mode, label]) => (
-              <button key={mode} type="button" role="radio" aria-checked={listener.mode === mode} className={listener.mode === mode ? 'on' : ''} onClick={() => listener.mode !== mode && void onChange({ mode }, 'mode')}>{label}</button>
-            ))}
-          </div>
-        ) : <b className="listen-mode-name">{modes.find(([mode]) => mode === listener.mode)?.[1]}</b>}
-        <span className="field-head"><span className="field-hint" id={`${id}-mode-line`}>{modeLine(listener.mode, listener.folder)}</span>{saved('mode')}</span>
+          <SavedText id={`${id}-folder`} label="Folder" value={listener.folder} onSave={(folder) => onChange({ folder }, 'folder')} hint="Its notes go here. It’s made at the top of the binder if it isn’t there." saved={saved('folder')} />
+        ) : <p className="listen-fact"><span className="field-label">Folder</span> {listener.folder}</p>}
+
+        {listener.kind === 'post' && <PostPart listener={listener} may={may} onChange={onChange} saved={saved} />}
+        {listener.kind === 'feed' && <FeedPart listener={listener} may={may} onChange={onChange} saved={saved} />}
+        {listener.kind === 'github' && <p className="field-hint">It hears issues opened in this binder’s repos that the hub didn’t make. Someone in the Binder is heard, and anyone else is from outside.</p>}
       </div>
-
-      {may ? (
-        <SavedText id={`${id}-folder`} label="Folder" value={listener.folder} onSave={(folder) => onChange({ folder }, 'folder')} hint="Its notes go here. It’s made at the top of the binder if it isn’t there." saved={saved('folder')} />
-      ) : <p className="listen-fact"><span className="field-label">Folder</span> {listener.folder}</p>}
-
-      {listener.kind === 'post' && <PostPart listener={listener} may={may} onChange={onChange} saved={saved} />}
-      {listener.kind === 'feed' && <FeedPart listener={listener} may={may} onChange={onChange} saved={saved} />}
-      {listener.kind === 'github' && <p className="field-hint">It hears issues opened in this binder’s repos that the hub didn’t make. Someone in the Binder is heard, and anyone else is from outside.</p>}
-
-      {may && (
-        <div className="listen-actions">
-          {listener.kind === 'post' && <ConfirmButton question="New secret? The old one stops. Press again" label={`New secret for ${listener.name}`} onConfirm={onRemake}>New secret</ConfirmButton>}
-          <ConfirmButton className="button danger" question="Remove it? Press again" label={`Remove ${listener.name}`} onConfirm={onRemove}>Remove</ConfirmButton>
-        </div>
-      )}
-    </li>
+    </Dialog>
   )
 }
 
@@ -262,41 +299,60 @@ function CopyButton({ text, what }: { text: string; what: string }) {
 }
 
 /**
- * A new secret, shown once and kept on screen until it is dismissed: the secret, a line that it won't be shown again,
- * and a command to paste with the real address and secret in it. Focus lands on it, so a keyboard gets there at once.
+ * A new secret, shown once: the secret, a line that it won't be shown again, and a command to paste with the real address
+ * and secret in it. Focus lands on it, so a keyboard gets there at once.
  */
-function SecretBlock({ name, address, secret, onDone }: NewSecret & { onDone: () => void }) {
+function SecretPart({ name, address, secret }: NewSecret) {
   const block = useRef<HTMLElement>(null)
   useEffect(() => block.current?.focus(), [])
   const example = `curl -X POST "${address}" -H "Authorization: Bearer ${secret}" -H "Content-Type: application/json" -d '{"title":"Hello","text":"Sent from my script"}'`
   return (
     <section className="listen-secret" ref={block} tabIndex={-1} aria-label={`The secret for ${name}`}>
-      <h3>The secret for {name}</h3>
-      <div className="token-value mono"><span>{secret}</span><CopyButton text={secret} what="the secret" /></div>
-      <p><b>It won’t be shown again.</b> Copy it now. If it’s lost, make a new one: the old one stops working.</p>
+      <p className="listen-secret-once"><TriangleAlert size={15} aria-hidden="true" /><span><b>It won’t be shown again.</b> Copy it now. If it’s lost, make a new one: the old one stops working.</span></p>
+      <div className="copy-row">
+        <span className="field-label">The secret for {name}</span>
+        <div className="token-value mono"><span>{secret}</span><CopyButton text={secret} what="the secret" /></div>
+      </div>
       <div className="copy-row">
         <span className="field-label">To try it</span>
         <div className="listen-code mono"><code>{example}</code></div>
         <div><CopyButton text={example} what="the command" /></div>
       </div>
       <p className="field-hint">A tool that can’t set a header can add <span className="mono">?key={secret}</span> to the address. The body can be JSON (<span className="mono">title</span>, <span className="mono">text</span>, <span className="mono">from</span>, <span className="mono">url</span>, <span className="mono">id</span>), a form, or plain text.</p>
-      <div className="listen-actions"><button type="button" className="button primary" onClick={onDone}>I’ve copied it</button></div>
     </section>
   )
 }
 
-/** The form that makes a listener: what it listens to, its name, the binder and folder its notes go to, and a feed's address. */
-function AddListener({ binders, first, onAdded }: { binders: { id: string; name: string }[]; first?: string; onAdded: (listener: ListenerView, secret?: string) => void }) {
-  const id = useId()
-  const [kind, setKind] = useState<ListenerKind>('post')
+/** A secret whose dialog was closed before it was dismissed: on the page, with its own way to dismiss it. */
+function SecretBlock(props: NewSecret & { onDone: () => void }) {
+  return (
+    <div className="listen-secret-page">
+      <SecretPart {...props} />
+      <div className="listen-actions"><button type="button" className="button primary" onClick={props.onDone}>I’ve copied it</button></div>
+    </div>
+  )
+}
+
+/**
+ * Add a listener, guided: what it listens to, then its name, the binder and folder its notes go to, and a feed's address;
+ * then, for an address to post to, the address and its secret, shown once.
+ */
+function AddListener({ binders, first, secret, onAdded, onSecretDone, onClose }: {
+  binders: { id: string; name: string }[]
+  first?: string
+  secret?: NewSecret
+  onAdded: (listener: ListenerView, secret?: string) => void
+  onSecretDone: () => void
+  onClose: () => void
+}) {
   const [name, setName] = useState('')
   const [binderId, setBinderId] = useState<string>()
   const [folder, setFolder] = useState('Inbox')
   const [url, setUrl] = useState('')
   const [making, setMaking] = useState(false)
+  const [made, setMade] = useState<string>()
   const chosen = binderId ?? first
-  const ready = !!name.trim() && (kind !== 'feed' || !!url.trim()) && !making
-  const create = async () => {
+  const create = async (kind: ListenerKind, next: () => void) => {
     setMaking(true)
     const done = await attempt(() => call<{ listener: ListenerView; secret?: string }>('POST', '/api/listen', {
       kind, name: name.trim(), ...(chosen ? { binderId: chosen } : {}), folder: folder.trim() || 'Inbox', ...(kind === 'feed' ? { url: url.trim() } : {}),
@@ -304,38 +360,49 @@ function AddListener({ binders, first, onAdded }: { binders: { id: string; name:
     setMaking(false)
     if (!done?.listener) return
     onAdded(done.listener, done.secret)
-    setName('')
-    setUrl('')
+    setMade(done.listener.id)
+    if (done.secret && done.listener.address) return next()
+    toast(`${done.listener.name} is listening, in Watch.`)
+    onClose()
   }
-  return (
-    <section className="settings-part">
-      <h3 className="settings-sub">Add a listener</h3>
-      <form className="settings-card form listen-add" onSubmit={(e) => { e.preventDefault(); if (ready) void create() }}>
-        <fieldset className="field listen-kinds">
-          <legend className="field-label">What it listens to</legend>
-          {kinds.map((k) => <Choice key={k} name={`${id}-kind`} id={`${id}-kind-${k}`} checked={kind === k} label={kindName[k]} hint={kindHint[k]} onPick={() => setKind(k)} />)}
-        </fieldset>
-        <label className="field"><span className="field-label">Name</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Support mail" maxLength={60} autoComplete="off" />
-        </label>
-        {binders.length > 1 && (
-          <label className="field"><span className="field-label">The binder its notes go in</span>
-            <select value={chosen ?? ''} onChange={(e) => setBinderId(e.target.value)}>
-              {binders.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
+  const options: GuidedOption[] = kinds.map((k) => ({ id: k, icon: kindIcon(k, 18), name: kindName[k], line: kindHint[k], recommended: k === 'post' }))
+  const steps = (kind: string): GuidedStep[] => {
+    const k = kind as ListenerKind
+    const ready = !!name.trim() && (k !== 'feed' || !!url.trim()) && !making
+    const form: GuidedStep = {
+      title: 'Its name and folder', lead: 'It starts in Watch: the hub says what it would file, and files nothing until you turn it On.',
+      content: (nav) => (
+        <form id="listen-add" className="form listen-add" onSubmit={(e) => { e.preventDefault(); if (ready) void create(k, nav.next) }}>
+          <label className="field"><span className="field-label">Name</span>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder={k === 'feed' ? 'Release notes' : k === 'github' ? 'Repo issues' : 'Support mail'} maxLength={60} autoComplete="off" />
           </label>
-        )}
-        <label className="field"><span className="field-label">Folder</span>
-          <input value={folder} onChange={(e) => setFolder(e.target.value)} maxLength={80} autoComplete="off" />
-          <span className="field-hint">Its notes go here. It’s made at the top of the binder if it isn’t there.</span>
-        </label>
-        {kind === 'feed' && (
-          <label className="field"><span className="field-label">Feed address</span>
-            <input className="mono" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/feed.xml" inputMode="url" autoComplete="off" spellCheck={false} />
+          {binders.length > 1 && (
+            <label className="field"><span className="field-label">The binder its notes go in</span>
+              <select value={chosen ?? ''} onChange={(e) => setBinderId(e.target.value)}>
+                {binders.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </label>
+          )}
+          <label className="field"><span className="field-label">Folder</span>
+            <input value={folder} onChange={(e) => setFolder(e.target.value)} maxLength={80} autoComplete="off" />
+            <span className="field-hint">Its notes go here. It’s made at the top of the binder if it isn’t there.</span>
           </label>
-        )}
-        <div><button className="button primary" disabled={!ready}>Create</button></div>
-      </form>
-    </section>
-  )
+          {k === 'feed' && (
+            <label className="field"><span className="field-label">Feed address</span>
+              <input className="mono" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/feed.xml" inputMode="url" autoComplete="off" spellCheck={false} />
+            </label>
+          )}
+        </form>
+      ),
+      footer: <button type="submit" form="listen-add" className="button primary" disabled={!ready}>Create</button>,
+    }
+    if (k !== 'post') return [form]
+    const shown = secret && secret.id === made ? secret : undefined
+    return [form, {
+      title: 'Its address and secret',
+      content: shown ? <SecretPart {...shown} /> : <p className="faint">The secret was dismissed.</p>,
+      footer: (nav) => <button type="button" className="button primary" onClick={() => { onSecretDone(); nav.close() }}>I’ve copied it</button>,
+    }]
+  }
+  return <Guided title="Add a listener" question="What does it listen to?" options={options} steps={steps} onClose={onClose} />
 }

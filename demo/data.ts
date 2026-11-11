@@ -17,6 +17,59 @@ export const demoAgents = ['claude-web', 'claude-api', 'codex', 'cursor']
 /** The screens the pictures are of. */
 export const demoIds = { note: 'annual-plans', card: 'card-settings-switch', blocked: 'card-beta', set: 'cs-12' }
 
+/**
+ * The repos the binder's GitHub App reaches on the invented example organization, as GitHub would list them: whether
+ * each is private, a line about it, its topics and its team (a custom property). Enough of them that Settings → GitHub
+ * shows its table, its filter and its paging as an organization's would.
+ */
+export const demoRepos: { name: string; private: boolean; description: string; topics: string[]; team: string }[] = [
+  ['harbor', true, 'The team’s notes and cards', ['docs'], 'platform'],
+  ['web', false, 'The website and the customer app', ['frontend', 'react'], 'web'],
+  ['api', true, 'The billing and accounts API', ['service', 'payments'], 'billing'],
+  ['emails', true, 'Every email we send, and the worker that sends them', ['service', 'notifications'], 'billing'],
+  ['billing', true, 'Plans, prices and invoices', ['service', 'payments'], 'billing'],
+  ['checkout', true, 'The checkout flow', ['frontend', 'payments'], 'web'],
+  ['invoices', true, 'Invoice PDFs and credit notes', ['service', 'payments'], 'billing'],
+  ['receipts', true, 'Receipt templates', ['payments'], 'billing'],
+  ['pricing-page', false, 'The public pricing page', ['frontend', 'marketing'], 'web'],
+  ['docs', false, 'The developer docs', ['docs'], 'platform'],
+  ['help-centre', false, 'Answers for customers', ['docs', 'support'], 'support'],
+  ['mobile', true, 'The shared code of the phone apps', ['mobile'], 'mobile'],
+  ['ios', true, 'The iPhone app', ['mobile'], 'mobile'],
+  ['android', true, 'The Android app', ['mobile'], 'mobile'],
+  ['design-system', false, 'Buttons, fields and colours', ['frontend', 'react'], 'web'],
+  ['icons', false, 'The icon set', ['frontend'], 'web'],
+  ['analytics', true, 'Events and dashboards', ['data'], 'data'],
+  ['reports', true, 'The monthly revenue report', ['data', 'payments'], 'data'],
+  ['warehouse', true, 'Models in the data warehouse', ['data'], 'data'],
+  ['search', true, 'Search across accounts', ['service'], 'platform'],
+  ['notifications', true, 'Push and in-app notices', ['service', 'notifications'], 'platform'],
+  ['webhooks', true, 'Webhooks we send to customers', ['service'], 'platform'],
+  ['auth', true, 'Sign-in and sessions', ['service', 'security'], 'platform'],
+  ['accounts', true, 'Teams, seats and roles', ['service'], 'platform'],
+  ['admin', true, 'The staff console', ['frontend', 'support'], 'support'],
+  ['support-tools', true, 'Scripts the support team runs', ['support'], 'support'],
+  ['status-page', false, 'The public status page', ['frontend'], 'platform'],
+  ['infra', true, 'Servers, networks and secrets', ['infra'], 'platform'],
+  ['terraform', true, 'Cloud accounts as code', ['infra'], 'platform'],
+  ['k8s-config', true, 'What runs where', ['infra'], 'platform'],
+  ['ci-actions', false, 'Shared CI workflows', ['infra'], 'platform'],
+  ['release-notes', false, 'What changed, for customers', ['docs', 'marketing'], 'support'],
+  ['blog', false, 'The company blog', ['marketing'], 'web'],
+  ['marketing-site', false, 'The home page and landing pages', ['frontend', 'marketing'], 'web'],
+  ['onboarding', true, 'The first-run tour', ['frontend'], 'web'],
+  ['feature-flags', true, 'Who sees what, and when', ['service'], 'platform'],
+  ['experiments', true, 'A/B tests and their results', ['data'], 'data'],
+  ['load-tests', true, 'Load tests for the API', ['infra'], 'platform'],
+  ['sdk-js', false, 'The JavaScript SDK', ['sdk'], 'platform'],
+  ['sdk-python', false, 'The Python SDK', ['sdk'], 'platform'],
+  ['cli', false, 'The command line tool', ['sdk'], 'platform'],
+  ['archive-2019', true, 'The old app, kept for reference', [], 'platform'],
+].map(([name, isPrivate, description, topics, team]) => ({ name: `example/${name}`, private: isPrivate as boolean, description: description as string, topics: topics as string[], team: team as string }))
+
+/** The ones Harbor's agents work in: most of them, not the old or the far-off ones. */
+const agentsWorkIn = demoRepos.map((r) => r.name).filter((name) => !/archive|blog|marketing|terraform|k8s|load-tests|warehouse|experiments|android|ios/.test(name))
+
 const web = 'example/web'
 const api = 'example/api'
 const emails = 'example/emails'
@@ -118,6 +171,36 @@ Harbor's billing and accounts API: Node and Postgres, the only thing that talks 
 ## Build, test, run
 
 \`npm test\` needs Postgres (\`docker compose up db\`, about 3 min). Migrations run with \`npm run migrate\`.
+`
+
+const billingBrief = `## What it is
+
+Plans, prices and invoices. Every price comes from \`plans.ts\`; nothing else sets one.
+
+## Working here
+
+- \`npm test\` runs everything; \`npm test -- invoices\` for one part.
+- Money is in cents, as integers. Never a float.
+`
+
+const checkoutBrief = `## What it is
+
+The checkout flow, from the pricing page to a paid plan.
+
+## Working here
+
+- \`npm run dev\` with \`API_URL\` set to a preview API.
+- The e2e tests pay with the test card only.
+`
+
+const docsBrief = `## What it is
+
+The developer docs, built with the site generator in \`site/\`.
+
+## Working here
+
+- Every page has a title and one line under it.
+- \`npm run check\` finds broken links.
 `
 
 const harborBrief = `## What it is
@@ -452,7 +535,7 @@ export function demoChanges(now = Date.now()): Change[] {
   ]
 
   return [
-    { type: 'binder.put', binder: { id: demoBinder.id, name: demoBinder.name, createdBy: 'maya', repo: demoBinder.repo } },
+    { type: 'binder.put', binder: { id: demoBinder.id, name: demoBinder.name, createdBy: 'maya', repo: demoBinder.repo, repos: agentsWorkIn } },
     { type: 'folder.put', folder: { id: 'plans', binderId: demoBinder.id, name: 'Plans' } },
     { type: 'folder.put', folder: { id: 'repo-docs', binderId: demoBinder.id, name: docsFolderName } },
     { type: 'folder.put', folder: { id: 'docs-web', binderId: demoBinder.id, name: web, parentId: 'repo-docs' } },
@@ -476,6 +559,12 @@ export function demoChanges(now = Date.now()): Change[] {
     ] } },
     { type: 'brief.put', brief: { id: emails, repo: emails, ask: { agentId: 'claude-api', askedBy: 'maya', at: ago(4), state: 'writing', doing: 'Reading how the worker schedules jobs' } } },
     { type: 'brief.put', brief: { id: demoBinder.repo, repo: demoBinder.repo, noteId: 'brief-harbor', sha: '77b2e1f04a3d', writtenAt: ago(8 * days), writtenBy: 'codex' } },
+    // A few more of the organization's repos, as briefs stand after a few weeks: written, asked for, and one that failed.
+    { type: 'brief.put', brief: { id: 'example/billing', repo: 'example/billing', text: billingBrief, sha: '4be0c93d71a2', writtenAt: ago(3 * days), writtenBy: 'claude-api' } },
+    { type: 'brief.put', brief: { id: 'example/checkout', repo: 'example/checkout', text: checkoutBrief, sha: '9d2f61a08c3e', writtenAt: ago(12 * days), writtenBy: 'claude-web' } },
+    { type: 'brief.put', brief: { id: 'example/docs', repo: 'example/docs', text: docsBrief, sha: 'c07a4e1b95d8', writtenAt: ago(20 * days), writtenBy: 'codex' } },
+    { type: 'brief.put', brief: { id: 'example/search', repo: 'example/search', ask: { agentId: 'codex', askedBy: 'priya', at: ago(2), state: 'asked' } } },
+    { type: 'brief.put', brief: { id: 'example/mobile', repo: 'example/mobile', ask: { agentId: 'cursor', askedBy: 'jonas', at: ago(5 * hours), state: 'failed', failed: 'Its run ran out of time before the brief was written.' } } },
     ...agents.map((a): Change => ({ type: 'agent.put', agent: a })),
     { type: 'proposal.put', proposal: { id: 'p-comparison', binderId: demoBinder.id, noteId: demoIds.note, title: 'Annual prices in the plan comparison table', quote: 'A monthly or annual toggle on the pricing page, with monthly as the default.', brief: 'The comparison table under the plans shows the price for the chosen interval.', doneWhen: 'The table’s prices follow the toggle.', size: 'S', by: 'codex', state: 'new', meantFor: 'claude-web' } },
     { type: 'proposal.put', proposal: { id: 'p-downgrade', binderId: demoBinder.id, noteId: demoIds.note, title: 'What happens when someone cancels an annual plan', quote: 'Anyone on a monthly plan can switch from account settings, with the unused days credited.', brief: 'Say what a customer gets back when they cancel part way through a year.', doneWhen: 'Cancelling an annual plan does what the terms say, with a test.', size: 'M', by: 'codex', state: 'new' } },

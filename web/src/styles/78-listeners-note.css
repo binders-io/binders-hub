@@ -1,0 +1,9 @@
+/* A note that came through a listener: one slim line over it, and what it waits on. */
+.listen-came { display: grid; gap: var(--space-4); margin: 6px 0 10px; font-size: var(--font-13); color: var(--muted); }
+.listen-came p { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) var(--space-12); min-width: 0; overflow-wrap: anywhere; }
+.listen-came b { color: var(--text-2); font-weight: 700; }
+.listen-came a { display: inline-flex; align-items: center; gap: 2px; color: var(--text); font-weight: 600; }
+.listen-came-hold { color: var(--text-2); }
+.listen-came-hold .button { flex: none; }
+@media (max-width: 600px) { .listen-came .button, .listen-came a { min-height: 36px; } .listen-came a { padding: 0 2px; } }
+

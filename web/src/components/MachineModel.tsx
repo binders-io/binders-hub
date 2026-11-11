@@ -1,16 +1,11 @@
 import { useState, type FormEvent } from 'react'
-import { Check, LoaderCircle, TriangleAlert } from 'lucide-react'
+import { TriangleAlert } from 'lucide-react'
 import { call } from '../data/api'
 import type { Agent } from '../data/model'
 import { ConfirmButton } from './ConfirmButton'
 import { Dialog } from './Dialog'
-import { ModelKindFields, type ModelValues } from './ModelFields'
-import { movedTo, newAddressNeedsKey } from './modelAgent'
-
-interface Tried {
-  ok: boolean
-  why?: string
-}
+import { ModelKindFields, ModelSays, type ModelValues, type Tried } from './ModelFields'
+import { boxOf, movedTo, newAddressNeedsKey } from './modelAgent'
 
 /**
  * The model of an agent on a machine (Binders' own agent): which kind, its model or deployment, its address where its
@@ -90,29 +85,24 @@ export function MachineModel({ agent, onClose }: { agent: Agent; onClose: () => 
 
   const keyHint = !withModel ? undefined : !was ? undefined : changed ? 'A new kind of model needs its own key.' : movedTo(values.baseUrl, was.baseUrl) ? newAddressNeedsKey : 'Empty keeps the key that’s there. Type one to replace it.'
   const warning = still ?? (was?.ready && !was.ready.ok ? was.ready.why || 'It didn’t answer as it needs to.' : undefined)
+  // A refusal about the address or the key is said beside that box; anything else, under the form.
+  const box = withModel ? boxOf(problem) : undefined
 
   return (
-    <Dialog title={was ? `${agent.name}’s model` : `Give ${agent.name} a model`} onClose={onClose} wide closeOnlyFromButton={!!busy}>
+    <Dialog title={was ? `${agent.name}’s model` : `Give ${agent.name} a model`} onClose={onClose} closeOnlyFromButton={!!busy}>
       <form className="form model-agent-form" onSubmit={save} aria-busy={!!busy}>
         <p className="field-hint model-agent-kind-line">The hub takes each step of this model for the agent, so its machine needs no key.</p>
-        {warning && <p className="agent-warning" role="status"><TriangleAlert size={13} aria-hidden="true" /> {still ? `Saved, and it still isn’t ready: ${warning}` : `It isn’t ready: ${warning}`}</p>}
+        {warning && <p className="agent-warning model-agent-warning" role="status"><TriangleAlert size={14} aria-hidden="true" /><span>{still ? `Saved, and it still isn’t ready: ${warning}` : `It isn’t ready: ${warning}`}</span></p>}
         <fieldset className="model-agent-set" disabled={!!busy}>
-          <ModelKindFields values={values} onChange={edit} onKind={pickKind} keyHint={keyHint} />
+          <ModelKindFields values={values} onChange={edit} onKind={pickKind} keyHint={keyHint} errors={box && problem ? { [box]: problem } : {}} />
         </fieldset>
-        <div className="model-agent-says">
-          {busy && <p className="model-agent-result" role="status"><LoaderCircle size={14} className="spin" aria-hidden="true" /> {busy === 'trying' ? 'Trying it…' : busy === 'saving' ? 'Saving it, and trying it again…' : 'Taking it away…'}</p>}
-          {!busy && result && (result.ok
-            ? <p className="model-agent-result ok" role="status"><Check size={14} strokeWidth={3} aria-hidden="true" /> It answers and calls tools.</p>
-            : <p className="model-agent-result bad" role="alert"><TriangleAlert size={14} aria-hidden="true" /> {result.why || 'It didn’t answer as it needs to.'}</p>)}
-          {!busy && problem && <p className="model-agent-result bad" role="alert"><TriangleAlert size={14} aria-hidden="true" /> {problem}</p>}
-        </div>
+        <ModelSays busy={busy === 'trying' ? 'Trying it…' : busy === 'saving' ? 'Saving it, and trying it again…' : busy === 'removing' ? 'Taking it away…' : undefined} tried={result} problem={box ? undefined : problem} />
         <footer className="form-actions model-agent-machine-actions">
           {was && (
             <span className="model-agent-away">
               <ConfirmButton className="button quiet danger" question="Take it away? Press again" onConfirm={takeAway} disabled={!!busy}>Take its model away</ConfirmButton>
             </span>
           )}
-          <button type="button" className="button" onClick={onClose} disabled={!!busy}>{still ? 'Close' : 'Cancel'}</button>
           <button type="button" className="button" onClick={() => void tryIt()} disabled={!!busy}>Try it</button>
           <button type="submit" className="button primary" disabled={!!busy}>Save</button>
         </footer>

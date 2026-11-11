@@ -1,5 +1,5 @@
 import { shownName } from '../../../shared/people.ts'
-import { useEffect, useState } from 'react'
+import { useCallback, useSyncExternalStore } from 'react'
 import { Check as CheckIcon, CircleDashed, LoaderCircle, X } from 'lucide-react'
 import type { Agent, Card, Check, CheckState, Stage } from '../data/model'
 import { stoppedTwice } from '../../../shared/work.ts'
@@ -28,16 +28,21 @@ export const phoneQuery = '(max-width: 900px)'
 /** A touchscreen, of any size: there's no pointer to hover with, and focusing a field brings up its keyboard. */
 export const onTouch = () => window.matchMedia('(hover: none)').matches
 
-export function usePhone() {
-  const [phone, setPhone] = useState(() => window.matchMedia(phoneQuery).matches)
-  useEffect(() => {
-    const media = window.matchMedia(phoneQuery)
-    const change = () => setPhone(media.matches)
-    media.addEventListener('change', change)
-    return () => media.removeEventListener('change', change)
-  }, [])
-  return phone
+/** A phone held upright, or a window as narrow: a dialog is a sheet from the bottom, and a table is a list of rows. */
+export const sheetQuery = '(max-width: 600px)'
+
+/** Whether a media query matches now, following it as the window changes. */
+export function useMedia(query: string) {
+  const subscribe = useCallback((changed: () => void) => {
+    const media = window.matchMedia?.(query)
+    media?.addEventListener('change', changed)
+    return () => media?.removeEventListener('change', changed)
+  }, [query])
+  // A page without matchMedia (a test's, an old browser's) is taken to be a wide window.
+  return useSyncExternalStore(subscribe, () => window.matchMedia?.(query).matches ?? false)
 }
+
+export const usePhone = () => useMedia(phoneQuery)
 
 export function AgentAvatar({ agent, size = 26, live = false }: { agent?: Agent; size?: number; live?: boolean }) {
   if (!agent) return null

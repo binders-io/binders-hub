@@ -42,7 +42,8 @@ afterEach(() => {
 describe('with nothing deployed yet', () => {
   it('says so, and that GitHub’s word will show here by itself', async () => {
     await delivery([])
-    expect(screen.getByText('Nothing has been deployed from this binder’s repos yet. When GitHub reports a deployment from one of them, it shows here by itself.')).toBeTruthy()
+    expect(screen.getByText('Nothing has been deployed from this binder’s repos yet.')).toBeTruthy()
+    expect(screen.getByText('When GitHub reports a deployment from one of them, it shows here by itself.')).toBeTruthy()
   })
 
   it('offers an owner Look on GitHub now, and not a member', async () => {

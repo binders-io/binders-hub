@@ -1,0 +1,31 @@
+/* Settings → Listeners: what brings things into a binder from outside it, a row each, opening its dialog. */
+.listen-loading { padding: var(--space-16); }
+.listen-card { display: grid; gap: var(--space-16); min-width: 0; }
+.listen-kind { display: flex; align-items: center; gap: 6px; margin: 0; font-size: var(--font-13); color: var(--muted); }
+.listen-kind svg { flex: none; }
+.listen-modes { justify-self: start; max-width: 100%; }
+.listen-mode-name { font-size: var(--font-14); }
+.listen-fact { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-4) 10px; font-size: var(--font-14); overflow-wrap: anywhere; }
+.listen-fact .field-label { flex: none; }
+.listen-from, .listen-kinds { display: grid; gap: 10px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.listen-from > legend { padding: 0 0 var(--space-8); }
+.listen-choice { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; row-gap: 2px; align-items: center; }
+.listen-choice input { grid-row: 1; width: 16px; height: 16px; margin: 0; accent-color: var(--text); }
+.listen-choice label { grid-column: 2; font-size: var(--font-14); font-weight: 600; }
+.listen-choice .field-hint { grid-column: 2; }
+.listen-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-8); }
+.listen-copy { height: var(--control-sm); padding: 0 10px; font-size: var(--font-13); flex: none; }
+.listen-failing { margin: 0; }
+.listen-add { display: grid; gap: var(--space-16); }
+/* A new secret: unmissable, in its dialog, or on the page until it's dismissed. */
+.listen-secret { display: grid; gap: var(--space-16); min-width: 0; }
+.listen-secret:focus-visible { outline: var(--focus-ring); outline-offset: 4px; border-radius: var(--r-sm); }
+.listen-secret p { margin: 0; font-size: var(--font-13); color: var(--text-2); overflow-wrap: anywhere; }
+.listen-secret-once { display: flex; gap: var(--space-8); align-items: flex-start; padding: var(--space-12) 14px; border-radius: var(--r); background: var(--amber-wash); border: 1px solid var(--amber-line); }
+.listen-secret-once svg { flex: none; margin-top: 2px; color: var(--amber); }
+.listen-secret-once b { color: var(--text); }
+.listen-secret-page { display: grid; gap: var(--space-16); padding: var(--space-16); border-radius: var(--r-lg); border: 1px solid var(--amber-line); background: var(--tile); box-shadow: var(--tile-shadow); }
+.listen-secret-page .listen-actions { justify-content: flex-end; }
+.listen-code { padding: 10px var(--space-12); border-radius: var(--r-sm); background: var(--surface); border: 1px solid var(--line-strong); font-size: var(--font-12); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all; }
+.listen-code code { font: inherit; }
+@media (max-width: 600px) { .listen-copy { height: 36px; } .listen-modes { justify-self: stretch; } .listen-modes button { min-height: 36px; } }

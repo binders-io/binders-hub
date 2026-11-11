@@ -6,8 +6,8 @@ import { hubState, me, mount, standInHub } from './harness'
 import { Settings } from '../src/screens/Settings'
 import type { ListenerView } from '../src/data/listen'
 
-// Settings → Listeners: what each listener is and which choice it's in, who may change them, and the secret of an
-// address to post to, which is shown once.
+// Settings → Listeners: each listener a row with what it is and which choice it's in, opening its dialog; who may change
+// them; Add a listener, guided; and the secret of an address to post to, which is shown once.
 
 const base = { binderId: 'b1', folder: 'Inbox', createdAt: 'then', createdBy: 'you' }
 const post: ListenerView = { ...base, id: 'l1', name: 'Support form', kind: 'post', mode: 'watch', from: 'anyone', address: 'https://hub.test/webhooks/in/main/l1' }
@@ -42,7 +42,20 @@ function listenHub(listeners: ListenerView[], mayManage = true, binders = [{ id:
   }))
   return sent
 }
-const card = (name: string) => within(screen.getByText(name).closest('li')!)
+/** A listener's row, in the list. */
+const row = (name: string) => screen.getByRole('button', { name: new RegExp(`^${name}`) })
+/** A listener's dialog, opened from its row. */
+const open = (name: string) => {
+  fireEvent.click(row(name))
+  return within(screen.getByRole('dialog', { name }))
+}
+const done = () => fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+/** Add a listener: the guided dialog, at the kind asked for. */
+const adding = async (kind: RegExp) => {
+  fireEvent.click(await screen.findByRole('button', { name: /Add a listener/ }))
+  fireEvent.click(await screen.findByRole('button', { name: kind }))
+  return within(screen.getByRole('dialog', { name: 'Add a listener' }))
+}
 
 afterEach(() => {
   cleanup()
@@ -51,45 +64,59 @@ afterEach(() => {
 })
 
 describe('Settings → Listeners', () => {
-  it('lists each listener with what it is and the choice it is in', async () => {
+  it('lists each listener as a row with what it is, where its notes go, and the choice it is in', async () => {
     listenHub([post, feed, github])
     await mount(<Settings />)
     await screen.findByText('Support form')
-    expect(card('Support form').getByText('An address to post to')).toBeTruthy()
-    expect(card('Release notes').getByText('A feed the hub reads')).toBeTruthy()
-    expect(card('Repo issues').getByText('GitHub issues')).toBeTruthy()
-    const checked = (name: string) => card(name).getAllByRole('radio', { checked: true }).map((r) => r.textContent)
-    expect(checked('Support form')).toContain('Watch')
-    expect(checked('Release notes')).toContain('On')
-    expect(checked('Repo issues')).toContain('Off')
-    // One line under each choice says what it means, with the folder in it for On.
-    expect(card('Support form').getByText('The hub says what it would file in Came in, and files nothing.')).toBeTruthy()
-    expect(card('Release notes').getByText('Each thing it hears becomes a note in News.')).toBeTruthy()
-    expect(card('Repo issues').getByText('It hears nothing.')).toBeTruthy()
-    expect(card('Repo issues').getByText(/Someone in the Binder is heard, and anyone else is from outside/)).toBeTruthy()
+    expect(row('Support form').textContent).toContain('An address to post to')
+    expect(row('Support form').textContent).toContain('Notes go to Inbox')
+    expect(row('Support form').textContent).toContain('Watch')
+    expect(row('Release notes').textContent).toContain('A feed the hub reads')
+    expect(row('Release notes').textContent).toContain('On')
+    expect(row('Repo issues').textContent).toContain('GitHub issues')
+    expect(row('Repo issues').textContent).toContain('Off')
     // A new one starts in Watch, and the opening says so.
     expect(screen.getByText(/starts in Watch/)).toBeTruthy()
+    // Opened, each has its choice, and one line under it says what it means, with the folder in it for On.
+    const checked = (dialog: ReturnType<typeof open>) => dialog.getAllByRole('radio', { checked: true }).map((r) => r.textContent)
+    let dialog = open('Support form')
+    expect(checked(dialog)).toContain('Watch')
+    expect(dialog.getByText('The hub says what it would file in Came in, and files nothing.')).toBeTruthy()
+    done()
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    dialog = open('Release notes')
+    expect(checked(dialog)).toContain('On')
+    expect(dialog.getByText('Each thing it hears becomes a note in News.')).toBeTruthy()
+    done()
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    dialog = open('Repo issues')
+    expect(checked(dialog)).toContain('Off')
+    expect(dialog.getByText('It hears nothing.')).toBeTruthy()
+    expect(dialog.getByText(/Someone in the Binder is heard, and anyone else is from outside/)).toBeTruthy()
   })
 
   it('sends the new choice when the mode is changed, and shows it', async () => {
     const sent = listenHub([post])
     await mount(<Settings />)
     await screen.findByText('Support form')
-    fireEvent.click(card('Support form').getByRole('radio', { name: 'On' }))
+    const dialog = open('Support form')
+    fireEvent.click(dialog.getByRole('radio', { name: 'On' }))
     await waitFor(() => expect(sent.find((s) => s.method === 'PUT')).toEqual({ method: 'PUT', path: '/api/listen/l1', body: { mode: 'on' } }))
-    await waitFor(() => expect(card('Support form').getByRole('radio', { name: 'On' }).getAttribute('aria-checked')).toBe('true'))
-    expect(card('Support form').getByText('Each thing it hears becomes a note in Inbox.')).toBeTruthy()
-    expect(card('Support form').getByRole('radio', { name: 'Watch' }).getAttribute('aria-checked')).toBe('false')
+    await waitFor(() => expect(dialog.getByRole('radio', { name: 'On' }).getAttribute('aria-checked')).toBe('true'))
+    expect(dialog.getByText('Each thing it hears becomes a note in Inbox.')).toBeTruthy()
+    expect(dialog.getByRole('radio', { name: 'Watch' }).getAttribute('aria-checked')).toBe('false')
+    expect(row('Support form').textContent).toContain('On')
   })
 
   it('sends who has an address to post to when it is changed', async () => {
     const sent = listenHub([post])
     await mount(<Settings />)
     await screen.findByText('Support form')
-    expect((card('Support form').getByLabelText('Anyone') as HTMLInputElement).checked).toBe(true)
-    fireEvent.click(card('Support form').getByLabelText('Only people in this Binder'))
+    const dialog = open('Support form')
+    expect((dialog.getByLabelText('Anyone') as HTMLInputElement).checked).toBe(true)
+    fireEvent.click(dialog.getByLabelText('Only people in this Binder'))
     await waitFor(() => expect(sent.find((s) => s.method === 'PUT')?.body).toEqual({ from: 'binder' }))
-    await waitFor(() => expect((card('Support form').getByLabelText('Only people in this Binder') as HTMLInputElement).checked).toBe(true))
+    await waitFor(() => expect((dialog.getByLabelText('Only people in this Binder') as HTMLInputElement).checked).toBe(true))
   })
 
   it('shows a person who may not manage the listeners no way to change them', async () => {
@@ -97,22 +124,25 @@ describe('Settings → Listeners', () => {
     await mount(<Settings />)
     await screen.findByText('Support form')
     expect(screen.getByText(/Only this binder’s owners and admins/)).toBeTruthy()
-    expect(screen.queryByRole('radio')).toBeNull()
-    expect(screen.queryByRole('textbox')).toBeNull()
-    expect(screen.queryByRole('button', { name: /^Remove/ })).toBeNull()
-    expect(screen.queryByRole('button', { name: /^New secret/ })).toBeNull()
     expect(screen.queryByText('Add a listener')).toBeNull()
     // What is there is still readable: its choice, its folder and its address.
-    expect(card('Support form').getByText('Watch')).toBeTruthy()
-    expect(card('Support form').getByText('https://hub.test/webhooks/in/main/l1')).toBeTruthy()
+    const dialog = open('Support form')
+    expect(dialog.queryByRole('radio')).toBeNull()
+    expect(dialog.queryByRole('textbox')).toBeNull()
+    expect(dialog.queryByRole('button', { name: /^Remove/ })).toBeNull()
+    expect(dialog.queryByRole('button', { name: /^New secret/ })).toBeNull()
+    expect(dialog.getByText('Watch')).toBeTruthy()
+    expect(dialog.getByText('https://hub.test/webhooks/in/main/l1')).toBeTruthy()
   })
 
-  it('shows the secret of a new address to post to once, with a command to paste, and not again once dismissed', async () => {
+  it('adds an address to post to, guided, and shows its secret once, with a command to paste, and not again once dismissed', async () => {
     const sent = listenHub([])
     await mount(<Settings />)
     await screen.findByText(/No listeners yet/)
-    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Alerts' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    const add = await adding(/An address to post to/)
+    expect(add.getByText(/It starts in Watch/)).toBeTruthy()
+    fireEvent.change(add.getByLabelText('Name'), { target: { value: 'Alerts' } })
+    fireEvent.click(add.getByRole('button', { name: 'Create' }))
     const block = await screen.findByRole('region', { name: 'The secret for Alerts' })
     expect(sent.find((s) => s.method === 'POST')?.body).toEqual({ kind: 'post', name: 'Alerts', binderId: 'b1', folder: 'Inbox' })
     expect(within(block).getAllByText('bnl_first_secret').length).toBeGreaterThan(0)
@@ -121,9 +151,9 @@ describe('Settings → Listeners', () => {
     expect(block.textContent).toContain('?key=bnl_first_secret')
     expect(within(block).getByRole('button', { name: 'Copy the secret' })).toBeTruthy()
     // The listener is in the list, in Watch.
-    expect(card('Alerts').getByRole('radio', { name: 'Watch' }).getAttribute('aria-checked')).toBe('true')
-    fireEvent.click(within(block).getByRole('button', { name: 'I’ve copied it' }))
-    expect(screen.queryByRole('region', { name: /secret/ })).toBeNull()
+    expect(row('Alerts').textContent).toContain('Watch')
+    fireEvent.click(screen.getByRole('button', { name: 'I’ve copied it' }))
+    await waitFor(() => expect(screen.queryByRole('region', { name: /secret/ })).toBeNull())
     expect(document.body.textContent).not.toContain('bnl_first_secret')
     // Nowhere else: not in the browser's storage or the address.
     expect(JSON.stringify({ ...window.localStorage })).not.toContain('bnl_first_secret')
@@ -131,13 +161,30 @@ describe('Settings → Listeners', () => {
     expect(window.location.href).not.toContain('bnl_first_secret')
   })
 
+  it('keeps a new secret on the page, unmissable, if its dialog is closed before it is dismissed', async () => {
+    listenHub([])
+    await mount(<Settings />)
+    await screen.findByText(/No listeners yet/)
+    const add = await adding(/An address to post to/)
+    fireEvent.change(add.getByLabelText('Name'), { target: { value: 'Alerts' } })
+    fireEvent.click(add.getByRole('button', { name: 'Create' }))
+    await screen.findByRole('region', { name: 'The secret for Alerts' })
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    const block = screen.getByRole('region', { name: 'The secret for Alerts' })
+    expect(block.textContent).toContain('bnl_first_secret')
+    fireEvent.click(screen.getByRole('button', { name: 'I’ve copied it' }))
+    expect(screen.queryByRole('region', { name: /secret/ })).toBeNull()
+  })
+
   it('makes a new secret after asking, and shows that one once', async () => {
     const sent = listenHub([post])
     await mount(<Settings />)
     await screen.findByText('Support form')
-    fireEvent.click(card('Support form').getByRole('button', { name: 'New secret for Support form' }))
+    const dialog = open('Support form')
+    fireEvent.click(dialog.getByRole('button', { name: 'New secret for Support form' }))
     expect(sent.some((s) => s.path.endsWith('/secret'))).toBe(false)
-    fireEvent.click(screen.getByRole('button', { name: /The old one stops/ }))
+    fireEvent.click(dialog.getByRole('button', { name: /The old one stops/ }))
     const block = await screen.findByRole('region', { name: 'The secret for Support form' })
     expect(block.textContent).toContain('Bearer bnl_second_secret')
     expect(block.textContent).toContain('https://hub.test/webhooks/in/main/l1')
@@ -147,13 +194,14 @@ describe('Settings → Listeners', () => {
     const sent = listenHub([])
     await mount(<Settings />)
     await screen.findByText(/No listeners yet/)
-    fireEvent.click(screen.getByLabelText('A feed the hub reads'))
-    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'News' } })
-    expect((screen.getByRole('button', { name: 'Create' }) as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.change(screen.getByLabelText('Feed address'), { target: { value: 'https://example.com/rss' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    const add = await adding(/A feed the hub reads/)
+    fireEvent.change(add.getByLabelText('Name'), { target: { value: 'News' } })
+    expect((add.getByRole('button', { name: 'Create' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.change(add.getByLabelText('Feed address'), { target: { value: 'https://example.com/rss' } })
+    fireEvent.click(add.getByRole('button', { name: 'Create' }))
     await waitFor(() => expect(sent.find((s) => s.method === 'POST')?.body).toEqual({ kind: 'feed', name: 'News', binderId: 'b1', folder: 'Inbox', url: 'https://example.com/rss' }))
-    // A feed has no secret to show.
+    // A feed has no secret to show: its dialog is done.
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(screen.queryByRole('region', { name: /secret/ })).toBeNull()
   })
 
@@ -161,27 +209,31 @@ describe('Settings → Listeners', () => {
     listenHub([], true, [{ id: 'b1', name: 'Server' }, { id: 'b2', name: 'Docs' }])
     await mount(<Settings />)
     await screen.findByText(/No listeners yet/)
-    expect(screen.getByLabelText('The binder its notes go in')).toBeTruthy()
+    expect((await adding(/An address to post to/)).getByLabelText('The binder its notes go in')).toBeTruthy()
     cleanup()
     listenHub([])
     await mount(<Settings />)
     await screen.findByText(/No listeners yet/)
-    expect(screen.queryByLabelText('The binder its notes go in')).toBeNull()
+    expect((await adding(/An address to post to/)).queryByLabelText('The binder its notes go in')).toBeNull()
   })
 
   it('shows why a feed can’t be read as a warning, and its address and how often it is read', async () => {
     listenHub([{ ...feed, failing: 'example.com didn’t answer.' }])
     await mount(<Settings />)
-    const warning = await screen.findByText('example.com didn’t answer.')
+    await screen.findByText('Release notes')
+    expect(row('Release notes').textContent).toContain('Can’t read it')
+    const dialog = open('Release notes')
+    const warning = dialog.getByText('example.com didn’t answer.')
     expect(warning.closest('[role="status"]')?.className).toContain('setup-warning')
-    expect((screen.getByLabelText('Feed address') as HTMLInputElement).value).toBe('https://example.com/feed.xml')
-    expect((screen.getByLabelText('Read it every (minutes)') as HTMLInputElement).value).toBe('30')
+    expect((dialog.getByLabelText('Feed address') as HTMLInputElement).value).toBe('https://example.com/feed.xml')
+    expect((dialog.getByLabelText('Read it every (minutes)') as HTMLInputElement).value).toBe('30')
   })
 
   it('sends how often a feed is read when it is changed', async () => {
     const sent = listenHub([feed])
     await mount(<Settings />)
-    const box = await screen.findByLabelText('Read it every (minutes)')
+    await screen.findByText('Release notes')
+    const box = open('Release notes').getByLabelText('Read it every (minutes)')
     fireEvent.change(box, { target: { value: '60' } })
     fireEvent.blur(box)
     await waitFor(() => expect(sent.find((s) => s.method === 'PUT')?.body).toEqual({ everyMinutes: 60 }))
@@ -191,9 +243,10 @@ describe('Settings → Listeners', () => {
     const sent = listenHub([post, feed])
     await mount(<Settings />)
     await screen.findByText('Support form')
-    fireEvent.click(card('Support form').getByRole('button', { name: 'Remove Support form' }))
+    const dialog = open('Support form')
+    fireEvent.click(dialog.getByRole('button', { name: 'Remove Support form' }))
     expect(sent.some((s) => s.method === 'DELETE')).toBe(false)
-    fireEvent.click(screen.getByRole('button', { name: 'Remove it? Press again' }))
+    fireEvent.click(dialog.getByRole('button', { name: 'Remove it? Press again' }))
     await waitFor(() => expect(sent.find((s) => s.method === 'DELETE')?.path).toBe('/api/listen/l1'))
     await waitFor(() => expect(screen.queryByText('Support form')).toBeNull())
     expect(screen.getByText('Release notes')).toBeTruthy()
@@ -205,14 +258,18 @@ describe('Settings → Listeners', () => {
     expect(await screen.findByText(/No listeners yet/)).toBeTruthy()
   })
 
-  it('finds nothing for axe to object to, with every kind of listener and a secret showing', async () => {
+  it('finds nothing for axe to object to, with every kind of listener, and a secret showing', async () => {
     listenHub([post, { ...feed, failing: 'example.com didn’t answer.' }, github])
     await mount(<Settings />)
     await screen.findByText('Support form')
-    fireEvent.click(card('Support form').getByRole('button', { name: 'New secret for Support form' }))
-    fireEvent.click(screen.getByRole('button', { name: /The old one stops/ }))
+    const quiet = { rules: { 'color-contrast': { enabled: false }, region: { enabled: false } } }
+    const list = await axe.run(document.body, quiet)
+    expect(list.violations.flatMap((v) => v.nodes.map((n) => `${v.id}: ${n.target.join(' ')}`))).toEqual([])
+    const dialog = open('Support form')
+    fireEvent.click(dialog.getByRole('button', { name: 'New secret for Support form' }))
+    fireEvent.click(dialog.getByRole('button', { name: /The old one stops/ }))
     await screen.findByRole('region', { name: 'The secret for Support form' })
-    const { violations } = await axe.run(document.body, { rules: { 'color-contrast': { enabled: false }, region: { enabled: false } } })
+    const { violations } = await axe.run(screen.getByRole('dialog'), { rules: { ...quiet.rules } })
     expect(violations.flatMap((v) => v.nodes.map((n) => `${v.id}: ${n.target.join(' ')}`))).toEqual([])
   })
 })

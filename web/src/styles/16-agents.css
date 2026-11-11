@@ -1,0 +1,36 @@
+/* Agents: a grid of cards under the page's header, as tall as each other along a row, one column on a phone. */
+.agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); gap: var(--space-16); }
+.agents-empty { border-radius: var(--r-lg); border: 1px dashed var(--line-strong); }
+.presence-pill { display: inline-flex; align-items: center; gap: 6px; font-size: var(--font-12); color: var(--faint); }
+.presence-pill i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.presence-pill.online { color: var(--green); }
+.presence-pill.online i { background: var(--green); box-shadow: 0 0 0 3px var(--green-wash); }
+
+/* The token, shown once, and the ways to start an agent with it. */
+.token { display: grid; gap: var(--space-16); min-width: 0; }
+.token > p { margin: 0; font-size: var(--font-14); line-height: var(--leading-14); color: var(--muted); }
+.token-value { display: flex; align-items: center; gap: var(--space-8); padding: var(--space-8) var(--space-8) var(--space-8) var(--space-12); border-radius: var(--r-sm); background: var(--fill-1); border: 1px solid var(--line-strong); font-size: var(--font-13); }
+.token-value span { flex: 1; overflow-wrap: anywhere; color: var(--text); }
+.token .disclosure-body { max-width: none; padding-left: 0; gap: var(--space-12); }
+
+/* Adding a machine, as a step of adding an agent: the line, then the machines that ran it. */
+.add-machine { display: grid; gap: var(--space-12); min-width: 0; }
+.add-machine > .segmented { justify-self: start; }
+.add-machine p { margin: 0; font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); }
+.add-machine .add-machine-wait { display: flex; align-items: center; gap: var(--space-8); }
+.add-machine-problem { display: grid; justify-items: start; gap: var(--space-8); }
+.add-machine .add-machine-problem p { color: var(--red); font-size: var(--font-14); }
+.add-machine-joined { display: grid; gap: var(--space-8); margin-top: var(--space-4); padding-top: var(--space-16); border-top: 1px solid var(--line); }
+.add-machine-joined h4 { margin: 0; font: 600 var(--font-13)/var(--leading-13) var(--body); color: var(--text-2); }
+.joined-list { list-style: none; margin: 0; padding: 0; display: grid; border: 1px solid var(--line); border-radius: var(--r); }
+.joined-list li { display: flex; align-items: center; gap: var(--space-12); min-height: 52px; padding: var(--space-8) var(--space-12); border-top: 1px solid var(--line); font-size: var(--font-13); }
+.joined-list li:first-child { border-top: 0; }
+.joined-list li > div { display: grid; gap: 2px; min-width: 0; flex: 1; }
+.joined-where { font-size: var(--font-12); color: var(--muted); overflow-wrap: anywhere; }
+.joined-state { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: var(--font-12); color: var(--muted); }
+.joined-state.on { color: var(--green); }
+
+/* A command to copy, in a tool's own words. */
+.snippet header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.snippet h3 { margin: 0; font: 600 var(--font-13)/var(--leading-13) var(--body); color: var(--text); }
+.snippet pre { margin: 0; padding: var(--space-12) var(--space-16); border-radius: var(--r-sm); background: var(--terminal); color: #e8e6ef; font-size: var(--font-12); line-height: 1.55; overflow-x: auto; white-space: pre; }

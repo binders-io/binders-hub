@@ -1,12 +1,14 @@
-import { useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
-import { ArrowDown, ArrowUp, ArrowUpRight, Search, Trash2 } from 'lucide-react'
+import { useState, type FormEvent, type KeyboardEvent } from 'react'
+import { AnimatePresence } from 'motion/react'
+import { ArrowDown, ArrowUp, ArrowUpRight, ChevronDown, Plus, Rocket, Search, Trash2 } from 'lucide-react'
+import { openMenuUnder } from './ContextMenu'
 import { deliveryRepos, environmentId, repoEnvironments, sameRepo, type Environment } from '../../../shared/work.ts'
 import { useStore, type EnvironmentChange } from '../data/store'
 import { useBinderAccess, useSaved } from '../screens/settings/access'
 import { Changeable, Saved } from '../screens/settings/shared'
 import { sectionHref } from '../screens/settings/sections'
-import { ConfirmButton } from './ConfirmButton'
 import { attempt, failure, toast } from './Toast'
+import { DataTable, Dialog, EmptyState, Section, type Column } from '../kit'
 
 // Delivery's environments. The hub follows what GitHub deploys, so most of them turn up by themselves; here an owner or
 // an admin says what GitHub can't (where one is served, a workflow the hub may run to deploy to it), puts them in order,
@@ -47,92 +49,117 @@ export function LookButton({ repo, className = 'button' }: { repo?: string; clas
   )
 }
 
+/** Where an environment is served, without its scheme: what a table has room for. */
+const host = (url?: string) => (url ? url.replace(/^https?:\/\//, '').replace(/\/$/, '') : '')
+
+/**
+ * The environments of each repo as a table (its name, what's on it, where it's served, how the hub deploys to it), a
+ * row opening its dialog to change it, put it in order or take it away; one Add button for a new one, and the hub asked
+ * to look on GitHub now. A member reads them all and changes none.
+ */
 export function Environments() {
   const store = useStore()
   const { state } = store
   const { may } = useBinderAccess()
   const { saved, shown } = useSaved()
   const repos = environmentRepos(state.environments)
-  // A rename changes an environment's id, and a row that took a new key would be drawn again and lose the person's place:
-  // the new id keeps the key the old one had.
+  const deliverable = deliveryRepos(state)
+  // A rename changes an environment's id, and a dialog that took a new key would be drawn again and lose the person's
+  // place: the new id keeps the key the old one had.
   const [keys] = useState(() => new Map<string, string>())
   const keyOf = (id: string) => keys.get(id) ?? id
+  const [open, setOpen] = useState<string>()
+  const [adding, setAdding] = useState(false)
 
   /** Changes one and says Saved on it; whether it was kept. */
   const change = async (env: Environment, fields: EnvironmentChange) => {
     if (fields.name !== undefined && env.repo) keys.set(environmentId(env.repo, fields.name), keyOf(env.id))
     const done = await attempt(() => store.changeEnvironment(env.id, fields))
-    if (done) saved(keyOf(env.id))
+    if (done) saved(`${keyOf(env.id)}-${Object.keys(fields)[0]}`)
     return !!done
   }
+  const opened = open ? state.environments.find((e) => keyOf(e.id) === open) : undefined
+  const columns: Column<Environment>[] = [
+    { key: 'name', header: 'Name', width: '24%', phone: 'title', cell: (e) => e.name, text: (e) => e.name },
+    { key: 'on', header: 'On it', width: '22%', cell: (e) => (e.version ? <span className="mono">{e.version}</span> : <span className="faint">Nothing yet</span>), text: (e) => e.version ?? '' },
+    { key: 'url', header: 'Served at', cell: (e) => (e.url ? host(e.url) : <span className="faint">Not said</span>), text: (e) => e.url ?? '' },
+    { key: 'deploy', header: 'Deploys', width: '22%', phone: 'hidden', cell: (e) => (e.deploy ? <span className="mono">{e.deploy.workflow}</span> : <span className="faint">From GitHub</span>) },
+  ]
+  const add = may && deliverable.length > 0 && <button type="button" className="button small" onClick={() => setAdding(true)}><Plus size={14} aria-hidden="true" />Add</button>
 
   return (
-    <section className="settings-part">
-      <h3 className="settings-sub">Environments</h3>
-      <p className="settings-part-detail">{howEnvironmentsArrive} Add or change one here to say where it’s served, or how the hub deploys to it.</p>
-      <Changeable may={may}>
-        {repos.length ? repos.map((repo) => {
-          const list = repoEnvironments(state, repo)
-          return (
-            <div key={repo.toLowerCase()} className="env-repo">
-              <h4 className="env-repo-name"><a href={`https://github.com/${repo}`} target="_blank" rel="noreferrer">{repo} <ArrowUpRight size={11} aria-hidden="true" /></a></h4>
-              <ul className="env-rows">
-                {list.map((env, at) => (
-                  <EnvironmentRow key={keyOf(env.id)} env={env} at={at} last={list.length - 1} saved={<Saved show={shown(keyOf(env.id))} />} change={(fields) => change(env, fields)} />
-                ))}
-              </ul>
-            </div>
-          )
-        }) : <p className="faint">No environments yet.</p>}
-        <AddEnvironment onAdded={saved} saved={<Saved show={shown('add')} />} />
-        <div className="env-look">
-          <LookButton />
-          <span className="field-hint">Asks GitHub what it has deployed from each repo. It can take a minute.</span>
-        </div>
-      </Changeable>
-    </section>
+    <Section title="Environments" lead={howEnvironmentsArrive} action={(repos.length && add) || undefined}
+      more={<p>Add or change one here to say where it’s served, or how the hub deploys to it. The hub runs a deploy only when someone presses Promote on Delivery. One taken off comes back by itself if GitHub deploys there again.</p>}>
+      {repos.length ? repos.map((repo) => {
+        const list = repoEnvironments(state, repo)
+        return (
+          <div key={repo.toLowerCase()} className="env-repo">
+            <h4 className="env-repo-name"><a href={`https://github.com/${repo}`} target="_blank" rel="noreferrer">{repo}<ArrowUpRight size={12} aria-hidden="true" /></a></h4>
+            <DataTable label={`${repo}’s environments`} columns={columns} rows={list} rowKey={(e) => keyOf(e.id)} onRowPress={(e) => setOpen(keyOf(e.id))} rowLabel={(e) => `Open ${e.name}`} />
+          </div>
+        )
+      }) : <EmptyState compact icon={<Rocket size={18} />} title="No environments yet" line="They turn up here when GitHub deploys from one of this binder’s repos." action={add || undefined} />}
+      {deliverable.length ? (
+        may && <div className="env-look"><span>Asks GitHub what it has deployed from each repo. It can take a minute.</span><LookButton className="button small" /></div>
+      ) : (
+        <p className="env-none">Environments belong to the repos this binder works in. Add one in <a href={sectionHref('github')}>GitHub</a> first.</p>
+      )}
+      <AnimatePresence>
+        {opened && (() => {
+          const list = repoEnvironments(state, opened.repo ?? '')
+          const at = list.findIndex((e) => e.id === opened.id)
+          return <EnvironmentDialog key={open} env={opened} at={at} last={list.length - 1} may={may} shown={(field) => shown(`${keyOf(opened.id)}-${field}`)} change={(fields) => change(opened, fields)}
+            onRemove={() => { setOpen(undefined); void attempt(() => store.removeEnvironment(opened.id)) }} onClose={() => setOpen(undefined)} />
+        })()}
+        {adding && <AddEnvironment key="add" onAdded={() => setAdding(false)} onClose={() => setAdding(false)} />}
+      </AnimatePresence>
+    </Section>
   )
 }
 
-function EnvironmentRow({ env, at, last, saved, change }: { env: Environment; at: number; last: number; saved: ReactNode; change: (fields: EnvironmentChange) => Promise<boolean> }) {
-  const store = useStore()
-  const [deploying, setDeploying] = useState(false)
-  const bodyId = `env-deploy-${env.id.replace(/[^\w-]/g, '-')}`
+/** One environment: its name, where it's served, how the hub deploys to it; its place and its removal in a menu. */
+function EnvironmentDialog({ env, at, last, may, shown, change, onRemove, onClose }: { env: Environment; at: number; last: number; may: boolean; shown: (field: string) => boolean; change: (fields: EnvironmentChange) => Promise<boolean>; onRemove: () => void; onClose: () => void }) {
+  const [menu, setMenu] = useState(false)
   const move = (to: number) => {
     if (to >= 0 && to <= last) void change({ order: to })
   }
   return (
-    <li className="env-row">
-      <div className="env-row-head">
-        <b>{env.name}</b>
-        <span className="faint">{env.version ? `On it: ${env.version}` : 'Nothing deployed yet'}</span>
-        {saved}
-        <span className="env-row-actions">
-          <button type="button" className="button only-icon" aria-label={`Move ${env.name} up`} aria-disabled={at === 0} onClick={() => move(at - 1)}><ArrowUp size={14} aria-hidden="true" /></button>
-          <button type="button" className="button only-icon" aria-label={`Move ${env.name} down`} aria-disabled={at === last} onClick={() => move(at + 1)}><ArrowDown size={14} aria-hidden="true" /></button>
-          <ConfirmButton question={`Remove ${env.name}? Press again`} detail="If GitHub deploys there again, it comes back by itself." label={`Remove ${env.name}`} className="button only-icon danger" onConfirm={() => void attempt(() => store.removeEnvironment(env.id))}>
-            <Trash2 size={14} aria-hidden="true" />
-          </ConfirmButton>
-        </span>
+    <Dialog title={env.name} onClose={onClose} footer={(
+      <>
+        {may && (
+          // Its place and its removal, in a menu: rare, and the removal asks first.
+          <button type="button" className="button dialog-foot-start" aria-haspopup="menu" aria-expanded={menu}
+            onClick={(event) => { if (openMenuUnder(event, [
+              { label: `Move ${env.name} up`, icon: <ArrowUp size={14} />, disabled: at <= 0, onSelect: () => move(at - 1) },
+              { label: `Move ${env.name} down`, icon: <ArrowDown size={14} />, disabled: at >= last, onSelect: () => move(at + 1) },
+              { separator: true },
+              { label: `Remove ${env.name}`, icon: <Trash2 size={14} />, danger: true, confirm: `Remove ${env.name}? Press again`, onSelect: onRemove },
+            ], { onClose: () => setMenu(false) })) setMenu(true) }}>
+            Move or remove<ChevronDown size={14} aria-hidden="true" />
+          </button>
+        )}
+        <button type="button" className="button primary" onClick={onClose}>Done</button>
+      </>
+    )}>
+      <div className="env-dialog">
+        <p className="env-dialog-what">{env.repo} · {env.version ? <>on it: <span className="mono">{env.version}</span></> : 'nothing deployed yet'}{last > 0 ? ` · ${ordinal(at)} of ${last + 1}` : ''}</p>
+        <Changeable may={may}>
+          <SaveText label="Name" value={env.name} saved={shown('name')} onSave={(next) => (next ? change({ name: next }) : false)} />
+          <SaveText label="Where it’s served" value={env.url} placeholder="https://" saved={shown('url')} onSave={(next) => change({ url: next })} />
+          <DeployFrom env={env} saved={shown('deploy')} change={change} />
+        </Changeable>
       </div>
-      <div className="env-fields">
-        <SaveText label="Name" value={env.name} onSave={(next) => (next ? change({ name: next }) : false)} />
-        <SaveText label="Where it’s served" value={env.url} placeholder="https://" onSave={(next) => change({ url: next })} />
-      </div>
-      {env.deploy && !deploying && (
-        <p className="field-hint">The hub deploys to it with {env.deploy.workflow} on {env.deploy.ref}, once someone presses Promote.</p>
-      )}
-      <button type="button" className="text-button env-deploy-toggle" aria-expanded={deploying} aria-controls={bodyId} onClick={() => setDeploying(!deploying)}>Deploy from the hub</button>
-      {deploying && <DeployFrom id={bodyId} env={env} change={change} />}
-    </li>
+    </Dialog>
   )
 }
 
+const ordinal = (n: number) => ['First', 'Second', 'Third', 'Fourth', 'Fifth'][n] ?? `Number ${n + 1}`
+
 /** A text box that keeps what's typed when it's left, and goes back to what it was if the hub says no. */
-function SaveText({ label, value, placeholder, onSave }: { label: string; value: string; placeholder?: string; onSave: (next: string) => Promise<boolean> | boolean }) {
+function SaveText({ label, value, placeholder, saved, onSave }: { label: string; value: string; placeholder?: string; saved: boolean; onSave: (next: string) => Promise<boolean> | boolean }) {
   return (
     <label className="field">
-      <span className="field-label">{label}</span>
+      <span className="field-head"><span className="field-label">{label}</span><Saved show={saved} /></span>
       <input
         key={value}
         defaultValue={value}
@@ -150,7 +177,7 @@ function SaveText({ label, value, placeholder, onSave }: { label: string; value:
 }
 
 /** The workflow the hub runs to deploy to an environment, and on what. Kept once both are given, and cleared when both are emptied. */
-function DeployFrom({ id, env, change }: { id: string; env: Environment; change: (fields: EnvironmentChange) => Promise<boolean> }) {
+function DeployFrom({ env, saved, change }: { env: Environment; saved: boolean; change: (fields: EnvironmentChange) => Promise<boolean> }) {
   const [workflow, setWorkflow] = useState(env.deploy?.workflow ?? '')
   const [ref, setRef] = useState(env.deploy?.ref ?? '')
   // What another tab or the hub changed replaces what's in the boxes; drawn again at once, without losing the person's place.
@@ -175,7 +202,8 @@ function DeployFrom({ id, env, change }: { id: string; env: Environment; change:
   }
   const enter = (event: KeyboardEvent<HTMLInputElement>) => { if (event.key === 'Enter') event.currentTarget.blur() }
   return (
-    <div id={id} className="env-deploy">
+    <div className="env-deploy" role="group" aria-labelledby={`env-deploy-${env.id.replace(/[^\w-]/g, '-')}`}>
+      <span className="field-head"><span className="env-deploy-title" id={`env-deploy-${env.id.replace(/[^\w-]/g, '-')}`}>Deploy from the hub</span><Saved show={saved} /></span>
       <div className="env-fields">
         <label className="field">
           <span className="field-label">Workflow file</span>
@@ -188,7 +216,7 @@ function DeployFrom({ id, env, change }: { id: string; env: Environment; change:
       </div>
       {env.deploy ? (
         // Nothing deploys by itself: the hub runs the workflow when someone presses Promote on Delivery.
-        <p className="field-hint">It deploys when someone presses Promote on Delivery. Empty both boxes to stop the hub deploying to it.</p>
+        <p className="field-hint">The hub deploys to it with {env.deploy.workflow} on {env.deploy.ref} when someone presses Promote on Delivery. Empty both boxes to stop the hub deploying to it.</p>
       ) : (
         <p className="field-hint">Give both, and when someone presses Promote the hub runs the workflow with the version on the environment before this one. Left empty, the hub only shows what GitHub deploys.</p>
       )}
@@ -197,47 +225,42 @@ function DeployFrom({ id, env, change }: { id: string; env: Environment; change:
 }
 
 /** One more environment, for a repo this binder works in, which is the only kind GitHub's deployments are followed for. */
-function AddEnvironment({ onAdded, saved }: { onAdded: (key: string) => void; saved: ReactNode }) {
+function AddEnvironment({ onAdded, onClose }: { onAdded: () => void; onClose: () => void }) {
   const store = useStore()
   const repos = deliveryRepos(store.state)
   const [repo, setRepo] = useState('')
   const [name, setName] = useState('')
   const [url, setUrl] = useState('')
   const [adding, setAdding] = useState(false)
-  if (!repos.length) return <p className="field-hint">Environments belong to the repos this binder works in. Add one in <a href={sectionHref('github')}>GitHub</a> first.</p>
   const chosen = repos.find((r) => sameRepo(r, repo)) ?? repos[0]
   const add = async (event: FormEvent) => {
     event.preventDefault()
-    if (!name.trim() || adding) return
+    if (!name.trim() || adding || !chosen) return
     setAdding(true)
     const made = await attempt(() => store.addEnvironment({ repo: chosen, name: name.trim(), ...(url.trim() ? { url: url.trim() } : {}) }))
     setAdding(false)
     if (!made) return
-    setName('')
-    setUrl('')
-    onAdded('add')
+    toast(`Added ${name.trim()} to ${chosen}.`)
+    onAdded()
   }
   return (
-    <form className="env-add" onSubmit={(event) => void add(event)}>
-      <h4 className="env-repo-name">Add an environment</h4>
-      <label className="field">
-        <span className="field-label">Repo</span>
-        <select value={chosen} onChange={(e) => setRepo(e.target.value)}>
-          {repos.map((r) => <option key={r} value={r}>{r}</option>)}
-        </select>
-      </label>
-      <label className="field">
-        <span className="field-label">Name, as GitHub calls it</span>
-        <input value={name} placeholder="staging" onChange={(e) => setName(e.target.value)} />
-      </label>
-      <label className="field">
-        <span className="field-label">Where it’s served (optional)</span>
-        <input value={url} placeholder="https://" onChange={(e) => setUrl(e.target.value)} />
-      </label>
-      <div className="env-add-actions">
-        <button type="submit" className="button" disabled={!name.trim() || adding}>Add environment</button>
-        {saved}
-      </div>
-    </form>
+    <Dialog title="Add an environment" onClose={onClose} footer={<button type="submit" form="env-add" className="button primary" disabled={!name.trim() || adding}>Add environment</button>}>
+      <form id="env-add" className="form env-add" onSubmit={(event) => void add(event)}>
+        <label className="field">
+          <span className="field-label">Repo</span>
+          <select value={chosen} onChange={(e) => setRepo(e.target.value)}>
+            {repos.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </label>
+        <label className="field">
+          <span className="field-label">Name, as GitHub calls it</span>
+          <input value={name} placeholder="staging" onChange={(e) => setName(e.target.value)} />
+        </label>
+        <label className="field">
+          <span className="field-label">Where it’s served (optional)</span>
+          <input value={url} placeholder="https://" onChange={(e) => setUrl(e.target.value)} />
+        </label>
+      </form>
+    </Dialog>
   )
 }

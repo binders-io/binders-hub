@@ -1,10 +1,10 @@
 import { guideTemplate } from '../../../shared/guide.ts'
 import type { NoteProposal } from '../../../shared/notes.ts'
 import { createElement, useEffect, useState, type DragEvent, type ReactNode } from 'react'
-import { ArrowUpRight, BookPlus, ChevronRight, CloudUpload, FilePlus, LoaderCircle, FileText, BookMarked, Lock, Folder as FolderIcon, FolderOpen, FolderCog, FolderInput, FolderPlus, Link2, MoreHorizontal, Pencil, Search, Settings2, Trash2, X } from 'lucide-react'
-import { ConfirmButton } from './ConfirmButton'
+import { ArrowUpRight, BookPlus, ChevronRight, CloudUpload, FilePlus, LoaderCircle, FileText, BookMarked, Lock, Folder as FolderIcon, FolderOpen, FolderCog, FolderInput, FolderPlus, Link2, Pencil, Search, Settings2, Trash2, X } from 'lucide-react'
+import { MenuButton } from '../kit'
 import { copyNoteLink, sendAndSumItems, useSendTargets } from './NoteControls'
-import { openMenu, openMenuUnder, type MenuItem } from './ContextMenu'
+import { openMenu, type MenuItem } from './ContextMenu'
 import { FolderRuleDialog } from './FolderRules'
 import { attempt, failure, toast } from './Toast'
 import type { Folder, Note } from '../data/model'
@@ -80,8 +80,8 @@ export function SaveAll() {
   })
   const title = `${waiting ? `${waiting} note${waiting === 1 ? '' : 's'} waiting for typing to pause. ` : ''}Save all: commit every note now and push it (⌘S)`
   return (
-    <button className={`icon-button save-all${waiting ? ' waiting' : ''}`} onClick={() => void save()} disabled={busy} aria-label="Save all notes" title={title}>
-      {busy ? <LoaderCircle size={15} className="spin" /> : <CloudUpload size={15} />}
+    <button type="button" className={`icon-button save-all${waiting ? ' waiting' : ''}`} onClick={() => void save()} disabled={busy} aria-label="Save all notes" title={title}>
+      {busy ? <LoaderCircle size={16} className="spin" /> : <CloudUpload size={16} />}
       {waiting > 0 && !busy && <span className="save-count num">{waiting}</span>}
     </button>
   )
@@ -161,7 +161,7 @@ export function NoteTree({ currentId }: { currentId: string }) {
   })
 
   // Right-click menus, as on the Mac: the same things the row's buttons do, and a few more.
-  const icon = (component: typeof FilePlus) => createElement(component, { size: 13 })
+  const icon = (component: typeof FilePlus) => createElement(component, { size: 14 })
   const folderPath = (folderId?: string) => {
     const names: string[] = []
     let folder = folders.find((f) => f.id === folderId)
@@ -216,11 +216,11 @@ export function NoteTree({ currentId }: { currentId: string }) {
   ]
 
   const waiting = (note: Note) => proposals.filter((p) => p.noteId === note.id && p.state === 'new').length
+  /** Where a new note or folder from the top of the list goes: beside the note you're on, else in the binder you're in. */
+  const here = () => current?.binderId ?? (ui.binder !== 'all' ? ui.binder : binders[0].id)
 
-  /** A row's ⋯: its right-click menu, for a phone or a keyboard. */
-  const more = (name: string, items: () => MenuItem[]) => (
-    <button type="button" className="tree-more" aria-label={`Actions for ${name}`} aria-haspopup="menu" onClick={(event) => openMenuUnder(event, items())}><MoreHorizontal size={14} /></button>
-  )
+  /** A row's ⋯: its right-click menu, on hover with a mouse and always there for a finger or a keyboard. */
+  const more = (name: string, items: () => MenuItem[]) => <MenuButton className="tree-more" label={`Actions for ${name}`} items={items} />
 
   const noteRow = (note: Note, depth: number, path?: string) => (
     <div key={note.id} className="tree-item">
@@ -232,7 +232,7 @@ export function NoteTree({ currentId }: { currentId: string }) {
         onDragStart={(event) => event.dataTransfer.setData('text/note', note.id)}
         onContextMenu={(event) => openMenu(event, noteMenu(note))}
       >
-        {guides.has(note.id) ? <BookMarked size={14} className="tree-icon" aria-label="The binder’s guide" /> : <FileText size={14} className="tree-icon" />}
+        {guides.has(note.id) ? <BookMarked size={16} className="tree-icon" aria-label="The binder’s guide" /> : <FileText size={16} className="tree-icon" />}
         <span className="tree-label">
           <b>{note.title || 'Untitled'}</b>
           {path && <em>{path}</em>}
@@ -263,7 +263,7 @@ export function NoteTree({ currentId }: { currentId: string }) {
           <button className="tree-chevron" onClick={() => toggle(folder.id)} aria-expanded={open} aria-label={open ? `Close ${folder.name}` : `Open ${folder.name}`}>
             <ChevronRight size={13} style={{ transform: open ? 'rotate(90deg)' : 'none' }} />
           </button>
-          {open ? <FolderOpen size={14} className="tree-icon" /> : <FolderIcon size={14} className="tree-icon" />}
+          {open ? <FolderOpen size={16} className="tree-icon" /> : <FolderIcon size={16} className="tree-icon" />}
           {renaming === folder.id ? (
             <input
               id={`rename-${folder.id}`}
@@ -283,12 +283,6 @@ export function NoteTree({ currentId }: { currentId: string }) {
             </button>
           )}
           <span className="tree-count num">{count(folder.binderId, folder.id)}</span>
-          {may && <span className="tree-actions">
-            <button onClick={() => newNote(folder.binderId, folder.id)} aria-label={`New note in ${folder.name}`} title="New note"><FilePlus size={13} /></button>
-            <button onClick={() => newFolder(folder.binderId, folder.id)} aria-label={`New folder in ${folder.name}`} title="New folder"><FolderPlus size={13} /></button>
-            <button onClick={() => setRenaming(folder.id)} aria-label={`Rename ${folder.name}`} title="Rename"><Pencil size={13} /></button>
-            <ConfirmButton className="" question="Delete? Press again" label={`Delete ${folder.name}`} title="Delete the folder (what’s in it moves up)" onConfirm={() => store.deleteFolder(folder.id)}><Trash2 size={13} /></ConfirmButton>
-          </span>}
           {may && renaming !== folder.id && more(folder.name, () => folderMenu(folder))}
         </div>
         {open && (
@@ -316,13 +310,14 @@ export function NoteTree({ currentId }: { currentId: string }) {
     <nav className="note-tree" aria-label="Notes">
       <div className="tree-tools">
         <label className="tree-filter">
-          <Search size={13} />
+          <Search size={14} aria-hidden="true" />
           <input id="note-filter" placeholder="Filter notes" value={filter} onChange={(event) => setFilter(event.target.value)} onKeyDown={(event) => event.key === 'Escape' && setFilter('')} />
-          {filter && <button onClick={() => setFilter('')} aria-label="Clear filter"><X size={12} /></button>}
+          {filter && <button type="button" onClick={() => setFilter('')} aria-label="Clear filter"><X size={14} /></button>}
         </label>
-        {may && <button className="icon-button" onClick={() => binders[0] && newNote(current?.binderId ?? (ui.binder !== 'all' ? ui.binder : binders[0].id), current?.folderId)} disabled={!binders.length} aria-label="New note" title="New note (N, or ⌥⌘N)"><FilePlus size={15} /></button>}
+        {may && <button type="button" className="icon-button" onClick={() => binders[0] && newNote(here(), current?.folderId)} disabled={!binders.length} aria-label="New note" title="New note (N, or ⌥⌘N)"><FilePlus size={16} /></button>}
+        {may && <button type="button" className="icon-button" onClick={() => binders[0] && newFolder(here(), current?.folderId)} disabled={!binders.length} aria-label="New folder" title="New folder, beside the note you’re on"><FolderPlus size={16} /></button>}
         {may && <SaveAll />}
-        {may && !binders.length && <button className="icon-button" onClick={() => setNewBinder('')} aria-label="Start its notes" title="Start its notes"><BookPlus size={15} /></button>}
+        {may && !binders.length && <button type="button" className="icon-button" onClick={() => setNewBinder('')} aria-label="Start its notes" title="Start its notes"><BookPlus size={16} /></button>}
       </div>
       {newBinder !== undefined && (
         <form className="tree-new-binder" onSubmit={(event) => { event.preventDefault(); if (newBinder.trim()) store.addBinder(newBinder); setNewBinder(undefined) }}>
@@ -345,10 +340,6 @@ export function NoteTree({ currentId }: { currentId: string }) {
                   <ChevronRight size={13} style={{ transform: open ? 'rotate(90deg)' : 'none' }} />
                 </button>
                 <button className="tree-label" onClick={() => toggle(binder.id)}><b>{binder.name}</b></button>
-                {may && <span className="tree-actions">
-                  <button onClick={() => newNote(binder.id)} aria-label={`New note in ${binder.name}`} title="New note"><FilePlus size={13} /></button>
-                  <button onClick={() => newFolder(binder.id)} aria-label={`New folder in ${binder.name}`} title="New folder"><FolderPlus size={13} /></button>
-                </span>}
                 {more(binder.name, () => projectMenu(binder.id))}
               </div>
               {open && (

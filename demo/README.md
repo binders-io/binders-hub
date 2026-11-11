@@ -10,7 +10,10 @@ are taken from, so they never come from a real hub.
   environments yet. Dates are counted back from when it runs.
 - `hub.ts`: starts it. It keeps everything in this process and reads no settings from the environment, so it can't open a
   real hub's Redis, notes or keys. It listens on 127.0.0.1 only, and its GitHub is a port nothing answers on. The screens
-  are told GitHub is connected, so they read as a set-up hub's, and nothing you approve or promote reaches a repo. It can't add machines: Add a machine on the Agents page says so.
+  are told GitHub is connected, so they read as a set-up hub's, and nothing you approve or promote reaches a repo:
+  Harbor has an invented GitHub App on the invented example organization, reaching the 42 repos in `demoRepos` (private
+  and public, with topics and a team property), its agents work in most of them, a few more have briefs, and maya has
+  connected her GitHub, so Settings → GitHub shows its repos' table as a set-up binder's would. It can't add machines: Add an agent on the Agents page says so, when a machine is chosen.
 - `brain.ts`: its Brain. No model: a few answers written down (and, asked anything else, it looks in the notes in steps
   as a model with tools would), put together from the hub's own board, so the Brain's page
   answers and shows each kind of view (rows of agents and cards, a chart, a table, a drawing) with nothing set up. Try

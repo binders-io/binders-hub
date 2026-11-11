@@ -3,7 +3,6 @@ import { Check, Copy, LoaderCircle } from 'lucide-react'
 import { call, isNetworkFailure, unreachable } from '../data/api'
 import { isListening, useStore, usePresence } from '../data/store'
 import { toolInfo } from '../../../shared/agents.ts'
-import { Dialog } from './Dialog'
 import { failure } from './Toast'
 
 interface JoinLine {
@@ -25,12 +24,13 @@ export function until(expiresAt: string, now = new Date()) {
 }
 
 /**
- * Adding a machine: the hub makes one line to paste in a terminal on each machine, in the folder with the code, and each
- * machine that runs it shows here as it joins. A machine that joins is an ordinary agent of yours, so what joined is the
- * agents that weren't there when this opened. The line carries a secret for a day: it's shown, since it has to be
- * copied, and kept in this component's state alone, never in an address, a toast or the browser's storage.
+ * Adding a machine, as a step of adding an agent: the hub makes one line to paste in a terminal on each machine, in the
+ * folder with the code, and each machine that runs it shows here as it joins. A machine that joins is an ordinary agent
+ * of yours, so what joined is the agents that weren't there when this opened. The line carries a secret for a day: it's
+ * shown, since it has to be copied, and kept in this component's state alone, never in an address, a toast or the
+ * browser's storage.
  */
-export function AddMachine({ onClose }: { onClose: () => void }) {
+export function MachineLine() {
   const { state } = useStore()
   usePresence()
   const [line, setLine] = useState<JoinLine>()
@@ -79,60 +79,53 @@ export function AddMachine({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <Dialog title="Add a machine" onClose={onClose} wide closeOnlyFromButton>
-      <div className="token add-machine">
-        {problem ? (
-          <div className="add-machine-problem">
-            <p role="alert">{problem}</p>
-            <button type="button" className="button" onClick={() => void ask()}>Try again</button>
+    <div className="add-machine">
+      {problem ? (
+        <div className="add-machine-problem">
+          <p role="alert">{problem}</p>
+          <button type="button" className="button" onClick={() => void ask()}>Try again</button>
+        </div>
+      ) : !line ? (
+        <p className="add-machine-wait" role="status"><LoaderCircle size={14} className="spin" aria-hidden="true" /> Making the line…</p>
+      ) : (
+        <>
+          <div className="segmented" role="radiogroup" aria-label="What it runs on">
+            <button type="button" role="radio" aria-checked={!windows} className={!windows ? 'on' : ''} onClick={() => setWindows(false)}>macOS or Linux</button>
+            <button type="button" role="radio" aria-checked={windows} className={windows ? 'on' : ''} onClick={() => setWindows(true)}>Windows</button>
           </div>
-        ) : !line ? (
-          <p className="add-machine-wait" role="status"><LoaderCircle size={14} className="spin" aria-hidden="true" /> Making the line…</p>
+          <div className="command">
+            <pre className="mono">{text}</pre>
+            <button type="button" className="icon-button" onClick={() => void copy()} aria-label="Copy the line" title="Copy the line">{copied ? <Check size={14} /> : <Copy size={14} />}</button>
+          </div>
+          <p className="add-machine-note">It works for a day: anyone with this line can add a machine as you until {until(line.expiresAt)}.{state.me?.hubAdmin && ' You’re a hub admin, so each machine’s models are lent to the hub’s brain too.'}</p>
+        </>
+      )}
+      <section className="add-machine-joined" aria-label="Machines that joined">
+        <h4>Machines that joined</h4>
+        {joined.length ? (
+          <ul className="joined-list">
+            {joined.map((agent) => {
+              const listening = isListening(agent)
+              const workspace = agent.runner?.workspace
+              return (
+                <li key={agent.id}>
+                  <div>
+                    <b>{agent.name}</b>
+                    <span className="joined-where">{workspace ? <>Works in <span className="mono">{workspace}</span></> : agent.runsOn ? `On ${agent.runsOn}` : `${toolInfo(agent.runner?.tool ?? 'claude').name}`}</span>
+                  </div>
+                  <span className={`joined-state${listening ? ' on' : ''}`}>
+                    {listening ? <Check size={13} strokeWidth={3} aria-hidden="true" /> : <LoaderCircle size={13} className="spin" aria-hidden="true" />}
+                    {listening ? 'Listening' : 'Not listening yet'}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
         ) : (
-          <>
-            <p>Run this in the folder with the code, on each machine. It works for a day.</p>
-            <div className="segmented runner-how" role="radiogroup" aria-label="What it runs on">
-              <button type="button" role="radio" aria-checked={!windows} className={!windows ? 'on' : ''} onClick={() => setWindows(false)}>macOS or Linux</button>
-              <button type="button" role="radio" aria-checked={windows} className={windows ? 'on' : ''} onClick={() => setWindows(true)}>Windows</button>
-            </div>
-            <div className="command">
-              <pre className="mono">{text}</pre>
-              <button type="button" className="icon-button" onClick={() => void copy()} aria-label="Copy the line">{copied ? <Check size={14} /> : <Copy size={14} />}</button>
-            </div>
-            <p>Anyone with this line can add a machine as you until {until(line.expiresAt)}.</p>
-            {state.me?.hubAdmin && <p>You’re a hub admin, so each machine’s models are lent to the hub’s brain too.</p>}
-          </>
+          <p className="add-machine-wait"><LoaderCircle size={14} className="spin" aria-hidden="true" /> Waiting for one to run it…</p>
         )}
-        <section className="add-machine-joined" aria-label="Machines that joined">
-          <h3>Machines that joined</h3>
-          {joined.length ? (
-            <ul className="joined-list">
-              {joined.map((agent) => {
-                const listening = isListening(agent)
-                const workspace = agent.runner?.workspace
-                return (
-                  <li key={agent.id}>
-                    <div>
-                      <b>{agent.name}</b>
-                      <span className="joined-where">{workspace ? <>Works in <span className="mono">{workspace}</span></> : agent.runsOn ? `On ${agent.runsOn}` : `${toolInfo(agent.runner?.tool ?? 'claude').name}`}</span>
-                    </div>
-                    <span className={`joined-state${listening ? ' on' : ''}`}>
-                      {listening ? <Check size={13} strokeWidth={3} aria-hidden="true" /> : <LoaderCircle size={13} className="spin" aria-hidden="true" />}
-                      {listening ? 'Listening' : 'Not listening yet'}
-                    </span>
-                  </li>
-                )
-              })}
-            </ul>
-          ) : (
-            <p className="add-machine-wait"><LoaderCircle size={14} className="spin" aria-hidden="true" /> Waiting for one to run it…</p>
-          )}
-        </section>
-        <p className="sr-only" role="status">{announced}</p>
-      </div>
-      <footer className="form-actions">
-        <button type="button" className="button primary" onClick={onClose}>Done</button>
-      </footer>
-    </Dialog>
+      </section>
+      <p className="sr-only" role="status">{announced}</p>
+    </div>
   )
 }

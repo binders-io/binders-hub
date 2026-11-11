@@ -1,0 +1,23 @@
+/* ---------- Agents, last: these come after the rest, and replace rules in other files that style the Agents page and its dialogs ---------- */
+
+/* .claude-code (63-shell-pills.css): the command as wide as the dialog, its copy button in it, the words on the scale. */
+.claude-code { display: grid; gap: var(--space-12); justify-items: stretch; min-width: 0; }
+.claude-code > p { margin: 0; font-size: var(--font-14); line-height: var(--leading-14); color: var(--muted); }
+.claude-code > p.faint { font-size: var(--font-13); line-height: var(--leading-13); }
+.claude-code code { padding: 1px 5px; border-radius: var(--r-xs); background: var(--fill-2); color: var(--text); font: var(--font-12)/1.4 var(--mono); }
+
+/* .schedules-section (54-schedules.css): a kit section on the Agents page, spaced as every other. */
+.agents-screen .schedules-section { margin-top: 0; gap: var(--space-12); }
+.agents-screen .schedules-section .section-title { font: 800 var(--font-16)/var(--leading-16) var(--display); }
+.agents-screen .schedules-section .section-lead { margin: 0; font-size: var(--font-13); }
+
+/* .agent-warning and .agent-note (52-change-sets-tabs.css): a line of state on a card, on the type scale. */
+.agent-card .agent-warning, .agent-card .agent-note { margin: 0; padding: var(--space-8) 10px; border-radius: var(--r-sm); font-size: var(--font-13); line-height: var(--leading-13); font-weight: 500; }
+.model-agent-form .agent-warning { margin: 0; padding: var(--space-8) 10px; border-radius: var(--r-sm); font-size: var(--font-13); line-height: var(--leading-13); font-weight: 500; }
+
+/* .runner-how and .runner-token (55-github-personal.css): the runner's choices in a row that wraps on a phone. */
+.runner-steps .runner-how { margin: 0; max-width: 100%; }
+.runner-steps .runner-token { gap: var(--space-12); }
+
+/* .snippet (26-notes-distill.css): what comes before the snippets, on the scale. */
+.token .disclosure-body > p { margin: 0; font-size: var(--font-13); color: var(--muted); }

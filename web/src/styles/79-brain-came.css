@@ -1,0 +1,21 @@
+/* The Brain's rail: Came in. A row each in the section's card: an icon, the title (the note it made, when it made one),
+   where it came from, the hub's line, and when, with Undo at its end. */
+.brain-came-row { align-items: flex-start; gap: var(--space-12); padding: var(--space-12); }
+.brain-came-row > .rows-icon { margin-top: 2px; }
+.brain-came-row.quiet > .rows-icon { background: none; color: var(--faint); }
+.brain-came-text { flex: 1; display: grid; gap: 2px; min-width: 0; }
+.brain-came-title { font: 600 var(--font-13)/var(--leading-13) var(--body); color: var(--text); overflow-wrap: anywhere; }
+.brain-came-row.quiet .brain-came-title { color: var(--muted); font-weight: 400; }
+.brain-came-title a { color: inherit; text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+.brain-came-title a:hover { text-decoration-color: currentColor; }
+.brain-came-from { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--space-8); min-width: 0; font-size: var(--font-12); line-height: var(--leading-12); color: var(--muted); }
+.brain-came-from b { color: var(--text-2); font-weight: 600; overflow-wrap: anywhere; }
+.brain-came-sender { overflow-wrap: anywhere; }
+.brain-came-line { font-size: var(--font-12); line-height: var(--leading-12); color: var(--muted); overflow-wrap: anywhere; }
+.brain-came-end { flex: none; display: grid; justify-items: end; gap: var(--space-4); font-size: var(--font-12); line-height: var(--leading-12); color: var(--faint); }
+.brain-came-undo { font-size: var(--font-12); }
+.brain-came-undo:disabled { color: var(--faint); cursor: default; text-decoration: none; }
+.brain-came-refused { margin: var(--space-4) 0 0; font-size: var(--font-12); color: var(--red); overflow-wrap: anywhere; }
+.brain-rail-section .section-card > .brain-came-more { display: block; width: 100%; padding: 10px var(--space-16); font-size: var(--font-13); font-weight: 600; text-align: left; color: var(--muted); }
+.brain-came-more:hover { color: var(--text); background: var(--row-hover); }
+@media (max-width: 600px), (hover: none) { .brain-came-undo { min-height: 44px; display: inline-flex; align-items: center; } }

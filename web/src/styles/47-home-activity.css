@@ -1,0 +1,31 @@
+/* Home: the day's agent activity, in one card, with a legend of one pill an agent */
+.activity-panel { display: grid; gap: var(--space-12); padding: var(--space-16); border-radius: var(--r-lg); border: 1px solid var(--line); background: var(--tile); box-shadow: var(--tile-shadow); min-width: 0; }
+.activity-panel header { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-4) var(--space-12); }
+.activity-panel h2 { margin: 0; font: 800 var(--font-16)/var(--leading-16) var(--display); }
+.activity-total { font-size: var(--font-13); font-weight: 700; color: var(--text); }
+.activity-change { font-size: var(--font-12); color: var(--faint); }
+.activity-change.up { color: var(--green); }
+.activity-used { margin-left: auto; font-size: var(--font-12); color: var(--muted); }
+.activity-chart { min-width: 0; overflow: hidden; }
+.activity-chart svg { display: block; }
+.activity-guide { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 4; }
+.activity-floor { stroke: var(--line-strong); stroke-width: 1; }
+.activity-hour { fill: var(--faint); font: 500 var(--font-12) var(--body); }
+.activity-hour.now { fill: var(--muted); font-weight: 700; }
+.activity-empty { margin: 0; padding: var(--space-24) 0; text-align: center; font-size: var(--font-13); color: var(--muted); }
+.activity-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-8); }
+.activity-legend li { display: inline-flex; align-items: center; gap: var(--space-8); min-width: 0; height: 30px; padding: 0 var(--space-12) 0 var(--space-8); border-radius: var(--r-pill); border: 1px solid var(--line); background: var(--fill-1); font-size: var(--font-12); line-height: 1; }
+.activity-legend i { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.activity-legend .avatar { flex: none; }
+.activity-legend b { font-weight: 700; color: var(--text); white-space: nowrap; }
+.activity-legend span { color: var(--muted); white-space: nowrap; }
+@media (max-width: 600px) {
+  .activity-used { margin-left: 0; flex-basis: 100%; }
+  /* A line an agent, its numbers at the end, rather than pills that would break in two. */
+  .activity-legend { flex-direction: column; gap: var(--space-4); }
+  .activity-legend li { width: 100%; }
+  .activity-legend span { margin-left: auto; overflow: hidden; text-overflow: ellipsis; }
+}
+.runner-old { color: var(--amber); font-size: var(--font-12); margin: 0; }
+.runner-old a { color: var(--text); font-weight: 700; text-decoration: underline; }
+.folder-row[draggable="true"] { cursor: grab; }

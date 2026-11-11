@@ -9,6 +9,7 @@ import { space } from '../data/space'
 import { useStore } from '../data/store'
 import { AgentAvatar, ago } from '../components/bits'
 import { href } from '../route'
+import { EmptyState } from '../kit'
 import type { FromViewer, TerminalInfo, ToViewer } from '../../../shared/terminal.ts'
 
 // A terminal's colours, the same in either theme: the tools draw for a dark terminal.
@@ -134,46 +135,46 @@ export function AgentTerminal({ id, sid }: { id: string; sid?: string }) {
 
   return (
     <div className="agent-terminal">
-      <header className="term-head">
-        <a className="icon-button" href={href({ screen: 'agents' })} aria-label="Back to Agents" title="Back to Agents"><ArrowLeft size={16} /></a>
-        <AgentAvatar agent={agent} size={22} />
-        <div className="term-title">
-          <b>{agent?.name ?? 'Agent'}</b>
-          <span className="faint">{current?.info ? <><span className="mono">{current.info.dir}</span> · opened {ago(current.info.startedAt)}</> : 'Terminal'}</span>
-        </div>
-      </header>
-      <div className="term-tabs" role="tablist" aria-label="Its terminals">
-        <a className="term-back" href={href({ screen: 'agents' })} aria-label={`Back to Agents (${agent?.name ?? 'agent'})`} title="Back to Agents"><ArrowLeft size={16} /><AgentAvatar agent={agent} size={20} /></a>
-        {tabs?.map((tab) => (
-          <div key={tab.key} className={`term-tab${tab.key === active ? ' on' : ''}${tab.ended ? ' ended' : ''}`}>
-            {renaming === tab.key ? (
-              <form className="term-tab-rename" onSubmit={(e) => {
-                e.preventDefault()
-                const value = new FormData(e.currentTarget).get('name')
-                const name = String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, 40)
-                controls.current.get(tab.key)?.rename(name)
-                // Shown at once; the hub's word follows.
-                if (tab.info) update(tab.key, { info: { ...tab.info, name: name || undefined } })
-                setRenaming(undefined)
-              }}>
-                <SquareTerminal size={13} />
-                <input id={`term-name-${tab.key}`} name="name" autoFocus defaultValue={tab.info?.name ?? ''} placeholder={tab.info?.tool} maxLength={40} aria-label="The terminal’s name"
-                  onBlur={(e) => e.currentTarget.form?.requestSubmit()} onKeyDown={(e) => e.key === 'Escape' && setRenaming(undefined)} />
-              </form>
-            ) : (
-              <button type="button" role="tab" aria-selected={tab.key === active} onClick={() => show(tab)} onDoubleClick={() => tab.sid && !tab.ended && setRenaming(tab.key)}
-                // A long press on a phone, a right-click with a mouse: there's no double-click on a touchscreen.
-                onContextMenu={(e) => { if (tab.sid && !tab.ended) { e.preventDefault(); setRenaming(tab.key) } }}
-                title={tab.info ? `${tab.info.dir}, opened ${ago(tab.info.startedAt)}. Double-click or long-press to rename.` : undefined}>
-                <SquareTerminal size={13} /> {label(tab)}
+      {/* One slim bar: back to Agents, whose terminals these are, a tab each, and where the shown one works. */}
+      <div className="term-bar">
+        <a className="term-back" href={href({ screen: 'agents' })} aria-label="Back to Agents" title="Back to Agents"><ArrowLeft size={16} /></a>
+        <span className="term-who">
+          <AgentAvatar agent={agent} size={22} />
+          <h2>{agent?.name ?? 'Agent'}</h2>
+        </span>
+        <div className="term-tabs" role="tablist" aria-label="Its terminals">
+          {tabs?.map((tab) => (
+            <div key={tab.key} className={`term-tab${tab.key === active ? ' on' : ''}${tab.ended ? ' ended' : ''}`}>
+              {renaming === tab.key ? (
+                <form className="term-tab-rename" onSubmit={(e) => {
+                  e.preventDefault()
+                  const value = new FormData(e.currentTarget).get('name')
+                  const name = String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, 40)
+                  controls.current.get(tab.key)?.rename(name)
+                  // Shown at once; the hub's word follows.
+                  if (tab.info) update(tab.key, { info: { ...tab.info, name: name || undefined } })
+                  setRenaming(undefined)
+                }}>
+                  <SquareTerminal size={13} aria-hidden="true" />
+                  <input id={`term-name-${tab.key}`} name="name" autoFocus defaultValue={tab.info?.name ?? ''} placeholder={tab.info?.tool} maxLength={40} aria-label="The terminal’s name"
+                    onBlur={(e) => e.currentTarget.form?.requestSubmit()} onKeyDown={(e) => e.key === 'Escape' && setRenaming(undefined)} />
+                </form>
+              ) : (
+                <button type="button" role="tab" aria-selected={tab.key === active} onClick={() => show(tab)} onDoubleClick={() => tab.sid && !tab.ended && setRenaming(tab.key)}
+                  // A long press on a phone, a right-click with a mouse: there's no double-click on a touchscreen.
+                  onContextMenu={(e) => { if (tab.sid && !tab.ended) { e.preventDefault(); setRenaming(tab.key) } }}
+                  title={tab.info ? `${tab.info.dir}, opened ${ago(tab.info.startedAt)}. Double-click or long-press to rename.` : undefined}>
+                  <SquareTerminal size={13} aria-hidden="true" /> {label(tab)}
+                </button>
+              )}
+              <button type="button" className="term-tab-close" onClick={() => close(tab)} aria-label={`Close ${label(tab)}`} title={tab.sid && !tab.ended ? 'Close: ends its tool (a worktree with changes is kept)' : 'Close'}>
+                <X size={12} />
               </button>
-            )}
-            <button type="button" className="term-tab-close" onClick={() => close(tab)} aria-label={`Close ${label(tab)}`} title={tab.sid && !tab.ended ? 'Close: ends its tool (a worktree with changes is kept)' : 'Close'}>
-              <X size={12} />
-            </button>
-          </div>
-        ))}
-        <button type="button" className="term-tab-add" onClick={add} aria-label="New terminal" title="New terminal"><Plus size={14} /></button>
+            </div>
+          ))}
+          <button type="button" className="term-tab-add" onClick={add} aria-label="New terminal" title="New terminal"><Plus size={14} /></button>
+        </div>
+        {current?.info && <span className="term-where" title={current.info.dir}><span className="mono">{current.info.dir}</span> · opened {ago(current.info.startedAt)}</span>}
       </div>
       <div className="term-views">
         {tabs?.map((tab) => (
@@ -186,8 +187,8 @@ export function AgentTerminal({ id, sid }: { id: string; sid?: string }) {
         ))}
         {tabs && !tabs.length && (
           <div className="term-empty">
-            <p>No terminals open.</p>
-            <button className="button primary" onClick={add}><Plus size={14} /> New terminal</button>
+            <EmptyState icon={<SquareTerminal size={20} />} title="No terminals open" line={`Open one to use ${agent?.name ?? 'its tool'} on its machine, as you would there.`}
+              action={<button type="button" className="button primary" onClick={add}><Plus size={14} aria-hidden="true" />New terminal</button>} />
           </div>
         )}
       </div>
@@ -353,8 +354,8 @@ function TerminalView({ agentId, sid, active, onReady, onEnded, onChanged, onNew
       {keys && <TermKeys term={termRef} send={(data) => sendRef.current?.({ type: 'input', data })} ctrl={ctrlOn} onCtrl={(on) => { ctrl.current = on; setCtrlOn(on) }} box={box} />}
       {(note || ended) && (
         <p className={`term-note ${ended ? 'ended' : note!.tone}`}>
-          <SquareTerminal size={14} /> {ended ?? note!.text}
-          {ended && <button className="text-button" onClick={onNew}>Open a new one</button>}
+          <SquareTerminal size={14} aria-hidden="true" /> <span>{ended ?? note!.text}</span>
+          {ended && <button type="button" className="button small" onClick={onNew}>Open a new one</button>}
         </p>
       )}
     </div>

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useId, useState, type FormEvent } from 'react'
 import { stages, type Card } from '../data/model'
 import { useStore } from '../data/store'
 import { go } from '../route'
@@ -19,6 +19,7 @@ export function NewCardDialog({ binderId, title: start = '', brief: startBrief =
   const [size, setSize] = useState<Card['size']>('M')
   const [meantFor, setMeantFor] = useState('')
   const [busy, setBusy] = useState(false)
+  const formId = useId()
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -33,8 +34,13 @@ export function NewCardDialog({ binderId, title: start = '', brief: startBrief =
   }
 
   return (
-    <Dialog title="New card" onClose={onClose}>
-      <form className="form" onSubmit={submit}>
+    <Dialog title="New card" onClose={onClose} footer={
+      <>
+        <button type="button" className="button" onClick={onClose}>Cancel</button>
+        <button type="submit" form={formId} className="button primary" disabled={busy || !title.trim() || !binder}>Put on the board</button>
+      </>
+    }>
+      <form className="form" id={formId} onSubmit={submit}>
         {state.binders.length > 1 && (
           <Field label="Part">
             <select id="card-binder" value={binder} onChange={(e) => setBinder(e.target.value)}>
@@ -49,27 +55,21 @@ export function NewCardDialog({ binderId, title: start = '', brief: startBrief =
           <textarea id="card-brief" rows={3} value={brief} onChange={(e) => setBrief(e.target.value)} />
         </Field>
         <Field label="Done when">
-          <input id="card-done" value={doneWhen} onChange={(e) => setDoneWhen(e.target.value)} placeholder="How you'll know it's finished" />
+          <input id="card-done" value={doneWhen} onChange={(e) => setDoneWhen(e.target.value)} placeholder="How you’ll know it’s finished" />
         </Field>
-        <div className="form-row">
-          <Field label="Size">
-            <select id="card-size" value={size} onChange={(e) => setSize(e.target.value as Card['size'])}>
-              <option value="S">Small</option>
-              <option value="M">Medium</option>
-              <option value="L">Large</option>
-            </select>
-          </Field>
-          <Field label="For">
-            <select id="card-for" value={meantFor} onChange={(e) => setMeantFor(e.target.value)}>
-              <option value="">Any agent that can</option>
-              {state.agents.filter((a) => !a.revoked).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </select>
-          </Field>
-        </div>
-        <footer className="form-actions">
-          <button type="button" className="button" onClick={onClose}>Cancel</button>
-          <button type="submit" className="button primary" disabled={busy || !title.trim() || !binder}>Put on the board</button>
-        </footer>
+        <Field label="Size">
+          <select id="card-size" value={size} onChange={(e) => setSize(e.target.value as Card['size'])}>
+            <option value="S">Small</option>
+            <option value="M">Medium</option>
+            <option value="L">Large</option>
+          </select>
+        </Field>
+        <Field label="For">
+          <select id="card-for" value={meantFor} onChange={(e) => setMeantFor(e.target.value)}>
+            <option value="">Any agent that can</option>
+            {state.agents.filter((a) => !a.revoked).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+        </Field>
       </form>
     </Dialog>
   )

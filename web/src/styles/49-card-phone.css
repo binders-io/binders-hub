@@ -1,0 +1,33 @@
+/* A card on a phone: one column; the back arrow beside the title, who has it under; the steps a list down the page. */
+@media (max-width: 600px) {
+  .work { padding: var(--space-16) var(--space-16) var(--space-48); gap: var(--space-16); }
+  .work-head { grid-template-columns: auto minmax(0, 1fr); gap: var(--space-8) var(--space-8); }
+  .work-back { margin: -4px 0 0 -8px; }
+  .work-title h1 { font-size: var(--font-20); line-height: var(--leading-20); }
+  .work-head-end { grid-column: 1 / -1; justify-content: space-between; flex-direction: row-reverse; }
+  .work-head-end .work-agent-picker { min-width: 0; }
+
+  /* Where it is: a step a line, the one it's on said in full, the others by name. */
+  .sdlc { grid-template-columns: minmax(0, 1fr); row-gap: 0; padding: var(--space-12) var(--space-16); }
+  .sdlc li { grid-template-columns: 22px minmax(0, 1fr); justify-items: start; align-items: center; column-gap: var(--space-12); row-gap: 0; padding: 5px 0; text-align: left; }
+  .sdlc-dot { grid-row: span 2; width: 22px; height: 22px; margin: 0; border-width: 2px; }
+  .sdlc-dot svg { width: 11px; height: 11px; }
+  .sdlc li:not(:last-child)::after { content: ""; position: absolute; left: 10px; top: 27px; bottom: -5px; width: 2px; background: var(--line-strong); }
+  .sdlc li.done:not(:last-child)::after { background: var(--progress); }
+  .sdlc em { display: none; }
+  .sdlc li.now em { display: block; }
+  .sdlc li.now .sdlc-dot { box-shadow: 0 0 0 4px var(--fill-2); animation: none; }
+
+  .now-card { padding: 14px; }
+  .now-text { font-size: var(--font-16); }
+  .now-progress { width: 100%; margin-left: 0; }
+  .reply input { flex-basis: 100%; }
+  .reply .button { flex: 1; }
+
+  .work-section.debrief h2 { row-gap: var(--space-8); }
+  .work-section.debrief h2 .debrief-actions { margin-left: 0; width: 100%; }
+  .debrief-changes div, .debrief-against li { grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
+  .debrief-try { overflow-wrap: anywhere; }
+  .facts > div { grid-template-columns: 88px minmax(0, 1fr); }
+  .work-loading-side { display: none; }
+}

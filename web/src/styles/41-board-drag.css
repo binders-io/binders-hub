@@ -1,0 +1,15 @@
+/* Moving cards on the board: by dragging, or from a card's ⋯, which a keyboard reaches. */
+.card-drag { cursor: grab; }
+.card-drag:active { cursor: grabbing; }
+.column.drop { border-color: var(--text); background: var(--fill-2); outline: 2px dashed var(--line-strong); outline-offset: -6px; }
+.card-menu { position: relative; flex: none; display: flex; margin: -4px -6px -4px 0; }
+.card .card-menu-button { width: 24px; height: 24px; border-radius: var(--r-sm); color: var(--muted); opacity: 0; transition: opacity var(--dur-fast), background var(--dur-fast), color var(--dur-fast); }
+.card:hover .card-menu-button, .card:focus-within .card-menu-button, .card .card-menu-button[aria-expanded="true"] { opacity: 1; }
+/* With a pointer the ⋯ comes up over the end of the line of facts, so the facts have the card's whole width. */
+@media (hover: hover) {
+  .card-menu { position: absolute; top: 8px; right: 8px; margin: 0; }
+  .card .card-menu-button { background: var(--surface-3); box-shadow: 0 0 0 4px var(--surface-2); }
+  .card:hover .card-menu-button { box-shadow: 0 0 0 4px var(--hover); }
+  .card.asks .card-menu-button { box-shadow: none; }
+  .card .card-menu-button:hover { color: var(--text); }
+}

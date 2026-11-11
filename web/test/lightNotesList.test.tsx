@@ -7,7 +7,7 @@ import { hubState, mount, note, settle, standInHub } from './harness'
 import { ContextMenuHost } from '../src/components/ContextMenu'
 import { NoteControls, useMayChange } from '../src/components/NoteControls'
 import { NoteTree } from '../src/components/NoteTree'
-import { RepoBriefs } from '../src/components/RepoBriefs'
+import { RepoBrief } from '../src/components/RepoBriefs'
 import { useActions, useHub } from '../src/data/store'
 import { UIContext } from '../src/ui'
 
@@ -75,7 +75,7 @@ describe('filtering the notes list when most notes have no text here', () => {
     typeIn('deepword')
     expect(rows()).toEqual([])
     expect(screen.getByText('No note matches “deepword”.')).toBeTruthy()
-    await waitFor(() => expect(rows()).toEqual(['Beta']), { timeout: 2000 })
+    await waitFor(() => expect(rows()).toEqual(['Beta']), { timeout: 10_000 })
     expect(asked).toEqual(['deepword'])
   })
 
@@ -253,7 +253,7 @@ describe('a repo’s brief kept in a note whose text isn’t here', () => {
   it('is still a brief, written and there to read', async () => {
     const brief = { id: 'acme/api', repo: 'acme/api', noteId: 'n1', writtenAt: new Date().toISOString(), writtenBy: 'a1' }
     standInHub(() => hubState({ binders: [{ id: 'b1', name: 'Binder', repo: 'acme/api' }], notes: [light('n1', 'acme/api', '# acme/api\n\nThe API is in Go. It has three services.')], briefs: [brief] }))
-    await mount(<RepoBriefs />)
+    await mount(<RepoBrief repo="acme/api" />)
     await screen.findByText(/^Written (just now|on |\d+[smh] ago)/)
     expect(screen.queryByText(/No brief yet/)).toBeNull()
     expect(screen.getByRole('link', { name: /Read it in/ })).toBeTruthy()

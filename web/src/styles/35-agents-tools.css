@@ -1,0 +1,19 @@
+/* The tools to choose from: a mark, a name and who makes it, one a tile. */
+.tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 1fr)); gap: 6px; }
+.tool-choice { display: flex; align-items: center; gap: 10px; min-width: 0; min-height: 48px; padding: var(--space-8) 10px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--control-bg); text-align: left; color: var(--muted); transition: border-color var(--dur-fast); }
+.tool-choice:hover { border-color: var(--line-strong); color: var(--text); }
+.tool-choice.on { border-color: var(--text); color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
+.tool-choice span { display: grid; min-width: 0; }
+.tool-choice b { font: 600 var(--font-13)/var(--leading-13) var(--body); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tool-choice em { font-style: normal; font-size: var(--font-12); line-height: var(--leading-12); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tool-icon { flex: none; display: inline-grid; place-items: center; }
+.tool-icon.initials { border-radius: 6px; background: var(--fill-3); font-weight: 800; font-family: var(--display); color: var(--text); }
+.form .check, .runner-fields .check { display: flex; align-items: center; gap: var(--space-8); grid-column: 1 / -1; justify-content: flex-start; text-align: left; }
+.form .check input { width: auto; flex: none; }
+.avatar-mark { display: grid; place-items: center; color: #fff; }
+@media (prefers-reduced-motion: reduce) { .tool-choice { transition: none; } }
+/* A phone: two tools to a row, so the list is half as long to scroll. */
+@media (max-width: 600px) {
+  .tool-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tool-choice { gap: var(--space-8); padding: 6px var(--space-8); }
+}

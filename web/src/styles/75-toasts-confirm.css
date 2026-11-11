@@ -1,0 +1,16 @@
+/* A toast that is bad news, or has a button; and the button that asks again before something that can't be undone. */
+.toast { display: flex; align-items: center; gap: var(--space-12); min-height: 44px; font-weight: 500; line-height: var(--leading-14); }
+.toast.bad { background: var(--danger-solid); color: #fff; }
+.toast-action { flex: none; height: 30px; margin: -4px -4px -4px 0; padding: 0 10px; border-radius: var(--r-sm); background: rgba(255, 255, 255, 0.14); color: inherit; font: 700 var(--font-13)/1 var(--body); transition: background var(--dur-fast); }
+.toast-action:hover { background: rgba(255, 255, 255, 0.24); }
+.toast-action:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.confirm-button.sure { width: auto; padding: 0 10px; white-space: nowrap; font-weight: 700; }
+.confirm-button.sure:not(.primary) { color: var(--red); background: var(--red-wash); border-color: color-mix(in srgb, var(--red) 35%, transparent); }
+.confirm-button.sure.primary { box-shadow: 0 0 0 3px var(--amber-line); }
+.confirm-detail { display: block; margin-top: 6px; font-size: var(--font-12); line-height: var(--leading-12); color: var(--muted); }
+.agent-card footer:has(.confirm-button.sure) { flex-wrap: wrap; }
+.agent-card-rare:has(.confirm-button.sure) { flex-wrap: wrap; justify-content: flex-end; flex-basis: 100%; }
+@media (max-width: 600px) { .confirm-button.sure { white-space: normal; height: auto; min-height: 32px; padding-top: 6px; padding-bottom: 6px; } }
+.check-list li:has(.check-fix) { flex-wrap: wrap; }
+.check-list .check-fix { flex: none; }
+

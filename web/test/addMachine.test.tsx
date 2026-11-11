@@ -1,6 +1,4 @@
 // @vitest-environment jsdom
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { defaultRunner } from '../../shared/work.ts'
@@ -32,14 +30,21 @@ function toasts() {
   return said
 }
 
-/** The page with its stand-in hub, the dialog open once the line has come. */
+/** Add an agent, and the machine with the code on it: its step. */
+async function toMachine() {
+  fireEvent.click(screen.getAllByRole('button', { name: 'Add an agent' })[0])
+  const dialog = (await screen.findByRole('dialog', { name: 'Add an agent' })) as HTMLElement
+  fireEvent.click(within(dialog).getByRole('button', { name: /A machine with your code on it/ }))
+  return dialog
+}
+
+/** The page with its stand-in hub, the dialog open at the machine's step once the line has come. */
 async function opened(you: unknown = me, agents = [agent]) {
   standInHub(() => hubState({ agents }), you)
   const asked = standInRoute('POST', '/api/agents/join-line', () => line())
   await mount(<Agents />)
-  fireEvent.click(screen.getByRole('button', { name: 'Add a machine' }))
-  const dialog = (await screen.findByRole('dialog', { name: 'Add a machine' })) as HTMLElement
-  await within(dialog).findByText(/Run this in the folder/)
+  const dialog = await toMachine()
+  await within(dialog).findByText(/^It works for a day/)
   return { dialog, asked }
 }
 
@@ -47,51 +52,95 @@ async function opened(you: unknown = me, agents = [agent]) {
 let version = 1
 const joins = (id: string, over: object = {}) => hear({ type: 'entries', entries: [entry(++version, { type: 'agent.put', agent: { ...agent, id, name: 'Claude Code on studio-mac', runsOn: 'studio-mac', runner: { ...defaultRunner, workspace: '/Users/ana/code/app' }, ...over } })] })
 
-describe('the Agents page’s buttons', () => {
-  it('leads with Add a machine, and keeps Set up an agent beside it, quieter, as Set one up by hand', async () => {
+describe('the Agents page’s one way in', () => {
+  it('is one primary button, Add an agent, with no other button beside it', async () => {
     standInHub()
     await mount(<Agents />)
-    const main = screen.getByRole('button', { name: 'Add a machine' })
-    const byHand = screen.getByRole('button', { name: 'Set one up by hand' })
-    expect(main.className).toContain('primary')
-    expect(byHand.className).not.toContain('primary')
-    expect(byHand.parentElement).toBe(main.parentElement)
-    expect(screen.queryByRole('button', { name: 'Set up an agent' })).toBeNull()
-    fireEvent.click(byHand)
-    expect(await screen.findByRole('dialog', { name: 'Set up an agent' })).toBeTruthy()
+    const add = screen.getByRole('button', { name: 'Add an agent' })
+    expect(add.className).toContain('primary')
+    expect(add.closest('.page-header')).toBeTruthy()
+    expect(add.parentElement!.querySelectorAll('button, a')).toHaveLength(1)
+    for (const gone of ['Add a machine', 'Set one up by hand', 'Add to Claude Code']) expect(screen.queryByRole('button', { name: gone }), gone).toBeNull()
+    expect(screen.queryByRole('button', { name: /A model, with no machine/ })).toBeNull()
   })
 
-  it('leads, with no agents yet, with Add a machine and one sentence on what it does', async () => {
+  it('asks what kind first: four ways, each a name and a line, the machine recommended', async () => {
+    standInHub(undefined, { ...me, role: 'owner' })
+    await mount(<Agents />)
+    fireEvent.click(screen.getByRole('button', { name: 'Add an agent' }))
+    const dialog = (await screen.findByRole('dialog', { name: 'Add an agent' })) as HTMLElement
+    expect(within(dialog).getByRole('heading', { name: 'What kind of agent?' })).toBeTruthy()
+    const ways = [...dialog.querySelectorAll<HTMLButtonElement>('.guided-option')]
+    expect(ways.map((w) => w.querySelector('b')!.textContent)).toEqual(['A machine with your code on it', 'A model, with no machine', 'Set one up by hand', 'Use this hub from Claude Code'])
+    expect(ways.every((w) => !w.disabled && !!w.querySelector('.guided-option-line')!.textContent)).toBe(true)
+    expect(within(dialog).getByRole('button', { name: /A machine with your code on it/ }).textContent).toContain('Recommended')
+    expect(ways[3].textContent).toContain('It isn’t an agent: it takes no cards.')
+  })
+
+  it('goes to each way’s own step, and Back comes to the choice again', async () => {
+    standInHub(undefined, { ...me, role: 'owner' })
+    standInRoute('POST', '/api/agents/join-line', () => line())
+    await mount(<Agents />)
+    fireEvent.click(screen.getByRole('button', { name: 'Add an agent' }))
+    const dialog = (await screen.findByRole('dialog', { name: 'Add an agent' })) as HTMLElement
+    const steps: [RegExp, string, (d: HTMLElement) => unknown][] = [
+      [/A machine with your code on it/, 'Run this on each machine', (d) => within(d).findByRole('button', { name: 'Copy the line' })],
+      [/A model, with no machine/, 'Which model?', (d) => within(d).getByRole('button', { name: 'Add it' })],
+      [/Set one up by hand/, 'Its tool and its name', (d) => within(d).getByRole('button', { name: 'Set up' })],
+      [/Use this hub from Claude Code/, 'Paste one command', (d) => within(d).getByRole('button', { name: 'Copy the command' })],
+    ]
+    for (const [way, heading, has] of steps) {
+      fireEvent.click(within(dialog).getByRole('button', { name: way }))
+      expect(await within(dialog).findByRole('heading', { name: heading })).toBeTruthy()
+      expect(await has(dialog)).toBeTruthy()
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Back' }))
+      expect(await within(dialog).findByRole('heading', { name: 'What kind of agent?' })).toBeTruthy()
+    }
+  })
+
+  it('shows a member the model with no machine, and why it isn’t theirs, without letting them choose it', async () => {
+    standInHub(undefined, { ...me, role: 'member' })
+    await mount(<Agents />)
+    fireEvent.click(screen.getByRole('button', { name: 'Add an agent' }))
+    const model = (await screen.findByRole('button', { name: /A model, with no machine/ })) as HTMLButtonElement
+    expect(model.disabled).toBe(true)
+    expect(model.textContent).toContain('Only this binder’s owners and admins can add one')
+  })
+
+  it('leads, with no agents yet, with an empty state whose one button is Add an agent', async () => {
     standInHub(() => hubState({ agents: [] }))
     await mount(<Agents />)
-    const empty = document.querySelector('.empty-screen') as HTMLElement
+    const empty = document.querySelector('.empty-state') as HTMLElement
     expect(within(empty).getByText('No agents yet')).toBeTruthy()
-    expect(empty.querySelectorAll('p').length).toBe(1)
-    expect(empty.querySelector('p')!.textContent).toMatch(/^Add a machine: one line, run in the folder with the code/)
-    const add = within(empty).getByRole('button', { name: 'Add a machine' })
-    fireEvent.click(add)
-    expect(await screen.findByRole('dialog', { name: 'Add a machine' })).toBeTruthy()
+    expect(empty.querySelector('.empty-state-line')!.textContent).toMatch(/^An agent takes cards from the board/)
+    // Said once: the header has no button of its own while the empty state has it.
+    expect(screen.getAllByRole('button', { name: 'Add an agent' })).toHaveLength(1)
+    fireEvent.click(within(empty).getByRole('button', { name: 'Add an agent' }))
+    expect(await screen.findByRole('dialog', { name: 'Add an agent' })).toBeTruthy()
   })
 
-  it('has Home’s empty state send people to Add a machine, on the Agents page', async () => {
+  it('has Home’s empty state send people to Add an agent, on the Agents page', async () => {
     standInHub(() => hubState({ agents: [], cards: [] }))
     window.location.hash = '#/home'
     await mount(<App />)
     await settle(200)
     // The sidebar says the same, with no agents: both lead to the Agents page.
-    const links = await screen.findAllByRole('link', { name: 'Add a machine' })
+    // Home is loaded when it's first shown: its link comes a moment after the sidebar's.
+    await waitFor(() => expect(screen.getAllByRole('link', { name: 'Add an agent' })).toHaveLength(2), { timeout: 10_000 })
+    const links = screen.getAllByRole('link', { name: 'Add an agent' })
     expect(links.map((l) => l.getAttribute('href'))).toEqual(['#/agents', '#/agents'])
     const link = links.find((l) => l.closest('.home-empty'))!
-    expect(link.closest('.home-empty')!.textContent).toMatch(/^No agents yet\. Add a machine: one line/)
+    expect(link.closest('.home-empty')!.textContent).toMatch(/^No agents yet.*Add a machine: one line/)
   })
 })
 
 describe('the line', () => {
-  it('is asked of the hub once, as the dialog opens, and shown with the two sentences', async () => {
+  it('is asked of the hub once, as its step opens, and shown with where to run it and how long it works', async () => {
     const { dialog, asked } = await opened()
     expect(asked).toEqual([undefined])
-    expect(within(dialog).getByText('Run this in the folder with the code, on each machine. It works for a day.')).toBeTruthy()
-    expect(within(dialog).getByText(/^Anyone with this line can add a machine as you until tomorrow at /)).toBeTruthy()
+    expect(within(dialog).getByRole('heading', { name: 'Run this on each machine' })).toBeTruthy()
+    expect(within(dialog).getByText(/^In a terminal, in the folder with the code\./)).toBeTruthy()
+    expect(within(dialog).getByText(/^It works for a day: anyone with this line can add a machine as you until tomorrow at /)).toBeTruthy()
     expect(dialog.querySelector('.command pre')!.textContent).toBe(line().command.unix)
   })
 
@@ -161,8 +210,7 @@ describe('the line', () => {
     let answers = 0
     standInRoute('POST', '/api/agents/join-line', () => (++answers === 1 ? new Response(JSON.stringify({ error: 'This hub can’t add machines: its address isn’t public.' }), { status: 422, headers: { 'content-type': 'application/json' } }) : line()))
     await mount(<Agents />)
-    fireEvent.click(screen.getByRole('button', { name: 'Add a machine' }))
-    const dialog = (await screen.findByRole('dialog', { name: 'Add a machine' })) as HTMLElement
+    const dialog = await toMachine()
     expect((await within(dialog).findByRole('alert')).textContent).toBe('This hub can’t add machines: its address isn’t public.')
     expect(within(dialog).queryByRole('button', { name: 'Copy the line' })).toBeNull()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Try again' }))
@@ -175,7 +223,7 @@ describe('the line', () => {
     standInHub()
     standInRoute('POST', '/api/agents/join-line', () => { throw new TypeError('Failed to fetch') })
     await mount(<Agents />)
-    fireEvent.click(screen.getByRole('button', { name: 'Add a machine' }))
+    await toMachine()
     expect((await screen.findByRole('alert')).textContent).toBe('Couldn’t reach the hub. Try again in a moment.')
   })
 })
@@ -220,7 +268,7 @@ describe('machines that joined', () => {
 
   it('says it to a screen reader, politely, as it joins and as it starts listening', async () => {
     const { dialog } = await opened()
-    const live = dialog.querySelector('p.sr-only[role="status"]') as HTMLElement
+    const live = dialog.querySelector('.add-machine > p.sr-only[role="status"]') as HTMLElement
     expect(live.textContent).toBe('')
     await joins('a2')
     expect(live.textContent).toBe('Claude Code on studio-mac joined, and isn’t listening yet.')
@@ -236,26 +284,23 @@ describe('machines that joined', () => {
     const { dialog } = await opened()
     await joins('a2')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }))
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add a machine' })).toBeNull())
-    fireEvent.click(screen.getAllByRole('button', { name: 'Add a machine' })[0])
-    const again = (await screen.findByRole('dialog', { name: 'Add a machine' })) as HTMLElement
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add an agent' })).toBeNull())
+    const again = await toMachine()
     expect(within(again).queryByRole('listitem')).toBeNull()
   })
 })
 
 describe('closing it', () => {
-  it('stays open for a tap outside or Escape, and closes from Done or Close', async () => {
+  it('closes from Done or Close, and Back leaves the line for the choice without closing', async () => {
     const { dialog } = await opened()
-    fireEvent.click(document.querySelector('.scrim') as HTMLElement)
-    fireEvent.keyDown(dialog, { key: 'Escape' })
-    fireEvent.keyDown(document, { key: 'Escape' })
-    expect(screen.getByRole('dialog', { name: 'Add a machine' })).toBeTruthy()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }))
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add a machine' })).toBeNull())
-    fireEvent.click(screen.getAllByRole('button', { name: 'Add a machine' })[0])
-    const again = (await screen.findByRole('dialog', { name: 'Add a machine' })) as HTMLElement
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Back' }))
+    expect(await within(dialog).findByRole('heading', { name: 'What kind of agent?' })).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: /A machine with your code on it/ }))
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'Done' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add an agent' })).toBeNull())
+    const again = await toMachine()
     fireEvent.click(within(again).getByRole('button', { name: 'Close' }))
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add a machine' })).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add an agent' })).toBeNull())
   })
 
   it('has every control a button, so Tab reaches it, and Done last', async () => {
@@ -270,7 +315,7 @@ describe('closing it', () => {
 describe('for a hub admin', () => {
   it('says that each machine’s models are lent to the hub’s brain too', async () => {
     const { dialog } = await opened({ ...me, hubAdmin: true })
-    expect(within(dialog).getByText('You’re a hub admin, so each machine’s models are lent to the hub’s brain too.')).toBeTruthy()
+    expect(within(dialog).getByText(/You’re a hub admin, so each machine’s models are lent to the hub’s brain too\.$/)).toBeTruthy()
   })
 
   it('says nothing of models to anyone else', async () => {
@@ -280,24 +325,33 @@ describe('for a hub admin', () => {
 })
 
 describe('Settings → Brain → Your machines', () => {
-  it('keeps its own line, and says a machine with code is better added from the Agents page, as a link', async () => {
+  const brain = () => {
     const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } })
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       if (url === '/api/brain') return json({ brain: {}, admin: true })
       if (url === '/api/brain/machines') return json({ machines: [] })
+      if (url === '/api/brain/machines/command') return json({ install: 'curl https://hub.test/install | sh', expiresAt: '2026-11-10T10:00:00.000Z' })
       return json({})
     }))
     render(<BrainPanel />)
-    expect(await screen.findByRole('button', { name: 'Add your machines' })).toBeTruthy()
-    const link = screen.getByRole('link', { name: 'Agents page' })
-    expect(link.getAttribute('href')).toBe('#/agents')
-    expect(link.parentElement!.textContent).toMatch(/^A machine with code on it is better added from the Agents page/)
-  })
-})
+  }
 
-describe('the page’s rules', () => {
-  it('has a quiet button in the header, smaller than the main one', () => {
-    const css = readFileSync(resolve(__dirname, '../src/app.css'), 'utf8')
-    expect(css).toMatch(/\.head-actions \.button\.quiet \{[^}]*height: 28px/)
+  it('has one Add, which asks what the machine is for, and gives the daemon’s line for one that lends its models', async () => {
+    brain()
+    fireEvent.click(await screen.findByRole('button', { name: 'Add' }))
+    const dialog = (await screen.findByRole('dialog', { name: 'Add a machine' })) as HTMLElement
+    expect(within(dialog).getByRole('heading', { name: 'What is it for?' })).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: /Lending the hub its models/ }))
+    expect((await within(dialog).findByText('curl https://hub.test/install | sh')).tagName).toBe('PRE')
+    expect(within(dialog).getByRole('region', { name: 'Machines that linked' })).toBeTruthy()
+  })
+
+  it('sends a machine with code on it to the Agents page, as a link', async () => {
+    brain()
+    fireEvent.click(await screen.findByRole('button', { name: 'Add' }))
+    const dialog = (await screen.findByRole('dialog', { name: 'Add a machine' })) as HTMLElement
+    fireEvent.click(within(dialog).getByRole('button', { name: /Working on your code too/ }))
+    expect(await within(dialog).findByRole('heading', { name: 'Add it from the Agents page' })).toBeTruthy()
+    expect(within(dialog).getByRole('link', { name: 'Go to Agents' }).getAttribute('href')).toBe('#/agents')
   })
 })

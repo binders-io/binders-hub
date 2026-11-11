@@ -1,0 +1,52 @@
+/* ---------- What the Brain drafted for a card that waits on you (under its row; a group of such cards is one row) ---------- */
+ul.waiting > li { min-width: 0; }
+.first { display: grid; gap: var(--space-8); min-width: 0; box-sizing: border-box; margin: var(--space-4) 0 0 var(--space-12); padding: 10px var(--space-12); border-radius: var(--r); border: 1px solid var(--violet-line); background: var(--violet-wash); color: var(--text); font-size: var(--font-13); font-weight: 400; line-height: 1.45; overflow-wrap: anywhere; }
+.first p, .first ul, .first small { margin: 0; padding: 0; font-weight: 400; }
+.first-label { display: flex; align-items: center; gap: 6px; font-size: var(--font-12); line-height: var(--leading-12); font-weight: 700; color: var(--violet); }
+.first-label svg, .first-line svg { flex: none; }
+.first-words { color: var(--text-2); white-space: pre-wrap; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.first-words.open { display: block; -webkit-line-clamp: unset; overflow: visible; }
+.first-more { justify-self: start; padding: 2px 0; font-size: 12px; font-weight: 700; color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
+.first-more:hover { color: var(--text); }
+.first-from { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-size: 12px; color: var(--muted); }
+.first-from ul { display: flex; flex-wrap: wrap; gap: 2px 10px; list-style: none; min-width: 0; }
+.first-from li { min-width: 0; }
+.first-from a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+.first-from a:hover { color: var(--violet); }
+.first-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.first-actions .button { white-space: normal; height: auto; min-height: 32px; padding-block: 5px; }
+.first-edit { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px 10px; border-radius: var(--r-sm); border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font: inherit; font-size: 13px; line-height: 1.45; resize: vertical; overflow-wrap: anywhere; }
+.first-edit:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; border-color: var(--text); }
+.first-edit:disabled { opacity: 0.6; }
+.first-again .first-line, .first-yours .first-line { display: flex; align-items: baseline; gap: 6px; color: var(--text-2); }
+.first-again .first-line svg { margin-top: 3px; color: var(--violet); }
+.first-yours { border-color: var(--line); background: var(--fill-1); }
+.first-yours .first-line { font-style: italic; color: var(--muted); }
+.first-sent { font-size: 12px; font-weight: 700; color: var(--green); }
+.first-error { font-size: 12.5px; font-weight: 700; color: var(--red); }
+li.first-group { display: grid; gap: 8px; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--fill-1); }
+.first-group > .first { margin-left: 0; }
+.first-group-head { display: flex; gap: 9px; min-width: 0; }
+.first-group-head svg { flex: none; margin-top: 2px; }
+.first-group-head > span { display: grid; min-width: 0; }
+.first-group-head b { font-size: 13px; overflow-wrap: anywhere; }
+.first-group-head em { font-style: normal; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.first-answer-all { margin: 0; padding: 0; border: 0; background: none; }
+.first-stop { display: grid; gap: 6px; justify-items: start; }
+.first-stop small { font-size: 11.5px; color: var(--muted); }
+.first-stop .confirm-button.sure { height: auto; min-height: 32px; padding: 6px 10px; white-space: normal; text-align: left; line-height: 1.25; }
+.first-cards > summary { display: flex; align-items: center; gap: 6px; padding: 4px 0; cursor: pointer; list-style: none; font: 700 12.5px/1.2 var(--body); color: var(--muted); }
+.first-cards > summary::-webkit-details-marker { display: none; }
+.first-cards > summary svg { flex: none; transition: transform 0.15s; }
+.first-cards[open] > summary svg { transform: rotate(90deg); }
+.first-cards > summary:focus-visible, .first-more:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; border-radius: 4px; }
+.first-cards[open] > summary { margin-bottom: 6px; }
+ul.waiting.first-inner { background: none; color: var(--text); font-size: 13px; font-weight: 400; padding: 0; border-radius: 0; }
+@media (max-width: 900px), (hover: none) {
+  .first-actions .button, .first-cards > summary, .first-more { min-height: 40px; }
+  .first-more { padding-inline: 4px; }
+  .first-from a { display: inline-flex; align-items: center; min-height: 40px; }
+  .first-edit { font-size: 16px; }
+}
+@media (prefers-reduced-motion: reduce) { .first-cards > summary svg { transition: none; } }
+

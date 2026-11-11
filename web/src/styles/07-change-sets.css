@@ -1,0 +1,92 @@
+/* ---------- Change sets ---------- */
+.changes { display: grid; grid-template-columns: 300px minmax(0, 1fr); height: 100%; }
+.changes-empty { height: 100%; display: grid; place-items: center; padding: var(--space-24); overflow-y: auto; }
+.changes-empty .empty-state-title { font-family: var(--display); font-size: var(--font-16); line-height: var(--leading-16); }
+
+/* The sets, a row each with how it stands, the one open marked. */
+.set-list { padding: var(--space-24) var(--space-12); border-right: 1px solid var(--line); overflow-y: auto; }
+.set-list .rows { border: 0; border-radius: 0; background: none; box-shadow: none; display: grid; gap: 2px; }
+.set-list .rows-item + .rows-item { border-top: 0; }
+.set-list .rows-main { min-height: 56px; padding: var(--space-8) 10px; border-radius: var(--r); }
+.set-list .rows-item.current .rows-main { background: var(--fill-2); box-shadow: none; }
+.set-icon { display: grid; place-items: center; width: 100%; height: 100%; color: var(--muted); }
+.set-icon.review { color: var(--amber); }
+.set-icon.merging, .set-icon.merged { color: var(--blue); }
+.set-icon.shipped { color: var(--green); }
+
+/* A set: what it is and its one decision, then its pull requests, debrief and Challenge, a tab each. */
+.set { overflow-y: auto; min-width: 0; padding: var(--space-32) clamp(var(--space-16), 3vw, 40px) var(--space-48); }
+.set-page { width: min(960px, 100%); margin-inline: auto; }
+.set-back { display: inline-flex; align-items: center; gap: 6px; margin-bottom: var(--space-12); font: 600 var(--font-13)/1 var(--body); color: var(--muted); text-decoration: none; }
+.set-back:hover { color: var(--text); }
+.set-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-16) var(--space-24); flex-wrap: wrap; }
+.set-head-text { flex: 1 1 420px; min-width: 0; display: grid; gap: var(--space-8); }
+.set-head h2 { margin: 0; font: 800 var(--font-26)/var(--leading-26) var(--display); letter-spacing: -0.02em; text-wrap: balance; overflow-wrap: anywhere; }
+.set-summary { margin: 0; max-width: 64ch; color: var(--muted); font-size: var(--font-14); line-height: var(--leading-14); }
+.set-meta { display: flex; align-items: center; gap: var(--space-8) var(--space-12); flex-wrap: wrap; margin-top: var(--space-4); font-size: var(--font-13); color: var(--muted); }
+.set-meta a { color: var(--text); text-decoration: none; }
+.set-meta a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.set-meta .repo-tag { font-size: var(--font-12); padding: 2px 7px; color: var(--text-2); }
+.plus { color: var(--green); }
+.minus { color: var(--red); }
+.approve { flex: none; display: grid; justify-items: end; gap: var(--space-8); max-width: 300px; }
+.approve-note { font-size: var(--font-12); line-height: var(--leading-12); color: var(--muted); text-align: right; }
+.approve-note.done { display: inline-flex; align-items: center; gap: 6px; color: var(--green); font-weight: 700; font-size: var(--font-13); }
+.set-tabs { margin-top: var(--space-24); }
+.set-tab-note { padding: 2px 7px; border-radius: var(--r-pill); background: var(--fill-2); font: 600 var(--font-12)/var(--leading-12) var(--body); color: var(--muted); }
+.set-tab-note.busy { background: var(--blue-wash); color: var(--blue); }
+.set-tab-note.bad { background: var(--red-wash); color: var(--red); }
+.set-panel { padding-top: var(--space-24); }
+.set-panel > .work-section:first-child { margin-top: 0; }
+.set-foot { margin-top: var(--space-32); padding-top: var(--space-16); border-top: 1px solid var(--line); }
+.set-foot .confirm-detail { margin: var(--space-8) 0 0; font-size: var(--font-12); color: var(--muted); }
+
+/* The pull requests as a stack, in the order they merge: a numbered rail beside them, joined from one to the next. */
+.stack { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-16); }
+.stack-item { position: relative; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: var(--space-12); min-width: 0; }
+.stack-item:not(.last)::before { content: ""; position: absolute; left: 13px; top: 42px; bottom: -30px; width: 2px; border-radius: 1px; background: var(--line-strong); }
+.stack-order { position: relative; z-index: 1; display: grid; place-items: center; width: 28px; height: 28px; margin-top: 14px; border-radius: 50%; border: 1.5px solid var(--line-strong); background: var(--bg); font: 700 var(--font-12)/1 var(--body); color: var(--text-2); }
+.stack-item.merged .stack-order { border-color: var(--violet-line); background: var(--violet-wash); color: var(--violet); }
+.stack-item.merged:not(.last)::before { background: var(--violet-line); }
+.stack-item.conflicts .stack-order { border-color: var(--red); color: var(--red); }
+.stack-empty { border-radius: var(--r-lg); border: 1px dashed var(--line); }
+.pull { min-width: 0; border-radius: var(--r-lg); background: var(--tile); box-shadow: var(--tile-shadow); border: 1px solid var(--line); overflow: hidden; transition: border-color var(--dur-slow); }
+.pull.merged { border-color: var(--violet-line); }
+.pull-head { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto auto; align-items: start; gap: 6px var(--space-12); padding: 14px var(--space-12) 14px var(--space-16); }
+.pull-head > .avatar { margin-top: 1px; }
+.pull-title { display: grid; gap: var(--space-4); min-width: 0; }
+.pull-title b { font: 700 var(--font-14)/var(--leading-14) var(--body); overflow-wrap: anywhere; }
+.pull-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4) var(--space-12); font-size: var(--font-12); line-height: var(--leading-12); color: var(--muted); }
+.pull-line .mono { font-size: var(--font-12); }
+.pull-line a { color: var(--text-2); text-decoration: none; }
+.pull-line a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.pull-branch { display: inline-flex; align-items: center; gap: var(--space-4); min-width: 0; overflow-wrap: anywhere; }
+.pull-toggle { margin: -4px -4px 0 0; }
+.pull-checks { grid-column: 2 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: var(--space-4); }
+.check-pill { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 var(--space-8); border-radius: var(--r-pill); font: 600 var(--font-12)/1 var(--mono); background: var(--fill-2); color: var(--muted); }
+.check-pill.passed { background: var(--green-wash); color: var(--text-2); }
+.check-pill.running { background: var(--blue-wash); color: var(--blue); }
+.check-pill.failed { background: var(--red-wash); color: var(--red); }
+.pull-size { margin-left: auto; font-size: var(--font-12); color: var(--muted); }
+.pull-state { display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: var(--r-pill); background: var(--fill-2); font: 600 var(--font-12)/1 var(--body); color: var(--muted); white-space: nowrap; }
+.pull-state.approved { color: var(--green); background: var(--green-wash); }
+.pull-state.queued { color: var(--blue); background: var(--blue-wash); }
+.pull-state.merged { color: var(--violet); background: var(--violet-wash); }
+
+/* A diff: a file's name and counts, then its lines, which scroll sideways inside the file and nowhere else. */
+.file { border-top: 1px solid var(--line); min-width: 0; }
+.file-head { display: flex; justify-content: space-between; gap: var(--space-12); padding: var(--space-8) var(--space-16); font-size: var(--font-12); line-height: var(--leading-12); color: var(--text-2); background: var(--fill-1); border-bottom: 1px solid var(--line); }
+.file-head > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.file-head .num { flex: none; }
+.diff { padding: 6px 0 10px; font-size: var(--font-12); line-height: 20px; overflow-x: auto; overscroll-behavior-x: contain; }
+.d-line { display: flex; min-width: max-content; padding-right: var(--space-16); }
+.d-sign { width: 32px; flex: none; text-align: center; color: var(--faint); user-select: none; }
+.d-text { white-space: pre; color: var(--text-2); }
+.d-line.add { background: var(--add-bg); }
+.d-line.add .d-sign, .d-line.add .d-text { color: var(--add-ink); }
+.d-line.del { background: var(--del-bg); }
+.d-line.del .d-sign, .d-line.del .d-text { color: var(--del-ink); }
+.d-line.hunk { margin: 4px 0 2px; background: var(--fill-1); }
+.d-line.hunk .d-text { color: var(--muted); }
+.file-empty { padding: var(--space-12) var(--space-16); border-top: 1px solid var(--line); font-size: var(--font-13); color: var(--muted); }
+.file-failed { color: var(--text); }

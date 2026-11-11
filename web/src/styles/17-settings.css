@@ -1,0 +1,94 @@
+/* Settings: its sections in two groups at the left, and the one open in a pane that starts as every page does. */
+.settings-layout { height: 100%; display: grid; grid-template-columns: 232px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); overflow: hidden; }
+.settings-nav { display: grid; align-content: start; gap: var(--space-24); padding: var(--space-24) var(--space-12) var(--space-48); border-right: 1px solid var(--line); overflow-y: auto; }
+.settings-group { display: grid; gap: var(--space-4); min-width: 0; }
+.settings-group-head { display: grid; gap: 2px; padding: 0 var(--space-8) var(--space-4); min-width: 0; }
+.settings-group-title { margin: 0; font: 600 var(--font-12)/var(--leading-12) var(--body); color: var(--muted); }
+.settings-group-sub { margin: 0; font-size: var(--font-12); line-height: var(--leading-12); color: var(--faint); overflow-wrap: anywhere; }
+.settings-group-links { display: grid; gap: 2px; min-width: 0; }
+.settings-nav a { position: relative; display: flex; align-items: center; gap: var(--space-8); min-height: 34px; padding: 0 var(--space-8); border-radius: var(--r-sm); font: 600 var(--font-14)/var(--leading-14) var(--body); color: var(--muted); text-align: left; text-decoration: none; transition: background var(--dur-fast), color var(--dur-fast); }
+.settings-nav a:hover { background: var(--fill-1); color: var(--text); }
+.settings-nav a.on { background: var(--fill-2); color: var(--text); }
+.settings-nav-icon { flex: none; display: grid; place-items: center; width: 20px; height: 20px; color: var(--faint); transition: color var(--dur-fast); }
+.settings-nav a:hover .settings-nav-icon, .settings-nav a.on .settings-nav-icon { color: var(--text); }
+.settings-nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-warn { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--amber); }
+.settings-chevron { flex: none; color: var(--faint); }
+
+/* A phone: the sections as two cards of rows, a thumb's height each, or one section with the way back above its name. */
+.settings-layout.phone { grid-template-columns: minmax(0, 1fr); }
+.settings-layout.phone .settings-nav { border-right: 0; padding: var(--space-24) var(--space-16) var(--space-48); }
+.settings-layout.phone .settings-group { gap: var(--space-8); }
+.settings-layout.phone .settings-group-head { display: flex; flex-wrap: wrap; gap: 0 6px; padding: 0 var(--space-4); }
+.settings-layout.phone .settings-group-title { font-size: var(--font-13); line-height: var(--leading-13); }
+.settings-layout.phone .settings-group-sub { font-size: var(--font-13); line-height: var(--leading-13); }
+.settings-layout.phone .settings-group-sub::before { content: "· "; }
+.settings-layout.phone .settings-group-links { gap: 0; border-radius: var(--r-lg); border: 1px solid var(--line); background: var(--tile); box-shadow: var(--tile-shadow); overflow: clip; }
+.settings-layout.phone .settings-nav a { gap: var(--space-12); min-height: 52px; padding: 0 var(--space-12); border-radius: 0; color: var(--text); }
+.settings-layout.phone .settings-nav a + a { border-top: 1px solid var(--line); }
+.settings-layout.phone .settings-nav a:hover { background: var(--row-hover); }
+.settings-layout.phone .settings-nav a:active { background: var(--fill-2); }
+.settings-layout.phone .settings-nav-icon { width: 30px; height: 30px; border-radius: var(--r-sm); background: var(--fill-2); color: var(--text-2); }
+.settings-layout.phone .settings-nav a:focus-visible { outline-offset: -2px; }
+
+/* The pane: the page's own padding and column, so a table's header sticks to its scroll. */
+.settings-pane { min-height: 0; animation: pane-in var(--dur) var(--ease-out); }
+@keyframes pane-in { from { opacity: 0; transform: translateY(4px); } }
+@media (prefers-reduced-motion: reduce) { .settings-pane { animation: none; } }
+.settings-head { display: grid; gap: var(--space-8); min-width: 0; }
+.settings-head > .disclosure { margin-top: calc(-1 * var(--space-4)); }
+.settings-back { display: inline-flex; align-items: center; gap: 2px; width: fit-content; min-height: 36px; margin: calc(-1 * var(--space-8)) 0 var(--space-4) calc(-1 * var(--space-8)); padding: 0 var(--space-12) 0 var(--space-4); border-radius: var(--r-sm); font: 600 var(--font-14)/1 var(--body); color: var(--muted); text-decoration: none; }
+.settings-back:hover { background: var(--fill-1); color: var(--text); }
+/* A section's main action, drawn into the header. With none, the header has no place for one. */
+.settings-action-place { display: flex; gap: var(--space-8); }
+.page-action:has(> .settings-action-place:empty) { display: none; }
+@media (max-width: 600px) { .settings-action-place > * { flex: 1; } }
+/* A section shown outside Settings keeps its action at its top. */
+.settings-own-action { display: flex; justify-content: flex-end; }
+
+/* A section a person can't change: greyed, and out of the Tab order, under the line that says who can. */
+.settings-changeable { display: grid; gap: var(--space-16); min-width: 0; margin: 0; padding: 0; border: 0; }
+.settings-changeable:disabled { opacity: 0.55; }
+.settings-changeable:empty { display: none; }
+/* Who can change it, or that it has no owner: a line with its sign, not another box. */
+.settings-note { display: flex; align-items: flex-start; gap: var(--space-8); margin: 0; font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); }
+.settings-note > svg { flex: none; margin-top: 2px; color: var(--faint); }
+.settings-note > p { margin: 0; }
+.settings-note.warn { padding: var(--space-12) var(--space-16); border-radius: var(--r); border: 1px solid var(--amber-line); background: var(--amber-wash); color: var(--text-2); }
+.settings-note.warn > svg { color: var(--amber); }
+.field-head { display: flex; align-items: center; gap: var(--space-8); }
+.setup-warning { display: flex; gap: var(--space-8); align-items: flex-start; margin: 0; padding: var(--space-12) var(--space-16); border-radius: var(--r); background: var(--amber-wash); border: 1px solid var(--amber-line); font-size: var(--font-13); line-height: var(--leading-13); color: var(--text); }
+.setup-warning svg { flex: none; margin-top: 2px; color: var(--amber); }
+
+/* Classes other sections share: a card, a row of a person or an app, a binder's tag, a list of how things stand. */
+.settings-card { padding: var(--space-16); border-radius: var(--r-lg); border: 1px solid var(--line); background: var(--tile); box-shadow: var(--tile-shadow); }
+.me-row { display: flex; align-items: center; gap: var(--space-12); }
+.me-row div { flex: 1; display: grid; gap: 2px; justify-items: start; }
+.me-row b { font-size: var(--font-14); }
+.app-tokens { display: grid; gap: var(--space-12); }
+.app-tokens h3 { margin: 0; font: 800 var(--font-16)/var(--leading-16) var(--display); letter-spacing: -0.005em; }
+.app-tokens p { margin: 0; font-size: var(--font-13); line-height: var(--leading-13); }
+.app-tokens > p.faint { margin-top: calc(-1 * var(--space-8)); color: var(--muted); }
+.app-tokens .status-list li { align-items: center; }
+.app-tokens .status-list li div { flex: 1; }
+.row-title { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px var(--space-8); min-width: 0; }
+.rows-title > .row-title { flex-wrap: nowrap; max-width: 100%; }
+.binder-tag { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 1px 8px 1px 2px; border-radius: var(--r-pill); background: var(--fill-3); color: var(--text-2); font: 600 var(--font-12)/1.5 var(--body); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.binder-tag i { flex: none; display: grid; place-items: center; width: 16px; height: 16px; border-radius: var(--r-pill); background: var(--surface); font: 800 10px/1 var(--display); font-style: normal; }
+.status-list li .row-title { color: inherit; }
+.status-list li .binder-tag { color: var(--text-2); }
+.binder-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-8); }
+.binder-cards li { display: grid; gap: var(--space-8); }
+.binder-card-head { display: flex; align-items: center; gap: var(--space-8); }
+.tag.warn { background: var(--amber-wash); border: 1px solid var(--amber-line); color: var(--text); }
+.status-list { list-style: none; margin: 0; padding: 0; display: grid; border-radius: var(--r-lg); border: 1px solid var(--line); background: var(--tile); box-shadow: var(--tile-shadow); overflow: clip; }
+.status-list li { display: flex; align-items: flex-start; gap: var(--space-12); padding: var(--space-12) var(--space-16); border-top: 1px solid var(--line); }
+.status-list li:first-child { border-top: 0; }
+.status-list li div { display: grid; gap: 2px; min-width: 0; font-size: var(--font-13); line-height: var(--leading-13); }
+.status-list li b { font-size: var(--font-14); line-height: var(--leading-14); font-weight: 600; }
+.status-list li > div + a.button { margin-left: auto; }
+.status-list li span { color: var(--muted); }
+.status-icon { display: grid; place-items: center; width: 20px; height: 20px; flex: none; border-radius: 50%; background: var(--fill-2); color: var(--faint); margin-top: 1px; }
+.status-list li.ok .status-icon { background: var(--green-wash); color: var(--green); }
+.copy-rows { display: grid; gap: var(--space-12); }
+.copy-row { display: grid; gap: 6px; }

@@ -3,8 +3,10 @@ import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mount, standInHub } from './harness'
 import { Settings } from '../src/screens/Settings'
+import { ContextMenuHost } from '../src/components/ContextMenu'
 
-// Connecting to Jira fills the mapping in from what Jira has, for a person to check and save.
+// Connecting to Jira is a guided dialog that fills the mapping in from what Jira has, for a person to check and save;
+// once connected, a summary to change it from.
 
 const story = {
   name: 'Story',
@@ -41,26 +43,41 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+const next = () => fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+const back = () => fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+
 describe('connecting a binder to Jira', () => {
-  it('fills in the project, the types and the stages from Jira, and saves what it shows', async () => {
+  it('is a guided dialog: where, who, then the project and how it maps, filled in from Jira, and saves what it shows', async () => {
     const sent = jiraAnswering(fresh)
     await mount(<Settings />)
-    fireEvent.change(await screen.findByPlaceholderText('https://yourcompany.atlassian.net'), { target: { value: 'https://acme.atlassian.net' } })
+    fireEvent.click(await screen.findByRole('button', { name: /Connect to Jira/ }))
+    expect(await screen.findByRole('heading', { name: 'Where is your Jira?' })).toBeTruthy()
+    fireEvent.change(screen.getByPlaceholderText('https://yourcompany.atlassian.net'), { target: { value: 'https://acme.atlassian.net' } })
+    next()
+    expect(await screen.findByRole('heading', { name: 'Who signs in?' })).toBeTruthy()
     fireEvent.change(screen.getByPlaceholderText('its email'), { target: { value: 'saver@acme.test' } })
     fireEvent.change(screen.getByPlaceholderText('The token'), { target: { value: 'tok' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Connect to Jira' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
     await screen.findByText('Connected as Binders Saver.')
+    expect(screen.getByRole('heading', { name: 'Which project?' })).toBeTruthy()
     await waitFor(() => expect(value('jira-project')).toBe('BIND'))
     expect(value('jira-note-type')).toBe('Epic')
     expect(value('jira-card-type')).toBe('Story')
+    next()
+    expect(await screen.findByRole('heading', { name: 'How it maps' })).toBeTruthy()
     expect(value('jira-stage-working')).toBe('Building')
     expect(value('jira-stage-blocked')).toBe('')
     expect(value('jira-sprint-board')).toBe('9')
     screen.getByText(/Nothing in this workflow looks like blocked/)
 
+    // Another card type fills the stages in from its own workflow.
+    back()
     fireEvent.change(document.getElementById('jira-card-type')!, { target: { value: 'Task' } })
+    next()
     expect(value('jira-stage-ready')).toBe('Open')
+    back()
     fireEvent.change(document.getElementById('jira-card-type')!, { target: { value: 'Story' } })
+    next()
     fireEvent.change(document.getElementById('jira-points-field')!, { target: { value: 'customfield_10600' } })
     expect(value('jira-points-M')).toBe('M')
     fireEvent.change(document.getElementById('jira-points-M')!, { target: { value: 'Medium' } })
@@ -68,16 +85,33 @@ describe('connecting a binder to Jira', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(sent.some((s) => s.method === 'PUT')).toBe(true))
     expect(sent.find((s) => s.method === 'PUT')!.body).toMatchObject({ project: 'BIND', issueType: 'Story', noteIssueType: 'Epic', statuses: story.suggested.statuses, sprintBoard: 9, pointsField: 'customfield_10600', pointsKind: 'option', points: { S: 'S', M: 'Medium', L: 'L' } })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
 
-  it('leaves a saved mapping as it is on opening, until a person asks Jira to fill it in again', async () => {
+  it('once connected, sums it up, and leaves a saved mapping as it is until a person asks Jira to fill it in again', async () => {
     jiraAnswering({ ...fresh, on: true, baseUrl: 'https://acme.atlassian.net', email: 'saver@acme.test', tokenSet: true, hint: '…ok', project: 'BIND', issueType: 'Story', statuses: { ready: 'Retired status' } })
     await mount(<Settings />)
+    const connection = await screen.findByRole('button', { name: /^BIND on acme\.atlassian\.net/ })
+    expect(connection.textContent).toContain('Signed in as saver@acme.test')
+    expect(connection.textContent).toContain('Connected')
+    fireEvent.click(screen.getByRole('button', { name: /^How it maps/ }))
     await screen.findByText('Connected as Binders Saver.')
     expect(value('jira-note-type')).toBe('')
+    next()
     expect(value('jira-stage-ready')).toBe('Retired status')
     fireEvent.click(screen.getByRole('button', { name: 'Fill in from Jira again' }))
-    expect(value('jira-note-type')).toBe('Epic')
     expect(value('jira-stage-ready')).toBe('Backlog')
+    back()
+    expect(value('jira-note-type')).toBe('Epic')
+  })
+
+  it('disconnects from the connection’s menu, after asking', async () => {
+    const sent = jiraAnswering({ ...fresh, on: true, baseUrl: 'https://acme.atlassian.net', email: 'saver@acme.test', tokenSet: true, project: 'BIND', issueType: 'Story', statuses: {} })
+    await mount(<><Settings /><ContextMenuHost /></>)
+    fireEvent.click(await screen.findByRole('button', { name: 'More for Jira' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Disconnect' }))
+    expect(sent.some((s) => s.method === 'DELETE')).toBe(false)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Disconnect? Press again' }))
+    await waitFor(() => expect(sent.some((s) => s.method === 'DELETE' && s.url === '/api/jira')).toBe(true))
   })
 })

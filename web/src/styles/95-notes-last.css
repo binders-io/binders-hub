@@ -1,0 +1,16 @@
+/* ---------- Home, the Brain and notes, last: rules that change what another file says, and what's new. ---------- */
+
+/* Mermaid lays a drawing out by measuring it as it goes. The rule for less motion (index.css) gives every element a short
+   transition, so a node it has just moved still reads as where it was, and the drawing comes out scattered over a huge,
+   empty canvas, with its words squashed. Its working copy and what it draws take no transition at all. */
+@media (prefers-reduced-motion: reduce) {
+  [id^="dmermaid-"], [id^="dmermaid-"] *, svg[id^="mermaid-"], svg[id^="mermaid-"] * { transition: none !important; }
+}
+
+/* A notes screen with no note to show: the kit's empty state, in the room beside the list. */
+.notes-empty { display: grid; place-items: center; align-content: center; min-width: 0; min-height: 0; padding: var(--space-48) var(--space-24); overflow-y: auto; }
+@media (min-width: 901px) { .notes.empty > .notes-empty { grid-column: 2 / -1; } }
+.notes-opening { margin: 0; color: var(--muted); font-size: var(--font-13); }
+/* A note on its way: its shape while the words come, or why they didn't. */
+.note-loading { display: grid; gap: var(--space-16); padding-top: var(--space-8); }
+.note-loading .empty-state { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--tile); }

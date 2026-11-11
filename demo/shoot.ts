@@ -27,6 +27,8 @@ interface Shot {
   ready: string
   /** The tab to open first, on a change set. */
   tab?: string
+  /** Pressed first, once it's on the screen: a row that opens a dialog. */
+  press?: string
   /** Scrolled to, to the top of the screen. */
   scroll?: string
 }
@@ -60,7 +62,8 @@ const kinds: Record<'site' | 'film', Kind> = {
       { name: 'test-plan', hash: `#/changes/${demoIds.set}`, ready: '#test-plan .test', tab: 'set-tab-debrief', scroll: '#test-plan' },
       { name: 'delivery', hash: '#/delivery', ready: '.envs .env' },
       { name: 'agents', hash: '#/agents', ready: '.agent-card' },
-      { name: 'briefs', hash: '#/settings', ready: '.brief-card' },
+      // A repo's brief is in its dialog, opened from the repos' table in Settings → GitHub.
+      { name: 'briefs', hash: '#/settings/github', press: 'button[aria-label="Open example/api"]', ready: '.dialog .brief-card' },
     ],
   },
 }
@@ -136,16 +139,16 @@ async function main(folder: string | undefined, which = 'site', only?: string) {
         elsewhere.push(asked)
         return route.abort()
       })
-      // A note opens on Distill and Settings on Repo briefs, as someone who'd been there last would see them.
+      // A note opens on Distill, as someone who'd been there last would see it.
       await context.addInitScript(() => {
         localStorage.setItem('binders-note-side', 'distill')
-        localStorage.setItem('binders-settings-part', 'briefs')
       })
       await signIn(context, hub.url)
       const page = await context.newPage()
       for (const shot of shots) {
         await page.goto(`${hub.binder}${shot.hash}`)
         if (shot.tab) await page.locator(`#${shot.tab}`).click()
+        if (shot.press) await page.locator(shot.press).first().click()
         await page.locator(shot.ready).first().waitFor()
         if (shot.scroll) await page.locator(shot.scroll).first().evaluate((element) => element.scrollIntoView({ block: 'start' }))
         await page.evaluate(() => document.fonts.ready)

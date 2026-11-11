@@ -97,8 +97,9 @@ describe('deleting a note or a folder', () => {
   it('says nothing of the kind for a folder, which isn’t kept', async () => {
     standInHub(tree)
     await opened()
-    fireEvent.click(screen.getByRole('button', { name: 'Delete Plans' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Delete? Press again' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Plans' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete it? What’s in it moves up' }))
     await waitFor(() => expect(calledOn()).toContain('POST /api/changes'))
     expect(toasted()).toBeUndefined()
   })
@@ -148,6 +149,20 @@ describe('Settings → History', () => {
     ])
     expect(first.querySelector('time')?.getAttribute('datetime')).toBe(line(1).at)
     expect(screen.queryByRole('button', { name: 'Show older' })).toBeNull()
+  })
+
+  it('puts each line under its day, the newest first, with its time beside who did it', async () => {
+    const now = new Date()
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 30).toISOString()
+    const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 16, 5).toISOString()
+    const before = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 9, 11, 0).toISOString()
+    withHistory(() => ({ lines: [{ at: today, by: 'ana', text: 'This morning.' }, { at: yesterday, by: 'cy', text: 'Yesterday’s.' }, { at: before, by: 'hub', text: 'Last week’s.' }], more: false }), () => [])
+    await open()
+    await screen.findByText('This morning.')
+    const days = [...document.querySelectorAll('.timeline-day')] as HTMLElement[]
+    expect(days.map((d) => d.querySelector('h4')!.textContent)).toEqual(['Today', 'Yesterday', new Date(before).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', ...(new Date(before).getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) })])
+    expect(within(days[1]).getByText('Yesterday’s.')).toBeTruthy()
+    expect(days[0].querySelector('time')!.textContent).toBe(new Date(today).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }))
   })
 
   it('shows only one person’s when asked, and everyone’s again', async () => {
@@ -252,6 +267,6 @@ describe('Settings → History', () => {
     }))
     await open()
     await screen.findByText('Note n1')
-    expect(document.querySelector('.trash-what span')?.textContent).toMatch(/^Note in Docs, deleted by ana/)
+    expect(document.querySelector('.trash-list .rows-meta')?.textContent).toMatch(/^Note in Docs, deleted by ana/)
   })
 })

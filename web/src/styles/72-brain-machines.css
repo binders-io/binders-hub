@@ -1,0 +1,21 @@
+/* Settings → Brain: sections of rows, one card each, with what's open in a dialog. */
+.brain-settings, .hub-options { display: grid; gap: var(--space-32); min-width: 0; }
+.settings-wait { padding: var(--space-16); border-radius: var(--r-lg); border: 1px solid var(--line); background: var(--tile); }
+.settings-failed { border-radius: var(--r-lg); border: 1px dashed var(--line-strong); }
+.brain-read p { margin: 0; font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); }
+
+/* One of your machines, in its dialog. */
+.machine-facts { margin: 0; display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: var(--space-12); align-items: baseline; font-size: var(--font-14); line-height: var(--leading-14); }
+.machine-facts dt { color: var(--muted); font-size: var(--font-13); }
+.machine-facts dd { margin: 0; min-width: 0; color: var(--text-2); overflow-wrap: anywhere; }
+.machine-servers { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-4); }
+.machine-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--fill-3); }
+.machine-dot.on { background: var(--green); }
+
+/* A download for a job: how far it's got. */
+.model-download { display: grid; gap: 6px; }
+.model-download .option-status svg { vertical-align: -1px; margin-right: 3px; }
+.model-download .progress { width: 100%; }
+.model-download .progress span { display: block; height: 100%; border-radius: inherit; background: var(--green); transition: width 0.4s ease; }
+@media (prefers-reduced-motion: reduce) { .model-download .progress span { transition: none; } }
+@media (max-width: 600px) { .machine-facts { grid-template-columns: minmax(0, 1fr); gap: 2px; } .machine-facts dd + dt { margin-top: var(--space-8); } }

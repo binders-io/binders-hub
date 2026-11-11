@@ -50,8 +50,8 @@ your own machines, where your code is: the hub only hands them work.
    back), install it on your repos, and sign in with GitHub. Then give your binder its repo, also in Settings → GitHub.
    See [Connect GitHub](#connect-github).
 
-5. **Add a machine**, in Agents: it shows one line to run in the folder with your code, on each machine that should
-   take cards. The hub finds the agent tool installed there, makes the agent and starts the
+5. **Add an agent**, in Agents, and choose a machine with your code on it: it shows one line to run in the folder with
+   your code, on each machine that should take cards. The hub finds the agent tool installed there, makes the agent and starts the
    [runner](#the-runner-agents-that-take-work-on-their-own), which takes cards with Claude Code, Codex or another tool.
    To set an agent up by hand instead, see the runner's section.
 
@@ -270,8 +270,8 @@ reaches the hub again, it gives back any card the hub says its agent holds and i
 that died), unless another runner works as the same agent. A card whose run fails twice in a row isn't taken a third
 time: it waits in Blocked with why.
 
-**Add a machine.** The Agents page leads with it. It shows one line to run in the folder with your code, on each machine
-that should take cards, and says how long it's good for: a day, on as many machines as you like. On macOS or Linux it's
+**A machine with your code on it.** **Add an agent** on the Agents page leads with it. It shows one line to run in the
+folder with your code, on each machine that should take cards, and says how long it's good for: a day, on as many machines as you like. On macOS or Linux it's
 `curl -fsSL https://your-hub/install | sh -s -- join bnj_…`, and on Windows the PowerShell form the page shows.
 `binders join` looks at the machine: which agent tools are installed (Claude Code, Codex and the others the Agents page
 lists) and which GitHub repos the folder holds. The hub chooses the tool and makes the agent, named for the tool and the
@@ -280,8 +280,8 @@ listening. The same machine running the line again is the same agent, with a fre
 machine, it says which it looked for: install one and run the line again. A hub admin's line also lends the machine's
 models to the hub's brain (see [The brain](#the-brain)).
 
-**By hand.** For a tool or a name the hub wouldn't have chosen, **Set one up by hand** on the Agents page makes an agent
-with a token, shown once. To run it in a terminal on the machine where the code is:
+**By hand.** For a tool or a name the hub wouldn't have chosen, **Add an agent** on the Agents page, then **Set one up by
+hand**, makes an agent with a token, shown once. To run it in a terminal on the machine where the code is:
 
 ```sh
 cd runner && npm install
@@ -424,7 +424,7 @@ A binder can mirror its cards into one Jira Cloud project: **Settings → Jira**
 ## Connect an agent
 
 To have agents take cards, add a machine in **Agents** (see [the runner](#the-runner-agents-that-take-work-on-their-own)). To connect an agent you
-run yourself, choose **Set one up by hand** there: it gets a token, shown once, and the settings to paste into Claude
+run yourself, choose **Add an agent**, then **Set one up by hand**, there: it gets a token, shown once, and the settings to paste into Claude
 Code, Codex, Claude Desktop or any MCP client. The agent then calls `whoami`, `wait_for_work`, `claim_task`, `report_progress`, `ask` and `complete_task` (the
 MCP server's instructions say how).
 
@@ -434,8 +434,8 @@ To try it without a real agent: `cd hub && HUB_URL=http://localhost:5173 BINDERS
 
 An agent's token is for a runner, which has no browser. A person's terminal (Claude Code, Cursor or another MCP client)
 connects as the person instead, through OAuth, so there's no one-time pad to copy and replacing an agent's token doesn't
-break it. One address serves every binder. **Add to Claude Code**, at the top of the hub (or in ⌘K), gives the command
-with the hub's address in it:
+break it. One address serves every binder. **Add an agent** on the Agents page, then **Use this hub from Claude Code** (or
+“Add the hub to Claude Code” in ⌘K, or **Connect a client** on your account page), gives the command with the hub's address in it:
 
 ```sh
 claude mcp add --transport http --scope user binders-hub https://your-hub/mcp

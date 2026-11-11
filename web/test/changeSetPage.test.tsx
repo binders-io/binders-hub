@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { hubState, mount, standInHub } from './harness'
 import { ChangeSets } from '../src/screens/ChangeSets'
@@ -62,5 +62,44 @@ describe('a link to a change set that’s gone', () => {
     cleanup()
     await open([set()])
     expect(screen.getByRole('heading', { name: /Change set #3/ })).toBeTruthy()
+  })
+})
+
+describe('on a phone', () => {
+  const phone = () => vi.stubGlobal('matchMedia', (query: string) => ({ matches: query === '(max-width: 900px)', media: query, addEventListener() {}, removeEventListener() {} }))
+
+  it('lists the sets first, each a link to its own page, and opens none of them', async () => {
+    standInHub(() => hubState({ pulls: [pull], changeSets: [set(), set({ id: 'set-2', number: 2, title: 'Older', state: 'shipped' })] }))
+    phone()
+    await mount(<UIContext.Provider value={ui}><ChangeSets id="" /></UIContext.Provider>)
+    const nav = screen.getByRole('navigation', { name: 'Change sets' })
+    expect(within(nav).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['#3 PagesWaiting on you · 1 pull request', '#/changes/set-3'],
+      ['#2 OlderShipped · 1 pull request', '#/changes/set-2'],
+    ])
+    expect(screen.queryByRole('heading', { name: /Change set #3/ })).toBeNull()
+  })
+
+  it('has a set on its own, with the way back to the list', async () => {
+    standInHub(() => hubState({ pulls: [pull], changeSets: [set()] }))
+    phone()
+    await mount(<UIContext.Provider value={ui}><ChangeSets id="set-3" /></UIContext.Provider>)
+    expect(screen.getByRole('heading', { name: /Change set #3/ })).toBeTruthy()
+    expect(screen.queryByRole('navigation', { name: 'Change sets' })).toBeNull()
+    expect(screen.getByRole('link', { name: 'All change sets' }).getAttribute('href')).toBe('#/changes')
+  })
+})
+
+describe('the tabs', () => {
+  it('move with the arrow keys, as a tab list’s do', async () => {
+    await open([set()])
+    const changes = screen.getByRole('tab', { name: /^Pull requests/ })
+    changes.focus()
+    fireEvent.keyDown(changes, { key: 'ArrowRight' })
+    expect(screen.getByRole('tab', { name: /^Debrief/ }).getAttribute('aria-selected')).toBe('true')
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: /^Debrief/ }))
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' })
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' })
+    expect(screen.getByRole('tab', { name: /^Challenge/ }).getAttribute('aria-selected')).toBe('true')
   })
 })

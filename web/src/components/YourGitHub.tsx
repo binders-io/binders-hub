@@ -6,6 +6,7 @@ import { Github } from './Github'
 import { connectHref } from '../data/space'
 import { isPersonal } from './PersonalRepo'
 import { BinderTag } from './BinderTag'
+import { Row, Rows, Section, Skeleton, Status } from '../kit'
 
 interface Project { id: string; name: string; repo?: string; access?: 'push' | 'read' | 'none' | 'unknown'; issues: boolean; notes: boolean; notesBranch: string }
 interface Link { login: string; connected: boolean; expiresAt?: string; renewsUntil?: string; projects: Project[] }
@@ -34,52 +35,45 @@ export function YourGitHub() {
   const login = state.me?.user.login ?? ''
   // The binder you're in now, whose GitHub App these connections go through: each is registered to it alone.
   const binder = state.me?.spaces.find((s) => s.id === state.me?.space)?.name ?? 'This binder'
+  const icon = (access?: Project['access'], repo?: string) => (access === 'push' ? <Check size={16} strokeWidth={2.5} /> : repo ? <X size={16} strokeWidth={2.5} /> : <Minus size={16} strokeWidth={2.5} />)
   return (
-    <section className="app-tokens your-github">
-      <h3>Your GitHub</h3>
-      <p className="faint">Signing in only tells the hub who you are. Each of these is a separate permission, for one thing.</p>
-      {hasApp && link && (
-        <div className="settings-card me-row">
-          <Github size={20} />
-          <div>
-            <span className="row-title"><b>For work in this binder’s repos{link.connected ? ` · connected as @${link.login}` : ''}</b><BinderTag name={binder} /></span>
-            <span className="faint">
-              {!link.connected ? 'Through this binder’s GitHub App, so approving, merging and agents pushing as you happen on GitHub as you. Only its organization’s members can connect.'
-                : link.renewsUntil ? `Through this binder’s GitHub App, renewed by the hub as it runs out, until ${until(link.renewsUntil)}.`
-                : link.expiresAt ? `Through this binder’s GitHub App, good until ${new Date(link.expiresAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}; connect again after.`
-                : 'Through this binder’s GitHub App.'}
-            </span>
-          </div>
-          {!link.connected
-            ? <a className="button primary" href={connectHere}><Github size={14} /> Connect</a>
-            : <a className="button" href={connectHere} title="Sign in to GitHub as the other account first (an Enterprise Managed User's, say): GitHub connects whichever account you're signed in as there.">Use another GitHub account</a>}
-        </div>
-      )}
-      {isPersonal && own?.possible && (
-        <div className="settings-card me-row">
-          <Github size={20} />
-          <div>
-            <span className="row-title"><b>For your personal binder{own.connected ? ' · connected' : ''}</b><BinderTag name={binder} /></span>
-            <span className="faint">{own.connected ? `Your own GitHub, through the hub’s OAuth App: it keeps your personal binder’s notes in ${login}/binders-notes, in your account, and is used for nothing else.` : 'Your own GitHub, through the hub’s OAuth App, so your personal binder’s notes are kept in a private repo in your own account. Used for nothing else.'}</span>
-          </div>
-          {own.connected
-            ? <button className="button" onClick={() => void call('DELETE', '/api/me/personal-github').then(() => setOwn({ ...own, connected: false }))}>Disconnect</button>
-            : <a className="button" href="/auth/github?personal=1&back=account">Connect</a>}
-        </div>
-      )}
+    <Section title="Your GitHub" lead="Signing in only tells the hub who you are. Each of these is a separate permission, for one thing." className="your-github">
+      {(hasApp && link) || (isPersonal && own?.possible) ? (
+        <Rows label="Your GitHub connections">
+          {hasApp && link && (
+            <Row icon={<Github size={16} />}
+              title={<span className="row-title">For work in this binder’s repos<BinderTag name={binder} /></span>}
+              meta={!link.connected ? 'Through this binder’s GitHub App, so approving, merging and agents pushing as you happen on GitHub as you. Only its organization’s members can connect.'
+                : link.renewsUntil ? `As @${link.login}, renewed by the hub as it runs out, until ${until(link.renewsUntil)}.`
+                : link.expiresAt ? `As @${link.login}, good until ${new Date(link.expiresAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}; connect again after.`
+                : `As @${link.login}, through this binder’s GitHub App.`}
+              status={link.connected ? <Status tone="ok">Connected</Status> : undefined}
+              trailing={!link.connected
+                ? <a className="button small primary" href={connectHere}><Github size={14} />Connect</a>
+                : <a className="button small" href={connectHere} title="Sign in to GitHub as the other account first (an Enterprise Managed User’s, say): GitHub connects whichever account you’re signed in as there.">Use another account</a>} />
+          )}
+          {isPersonal && own?.possible && (
+            <Row icon={<Github size={16} />}
+              title={<span className="row-title">For your personal binder<BinderTag name={binder} /></span>}
+              meta={own.connected ? `Your own GitHub, through the hub’s OAuth App: it keeps your notes in ${login}/binders-notes, and is used for nothing else.` : 'Your own GitHub, through the hub’s OAuth App, so your notes are kept in a private repo in your own account. Used for nothing else.'}
+              status={own.connected ? <Status tone="ok">Connected</Status> : undefined}
+              trailing={own.connected
+                ? <button type="button" className="button small" onClick={() => void call('DELETE', '/api/me/personal-github').then(() => setOwn({ ...own, connected: false }))}>Disconnect</button>
+                : <a className="button small" href="/auth/github?personal=1&back=account">Connect</a>} />
+          )}
+        </Rows>
+      ) : null}
       {hasApp && link && link.projects.length > 0 && (
-        <ul className="status-list">
+        <Rows label="What you may do in each repo">
           {link.projects.map((p) => (
-            <li key={p.id} className={p.access === 'push' ? 'ok' : ''}>
-              <span className="status-icon">{p.access === 'push' ? <Check size={13} strokeWidth={3} /> : p.repo ? <X size={13} strokeWidth={3} /> : <Minus size={13} strokeWidth={3} />}</span>
-              <div>
-                <span className="row-title"><b>{p.name}</b>{p.name !== binder && <BinderTag name={binder} />}</span>
-                <span>{p.repo ? <><span className="mono">{p.repo}</span> · {accessLabel[p.access ?? 'unknown']}{p.issues ? ' · cards as issues' : ''}{p.notes ? <> · notes on <span className="mono">{p.notesBranch}</span></> : ''}</> : 'No repo linked.'}</span>
-              </div>
-            </li>
+            <Row key={p.id} icon={icon(p.access, p.repo)}
+              title={<span className="row-title">{p.name}{p.name !== binder && <BinderTag name={binder} />}</span>}
+              meta={p.repo ? `${p.repo} · ${accessLabel[p.access ?? 'unknown']}${p.issues ? ' · cards as issues' : ''}${p.notes ? ` · notes on ${p.notesBranch}` : ''}` : 'No repo linked.'} />
           ))}
-        </ul>
+        </Rows>
       )}
-    </section>
+      {hasApp && !link && <div aria-busy="true"><Skeleton lines={2} /></div>}
+      {!hasApp && !(isPersonal && own?.possible) && <p className="faint">This binder has no GitHub App to connect to yet.</p>}
+    </Section>
   )
 }

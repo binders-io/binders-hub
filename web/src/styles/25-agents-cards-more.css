@@ -1,0 +1,17 @@
+/* Under Details: the rest of what an agent is set up with, a name and its words a line. */
+.agent-card .disclosure-body { max-width: none; padding: var(--space-8) 0 0; }
+.agent-details { margin: 0; display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: var(--space-8) var(--space-12); align-items: baseline; font-size: var(--font-13); line-height: var(--leading-13); }
+.agent-details dt { color: var(--muted); }
+.agent-details dd { margin: 0; min-width: 0; color: var(--text-2); overflow-wrap: anywhere; }
+.agent-details dd.mono { font-size: var(--font-12); }
+
+/* Its runner, when it isn't running or is an old one: in a line, with the way to start or update it. */
+.agent-start { display: flex; align-items: center; gap: var(--space-12); padding: var(--space-8) var(--space-8) var(--space-8) var(--space-12); border-radius: var(--r); border: 1px solid var(--line); }
+.agent-start p { flex: 1; min-width: 0; margin: 0; font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); }
+.agent-start p.runner-old { color: var(--amber); font-size: var(--font-13); }
+.agent-start .button { flex: none; }
+
+/* Its actions at the foot, as low as the card goes, so cards side by side line up. */
+.agent-card footer { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--space-8); margin-top: auto; padding-top: var(--space-12); border-top: 1px solid var(--line); }
+.agent-card-more { margin-left: auto; }
+.avatar-mark .tool-icon.initials { background: none; color: inherit; }

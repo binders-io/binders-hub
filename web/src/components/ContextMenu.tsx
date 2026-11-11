@@ -16,22 +16,30 @@ export type MenuItem =
   | { heading: string }
   | { separator: true }
 
-type Open = { x: number; y: number; items: MenuItem[]; from: Element | null }
+type Open = { x: number; y: number; items: MenuItem[]; from: Element | null; onClose?: () => void }
+
+/** Where a menu goes back to, and who wants to know it closed: a ⋯ button says whether its menu is open. */
+export interface MenuOptions {
+  from?: Element | null
+  onClose?: () => void
+}
 
 let show: ((open: Open | undefined) => void) | undefined
 
-/** Opens a menu at the right-click, in place of the browser's. */
-export function openMenu(event: { clientX: number; clientY: number; preventDefault: () => void; stopPropagation: () => void }, items: MenuItem[]) {
-  if (!items.length || !show) return
+/** Opens a menu at the right-click, in place of the browser's. Whether it opened: not with nothing in it. */
+export function openMenu(event: { clientX: number; clientY: number; preventDefault: () => void; stopPropagation: () => void }, items: MenuItem[], options: MenuOptions = {}) {
+  if (!items.length || !show) return false
   event.preventDefault()
   event.stopPropagation()
-  show({ x: event.clientX, y: event.clientY, items, from: document.activeElement })
+  show({ x: event.clientX, y: event.clientY, items, from: options.from ?? document.activeElement, onClose: options.onClose })
+  return true
 }
 
 /** Opens a menu under its ⋯: a phone has no right-click, and a keyboard shouldn't need one. */
-export function openMenuUnder(event: SyntheticEvent, items: MenuItem[]) {
+export function openMenuUnder(event: SyntheticEvent, items: MenuItem[], options: MenuOptions = {}) {
   const rect = event.currentTarget.getBoundingClientRect()
-  openMenu({ clientX: rect.right - 210, clientY: rect.bottom + 4, preventDefault: () => event.preventDefault(), stopPropagation: () => event.stopPropagation() }, items)
+  // A button pressed with a pointer isn't always focused (Safari): the menu goes back to the button all the same.
+  return openMenu({ clientX: rect.right - 210, clientY: rect.bottom + 4, preventDefault: () => event.preventDefault(), stopPropagation: () => event.stopPropagation() }, items, { from: event.currentTarget, ...options })
 }
 
 /** Back to where a menu was opened from, for a keyboard: what's chosen may then move focus on, as a rename does. */
@@ -45,6 +53,14 @@ export function ContextMenuHost() {
   const [at, setAt] = useState<{ left: number; top: number }>()
   const [sure, setSure] = useState<number>()
   const list = useRef<HTMLDivElement>(null)
+  // Told once its menu has gone, however it went: a choice, Escape, a click elsewhere, or another menu in its place.
+  // Going into a submenu and back is the same menu.
+  const told = useRef<(() => void) | undefined>(undefined)
+  useEffect(() => {
+    if (told.current && told.current !== open?.onClose) told.current()
+    told.current = open?.onClose
+  }, [open])
+  useEffect(() => () => told.current?.(), [])
 
   useEffect(() => {
     show = (next) => {

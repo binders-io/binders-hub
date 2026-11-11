@@ -1,0 +1,13 @@
+/* Starting an agent with the runner: numbered steps, the command, and the runner joining. */
+.runner-steps { list-style: none; counter-reset: step; margin: 0; padding: 0; display: grid; gap: var(--space-16); }
+.runner-steps > li { counter-increment: step; display: grid; gap: var(--space-8); padding-left: 36px; position: relative; min-width: 0; }
+.runner-steps > li::before { content: counter(step); position: absolute; left: 0; top: 0; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid var(--line-strong); font: 800 var(--font-12)/1 var(--display); color: var(--muted); }
+.runner-steps > li.done::before { content: '✓'; background: var(--green); border-color: var(--green); color: var(--bg); }
+.runner-steps h3 { margin: 2px 0 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--space-8); font: 700 var(--font-14)/var(--leading-14) var(--body); }
+.runner-steps h3 .faint { font: 400 var(--font-12)/var(--leading-12) var(--body); }
+.runner-steps p { margin: 0; font-size: var(--font-13); line-height: var(--leading-13); }
+.runner-steps > li.done h3 { color: var(--green); }
+.command { display: flex; align-items: flex-start; gap: 6px; min-width: 0; padding: 10px var(--space-8) 10px var(--space-12); border-radius: var(--r-sm); background: var(--terminal); }
+.command pre { flex: 1; min-width: 0; margin: 0; padding-top: 6px; color: #e8e6ef; font-size: var(--font-12); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.command .icon-button { flex: none; color: #a3a3a3; }
+.command .icon-button:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }

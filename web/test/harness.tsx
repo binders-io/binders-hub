@@ -1,9 +1,13 @@
-import { act, render, screen } from '@testing-library/react'
+import { act, configure, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { vi } from 'vitest'
 import { emptyState, type Change, type Entry, type HubState } from '../../shared/state.ts'
 import type { Agent, Card } from '../src/data/model'
 import { StoreProvider, useHub } from '../src/data/store'
+
+// A test that starts the app afresh (vi.resetModules) gets this file afresh too, and its own copy of the testing
+// library, so the longer wait test/setup.ts gives is given again here.
+configure({ asyncUtilTimeout: 10_000 })
 
 // The app against a hub that isn't there: its API and live feed stood in for, so a test can say what the hub has, hear
 // what it's sent, and tell the tab what happened.

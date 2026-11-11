@@ -134,23 +134,35 @@ describe('moving without dragging', () => {
 })
 
 describe('deleting a folder from the tree', () => {
-  it('asks with the shared press-again button, and deletes on the second press', async () => {
+  // A row's actions are in its ⋯ menu, which asks again before anything that can't be undone.
+  it('asks in its menu, and deletes on the second press', async () => {
     await opened()
-    const bin = screen.getByRole('button', { name: 'Delete Old' })
-    expect(bin.classList.contains('confirm-button')).toBe(true)
-    fireEvent.click(bin)
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Old' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }))
     await settle(0)
     expect(posted.flatMap((p) => p.changes).filter((c) => c.change.type === 'folder.delete')).toEqual([])
-    fireEvent.click(screen.getByRole('button', { name: 'Delete? Press again' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete it? What’s in it moves up' }))
     await settle()
     expect(posted.flatMap((p) => p.changes).map((c) => c.change)).toContainEqual({ type: 'folder.delete', id: 'f2' })
   })
 
-  it('goes back to what it was when it isn’t pressed again', async () => {
+  it('deletes nothing when the menu is closed instead', async () => {
     await opened()
-    fireEvent.click(screen.getByRole('button', { name: 'Delete Old' }))
-    fireEvent.blur(screen.getByRole('button', { name: 'Delete? Press again' }))
-    expect(screen.getByRole('button', { name: 'Delete Old' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Old' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete' }))
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await settle()
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(posted.flatMap((p) => p.changes).filter((c) => c.change.type === 'folder.delete')).toEqual([])
+  })
+})
+
+describe('the top of the tree', () => {
+  it('adds a note or a folder beside the note you’re on', async () => {
+    await opened()
+    fireEvent.click(screen.getByRole('button', { name: 'New folder' }))
+    await settle()
+    expect(posted.flatMap((p) => p.changes).map((c) => c.change)).toContainEqual(expect.objectContaining({ type: 'folder.put', folder: expect.objectContaining({ binderId: 'b1' }) }))
   })
 })
 

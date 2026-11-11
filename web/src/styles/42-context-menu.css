@@ -1,0 +1,12 @@
+/* A menu, from a right-click or a ⋯: one at a time, kept on screen. */
+.context-menu { position: fixed; z-index: var(--z-context); min-width: 200px; max-width: 300px; max-height: min(440px, calc(100vh - 16px)); overflow-y: auto; display: grid; gap: 1px; padding: var(--space-4); border-radius: var(--r); background: var(--pop-bg); box-shadow: var(--shadow-pop); text-align: left; -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
+.context-menu button { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 0 10px; border-radius: var(--r-sm); font-size: var(--font-13); color: var(--text); text-align: left; }
+.context-menu button > svg:first-child { flex: none; color: var(--muted); }
+.context-menu button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-menu-more { margin-left: auto; flex: none; color: var(--faint); }
+.context-menu button:hover, .context-menu button:focus-visible { background: var(--fill-2); outline: none; }
+.context-menu button:disabled { color: var(--faint); cursor: not-allowed; }
+.context-menu button.danger, .context-menu button.danger > svg:first-child { color: var(--red); }
+.context-menu button.sure { background: var(--red-wash); font-weight: 700; }
+.context-menu hr { margin: var(--space-4) 6px; border: 0; border-top: 1px solid var(--line); }
+.context-menu-heading { padding: 8px 10px 4px; font: 600 var(--font-12)/var(--leading-12) var(--body); color: var(--faint); }

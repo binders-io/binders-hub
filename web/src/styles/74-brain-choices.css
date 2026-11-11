@@ -1,0 +1,27 @@
+/* A job's dialog: what's in use, every model on your machines with Use, and a server by its address. */
+.job-dialog { display: grid; gap: var(--space-16); min-width: 0; }
+.job-in-use { display: grid; gap: var(--space-4); }
+.job-in-use p { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-8); font-size: var(--font-14); line-height: var(--leading-14); }
+.job-in-use b.mono { font-size: var(--font-13); overflow-wrap: anywhere; }
+.choices { display: grid; gap: 6px; min-width: 0; }
+.choice-list { list-style: none; margin: 0; padding: 0; display: grid; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.choice-list li { display: flex; align-items: center; gap: var(--space-12); min-height: 52px; padding: var(--space-8) var(--space-12); border-top: 1px solid var(--line); }
+.choice-list li:first-child { border-top: 0; }
+.choice-list li.on { background: var(--fill-1); }
+.choice-list li > .button, .choice-list li > .status-pill { flex: none; }
+.choice-name { flex: 1; display: grid; gap: 2px; min-width: 0; }
+.choice-name b { font: 600 var(--font-13)/var(--leading-13) var(--body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.choice-name span { font-size: var(--font-12); line-height: var(--leading-12); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.by-address { display: grid; gap: var(--space-12); color: var(--text); }
+.by-address .segmented { justify-self: start; }
+.job-dialog .disclosure-body { max-width: none; padding-left: 0; }
+/* Machines with an old daemon: a notice over the sections, with the line that brings one up to date. */
+.old-daemons { display: grid; gap: var(--space-8); justify-items: start; padding: var(--space-12) var(--space-16); border-radius: var(--r); background: var(--amber-wash); border: 1px solid var(--amber-line); font-size: var(--font-13); line-height: var(--leading-13); color: var(--text-2); }
+.old-daemons p { margin: 0; }
+.old-daemons .command { justify-self: stretch; }
+
+/* A setting's few ways, in a dialog: a radio, a name and a line each. */
+.choice-dialog { display: grid; gap: var(--space-16); min-width: 0; }
+.choice-dialog-lead { margin: 0; font-size: var(--font-14); line-height: var(--leading-14); color: var(--muted); }
+.choice-dialog-note { margin: 0; min-height: 18px; }
+.choice-rows { display: grid; border: 1px solid var(--line-strong); border-radius: var(--r); overflow: hidden; }

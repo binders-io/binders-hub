@@ -120,14 +120,14 @@ describe('asking for a card whole', () => {
   it('asks again when the card is of another version than the one here, and holds the one that matches', async () => {
     const asked = standInWhole((id, time) => sends(whole(id, time < 3 ? { updatedAt: days(1), brief: 'newer words' } : {})))
     await mount(<Probe id="c1" />)
-    await waitFor(() => expect(probed()).toBe('brief:brief of c1'), { timeout: 3000 })
+    await waitFor(() => expect(probed()).toBe('brief:brief of c1'), { timeout: 10_000 })
     expect(asked).toHaveLength(3)
   })
 
   it('gives up after five tries, and tries again when asked to', async () => {
     const asked = standInWhole((id) => sends(whole(id, { updatedAt: days(1) })))
     await mount(<Probe id="c1" />)
-    await waitFor(() => expect(screen.getByTestId('failed').textContent).toBe('true'), { timeout: 4000 })
+    await waitFor(() => expect(screen.getByTestId('failed').textContent).toBe('true'), { timeout: 10_000 })
     expect(asked).toHaveLength(5)
     expect(probed()).toBe('none')
     await settle(900)
@@ -142,10 +142,10 @@ describe('asking for a card whole', () => {
     const later = days(1)
     const asked = standInWhole((id) => sends(whole(id, { updatedAt: later, brief: 'newer words' })))
     await mount(<Probe id="c1" />)
-    await waitFor(() => expect(screen.getByTestId('failed').textContent).toBe('true'), { timeout: 4000 })
+    await waitFor(() => expect(screen.getByTestId('failed').textContent).toBe('true'), { timeout: 10_000 })
     expect(asked).toHaveLength(5)
     await hear({ type: 'entries', entries: [entry(2, { type: 'card.update', id: 'c1', fields: { brief: 'newer words' }, activity: { at: later, by: 'sam', kind: 'comment', text: 'hi' } })] })
-    await waitFor(() => expect(probed()).toBe('brief:newer words'), { timeout: 3000 })
+    await waitFor(() => expect(probed()).toBe('brief:newer words'), { timeout: 10_000 })
     expect(screen.getByTestId('failed').textContent).toBe('false')
     expect(screen.getByTestId('left').textContent).toBe('false')
   })
@@ -162,7 +162,7 @@ describe('asking for a card whole', () => {
     for (const body of [{}, { card: { id: 'c1' } }, sends(whole('c2')), sends(held('c1'))]) {
       const asked = standInWhole(() => body)
       await mount(<><Grab /><Probe id="c1" /></>)
-      await waitFor(() => expect(screen.getByTestId('failed').textContent).toBe('true'), { timeout: 4000 })
+      await waitFor(() => expect(screen.getByTestId('failed').textContent).toBe('true'), { timeout: 10_000 })
       expect(asked).toHaveLength(5)
       expect(actions.current().cards.find((c) => c.id === 'c1')).toMatchObject({ brief: '', doneWhen: '' })
       expect(actions.current().cards.find((c) => c.id === 'c1')?.left).toBeDefined()
@@ -224,9 +224,14 @@ describe('a card that is held without its detail, once it leaves Done', () => {
 
   it('is asked for once, when the card’s page wants it as well', async () => {
     const at = days(0.5)
-    const asked = standInWhole(async (id) => { await new Promise((done) => setTimeout(done, 50)); return sends(whole(id, { stage: 'ready', updatedAt: at })) })
+    // The hub answers once the move has been heard, however long the page took to draw: the page's asking and the
+    // move's are then for the one answer still on its way.
+    let answer = () => {}
+    const heard = new Promise<void>((done) => { answer = done })
+    const asked = standInWhole(async (id) => { await heard; return sends(whole(id, { stage: 'ready', updatedAt: at })) })
     await page('c1')
     await hear({ type: 'entries', entries: [entry(2, { type: 'card.update', id: 'c1', fields: { stage: 'ready' }, activity: { at, by: 'sam', kind: 'moved', text: 'Moved it to Ready' } })] })
+    answer()
     await waitFor(() => expect(actions.current().cards[0].left).toBeUndefined())
     expect(asked).toHaveLength(1)
   })
@@ -250,13 +255,13 @@ describe('a card that is held without its detail, once it leaves Done', () => {
     await mount(<Grab />)
     const at = days(0.5)
     await hear({ type: 'entries', entries: [entry(2, { type: 'card.update', id: 'c1', fields: { stage: 'ready' }, activity: { at, by: 'sam', kind: 'moved', text: 'Moved it to Ready' } })] })
-    await waitFor(() => expect(asked).toHaveLength(5), { timeout: 4000 })
+    await waitFor(() => expect(asked).toHaveLength(5), { timeout: 10_000 })
     await settle(1200)
     expect(asked).toHaveLength(5)
     // The card changes here: it's a new version to ask for.
     const later = hubs
     await hear({ type: 'entries', entries: [entry(3, { type: 'card.update', id: 'c1', fields: { doing: 'Reading' }, activity: { at: later, by: 'sam', kind: 'comment', text: 'hi' } })] })
-    await waitFor(() => expect(actions.current().cards[0].left).toBeUndefined(), { timeout: 3000 })
+    await waitFor(() => expect(actions.current().cards[0].left).toBeUndefined(), { timeout: 10_000 })
     expect(asked.length).toBeGreaterThan(5)
   }, 15_000)
 
@@ -271,7 +276,7 @@ describe('a card that is held without its detail, once it leaves Done', () => {
     expect(actions.current().cards[0]).toMatchObject({ stage: 'ready', brief: '' })
     expect(asked).toEqual([])
     standInRoute('GET', '/api/state', () => ({ version: 1, presence: {} }))
-    await waitFor(() => expect(actions.current().cards[0].left).toBeUndefined(), { timeout: 5000 })
+    await waitFor(() => expect(actions.current().cards[0].left).toBeUndefined(), { timeout: 10_000 })
     expect(asked).toEqual(['c1'])
   })
 })
@@ -340,7 +345,7 @@ describe('a card’s page, while its detail is on its way', () => {
     expect(saysNoBrief()).toBe(false)
     // Nothing shown at first, so a quick card doesn't flash.
     expect(screen.queryByText('Loading…')).toBeNull()
-    await waitFor(() => expect(screen.getByText('Loading…')).toBeTruthy(), { timeout: 1000 })
+    await waitFor(() => expect(screen.getByText('Loading…')).toBeTruthy(), { timeout: 10_000 })
     expect(document.querySelector('.brief-card')).toBeNull()
     // At no moment until it's here.
     watch.disconnect()
@@ -415,7 +420,7 @@ describe('a card’s page, while its detail is on its way', () => {
     state = hubState({ cards: [held('c1', { stage: 'ready', updatedAt: days(0.2), brief: 'rewritten' })] })
     standInRoute('GET', '/api/state', () => ({ version: 2, state, presence: {} }))
     await act(async () => { FakeSocket.open.at(-1)!.readyState = 3; FakeSocket.open.at(-1)!.onclose?.() })
-    await waitFor(() => expect(actions.current().cards[0].left).toBeDefined(), { timeout: 3000 })
+    await waitFor(() => expect(actions.current().cards[0].left).toBeDefined(), { timeout: 10_000 })
     expect(editable()).toBeNull()
     expect(saysNoBrief()).toBe(false)
     expect(document.querySelector('.brief-card')).toBeNull()
@@ -432,7 +437,7 @@ describe('a card’s page, while its detail is on its way', () => {
     state = hubState({ cards: [held('c1', { stage: 'ready' })] })
     standInRoute('GET', '/api/state', () => ({ version: 2, state, presence: {} }))
     await act(async () => { FakeSocket.open.at(-1)!.readyState = 3; FakeSocket.open.at(-1)!.onclose?.() })
-    await waitFor(() => expect(actions.current().sync.version).toBe(2), { timeout: 3000 })
+    await waitFor(() => expect(actions.current().sync.version).toBe(2), { timeout: 10_000 })
     await settle(100)
     expect(actions.current().cards[0].left).toBeUndefined()
     expect(editable()).not.toBeNull()

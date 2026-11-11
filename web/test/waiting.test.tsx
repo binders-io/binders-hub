@@ -125,10 +125,12 @@ describe('Home: what waits on you', () => {
     standInHub(busy)
     asPhone()
     await mount(<UIContext.Provider value={ui()}><Home /></UIContext.Provider>)
+    // First under the page's header, before the counts.
     const home = document.querySelector('.home')!
-    expect(home.firstElementChild?.classList.contains('home-waiting')).toBe(true)
+    expect(home.children[0].classList.contains('page-header')).toBe(true)
+    expect(home.children[1].classList.contains('home-waiting')).toBe(true)
     expect(home.querySelector('.home-side .home-waiting')).toBeNull()
-    expect(home.firstElementChild!.compareDocumentPosition(home.querySelector('.home-stats')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(home.children[1].compareDocumentPosition(home.querySelector('.home-stats')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('says so when nothing waits', async () => {

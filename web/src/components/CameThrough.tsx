@@ -31,7 +31,7 @@ export function CameThrough({ noteId }: { noteId: string }) {
       {waiting && (
         <p className="listen-came-hold">
           <span>It’s from outside this Binder, so its folder’s rule won’t start work from it until someone here lets it through.</span>
-          {mayChange && <button type="button" className="button" disabled={passing} onClick={() => void letThrough()}>Let it through</button>}
+          {mayChange && <button type="button" className="button small" disabled={passing} onClick={() => void letThrough()}>Let it through</button>}
         </p>
       )}
       {from.strength === 'outside' && from.passed && <p className="listen-came-hold">Let through by @{from.passed.by}</p>}

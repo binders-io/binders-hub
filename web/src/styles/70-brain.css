@@ -1,0 +1,160 @@
+/* The Brain: a conversation in the middle with the box to ask in under it, and beside it a rail, Now: what needs you, what
+   the agents are doing and what came in. Two columns that fill the height the screen gives: the conversation scrolls,
+   its box stays under it, and the rail has its own scroll. */
+.brain { height: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 360px; grid-template-rows: minmax(0, 1fr); }
+.brain [hidden] { display: none !important; }
+.brain-talk { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.brain-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: var(--space-32) clamp(var(--space-16), 3vw, var(--space-48)) var(--space-16); }
+.brain-scroll.empty { display: grid; align-content: center; padding-bottom: 6vh; }
+.brain-column { width: min(760px, 100%); margin-inline: auto; }
+.brain-log { display: flex; flex-direction: column; gap: var(--space-48); }
+.brain-log:empty { display: none; }
+
+/* Before anything is asked: what it is, in a line, and four things to ask, each a kind of answer it gives. */
+.ask-intro { display: grid; justify-items: center; gap: var(--space-8); text-align: center; }
+.ask-intro-icon { display: grid; place-items: center; width: 48px; height: 48px; margin-bottom: var(--space-8); border-radius: var(--r-lg); background: var(--fill-2); color: var(--text); }
+.ask-intro h2 { margin: 0; font: 800 var(--font-26)/var(--leading-26) var(--display); letter-spacing: -0.02em; }
+.ask-intro p { margin: 0 auto; max-width: 50ch; color: var(--muted); font-size: var(--font-14); line-height: var(--leading-14); text-wrap: balance; }
+.brain-starters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-8); width: 100%; max-width: 580px; margin-top: var(--space-16); }
+.brain-starter { display: flex; align-items: center; gap: var(--space-12); min-height: 56px; padding: var(--space-12) var(--space-16); border-radius: var(--r); border: 1px solid var(--line); background: var(--tile); box-shadow: var(--tile-shadow); color: var(--text-2); font: 600 var(--font-13)/var(--leading-13) var(--body); text-align: left; transition: border-color var(--dur-fast), background-color var(--dur-fast), color var(--dur-fast); }
+.brain-starter svg { flex: none; color: var(--muted); }
+.brain-starter:hover { border-color: var(--line-strong); background: var(--control-hover); color: var(--text); }
+.brain-starter:hover svg { color: var(--text); }
+
+/* One question and its answer: your words a short block at the right, the answer at the full width under it. */
+.ask-result { display: flex; flex-direction: column; gap: var(--space-16); min-width: 0; }
+.ask-question { align-self: flex-end; max-width: min(80%, 560px); margin: 0; padding: 10px var(--space-16); border-radius: var(--r-lg) var(--r-lg) var(--r-xs) var(--r-lg); background: var(--fill-2); font: 600 var(--font-14)/var(--leading-14) var(--body); color: var(--text); text-wrap: pretty; overflow-wrap: anywhere; }
+.ask-answer { font-size: var(--font-16); line-height: 1.6; color: var(--text-2); }
+.ask-cite { display: inline-grid; place-items: center; min-width: 18px; height: 18px; margin: 0 1px 0 3px; padding: 0 5px; border-radius: var(--r-xs); background: var(--fill-2); border: 1px solid var(--line-strong); font: 700 11px/1 var(--body); font-variant-numeric: tabular-nums; color: var(--text); vertical-align: 2px; transition: background-color var(--dur-fast); }
+.ask-cite:hover, .ask-cite:focus-visible { background: var(--fill-3); }
+.ask-waiting { display: grid; gap: var(--space-12); padding-block: var(--space-4); }
+.ask-waiting p { margin: 0 0 var(--space-4); color: var(--muted); font-size: var(--font-14); }
+.ask-waiting i { display: block; height: 12px; border-radius: 6px; background: var(--skeleton); animation: brain-wait 1.6s ease-in-out infinite; }
+@keyframes brain-wait { 50% { opacity: 0.4; } }
+.ask-waiting i:nth-of-type(1) { width: 92%; }
+.ask-waiting i:nth-of-type(2) { width: 78%; animation-delay: 0.15s; }
+.ask-waiting i:nth-of-type(3) { width: 54%; animation-delay: 0.3s; }
+@media (prefers-reduced-motion: reduce) { .ask-waiting i { animation: none; } }
+
+/* Its sources: a numbered list in one card, the number first, each with the passages it was read for. */
+.ask-sources-block { display: grid; gap: var(--space-8); }
+.ask-sources-title { margin: 0; font: 600 var(--font-13)/var(--leading-13) var(--body); color: var(--muted); }
+.ask-sources { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--tile); box-shadow: var(--tile-shadow); overflow: clip; }
+.ask-sources > li { display: grid; gap: var(--space-8); padding: var(--space-12) var(--space-16); transition: background-color var(--dur-slow); }
+.ask-sources > li + li { border-top: 1px solid var(--line); }
+.ask-sources > li.shown { background: var(--fill-2); }
+.ask-source-head { display: flex; align-items: center; gap: var(--space-8); min-width: 0; color: var(--muted); }
+.ask-source-head > svg { flex: none; }
+.ask-source-title { flex: 1; min-width: 0; font: 600 var(--font-14)/var(--leading-14) var(--body); color: var(--text); text-decoration: none; overflow-wrap: anywhere; }
+.ask-source-title:hover { text-decoration: underline; text-underline-offset: 3px; }
+.ask-source-title svg { margin-left: 3px; vertical-align: -1px; }
+.ask-ns { flex: none; display: inline-flex; gap: 3px; }
+.ask-n { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: var(--r-xs); background: var(--fill-2); font-size: var(--font-12); font-weight: 700; color: var(--text-2); }
+.ask-source-where { margin: 0; font-size: var(--font-12); line-height: var(--leading-12); overflow-wrap: anywhere; }
+.ask-passage { scroll-margin-top: 90px; display: grid; gap: var(--space-4); justify-items: start; }
+.ask-passage + .ask-passage { margin-top: var(--space-4); padding-top: var(--space-8); border-top: 1px dashed var(--line); }
+.ask-passage.clipped .md { max-height: 7.2em; overflow: hidden; mask-image: linear-gradient(to bottom, #000 62%, transparent); -webkit-mask-image: linear-gradient(to bottom, #000 62%, transparent); }
+.ask-more { display: inline-flex; align-items: center; gap: var(--space-4); padding: 2px 0; font-size: var(--font-12); font-weight: 600; color: var(--muted); }
+.ask-more:hover { color: var(--text); }
+
+/* What it looked at, and what it read and didn't use: a line each, opened for whoever wants them. */
+.ask-reads { display: grid; gap: var(--space-4); }
+.ask-read > summary { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 2px; cursor: pointer; color: var(--muted); font: 600 var(--font-13)/1 var(--body); list-style: none; border-radius: var(--r-xs); }
+.ask-read > summary::-webkit-details-marker { display: none; }
+.ask-read > summary::before { content: '›'; display: inline-block; width: 10px; font-size: 15px; line-height: 1; transition: transform var(--dur-fast) var(--ease-out); }
+.ask-read[open] > summary::before { transform: rotate(90deg); }
+.ask-read > summary:hover { color: var(--text); }
+.ask-read > summary .num { padding: 2px 6px; border-radius: var(--r-pill); background: var(--fill-2); font-size: 11px; }
+.ask-read[open] > .ask-sources { margin-top: var(--space-8); }
+.ask-looked ul { margin: var(--space-4) 0 var(--space-8); padding-left: var(--space-24); display: grid; gap: 2px; color: var(--muted); font-size: var(--font-13); line-height: var(--leading-13); }
+@media (prefers-reduced-motion: reduce) { .ask-read > summary::before { transition: none; } }
+
+/* Its foot: keep it as a note or a card, and how it was found and answered. */
+.ask-foot-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-4) var(--space-16); }
+.ask-keep { display: flex; flex-wrap: wrap; gap: var(--space-4); margin-left: calc(-1 * var(--space-8)); }
+.ask-how { display: flex; align-items: center; gap: 6px; margin: 0 0 0 auto; font-size: var(--font-12); line-height: var(--leading-12); color: var(--faint); overflow-wrap: anywhere; }
+.ask-how svg { flex: none; }
+
+/* An offer: something the hub is ready to do once its button is pressed, as one card. Amber while it waits on you. */
+.view-offer { display: grid; min-width: 0; border: 1px solid var(--amber-line); border-radius: var(--r-lg); background: var(--tile); box-shadow: var(--tile-shadow); overflow: clip; }
+.view-offer.answered { border-color: var(--line); }
+.view-offer-head { display: flex; align-items: flex-start; gap: var(--space-12); padding: var(--space-16); }
+.view-offer-icon { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--r-sm); background: var(--amber-wash); color: var(--amber); }
+.view-offer.answered .view-offer-icon { background: var(--fill-2); color: var(--muted); }
+.view-offer-what { margin: 0; padding-top: var(--space-4); font: 600 var(--font-14)/var(--leading-14) var(--body); color: var(--text); overflow-wrap: anywhere; }
+.view-offer-about { display: grid; min-width: 0; border-top: 1px solid var(--line); }
+.view-offer-about .view-thing { margin: 0; border: 0; border-radius: 0; background: none; box-shadow: none; padding-inline: var(--space-16); }
+.view-offer-about .view-thing + .view-thing, .view-offer-more { border-top: 1px solid var(--line); }
+.view-offer-more { margin: 0; padding: 10px var(--space-16); color: var(--muted); font-size: var(--font-13); }
+.view-offer-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-12); padding: var(--space-12) var(--space-16); border-top: 1px solid var(--line); background: var(--fill-1); }
+.view-offer-note { font-size: var(--font-12); line-height: var(--leading-12); color: var(--muted); }
+.view-offer-buttons { display: flex; flex-wrap: wrap; gap: var(--space-8); margin-left: auto; }
+.view-offer-did { display: flex; align-items: flex-start; gap: var(--space-8); margin: 0; padding: var(--space-12) var(--space-16); border-top: 1px solid var(--line); background: var(--fill-1); color: var(--text-2); font-size: var(--font-13); }
+.view-offer-did svg { flex: none; margin-top: 2px; color: var(--green); }
+
+/* The box to ask in: always under the conversation, growing with what's typed. The same box is Home's question line. */
+.brain-compose { flex: none; padding: var(--space-12) clamp(var(--space-16), 3vw, var(--space-48)) var(--space-16); background: var(--bg); }
+.brain-compose .brain-column { display: grid; gap: var(--space-8); }
+.brain-compose .ask-box { align-items: flex-end; }
+.ask-form { display: grid; gap: var(--space-8); }
+.ask-box { display: flex; align-items: center; gap: var(--space-8); width: 100%; padding: 5px 5px 5px var(--space-16); border-radius: var(--r-lg); border: 1px solid var(--field-line); background: var(--surface); box-shadow: var(--control-shadow); transition: border-color var(--dur-fast), box-shadow var(--dur-fast); }
+.ask-box:hover { border-color: var(--field-line-hover); }
+.ask-box:focus-within { border-color: var(--field-line-hover); box-shadow: 0 0 0 3px var(--focus-wash); }
+.ask-box input { flex: 1; min-width: 0; height: 36px; padding: 0; border: 0; background: none; color: var(--text); font-size: var(--font-14); outline: none; }
+.ask-box textarea { flex: 1; min-width: 0; max-height: 40vh; padding: var(--space-8) 0; border: 0; background: none; color: var(--text); font: var(--font-14)/var(--leading-14) var(--body); outline: none; resize: none; overflow-y: auto; }
+.ask-box input::placeholder, .ask-box textarea::placeholder { color: var(--faint); }
+.ask-send { flex: none; display: grid; place-items: center; width: 36px; height: 36px; border-radius: var(--r); background: var(--primary); color: var(--primary-ink); transition: background-color var(--dur-fast), color var(--dur-fast); }
+.ask-send:hover:not(:disabled) { background: var(--primary-hover); }
+/* Nothing to send yet: a quiet grey, never a pale tint of the main colour. */
+.ask-send:disabled { background: var(--fill-2); color: var(--faint); cursor: default; }
+.ask-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-4) var(--space-16); min-height: 28px; }
+.ask-scope { justify-self: start; font-size: var(--font-13); color: var(--muted); }
+.ask-follows { margin: 0; font-size: var(--font-12); line-height: var(--leading-12); color: var(--faint); }
+.ask-new { margin-right: calc(-1 * var(--space-8)); }
+
+/* The rail, Now: three sections of the kit's, each a title with its count and one card of rows. */
+.brain-rail { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: var(--space-24) var(--space-16) var(--space-32); border-left: 1px solid var(--line); background: var(--bg-raised); }
+.brain-rail-sections { display: grid; gap: var(--space-24); }
+.brain-rail .section-title { display: flex; align-items: center; gap: var(--space-8); font-size: var(--font-14); line-height: var(--leading-14); }
+.brain-count.alert { background: var(--amber-wash); color: var(--amber); }
+.brain-rail .rows-main { min-height: 52px; padding: 10px var(--space-12); }
+.brain-rail .rows-icon:has(.avatar) { background: none; }
+.brain-rail-loading { padding: var(--space-16); }
+/* What needs you is Waiting's list: here its rows are the kit's, a hairline between them and an icon in a tile. */
+.brain-rail-section .section-card > ul.waiting { display: grid; gap: 0; padding: 0; }
+.brain-rail-section ul.waiting > li + li { border-top: 1px solid var(--line); }
+.brain-rail-section ul.waiting li > button { gap: var(--space-12); align-items: flex-start; min-height: 52px; padding: 10px var(--space-12); border: 0; border-radius: 0; background: none; transition: background-color var(--dur-fast); }
+.brain-rail-section ul.waiting li > button:hover { background: var(--row-hover); }
+.brain-rail-section ul.waiting li > button > svg { box-sizing: content-box; width: 14px; height: 14px; margin: 0; padding: 9px; border-radius: var(--r-sm); background: var(--amber-wash); }
+.brain-rail-section ul.waiting li > button > svg.faint { background: var(--fill-2); }
+.brain-rail-section ul.waiting li > button > span { gap: 2px; padding-top: 2px; }
+.brain-rail-section ul.waiting li > button b { font-size: var(--font-13); line-height: var(--leading-13); }
+.brain-rail-section ul.waiting li > button em { -webkit-line-clamp: 1; font-size: var(--font-12); line-height: var(--leading-12); }
+.brain-rail-section ul.waiting li > button small { margin-top: 0; font-size: var(--font-12); }
+.brain-rail-section ul.waiting .first { margin: 0 var(--space-12) var(--space-12) 56px; }
+.brain-rail-section ul.waiting li.first-group { gap: var(--space-8); padding: var(--space-12); border: 0; border-radius: 0; background: none; }
+.brain-rail-section ul.waiting.first-inner > li { border-top: 0; }
+
+/* Narrow: one column with a switch at the top, and one of the two showing. */
+.brain.narrow { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+.brain.narrow .brain-rail { border-left: 0; padding-inline: clamp(var(--space-16), 3vw, var(--space-48)); background: var(--bg); }
+.brain-switch { display: flex; margin: var(--space-12) clamp(var(--space-16), 3vw, var(--space-48)) 0; }
+.brain-switch button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+@media (max-width: 900px), (hover: none) {
+  .brain-starter { min-height: 56px; }
+  .brain-compose .ask-send { width: 44px; height: 44px; }
+  .brain-compose .ask-scope, .brain-compose .ask-new { min-height: 44px; }
+  .ask-box textarea { font-size: var(--font-16); }
+  .brain-rail-section ul.waiting li > button { min-height: 56px; }
+}
+@media (max-width: 600px) {
+  .brain-scroll { padding-top: var(--space-24); }
+  .brain-compose { padding-bottom: var(--space-8); }
+  .brain-starters { grid-template-columns: minmax(0, 1fr); }
+  .ask-intro h2 { font-size: var(--font-20); line-height: var(--leading-20); }
+  .ask-question { max-width: 88%; }
+  .ask-answer { font-size: var(--font-14); line-height: 1.6; }
+  .view-offer-buttons { width: 100%; }
+  .view-offer-buttons .button { flex: 1; min-height: 44px; justify-content: center; }
+  .ask-how { margin-left: 0; }
+}

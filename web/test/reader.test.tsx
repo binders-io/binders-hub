@@ -107,9 +107,12 @@ describe('the People section', () => {
     const picker = await screen.findByRole('combobox', { name: 'cy’s role' })
     expect(within(picker).getAllByRole('option').map((o) => o.textContent)).toEqual(['Owner', 'Admin', 'Member', 'Reader'])
     expect((picker as HTMLSelectElement).value).toBe('reader')
-    expect(screen.getByText(/A reader sees everything in this binder, and can ask about it\. They can’t change anything/)).toBeTruthy()
-    const adding = screen.getByRole('combobox', { name: 'Their role' })
-    expect(within(adding).getByRole('option', { name: 'Reader' })).toBeTruthy()
+    // Who may do what is said once, under the list.
+    expect(screen.getByText(/A reader sees everything and can ask about it, but can’t change anything or have agents/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Add people' }))
+    const adding = within(await screen.findByRole('dialog', { name: 'Add people' })).getByRole('group', { name: 'Their role' })
+    expect(within(adding).getAllByRole('radio').map((r) => (r as HTMLInputElement).value)).toEqual(['owner', 'admin', 'member', 'reader'])
+    expect(within(adding).getByRole('radio', { name: /Reader/ })).toBeTruthy()
   })
 
   it('makes someone a reader, and says which agents were revoked with the change', async () => {
@@ -207,11 +210,12 @@ describe('a note', () => {
     await screen.findByTestId('editor')
     expect(screen.getByTestId('editor').getAttribute('data-readonly')).toBe('true')
     expect(screen.queryByTestId('toolbar')).toBeNull()
-    expect(has(/Delete this note/)).toBe(false)
-    expect(has('Schedule')).toBe(false)
-    expect(has('Own change set')).toBe(false)
-    expect(has('Binder guide')).toBe(false)
-    expect(has('Lock')).toBe(false)
+    // The note's ⋯ has what reads, and nothing that changes the Binder.
+    fireEvent.click(screen.getByRole('button', { name: 'More for this note' }))
+    const reads = (await screen.findAllByRole('menuitem')).map((item) => item.textContent)
+    expect(reads).toContain('Copy link')
+    for (const changes of ['Delete this note', 'Schedule it', 'Give it its own change set', 'Make it the binder’s guide', 'Lock']) expect(reads).not.toContain(changes)
+    fireEvent.keyDown(window, { key: 'Escape' })
     expect(screen.queryByRole('tab', { name: /Distill/ })).toBeNull()
     expect(screen.getByRole('tab', { name: /Chat/ })).toBeTruthy()
     expect(has('Versions and suggested changes')).toBe(true)
@@ -226,8 +230,10 @@ describe('a note', () => {
     await screen.findByTestId('editor')
     expect(screen.getByTestId('editor').getAttribute('data-readonly')).toBe('false')
     expect(screen.getByRole('tab', { name: /Distill/ })).toBeTruthy()
-    expect(has('Schedule')).toBe(true)
-    expect(has('Binder guide')).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'More for this note' }))
+    const all = (await screen.findAllByRole('menuitem')).map((item) => item.textContent)
+    for (const name of ['Lock', 'Make it the binder’s guide', 'Copy link', 'Schedule it', 'Give it its own change set', 'Delete this note']) expect(all).toContain(name)
+    fireEvent.keyDown(window, { key: 'Escape' })
     expect(has('Save all notes')).toBe(true)
     expect(has('New note')).toBe(true)
   })
@@ -311,25 +317,28 @@ describe('delivery', () => {
 describe('agents', () => {
   const world = () => hubState({ agents: [{ ...agent, name: 'Builder', owner: 'ana' }] })
 
-  it('has no Add a machine, no set-up, and no Edit, token or revoke on an agent, for a reader', async () => {
+  it('has no Add an agent, and no Edit or menu on an agent, for a reader: only Claude Code, which acts as them', async () => {
     hubAs('reader', world)
     await mount(withUI(<Agents />))
     expect(screen.getByRole('heading', { name: 'Builder' })).toBeTruthy()
-    for (const name of [/Add a machine/, /Set one up by hand/, 'Edit', /New token/, /Revoke/, /Restart/]) expect(has(name), String(name)).toBe(false)
+    for (const name of [/Add an agent/, 'Edit', /More for/, /Start the runner/, /Restart/]) expect(has(name), String(name)).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Use from Claude Code' }))
+    expect(await screen.findByRole('dialog', { name: 'Add the hub to Claude Code' })).toBeTruthy()
   })
 
-  it('says nothing where its only content was Add a machine', async () => {
+  it('says nothing where its only content was the way to add one', async () => {
     hubAs('reader', () => hubState({ agents: [] }))
     await mount(withUI(<Agents />))
-    expect(screen.getByRole('heading', { name: 'No agents yet' })).toBeTruthy()
-    expect(screen.queryByText(/one line, run in the folder/)).toBeNull()
-    expect(has(/Add a machine/)).toBe(false)
+    expect(screen.getByText('No agents yet')).toBeTruthy()
+    expect(has(/Add an agent/)).toBe(false)
   })
 
-  it('has them for a member', async () => {
+  it('has them for a member, the rare ones in each agent’s menu', async () => {
     hubAs('member', world)
     await mount(withUI(<Agents />))
-    for (const name of [/Add a machine/, /Set one up by hand/, 'Edit', /New token/, /Revoke/]) expect(has(name), String(name)).toBe(true)
+    for (const name of [/Add an agent/, 'Edit', 'More for Builder']) expect(has(name), String(name)).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'More for Builder' }))
+    expect((await screen.findAllByRole('menuitem')).map((item) => item.textContent)).toEqual(['New token', 'Revoke'])
   })
 })
 

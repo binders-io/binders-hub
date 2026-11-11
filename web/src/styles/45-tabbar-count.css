@@ -1,0 +1,2 @@
+/* On a phone the badge on the Agents tab would be a number with nothing to say what it is: the sidebar's menu has it. */
+.tabbar a .count-agents { display: none; }

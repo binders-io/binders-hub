@@ -1,0 +1,59 @@
+/* The stages over a phone's board, one column a screen. */
+.stage-chips { display: none; }
+@media (max-width: 600px) {
+  /* The board first: what waits on you in a line, one row of tools, the stages as a switch, and one column. */
+  .board-bar { gap: var(--space-8); padding: var(--space-12) var(--space-16) 0; }
+  .waiting-strip { min-height: 44px; padding-left: var(--space-12); gap: 10px; }
+  .board-tools { gap: 6px; }
+  .board-filters { display: none; }
+  .board-view { display: inline-flex; }
+  .board-tools-end { gap: 2px; }
+  /* New card floats in reach of a thumb, over the tab bar. */
+  .board-tools-end .board-new { position: fixed; z-index: var(--z-panel); right: var(--space-16); bottom: calc(70px + env(safe-area-inset-bottom, 0px)); height: 48px; margin: 0; padding: 0 var(--space-16) 0 14px; border-radius: var(--r-pill); font-size: var(--font-14); box-shadow: 0 10px 28px -10px var(--shadow-color), 0 0 0 1px var(--primary-line); }
+
+  .stage-chips { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); flex: none; gap: 2px; margin: var(--space-12) var(--space-16) 0; padding: 3px; border-radius: var(--r); border: 1px solid var(--line); background: var(--fill-1); }
+  .stage-chips button { position: relative; display: grid; justify-items: center; align-content: center; gap: 1px; min-width: 0; min-height: 44px; padding: var(--space-4) 2px; border-radius: var(--r-sm); font: 600 var(--font-12)/var(--leading-12) var(--body); color: var(--muted); transition: background var(--dur-fast), color var(--dur-fast); }
+  .stage-chip-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: -0.01em; }
+  .stage-chips .num { display: inline-flex; align-items: center; gap: var(--space-4); color: var(--faint); }
+  .stage-chips .dot { width: 6px; height: 6px; }
+  .stage-chips button[aria-current] { background: var(--selected); color: var(--text); box-shadow: var(--selected-shadow); }
+  .stage-chips button[aria-current] .num { color: var(--text-2); }
+
+  .columns { grid-auto-columns: calc(100vw - 2 * var(--space-16)); gap: var(--space-16); padding: var(--space-12) var(--space-16) 0; scroll-snap-type: x mandatory; scroll-padding: 0 var(--space-16); }
+  .column { border: 0; border-radius: 0; background: none; scroll-snap-align: start; }
+  .column header { display: none; }
+  .column-cards { gap: 10px; padding: 0 0 96px; }
+  .column.drop { outline: 0; }
+  .card { padding: 14px var(--space-16); gap: 10px; }
+  .feed { width: 100%; border-left: 0; }
+
+  /* A change set: its tabs fit, saying only what needs saying; the decision as wide as the screen. */
+  .set-tabs { margin-top: var(--space-16); }
+  .set-tabs button { flex: 1 1 0; min-width: 0; justify-content: center; padding: 0 var(--space-4); }
+  .set-tab-note:not(.bad, .busy) { display: none; }
+  .set-tab-note.bad, .set-tab-note.busy { flex: none; width: 8px; height: 8px; padding: 0; border-radius: 50%; overflow: hidden; color: transparent; background: currentColor; }
+  .set-tab-note.bad { background: var(--red); }
+  .set-tab-note.busy { background: var(--blue); }
+  .set-head h2 { font-size: var(--font-20); line-height: var(--leading-20); }
+  .approve { justify-items: stretch; width: 100%; max-width: none; }
+  .approve .button.big { justify-content: center; }
+  .approve-note { text-align: left; }
+  .set-panel { padding-top: var(--space-16); }
+  .stack-item { grid-template-columns: 24px minmax(0, 1fr); gap: var(--space-8); }
+  .stack-order { width: 24px; height: 24px; margin-top: 12px; }
+  .stack-item:not(.last)::before { left: 11px; top: 36px; bottom: -28px; }
+
+  .agent-facts-toggle { min-height: 36px; font-size: 13px; font-weight: 600; }
+
+  /* A pull request: its title gets the width, its state and the way to open it at the end of the line. */
+  .pull-head { grid-template-columns: minmax(0, 1fr) auto auto; padding: var(--space-12); }
+  .pull-head > .avatar { display: none; }
+  .pull-checks { grid-column: 1 / -1; }
+
+  .stat-go { display: none; }
+}
+/* A phone on its side: every line of chrome costs a tenth of the screen. */
+@media (max-width: 900px) and (max-height: 500px) {
+  .board-bar { padding-top: 6px; gap: 6px; }
+  .waiting-strip { min-height: 36px; padding-block: 6px; }
+}

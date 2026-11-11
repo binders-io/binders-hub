@@ -45,54 +45,58 @@ export function FolderRuleDialog({ folderId, onClose }: { folderId: string; onCl
     }
   }
 
+  const blocked = busy || (distill && accepts && (!agentId || !givenTo.length || !allowed.length))
   return (
-    <Dialog title={`Rules for “${folder?.name ?? 'this folder'}”`} onClose={onClose} wide>
-      {rule?.failing && <p className="schedule-failing" role="status">{rule.failing}</p>}
-      <p className="schedule-intro">These apply to notes in this folder and in folders inside it. Notes already here are left alone.</p>
-      <div className="form schedule-form rule-form">
-        <label className="rule-check"><input id="rule-distill" type="checkbox" checked={distill} onChange={(e) => setDistill(e.target.checked)} /> <span><b>Distill notes automatically</b><span className="faint">Once for each note, when it’s finished. Editing it afterwards doesn’t distill it again.</span></span></label>
-        {distill && (
-          <div className="form-row">
-            <Field label="Distilled by">
-              <select id="rule-agent" value={agentId} onChange={(e) => setAgentId(e.target.value)}>
-                <option value="">Any agent (the first one free)</option>
-                {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-              </select>
-            </Field>
-            <Field label="Finished after (minutes with no edit)">
-              <input id="rule-quiet" type="number" min={1} max={10080} value={quiet} onChange={(e) => setQuiet(Number(e.target.value))} />
-            </Field>
-          </div>
-        )}
-        {distill && <label className="rule-check"><input id="rule-accepts" type="checkbox" checked={accepts} onChange={(e) => setAccepts(e.target.checked)} /> <span><b>Accept work items without asking</b><span className="faint">They go straight to the agents you choose. Anything over these limits, or from a note another agent wrote, waits for a person. This needs one chosen agent to distill.</span></span></label>}
-        {distill && accepts && (
-          <>
+    <Dialog title={`Rules for “${folder?.name ?? 'this folder'}”`} onClose={onClose} wide footer={(
+      <>
+        {rule && <button type="button" className="button danger dialog-foot-start" onClick={() => void remove()}>Remove the rule</button>}
+        <button type="button" className="button" onClick={onClose}>Cancel</button>
+        <button type="button" className="button primary" disabled={blocked} onClick={() => void save()}>Save</button>
+      </>
+    )}>
+      <div className="rule-dialog">
+        {rule?.failing && <p className="schedule-failing" role="status">{rule.failing}</p>}
+        <p className="schedule-intro">These apply to notes in this folder and in folders inside it. Notes already here are left alone.</p>
+        <div className="form rule-form">
+          <label className="rule-check"><input id="rule-distill" type="checkbox" checked={distill} onChange={(e) => setDistill(e.target.checked)} /> <span><b>Distill notes automatically</b><span className="faint">Once for each note, when it’s finished. Editing it afterwards doesn’t distill it again.</span></span></label>
+          {distill && (
             <div className="form-row">
-              <Field label="Cards from one note, at most">
-                <input id="rule-max" type="number" min={1} max={20} value={maxCards} onChange={(e) => setMaxCards(Number(e.target.value))} />
+              <Field label="Distilled by">
+                <select id="rule-agent" value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+                  <option value="">Any agent (the first one free)</option>
+                  {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
               </Field>
-              <fieldset className="rule-group">
-                <legend>Sizes</legend>
-                {sizes.map((size) => <label key={size}><input id={`rule-size-${size}`} type="checkbox" checked={allowed.includes(size)} onChange={(e) => setAllowed(e.target.checked ? [...allowed, size] : allowed.filter((s) => s !== size))} /> {size}</label>)}
-              </fieldset>
+              <Field label="Finished after (minutes with no edit)">
+                <input id="rule-quiet" type="number" min={1} max={10080} value={quiet} onChange={(e) => setQuiet(Number(e.target.value))} />
+              </Field>
             </div>
-            <fieldset className="rule-group">
-              <legend>Give the work to</legend>
-              {agents.map((a) => <label key={a.id}><input id={`rule-agent-${a.id}`} type="checkbox" checked={givenTo.includes(a.id)} onChange={(e) => setGivenTo(e.target.checked ? [...givenTo, a.id] : givenTo.filter((id) => id !== a.id))} /> {a.name}</label>)}
-            </fieldset>
-            <p className="rule-warning">Notes can carry text from outside, such as scanner output or advisories. These agents will act on work nobody has read first, so choose ones with only the access they need. Their change sets still wait for a person to approve.</p>
-          </>
-        )}
-        <Field label="Change sets">
-          <select id="rule-change-set" value={changeSet} onChange={(e) => setChangeSet(e.target.value as FolderRule['changeSet'])}>
-            <option value="shared">Add each note’s work to the open change set</option>
-            <option value="own">Give each note its own change set</option>
-          </select>
-        </Field>
-        <div className="schedule-actions">
-          <button type="button" className="button primary" disabled={busy || (distill && accepts && (!agentId || !givenTo.length || !allowed.length))} onClick={() => void save()}>Save</button>
-          <button type="button" className="text-button" onClick={onClose}>Cancel</button>
-          {rule && <button type="button" className="text-button" onClick={() => void remove()}>Remove the rule</button>}
+          )}
+          {distill && <label className="rule-check"><input id="rule-accepts" type="checkbox" checked={accepts} onChange={(e) => setAccepts(e.target.checked)} /> <span><b>Accept work items without asking</b><span className="faint">They go straight to the agents you choose. Anything over these limits, or from a note another agent wrote, waits for a person. This needs one chosen agent to distill.</span></span></label>}
+          {distill && accepts && (
+            <>
+              <div className="form-row">
+                <Field label="Cards from one note, at most">
+                  <input id="rule-max" type="number" min={1} max={20} value={maxCards} onChange={(e) => setMaxCards(Number(e.target.value))} />
+                </Field>
+                <fieldset className="rule-group">
+                  <legend>Sizes</legend>
+                  {sizes.map((size) => <label key={size}><input id={`rule-size-${size}`} type="checkbox" checked={allowed.includes(size)} onChange={(e) => setAllowed(e.target.checked ? [...allowed, size] : allowed.filter((s) => s !== size))} /> {size}</label>)}
+                </fieldset>
+              </div>
+              <fieldset className="rule-group">
+                <legend>Give the work to</legend>
+                {agents.map((a) => <label key={a.id}><input id={`rule-agent-${a.id}`} type="checkbox" checked={givenTo.includes(a.id)} onChange={(e) => setGivenTo(e.target.checked ? [...givenTo, a.id] : givenTo.filter((id) => id !== a.id))} /> {a.name}</label>)}
+              </fieldset>
+              <p className="rule-warning">Notes can carry text from outside, such as scanner output or advisories. These agents will act on work nobody has read first, so choose ones with only the access they need. Their change sets still wait for a person to approve.</p>
+            </>
+          )}
+          <Field label="Change sets">
+            <select id="rule-change-set" value={changeSet} onChange={(e) => setChangeSet(e.target.value as FolderRule['changeSet'])}>
+              <option value="shared">Add each note’s work to the open change set</option>
+              <option value="own">Give each note its own change set</option>
+            </select>
+          </Field>
         </div>
       </div>
     </Dialog>

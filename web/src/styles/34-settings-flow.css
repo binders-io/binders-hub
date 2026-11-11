@@ -1,0 +1,23 @@
+/* Settings → How work flows: the switches as rows, their dialogs, and Tell a channel. */
+.flow-sections .rows-trailing { gap: var(--space-8); }
+.flow-sections .rows-trailing .switch { padding: var(--space-4); }
+.flow-no-repo p { margin: 0; padding: var(--space-16); font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); }
+.flow-no-repo a { color: var(--text); font-weight: 600; }
+.flow-who { margin: 0; font-size: var(--font-13); color: var(--muted); }
+.flow-dialog { display: grid; gap: var(--space-16); }
+.flow-dialog > p { margin: 0; }
+.issues-status { margin: 0; font-size: var(--font-13); line-height: var(--leading-13); color: var(--text-2); }
+.issues-status.problem { color: var(--red); }
+.issues-status.faint { color: var(--muted); }
+.issues-status a { display: inline-flex; align-items: center; gap: 2px; color: var(--text); font-weight: 600; }
+/* Tell a channel's dialog: where it posts, the address's box, and how the last post or test went. */
+.tell-dialog { display: grid; gap: var(--space-16); }
+.tell-where { margin: 0; font-size: var(--font-14); color: var(--text-2); }
+.tell-form { gap: var(--space-8); }
+.tell-status { margin: 0; font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); }
+.tell-status.problem { color: var(--red); }
+/* Making a repo from the repo picker (used on other pages too). */
+.repo-make { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-8); margin-top: var(--space-8); padding: 10px; border-radius: var(--r); border: 1px dashed var(--line-strong); }
+.repo-make select, .repo-make input.mono { height: var(--control-sm); padding: 0 var(--space-8); border-radius: var(--r-sm); border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font-size: var(--font-13); }
+.repo-make input.mono { flex: 1; min-width: 140px; }
+.people-suggestions .make-repo { color: var(--text); border-top: 1px solid var(--line); border-radius: 0 0 var(--r-sm) var(--r-sm); }

@@ -1,0 +1,7 @@
+/* A choice of a few, side by side: the chosen one raised. As high as a button, the frame included. */
+.segmented { display: inline-flex; max-width: 100%; padding: 3px; gap: 2px; border-radius: 10px; background: var(--fill-1); border: 1px solid var(--line); }
+.segmented button { flex: 1 1 auto; height: calc(var(--control) - 8px); padding: 0 12px; border-radius: var(--r-sm); font: 600 var(--font-13)/1 var(--body); color: var(--muted); white-space: nowrap; transition: background var(--dur-fast), color var(--dur-fast); }
+.segmented button:hover:not(:disabled) { color: var(--text); }
+.segmented button.on, .segmented button[aria-pressed='true'], .segmented button[aria-checked='true'] { background: var(--selected); color: var(--text); box-shadow: var(--selected-shadow); }
+.segmented button:disabled { cursor: not-allowed; opacity: 0.5; }
+.segmented button:focus-visible { outline-offset: -2px; }

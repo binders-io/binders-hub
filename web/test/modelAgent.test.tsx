@@ -6,6 +6,7 @@ import { Agents } from '../src/screens/Agents'
 import { Home } from '../src/screens/Home'
 import { AgentsNow } from '../src/brain/rail/AgentsNow'
 import { UIContext, type UI } from '../src/ui'
+import { ContextMenuHost } from '../src/components/ContextMenu'
 import { agent, hubState, me, mount, standInHub, standInRoute } from './harness'
 
 afterEach(() => {
@@ -25,12 +26,26 @@ const azure: Agent = {
 }
 const broken: Agent = { ...azure, id: 'm2', name: 'Broken one', endpoint: { ...azure.endpoint!, ready: { ok: false, why: 'The key was refused: it is wrong or has run out.', at: 'now' } } }
 
-/** The page and its Add dialog, as the Binder's owner. */
+/** Add an agent's first step, its choice of what kind. */
+async function choosing() {
+  fireEvent.click(screen.getAllByRole('button', { name: 'Add an agent' })[0])
+  return (await screen.findByRole('dialog', { name: 'Add an agent' })) as HTMLElement
+}
+
+/** The page and the step of Add an agent that adds a model, as the Binder's owner. */
 async function opened(you: unknown = owner, agents: Agent[] = []) {
   standInHub(() => hubState({ agents }), you)
   await mount(<Agents />)
-  fireEvent.click(screen.getByRole('button', { name: /A model, with no machine/ }))
-  return (await screen.findByRole('dialog', { name: 'Add a model, with no machine' })) as HTMLElement
+  const dialog = await choosing()
+  fireEvent.click(within(dialog).getByRole('button', { name: /A model, with no machine/ }))
+  await within(dialog).findByRole('heading', { name: 'Which model?' })
+  return dialog
+}
+
+/** The rare actions of an agent's card, in its menu. */
+async function menuOf(name: string) {
+  fireEvent.click(screen.getByRole('button', { name: `More for ${name}` }))
+  return (await screen.findAllByRole('menuitem')).map((item) => item.textContent)
 }
 
 const pick = (dialog: HTMLElement, name: RegExp) => fireEvent.click(within(dialog).getByRole('radio', { name }))
@@ -40,12 +55,15 @@ describe('adding a model with no machine', () => {
   it('is offered to a Binder’s owner, and a member is told who can add one', async () => {
     standInHub(undefined, owner)
     await mount(<Agents />)
-    expect(screen.getByRole('button', { name: /A model, with no machine/ }).textContent).toContain('It can’t read or change code.')
+    const offered = within(await choosing()).getByRole('button', { name: /A model, with no machine/ }) as HTMLButtonElement
+    expect(offered.disabled).toBe(false)
+    expect(offered.textContent).toContain('It can’t read or change code.')
     cleanup()
     standInHub(undefined, member)
     await mount(<Agents />)
-    expect(screen.queryByRole('button', { name: /A model, with no machine/ })).toBeNull()
-    expect(screen.getByText(/Only this Binder’s owners and admins can add a model with no machine/)).toBeTruthy()
+    const refused = within(await choosing()).getByRole('button', { name: /A model, with no machine/ }) as HTMLButtonElement
+    expect(refused.disabled).toBe(true)
+    expect(refused.textContent).toMatch(/Only this binder’s owners and admins can add one/)
   })
 
   it('shows each kind’s own fields and no others', async () => {
@@ -178,13 +196,16 @@ describe('adding a model with no machine', () => {
 describe('an agent that is a model', () => {
   const boardWith = async (agents: Agent[], you: unknown = owner) => {
     standInHub(() => hubState({ agents }), you)
-    await mount(<Agents />)
+    await mount(<><Agents /><ContextMenuHost /></>)
   }
 
-  it('reads “Runs on this hub” with its model and the host of its address', async () => {
+  it('reads ready, and “Runs on this hub” with its model and the host of its address', async () => {
     await boardWith([azure])
     const pieces = [...document.querySelectorAll('.agent-meta > .agent-piece')].map((p) => p.textContent)
-    expect(pieces).toEqual(['Ready', 'Runs on this hub', 'gpt-deploy at your-resource.openai.azure.com'])
+    expect(pieces).toEqual(['Ready'])
+    const where = [...document.querySelectorAll('.agent-where > span')].map((p) => p.textContent)
+    expect(where).toEqual(['Runs on this hub', 'gpt-deploy at your-resource.openai.azure.com'])
+    expect(document.querySelector('.agent-facts')!.textContent).toContain('Takes cards, chats, debriefs and challenges')
   })
 
   it('reads the model’s name at Anthropic when it has no address, and the hub’s own model plainly', async () => {
@@ -215,10 +236,10 @@ describe('an agent that is a model', () => {
     expect(screen.queryByText(/runner/i)).toBeNull()
     expect(screen.queryByRole('button', { name: /Start the runner|Update it now|Restart/ })).toBeNull()
     expect(screen.queryByRole('link', { name: /Terminal/ })).toBeNull()
-    expect(screen.queryByRole('button', { name: /New token/ })).toBeNull()
-    // It can still be changed and revoked.
+    expect(screen.queryByText('Details')).toBeNull()
+    // It can still be changed and revoked, and its menu has nothing else.
     expect(screen.getByRole('button', { name: 'Edit' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Revoke Azure assistant' })).toBeTruthy()
+    expect(await menuOf('Azure assistant')).toEqual(['Revoke'])
   })
 
   it('saves its edit with the PATCH address, and sends no key when the box is empty', async () => {
@@ -274,10 +295,11 @@ describe('an agent that is a model, elsewhere', () => {
   it('reads on a Home tile as running on the hub, with no runner to start', async () => {
     standInHub(() => hubState({ agents: [azure, broken] }), owner)
     await mount(<UIContext.Provider value={ui}><Home /></UIContext.Provider>)
-    const tile = screen.getByRole('heading', { name: 'Azure assistant' }).closest('article')!
+    // Neither holds a card, so each is a row under the agents at work, which opens the Agents page.
+    const tile = screen.getByRole('link', { name: /^Azure assistant/ })
     expect(tile.textContent).toContain('Runs on this hub · gpt-deploy at your-resource.openai.azure.com')
     expect(tile.textContent).toContain('Ready')
-    const sick = screen.getByRole('heading', { name: 'Broken one' }).closest('article')!
+    const sick = screen.getByRole('link', { name: /^Broken one/ })
     expect(sick.textContent).toContain('The key was refused: it is wrong or has run out.')
     expect(document.body.textContent).not.toMatch(/runner/i)
   })
@@ -297,6 +319,54 @@ describe('An address on a machine’s own network, in a form for a model the hub
     const { looksLocal } = await import('../src/components/modelAgent')
     for (const address of ['http://127.0.0.1:8000', 'http://localhost:1234/v1', 'https://10.0.0.5/v1', 'http://192.168.1.20:11434', 'http://172.20.0.3:8000/v1', 'http://spark.local:8000']) expect(looksLocal(address), address).toBe(true)
     for (const address of ['https://your-resource.openai.azure.com/openai/v1', 'https://api.openai.com/v1', 'https://172.64.0.1/v1', '']) expect(looksLocal(address), address).toBe(false)
+  })
+
+  it('takes the range mesh VPNs use, 100.64.0.0 to 100.127.255.255, as the hub does', async () => {
+    const { looksLocal } = await import('../src/components/modelAgent')
+    for (const address of ['http://100.64.0.2:8899/v1', 'http://100.100.10.1:11434', 'https://100.127.255.255/v1']) expect(looksLocal(address), address).toBe(true)
+    for (const address of ['http://100.63.255.255:8000', 'http://100.128.0.1:8000', 'https://100.1.2.3/v1']) expect(looksLocal(address), address).toBe(false)
+  })
+
+  it('takes a one-word host name as local, such as a container’s, and the names only a network has', async () => {
+    const { looksLocal } = await import('../src/components/modelAgent')
+    for (const address of ['http://ollama:11434/v1', 'http://spark/v1', 'http://gpu-box:8000', 'http://nas.lan:8080', 'http://models.internal/v1', 'http://box.home.arpa', 'http://[fd00::5]:8000', 'http://[::1]:8000']) expect(looksLocal(address), address).toBe(true)
+    for (const address of ['https://models.example.com/v1', 'http://[2001:db8::1]:8000', 'not an address at all']) expect(looksLocal(address), address).toBe(false)
+  })
+
+  it('says so beside the address in the form', async () => {
+    const dialog = await opened()
+    pick(dialog, /OpenAI’s chat API/)
+    type(dialog, /^Address/, 'http://100.64.0.2:8899/v1')
+    expect(within(dialog).getByLabelText(/^Address/).closest('.field')!.textContent).toContain('That’s the hub’s own machine or network')
+    type(dialog, /^Address/, 'https://r.openai.azure.com/openai/v1')
+    expect(within(dialog).getByLabelText(/^Address/).closest('.field')!.textContent).not.toContain('hub’s own machine')
+  })
+})
+
+describe('what the hub found wrong, in a model’s form', () => {
+  it('is said beside the box it’s about, and the box is marked', async () => {
+    const dialog = await opened()
+    standInRoute('POST', '/api/agents/endpoint', () => new Response(JSON.stringify({ error: 'The address must end in /v1.' }), { status: 400, headers: { 'content-type': 'application/json' } }))
+    type(dialog, /^Name/, 'Azure assistant')
+    pick(dialog, /OpenAI’s chat API/)
+    type(dialog, /^Address/, 'https://r.openai.azure.com/openai')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add it' }))
+    const alert = await within(dialog).findByRole('alert')
+    const box = within(dialog).getByLabelText(/^Address/)
+    expect(alert.textContent).toBe('The address must end in /v1.')
+    expect(alert.closest('.field')).toBe(box.closest('.field'))
+    expect(box.getAttribute('aria-invalid')).toBe('true')
+    // Typing again clears it.
+    type(dialog, /^Address/, 'https://r.openai.azure.com/openai/v1')
+    expect(within(dialog).queryByRole('alert')).toBeNull()
+  })
+
+  it('shows what Try it found as a status, said with words and not colour alone', async () => {
+    const dialog = await opened()
+    standInRoute('POST', '/api/agents/endpoint/test', () => ({ ok: true }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Try it' }))
+    const said = (await within(dialog).findByText('It answers and calls tools.')).closest('p')!
+    expect(said.querySelector('.status-pill.ok')!.textContent).toBe('Works')
   })
 })
 

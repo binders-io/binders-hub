@@ -1,0 +1,4 @@
+/* Save all: how many notes wait for typing to pause, on the button, in the amber of what waits on you. */
+.save-all { position: relative; }
+.save-all.waiting { color: var(--amber); }
+.save-count { position: absolute; top: -2px; right: -4px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--r-pill); background: var(--amber-wash); color: var(--amber); box-shadow: 0 0 0 2px var(--bg); font: 700 10px/16px var(--body); text-align: center; }

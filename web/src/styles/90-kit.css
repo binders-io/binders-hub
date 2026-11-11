@@ -1,0 +1,196 @@
+/* ---------- The kit: the pieces every screen is made of (src/kit, shown at #/kit) ---------- */
+
+/* A page's own column: as wide as reads well, padded alike on every screen. */
+.page { height: 100%; overflow-y: auto; padding: var(--space-32) clamp(var(--space-16), 4vw, var(--space-48)) var(--space-48); }
+.page-column { width: min(880px, 100%); margin-inline: auto; display: grid; gap: var(--space-32); align-content: start; }
+
+/* How a screen starts: its title, one line, and its one primary action. */
+.page-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-16) var(--space-24); min-width: 0; }
+.page-header-text { display: grid; gap: var(--space-4); min-width: 0; }
+.page-header .eyebrow { margin-bottom: 2px; }
+.page-title { margin: 0; font: 800 var(--font-26)/var(--leading-26) var(--display); letter-spacing: -0.02em; text-wrap: balance; overflow-wrap: anywhere; }
+.page-lead { margin: 0; max-width: 62ch; font-size: var(--font-14); line-height: var(--leading-14); color: var(--muted); text-wrap: pretty; }
+.page-action { flex: none; display: flex; gap: var(--space-8); }
+
+/* A section: a title, a line, an action at its right, and one card. */
+.section { display: grid; gap: var(--space-12); align-content: start; min-width: 0; }
+.section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-8) var(--space-16); min-width: 0; }
+.section-text { display: grid; gap: 2px; min-width: 0; }
+.section-title { margin: 0; font: 800 var(--font-16)/var(--leading-16) var(--display); letter-spacing: -0.005em; overflow-wrap: anywhere; }
+.section-lead { margin: 0; max-width: 62ch; font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); }
+.section-action { flex: none; display: flex; gap: var(--space-8); }
+.section > .disclosure { margin-top: calc(-1 * var(--space-4)); }
+/* One frame, clipped to its corners without becoming a scroller, so a table's header can still stick to the page. */
+.section-card { min-width: 0; border-radius: var(--r-lg); border: 1px solid var(--line); background: var(--tile); box-shadow: var(--tile-shadow); overflow: clip; }
+.section-card > :not(.rows, .data-table, .data-table-rows, table) { padding: var(--space-16); }
+.section-card > * + * { border-top: 1px solid var(--line); }
+/* Never a card in a card: one that finds itself in a section's card loses its own frame. */
+.section-card :is(.section-card, .settings-card, .options, .status-list, .rows, .schedule-list, .setup-steps) { border: 0; border-radius: 0; box-shadow: none; background: none; }
+
+/* Rows: a list of things, divided by hairlines; a card's frame when on their own. */
+.rows { list-style: none; margin: 0; padding: 0; min-width: 0; border-radius: var(--r-lg); border: 1px solid var(--line); background: var(--tile); box-shadow: var(--tile-shadow); overflow: clip; }
+.rows-item { display: flex; align-items: center; min-width: 0; }
+.rows-item + .rows-item { border-top: 1px solid var(--line); }
+.rows-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-12); min-height: 56px; padding: 10px var(--space-16); color: inherit; text-align: left; text-decoration: none; }
+.rows-item:has(.rows-trailing) .rows-main { padding-right: var(--space-8); }
+.rows-item.pressable .rows-main { cursor: pointer; transition: background var(--dur-fast); }
+.rows-item.pressable .rows-main:hover { background: var(--row-hover); }
+.rows-item.pressable .rows-main:active { background: var(--fill-2); }
+.rows-main:focus-visible { outline-offset: -2px; border-radius: inherit; }
+.rows-item.current .rows-main { background: var(--fill-1); box-shadow: inset 2px 0 0 var(--text); }
+.rows-item.disabled .rows-main { opacity: 0.55; cursor: not-allowed; }
+.rows-icon { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: var(--r-sm); background: var(--fill-2); color: var(--text-2); }
+.rows-icon > img, .rows-icon > .avatar { border-radius: inherit; }
+.rows-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.rows-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 var(--font-14)/var(--leading-14) var(--body); color: var(--text); }
+.rows-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); }
+.rows-status { flex: none; display: flex; align-items: center; gap: var(--space-8); }
+.rows-chevron { flex: none; color: var(--faint); transition: transform var(--dur-fast), color var(--dur-fast); }
+.rows-item.pressable .rows-main:hover .rows-chevron { color: var(--text); transform: translateX(2px); }
+.rows-trailing { flex: none; display: flex; align-items: center; gap: var(--space-4); padding: 0 var(--space-12) 0 var(--space-4); }
+
+/* A table on a wide window; the same rows stacked on a phone. */
+.data-table { display: grid; gap: var(--space-12); min-width: 0; }
+.section-card > .data-table { gap: 0; }
+.section-card > .data-table > .data-table-filter { margin: var(--space-12) var(--space-12) var(--space-4); }
+.data-table-filter { position: relative; display: flex; align-items: center; }
+.data-table-filter > svg { position: absolute; left: 11px; color: var(--faint); pointer-events: none; }
+.data-table-filter .input { padding-left: 34px; padding-right: 36px; }
+.data-table-filter .input::-webkit-search-cancel-button { display: none; }
+.data-table-filter .icon-button { position: absolute; right: 2px; }
+.data-table-grid { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: var(--font-14); }
+.data-table > .data-table-grid, .data-table > .data-table-rows { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--tile); box-shadow: var(--tile-shadow); overflow: clip; }
+.section-card .data-table > .data-table-grid, .section-card .data-table > .data-table-rows { border: 0; border-radius: 0; box-shadow: none; background: none; }
+.data-table-grid th { position: sticky; top: 0; z-index: 1; height: 38px; padding: 0 var(--space-16); border-bottom: 1px solid var(--line); background: var(--surface); text-align: left; font: 600 var(--font-12)/var(--leading-12) var(--body); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.data-table-grid td { height: 52px; padding: 0 var(--space-16); border-top: 1px solid var(--line); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); vertical-align: middle; }
+.data-table-grid tbody tr:first-child td { border-top: 0; }
+.data-table-grid .end { text-align: right; }
+.data-table-grid td:first-child { color: var(--text); font-weight: 600; }
+.data-table-grid.pressable tbody tr { cursor: pointer; transition: background var(--dur-fast); }
+.data-table-grid.pressable tbody tr:hover { background: var(--row-hover); }
+.data-table-grid.pressable tbody tr:hover .data-table-go { color: var(--text); }
+.data-table-grid col.data-table-go-col { width: 44px; }
+.data-table-go { padding: 0 var(--space-12) 0 0 !important; color: var(--faint); text-align: right; }
+.data-table-go svg { vertical-align: middle; }
+.data-table-open { display: inline; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: inherit; color: inherit; text-align: left; vertical-align: middle; }
+.data-table-open:focus-visible { outline-offset: 3px; border-radius: 4px; }
+.data-table-dot { margin: 0 6px; color: var(--faint); }
+.data-table-empty { padding: var(--space-8); }
+.data-table-more { display: flex; align-items: center; justify-content: space-between; gap: var(--space-12); font-size: var(--font-13); color: var(--muted); }
+.section-card > .data-table > .data-table-more { padding: var(--space-12) var(--space-16); border-top: 1px solid var(--line); }
+
+/* The guided dialog: the choice, then the chosen way's steps. */
+.guided { display: grid; gap: var(--space-16); min-width: 0; }
+.guided-head { display: grid; gap: var(--space-4); }
+.guided-title { margin: 0; font: 800 var(--font-16)/var(--leading-16) var(--display); }
+.guided-lead { margin: 0; font-size: var(--font-14); line-height: var(--leading-14); color: var(--muted); }
+.guided-options { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-8); }
+.guided-option { display: flex; align-items: center; gap: var(--space-12); width: 100%; min-height: 64px; padding: var(--space-12) var(--space-12) var(--space-12) var(--space-16); border-radius: var(--r); border: 1px solid var(--line-strong); background: var(--control-bg); text-align: left; transition: border-color var(--dur-fast), background var(--dur-fast); }
+.guided-option:hover:not(:disabled) { border-color: var(--field-line-hover); background: var(--control-hover); }
+/* A way in that isn't this person's: quieter, and its line, which says why, still easy to read. */
+.guided-option:disabled { cursor: not-allowed; background: transparent; border-style: dashed; }
+.guided-option:disabled .guided-option-icon, .guided-option:disabled .guided-option-name b, .guided-option:disabled .guided-option-go { opacity: 0.5; }
+.guided-option-icon { flex: none; display: grid; place-items: center; width: 36px; height: 36px; border-radius: var(--r-sm); background: var(--fill-2); color: var(--text); }
+.guided-option-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.guided-option-name { display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--space-8); }
+.guided-option-name b { font: 700 var(--font-14)/var(--leading-14) var(--body); color: var(--text); }
+.guided-option-line { font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); }
+.guided-recommended { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: var(--r-pill); background: var(--green-wash); color: var(--green); font: 700 var(--font-12)/1 var(--body); }
+.guided-option-go { flex: none; color: var(--faint); }
+.guided-option:hover:not(:disabled) .guided-option-go { color: var(--text); }
+.guided-progress { display: flex; align-items: center; gap: var(--space-12); margin-bottom: var(--space-4); }
+.guided-count { flex: none; font: 600 var(--font-12)/var(--leading-12) var(--body); color: var(--muted); }
+.guided-bar { flex: 1; display: flex; gap: var(--space-4); max-width: 160px; }
+.guided-bar i { flex: 1; height: 4px; border-radius: 2px; background: var(--fill-3); transition: background var(--dur); }
+.guided-bar i.done { background: var(--progress); }
+.guided-step { min-width: 0; }
+
+/* Nothing here yet. */
+.empty-state { display: grid; justify-items: center; gap: var(--space-4); padding: var(--space-48) var(--space-24); text-align: center; }
+.empty-state.compact { padding: var(--space-24) var(--space-16); }
+.empty-state-icon { display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: var(--space-8); border-radius: var(--r); background: var(--fill-2); color: var(--muted); }
+.empty-state.compact .empty-state-icon { width: 36px; height: 36px; margin-bottom: var(--space-4); }
+.empty-state-title { margin: 0; font: 700 var(--font-14)/var(--leading-14) var(--body); color: var(--text); text-wrap: balance; }
+.empty-state-line { margin: 0; max-width: 46ch; font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); text-wrap: pretty; }
+.empty-state-action { margin-top: var(--space-12); display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-8); }
+
+/* A state in a pill. */
+.status-pill { --tone: var(--faint); display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px 0 8px; border-radius: var(--r-pill); background: color-mix(in srgb, var(--tone) 12%, transparent); color: var(--tone); font: 600 var(--font-12)/1 var(--body); white-space: nowrap; }
+.status-pill i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.status-pill.ok { --tone: var(--green); }
+.status-pill.running { --tone: var(--blue); }
+.status-pill.running i { animation: status-beat 1.6s ease-in-out infinite; }
+.status-pill.waiting { --tone: var(--amber); }
+.status-pill.review { --tone: var(--violet); }
+.status-pill.bad { --tone: var(--red); }
+.status-pill.off { --tone: var(--muted); background: var(--fill-2); }
+.status-pill.off i { background: var(--faint); }
+@keyframes status-beat { 50% { opacity: 0.35; } }
+
+/* "How this works": one line closed, its words open. */
+.disclosure > summary { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding-right: 4px; cursor: pointer; list-style: none; border-radius: var(--r-sm); font: 600 var(--font-13)/1 var(--body); color: var(--muted); }
+.disclosure > summary::-webkit-details-marker { display: none; }
+.disclosure > summary:hover { color: var(--text); }
+.disclosure-chevron { flex: none; transition: transform var(--dur-fast) var(--ease-out); }
+.disclosure[open] > summary .disclosure-chevron { transform: rotate(90deg); }
+.disclosure-body { display: grid; gap: var(--space-8); max-width: 62ch; padding: var(--space-8) 0 var(--space-4) 20px; font-size: var(--font-13); line-height: 1.55; color: var(--muted); }
+.disclosure-body p { margin: 0; }
+
+/* Something on its way. */
+.skeleton { display: block; max-width: 100%; background: var(--skeleton); background-image: linear-gradient(90deg, transparent, var(--skeleton-shine), transparent); background-size: 200% 100%; background-repeat: no-repeat; animation: skeleton-sheen 1.4s ease-in-out infinite; }
+.skeleton-lines { display: grid; gap: var(--space-8); }
+.rows-text > .skeleton + .skeleton { margin-top: 6px; }
+@keyframes skeleton-sheen { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+
+/* The ⋯ of a row or a card. */
+.menu-dots[aria-expanded='true'] { background: var(--fill-2); color: var(--text); }
+
+/* Underline tabs: a few views of one thing. Each is a button with aria-pressed or aria-selected. */
+.tabs { display: flex; gap: var(--space-4); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+.tabs > button, .tabs > a { position: relative; display: inline-flex; align-items: center; gap: var(--space-8); height: 40px; padding: 0 var(--space-12); border-radius: var(--r-sm) var(--r-sm) 0 0; font: 600 var(--font-13)/1 var(--body); color: var(--muted); text-decoration: none; white-space: nowrap; }
+.tabs > :hover { color: var(--text); }
+.tabs > [aria-pressed='true'], .tabs > [aria-selected='true'], .tabs > [aria-current='page'] { color: var(--text); }
+.tabs > [aria-pressed='true']::after, .tabs > [aria-selected='true']::after, .tabs > [aria-current='page']::after { content: ""; position: absolute; left: var(--space-8); right: var(--space-8); bottom: -1px; height: 2px; border-radius: 2px; background: var(--text); }
+.tabs > :focus-visible { outline-offset: -2px; }
+
+/* A word on hover for a button that is only an icon: the same words as its aria-label, which is what a screen reader
+   says. Not on a touchscreen, where there's no hover to show it. A frame that clips (a section's card) clips it too: use
+   title there. */
+@media (hover: hover) {
+  :where([data-tip]) { position: relative; }
+  [data-tip]::after { content: attr(data-tip); position: absolute; z-index: var(--z-popover); bottom: calc(100% + 6px); left: 50%; translate: -50% 2px; padding: 5px 8px; border-radius: 6px; background: var(--toast-bg); color: var(--toast-ink); font: 600 var(--font-12)/1.2 var(--body); white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity var(--dur-fast), translate var(--dur-fast); }
+  [data-tip]:hover::after, [data-tip]:focus-visible::after { opacity: 1; translate: -50% 0; transition-delay: 0.4s; }
+  [data-tip][data-tip-below]::after { bottom: auto; top: calc(100% + 6px); }
+}
+
+/* A phone: the page's action under its line, as wide as the screen; a section's action stays at its right. */
+@media (max-width: 600px) {
+  .page { padding: var(--space-24) var(--space-16) var(--space-48); }
+  .page-header { flex-direction: column; align-items: stretch; }
+  .page-title { font-size: var(--font-20); line-height: var(--leading-20); }
+  .page-action > * { flex: 1; }
+  .rows-main { min-height: 60px; }
+  .guided-option { min-height: 68px; }
+}
+/* A finger: links in a row of tabs are as tall as buttons are. */
+@media (hover: none) {
+  .tabs > a { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton, .status-pill.running i { animation: none; }
+}
+
+/* ---------- The style guide (#/kit) ---------- */
+.kit-page .page-column { width: min(1080px, 100%); }
+.kit-grid { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-12); }
+.kit-grid.column { flex-direction: column; align-items: stretch; }
+.kit-cell { display: grid; gap: var(--space-8); align-content: start; min-width: 0; }
+.kit-label { font: 600 var(--font-12)/var(--leading-12) var(--body); color: var(--faint); }
+.kit-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: var(--space-24); }
+.kit-swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--space-8); }
+.kit-swatch { display: grid; gap: 6px; font-size: var(--font-12); color: var(--muted); }
+.kit-swatch i { display: block; height: 40px; border-radius: var(--r-sm); border: 1px solid var(--line); }
+.kit-type { display: grid; gap: var(--space-8); }
+.kit-type p { margin: 0; }
+.kit-repo svg { margin-right: 6px; vertical-align: -2px; color: var(--muted); }
+.kit-pre { margin: 0; padding: 12px 14px; border-radius: var(--r-sm); background: var(--terminal); color: #e8e6ef; font: 12.5px/1.55 var(--mono); overflow-x: auto; }

@@ -209,8 +209,8 @@ with the Mac.
 
 - A person sets an agent up in Agents: name, tool, repos, binders, skills. The hub gives a token (`bnd_…`), shown once;
   only its hash is kept. A new token replaces the old; revoking stops it at once and puts what it held back on the board.
-- **Add a machine** (`hub/src/routes/agents.ts`, `runner/src/daemon.ts`) is the usual way to set one up. Anyone in a binder
-  makes one line on the Agents page (`POST /api/agents/join-line`): `curl -fsSL <hub>/install | sh -s -- join bnj_…`, or
+- **A machine with your code on it** (`hub/src/routes/agents.ts`, `runner/src/daemon.ts`), the first choice under the Agents
+  page's one Add an agent button, is the usual way to set one up. Anyone in a binder makes one line there (`POST /api/agents/join-line`): `curl -fsSL <hub>/install | sh -s -- join bnj_…`, or
   its PowerShell form, good for 24 hours on any number of machines. Run in the folder with the code, `binders join` looks
   at the machine: which of the agent tools in `shared/agents.ts` are installed, and which GitHub repos the folder holds. It
   sends that to `POST /api/machines/join`, which takes no sign-in, as the line is the proof; the line stops working when

@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 import axe from 'axe-core'
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mount, standInHub } from './harness'
 import { Flow } from '../src/screens/settings/Flow'
 import { Toast } from '../src/components/Toast'
 
-// Settings → How work flows → Tell a channel: one box for the address, a test, and stopping. The hub never sends the
-// address back, so all the page knows is whether one is set, where it goes and how the last post went.
+// Settings → How work flows → Tell a channel: one row that says where it posts, opening a dialog with one box for the
+// address, a test, and stopping. The hub never sends the address back, so all the page knows is whether one is set, where
+// it goes and how the last post went.
 
 interface Status { set: boolean; host?: string; last?: { at: string; ok: boolean; answered: string }; retryAt?: string; mayManage?: boolean }
 interface Sent { method: string; url: string; body?: Record<string, unknown> }
@@ -47,6 +48,11 @@ function hub(status: Status, answers: Record<string, () => Response> = {}) {
 }
 
 const box = () => screen.getByLabelText(/Channel address/) as HTMLInputElement
+/** Tell a channel's dialog, opened from its row. */
+const openTell = async () => {
+  fireEvent.click(await screen.findByRole('button', { name: /No channel yet|Telling/ }))
+  return within(screen.getByRole('dialog', { name: 'Tell a channel' }))
+}
 const refusals = () => {
   const said: string[] = []
   window.addEventListener('binders-refused', (event) => said.push((event as CustomEvent<{ message: string }>).detail.message))
@@ -63,7 +69,9 @@ describe('Tell a channel, for an owner or an admin', () => {
     hub({ set: false, mayManage: true })
     await mount(<Flow />)
     expect(await screen.findByRole('heading', { name: 'Tell a channel' })).toBeTruthy()
-    expect(screen.getByText(/An incoming webhook from Slack, or any address that takes a JSON post/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /No channel yet/ }).textContent).toContain('Off')
+    const dialog = await openTell()
+    expect(dialog.getByText(/An incoming webhook from Slack, or any address that takes a JSON post/)).toBeTruthy()
     const input = box()
     // The name is in the label that holds the box, written before it.
     const label = input.closest('label')!
@@ -73,19 +81,19 @@ describe('Tell a channel, for an owner or an admin', () => {
     expect(document.getElementById('tell-hint')!.textContent).toMatch(/https:\/\//)
   })
 
-  it('leaves Save, the test and stopping off until there is something to save, try or stop', async () => {
+  it('leaves Save off until there is something to save, and offers a test and stopping only once there’s a channel', async () => {
     hub({ set: false, mayManage: true })
     await mount(<Flow />)
-    await screen.findByRole('heading', { name: 'Tell a channel' })
+    await openTell()
     expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByRole('button', { name: 'Send a test' }) as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByRole('button', { name: 'Stop telling it' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Send a test' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Stop telling it' })).toBeNull()
   })
 
   it('saves the address, clears the box, says it’s kept, and shows only where it goes', async () => {
     const { sent } = hub({ set: false, mayManage: true })
     await mount(<Flow />)
-    await screen.findByRole('heading', { name: 'Tell a channel' })
+    await openTell()
     fireEvent.change(box(), { target: { value: address } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await screen.findByText('Saved')
@@ -100,7 +108,7 @@ describe('Tell a channel, for an owner or an admin', () => {
   it('saves from the keyboard, with Enter in the box', async () => {
     const { sent } = hub({ set: false, mayManage: true })
     await mount(<Flow />)
-    await screen.findByRole('heading', { name: 'Tell a channel' })
+    await openTell()
     fireEvent.change(box(), { target: { value: address } })
     fireEvent.submit(box().closest('form')!)
     await waitFor(() => expect(sent.some((s) => s.method === 'PUT')).toBe(true))
@@ -110,7 +118,7 @@ describe('Tell a channel, for an owner or an admin', () => {
     const said = refusals()
     hub({ set: false, mayManage: true }, { 'PUT /api/tell': () => json({ error: 'The address has to start with https://, so what’s sent can’t be read on the way.' }, 422) })
     await mount(<><Flow /><Toast /></>)
-    await screen.findByRole('heading', { name: 'Tell a channel' })
+    await openTell()
     fireEvent.change(box(), { target: { value: 'http://hooks.example.com/x' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(said.join(' ')).toMatch(/has to start with https:\/\//))
@@ -121,6 +129,7 @@ describe('Tell a channel, for an owner or an admin', () => {
   it('sends a test and says what came of it, where a screen reader will hear it', async () => {
     const { sent } = hub({ set: true, host: 'hooks.slack.com', mayManage: true })
     await mount(<Flow />)
+    await openTell()
     fireEvent.click(await screen.findByRole('button', { name: 'Send a test' }))
     await screen.findByText(/The test arrived\. It answered 200: ok\./)
     expect(sent.some((s) => s.method === 'POST' && s.url === '/api/tell/test')).toBe(true)
@@ -130,6 +139,7 @@ describe('Tell a channel, for an owner or an admin', () => {
   it('says when the test didn’t arrive, with what the address answered', async () => {
     hub({ set: true, host: 'hooks.slack.com', mayManage: true }, { 'POST /api/tell/test': () => json({ ok: false, answered: 'It answered 404: no_service.' }) })
     await mount(<Flow />)
+    await openTell()
     fireEvent.click(await screen.findByRole('button', { name: 'Send a test' }))
     const line = await screen.findByText(/The test didn’t arrive\. It answered 404: no_service\./)
     expect(line.classList.contains('problem')).toBe(true)
@@ -139,7 +149,9 @@ describe('Tell a channel, for an owner or an admin', () => {
     const ago = new Date(Date.now() - 5 * 60_000).toISOString()
     hub({ set: true, host: 'hooks.slack.com', mayManage: true, last: { at: ago, ok: false, answered: 'It answered 500.' }, retryAt: new Date(Date.now() + 5 * 60_000).toISOString() })
     await mount(<Flow />)
-    const line = await screen.findByText(/The last post didn’t work 5m ago\. It answered 500\./)
+    // The row says it in a word, and the line.
+    expect((await screen.findByRole('button', { name: /Telling hooks\.slack\.com/ })).textContent).toContain('Failing')
+    const line = (await openTell()).getByText(/The last post didn’t work 5m ago\. It answered 500\./)
     expect(line.classList.contains('problem')).toBe(true)
     expect(line.textContent).toMatch(/It tries again at .*; what’s waiting is posted then\./)
   })
@@ -147,26 +159,32 @@ describe('Tell a channel, for an owner or an admin', () => {
   it('shows a post that worked as fine, not as a problem', async () => {
     hub({ set: true, host: 'hooks.slack.com', mayManage: true, last: { at: new Date(Date.now() - 2 * 3600_000).toISOString(), ok: true, answered: 'It answered 200: ok.' } })
     await mount(<Flow />)
-    const line = await screen.findByText(/The last post worked 2h ago\. It answered 200: ok\./)
+    const line = (await openTell()).getByText(/The last post worked 2h ago\. It answered 200: ok\./)
     expect(line.classList.contains('problem')).toBe(false)
   })
 
   it('stops telling only after a second press, and then shows no address set', async () => {
     const { sent } = hub({ set: true, host: 'hooks.slack.com', mayManage: true })
     await mount(<Flow />)
+    await openTell()
     fireEvent.click(await screen.findByRole('button', { name: 'Stop telling it' }))
     expect(sent.some((s) => s.method === 'DELETE')).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: 'Stop telling it? Press again' }))
     await waitFor(() => expect(sent.some((s) => s.method === 'DELETE')).toBe(true))
     await waitFor(() => expect(screen.queryByText('hooks.slack.com')).toBeNull())
-    expect((screen.getByRole('button', { name: 'Send a test' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Send a test' })).toBeNull()
+    expect(screen.getByRole('button', { name: /No channel yet/ })).toBeTruthy()
   })
 
   it('has nothing for axe to object to', async () => {
     hub({ set: true, host: 'hooks.slack.com', mayManage: true, last: { at: new Date().toISOString(), ok: true, answered: 'It answered 200: ok.' } })
     await mount(<Flow />)
     await screen.findByRole('heading', { name: 'Tell a channel' })
-    const { violations } = await axe.run(document.getElementById('tell-title')!.closest('section')!, { rules: { 'color-contrast': { enabled: false } } })
+    const quiet = { rules: { 'color-contrast': { enabled: false } } }
+    const row = await axe.run(document.getElementById('tell-title')!.closest('section')!, quiet)
+    expect(row.violations.flatMap((v) => v.nodes.map((n) => `${v.id}: ${n.target.join(' ')}`))).toEqual([])
+    await openTell()
+    const { violations } = await axe.run(screen.getByRole('dialog'), quiet)
     expect(violations.flatMap((v) => v.nodes.map((n) => `${v.id}: ${n.target.join(' ')}`))).toEqual([])
   })
 })
@@ -176,6 +194,8 @@ describe('Tell a channel, for a member', () => {
     hub({ set: true, host: 'hooks.slack.com', mayManage: false })
     await mount(<Flow />)
     expect(await screen.findByText('This binder tells a channel when something starts waiting.')).toBeTruthy()
+    // A row with nothing to open.
+    expect(screen.queryByRole('button', { name: /tells a channel/ })).toBeNull()
     expect(screen.queryByLabelText(/Channel address/)).toBeNull()
     expect(screen.queryByRole('button', { name: 'Send a test' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Stop telling it' })).toBeNull()

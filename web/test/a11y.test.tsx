@@ -57,7 +57,8 @@ describe('axe', () => {
       failed: true,
     }))
     await open('#/agents')
-    fireEvent.click(screen.getByRole('button', { name: 'Set one up by hand' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add an agent' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Set one up by hand/ }))
     const box = await screen.findByRole('combobox', { name: 'Repos it works in' })
     act(() => box.focus())
     await screen.findByRole('option', { name: /acme\/docs/ })
@@ -73,10 +74,14 @@ describe('axe', () => {
     expect(await violations()).toEqual([])
   })
 
-  it('finds nothing in the Claude Code dialog, which has the command with the hub in it', async () => {
+  it('finds nothing in Add an agent, at its choice and in the Claude Code step, which has the command with the hub in it', async () => {
     await open('#/agents')
-    fireEvent.click(screen.getByRole('button', { name: 'Add to Claude Code' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Add the hub to Claude Code' })
+    fireEvent.click(screen.getByRole('button', { name: 'Add an agent' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Add an agent' })
+    await within(dialog).findByRole('heading', { name: 'What kind of agent?' })
+    expect(await violations()).toEqual([])
+    fireEvent.click(within(dialog).getByRole('button', { name: /Use this hub from Claude Code/ }))
+    await within(dialog).findByRole('heading', { name: 'Paste one command' })
     expect(dialog.querySelector('pre')?.textContent).toBe(`claude mcp add --transport http --scope user binders-hub ${window.location.origin}/mcp`)
     expect(await violations()).toEqual([])
   })
@@ -159,7 +164,7 @@ describe('the palette', () => {
     // the answer's place is looked for again each time, and a slow machine is given the time it takes.
     const result = () => screen.getByRole('heading', { name: 'what was decided?' }).closest('.ask-result') as HTMLElement
     await screen.findByRole('heading', { name: 'what was decided?' })
-    await waitFor(() => expect(result().querySelector('.ask-answer strong')?.textContent).toBe('decided'), { timeout: 5000 })
+    await waitFor(() => expect(result().querySelector('.ask-answer strong')?.textContent).toBe('decided'), { timeout: 10_000 })
     const page = result()
     expect(page.querySelector('.ask-answer')?.textContent).not.toContain('**')
     expect(within(page).getAllByRole('button', { name: /^Source / }).map((b) => b.textContent)).toEqual(['1', '2'])

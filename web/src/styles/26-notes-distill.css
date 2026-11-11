@@ -1,0 +1,10 @@
+/* Distill on its way */
+.distill-status { display: grid; gap: var(--space-8); padding: var(--space-12); border-radius: var(--r); background: var(--tile); border: 1px solid var(--line); text-align: left; font-size: var(--font-13); line-height: var(--leading-13); color: var(--muted); }
+.distill-status.stuck { border-color: var(--amber-line); background: var(--amber-wash); }
+.distill-status p { margin: 0; }
+.distill-status b { color: var(--text); font-weight: 700; }
+.distill-hint code { display: block; margin-top: var(--space-8); padding: var(--space-8) 10px; border-radius: var(--r-sm); background: var(--fill-1); border: 1px solid var(--line); font: var(--font-12)/1.5 var(--mono); color: var(--text-2); white-space: normal; }
+.distill-actions { display: flex; flex-wrap: wrap; gap: var(--space-8); }
+.snippet pre.wrap { white-space: pre-wrap; }
+.snippet > p { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
+

@@ -1,0 +1,26 @@
+/* Settings → History: what happened, a day at a time, each line who did it and what, threaded down its marks; then
+   what was deleted, a row each with Put back. */
+.history-filter { display: flex; align-items: center; gap: var(--space-8); font-size: var(--font-13); color: var(--muted); }
+.history-filter .select { width: auto; min-width: 150px; max-width: 220px; height: var(--control-sm); font-size: var(--font-13); }
+.timeline { display: grid; }
+.timeline-day { padding: var(--space-12) var(--space-16) var(--space-4); }
+.timeline-day + .timeline-day { border-top: 1px solid var(--line); }
+.timeline-day-name { margin: 0 0 var(--space-4); font: 600 var(--font-12)/var(--leading-12) var(--body); color: var(--muted); }
+.history-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.history-list li { position: relative; display: grid; grid-template-columns: 24px auto minmax(0, 1fr); grid-template-areas: "mark who time" "mark text text"; column-gap: var(--space-12); row-gap: 2px; align-items: baseline; padding: var(--space-8) 0; }
+/* The thread from one line's mark to the next. */
+.history-list li::before { content: ""; position: absolute; left: 11.5px; top: calc(var(--space-8) + 28px); bottom: calc(-1 * var(--space-8) + 4px); width: 1px; background: var(--line); }
+.history-list li:last-child::before { display: none; }
+.timeline-mark { grid-area: mark; align-self: start; display: grid; place-items: center; width: 24px; height: 24px; }
+.history-who-name { grid-area: who; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 var(--font-13)/var(--leading-13) var(--body); color: var(--text); }
+.history-list time { grid-area: time; font-size: var(--font-12); line-height: var(--leading-12); color: var(--faint); white-space: nowrap; }
+.history-text { grid-area: text; min-width: 0; font-size: var(--font-14); line-height: var(--leading-14); color: var(--text-2); overflow-wrap: anywhere; }
+.timeline-more { display: flex; justify-content: center; }
+.timeline-loading { display: grid; gap: var(--space-4); }
+.timeline-skeleton { display: flex; align-items: flex-start; gap: var(--space-12); padding: var(--space-8) 0; }
+.timeline-skeleton > .skeleton-lines { flex: 1; }
+.trash-list .rows-meta time { color: var(--faint); }
+@media (max-width: 600px) {
+  .history-section .section-head { flex-direction: column; align-items: stretch; }
+  .history-filter .select { flex: 1; max-width: none; }
+}

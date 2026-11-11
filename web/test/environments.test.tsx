@@ -5,9 +5,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { agent, calledOn, entry, hear, hubState, me, mount, standInHub, standInRoute } from './harness'
 import { Toast } from '../src/components/Toast'
 import { Environments } from '../src/components/Environments'
+import { ContextMenuHost } from '../src/components/ContextMenu'
 import type { Environment, PullRequest } from '../src/data/model'
 
-// Settings → How work flows, Environments: what an owner or an admin sets on each repo's environments, and what a member sees.
+// Settings → How work flows, Environments: each repo's environments as a table, a row opening a dialog to change one, its
+// place and its removal in a menu; what an owner or an admin sets, and what a member sees.
 
 const env = (over: Partial<Environment> = {}): Environment => ({ id: 'acme/web#staging', repo: 'acme/web', name: 'staging', url: '', version: '', changeSetIds: [], state: 'healthy', deployedAt: '', needsApproval: false, order: 0, ...over })
 const pull = (over: Partial<PullRequest> = {}): PullRequest => ({ id: 'acme/blog#2', repo: 'acme/blog', number: 2, title: 'A post', branch: 'b', url: '', state: 'merged', checks: [], files: [], ...over })
@@ -27,14 +29,25 @@ function settings(environments: Environment[], you: object = owner) {
     pulls: [pull()],
     environments,
   }), you)
-  return mount(<><Environments /><Toast /></>)
+  return mount(<><Environments /><Toast /><ContextMenuHost /></>)
 }
 
-const row = (name: string) => screen.getByText(name, { selector: '.env-row-head > b' }).closest('li') as HTMLElement
+/** An environment's dialog, opened from its row in the table. */
+const open = (name: string) => {
+  fireEvent.click(screen.getByRole('button', { name: `Open ${name}` }))
+  return within(screen.getByRole('dialog', { name }))
+}
+const close = () => fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+/** The dialog's menu: its place and its removal. */
+const menu = () => fireEvent.click(screen.getByRole('button', { name: /Move or remove/ }))
 const toasted = (words: string) => waitFor(() => expect(document.querySelector('.toast')?.textContent).toBe(words))
 const type = (box: HTMLElement, value: string) => {
   fireEvent.change(box, { target: { value } })
   fireEvent.blur(box)
+}
+const adding = () => {
+  fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+  return within(screen.getByRole('dialog', { name: 'Add an environment' }))
 }
 
 afterEach(() => {
@@ -47,81 +60,84 @@ describe('what it says', () => {
     await settings([])
     expect(screen.getByRole('heading', { name: 'Environments' })).toBeTruthy()
     expect(screen.getByText(/When GitHub reports a deployment from one of this binder’s repos, the hub shows it in Delivery\./)).toBeTruthy()
-    expect(screen.getByText('No environments yet.')).toBeTruthy()
+    expect(screen.getByText('No environments yet')).toBeTruthy()
   })
 
-  it('lists each repo’s environments in order, under the repo’s name as a link to it', async () => {
+  it('lists each repo’s environments in order, in a table under the repo’s name as a link to it', async () => {
     await settings([production, staging])
     expect(screen.getByRole('link', { name: /acme\/web/ }).getAttribute('href')).toBe('https://github.com/acme/web')
-    expect([...document.querySelectorAll('.env-row-head > b')].map((b) => b.textContent)).toEqual(['staging', 'production'])
-    expect(within(row('staging')).getByText('On it: v1.1')).toBeTruthy()
-    expect(within(row('production')).getByText('Nothing deployed yet')).toBeTruthy()
+    expect([...document.querySelectorAll('.data-table-open')].map((b) => b.textContent)).toEqual(['staging', 'production'])
+    const rows = [...document.querySelectorAll('tbody tr')] as HTMLElement[]
+    expect(within(rows[0]).getByText('v1.1')).toBeTruthy()
+    expect(within(rows[0]).getByText('stage.example')).toBeTruthy()
+    expect(within(rows[1]).getByText('Nothing yet')).toBeTruthy()
   })
 
-  it('puts each field’s name above a full-width box', async () => {
+  it('opens one in a dialog, each field’s name above a full-width box', async () => {
     await settings([staging])
-    const name = within(row('staging')).getByLabelText('Name')
+    const dialog = open('staging')
+    const name = dialog.getByLabelText('Name')
     expect(name.closest('.field')!.firstElementChild!.textContent).toBe('Name')
-    expect((within(row('staging')).getByLabelText('Where it’s served') as HTMLInputElement).value).toBe('https://stage.example')
+    expect((dialog.getByLabelText('Where it’s served') as HTMLInputElement).value).toBe('https://stage.example')
   })
 })
 
 describe('adding one', () => {
   it('offers only the repos the binder works in: its own, its agents’ and its pull requests’', async () => {
     await settings([])
-    const options = within(screen.getByLabelText('Repo')).getAllByRole('option').map((o) => o.textContent)
+    const options = within(adding().getByLabelText('Repo')).getAllByRole('option').map((o) => o.textContent)
     expect(options).toEqual(['acme/web', 'acme/api', 'acme/blog'])
   })
 
-  it('says to add a repo first when the binder has none', async () => {
+  it('says to add a repo first when the binder has none, and has nothing to add', async () => {
     standInHub(() => hubState(), owner)
     await mount(<Environments />)
-    expect(screen.queryByLabelText('Repo')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull()
     expect(screen.getByRole('link', { name: 'GitHub' }).getAttribute('href')).toBe('#/settings/github')
   })
 
-  it('sends the repo, name and address, and says Saved', async () => {
+  it('sends the repo, name and address, says so, and closes', async () => {
     standInHub(() => hubState({ binders: [{ id: 'b1', name: 'Binder', repo: 'acme/web' }] }), owner)
     const sent = standInRoute('POST', '/api/environments', () => env({ name: 'qa' }))
-    await mount(<Environments />)
-    const add = (document.querySelector('.env-add') as HTMLElement)
-    fireEvent.change(within(add).getByLabelText('Name, as GitHub calls it'), { target: { value: ' qa ' } })
-    fireEvent.change(within(add).getByLabelText('Where it’s served (optional)'), { target: { value: 'https://qa.example' } })
-    fireEvent.click(within(add).getByRole('button', { name: 'Add environment' }))
+    await mount(<><Environments /><Toast /></>)
+    const add = adding()
+    fireEvent.change(add.getByLabelText('Name, as GitHub calls it'), { target: { value: ' qa ' } })
+    fireEvent.change(add.getByLabelText('Where it’s served (optional)'), { target: { value: 'https://qa.example' } })
+    fireEvent.click(add.getByRole('button', { name: 'Add environment' }))
     await waitFor(() => expect(sent).toEqual([{ repo: 'acme/web', name: 'qa', url: 'https://qa.example' }]))
-    expect(await screen.findByText('Saved')).toBeTruthy()
-    expect((within(add).getByLabelText('Name, as GitHub calls it') as HTMLInputElement).value).toBe('')
+    await toasted('Added qa to acme/web.')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add an environment' })).toBeNull())
   })
 
   it('has nothing to send until it has a name, and sends no address when there isn’t one', async () => {
     standInHub(() => hubState({ binders: [{ id: 'b1', name: 'Binder', repo: 'acme/web' }] }), owner)
     const sent = standInRoute('POST', '/api/environments', () => env())
     await mount(<Environments />)
-    const add = (document.querySelector('.env-add') as HTMLElement)
-    const button = within(add).getByRole('button', { name: 'Add environment' })
+    const add = adding()
+    const button = add.getByRole('button', { name: 'Add environment' })
     expect(button.hasAttribute('disabled')).toBe(true)
-    fireEvent.change(within(add).getByLabelText('Name, as GitHub calls it'), { target: { value: 'staging' } })
+    fireEvent.change(add.getByLabelText('Name, as GitHub calls it'), { target: { value: 'staging' } })
     fireEvent.click(button)
     await waitFor(() => expect(sent).toEqual([{ repo: 'acme/web', name: 'staging' }]))
   })
 
-  it('shows the hub’s refusal as it is, and keeps what was typed', async () => {
+  it('shows the hub’s refusal as it is, and keeps the dialog and what was typed', async () => {
     standInHub(() => hubState({ binders: [{ id: 'b1', name: 'Binder', repo: 'acme/web' }] }), owner)
     standInRoute('POST', '/api/environments', () => json({ error: 'acme/web has an environment called staging already.' }, 400))
     await mount(<><Environments /><Toast /></>)
-    const add = (document.querySelector('.env-add') as HTMLElement)
-    fireEvent.change(within(add).getByLabelText('Name, as GitHub calls it'), { target: { value: 'staging' } })
-    fireEvent.click(within(add).getByRole('button', { name: 'Add environment' }))
+    const add = adding()
+    fireEvent.change(add.getByLabelText('Name, as GitHub calls it'), { target: { value: 'staging' } })
+    fireEvent.click(add.getByRole('button', { name: 'Add environment' }))
     await toasted('acme/web has an environment called staging already.')
-    expect((within(add).getByLabelText('Name, as GitHub calls it') as HTMLInputElement).value).toBe('staging')
+    expect((add.getByLabelText('Name, as GitHub calls it') as HTMLInputElement).value).toBe('staging')
   })
 })
 
 describe('changing one', () => {
-  it('renames it when the box is left, with its id encoded in the path', async () => {
+  it('renames it when the box is left, with its id encoded in the path, and says Saved', async () => {
     await settings([staging])
     const sent = standInRoute('PUT', '/api/environments/acme%2Fweb%23staging', () => env({ id: 'acme/web#stage', name: 'stage' }))
-    type(within(row('staging')).getByLabelText('Name'), 'stage')
+    type(open('staging').getByLabelText('Name'), 'stage')
     await waitFor(() => expect(sent).toEqual([{ name: 'stage' }]))
     expect(await screen.findByText('Saved')).toBeTruthy()
   })
@@ -129,7 +145,7 @@ describe('changing one', () => {
   it('doesn’t send an empty name, and puts the old one back', async () => {
     await settings([staging])
     const sent = standInRoute('PUT', /^\/api\/environments\//, () => env())
-    const box = within(row('staging')).getByLabelText('Name') as HTMLInputElement
+    const box = open('staging').getByLabelText('Name') as HTMLInputElement
     type(box, '  ')
     await waitFor(() => expect(box.value).toBe('staging'))
     expect(sent).toEqual([])
@@ -138,68 +154,68 @@ describe('changing one', () => {
   it('sets where it’s served, and clears it with an empty box', async () => {
     await settings([staging])
     const sent = standInRoute('PUT', '/api/environments/acme%2Fweb%23staging', () => staging)
-    const box = within(row('staging')).getByLabelText('Where it’s served')
-    type(box, 'https://new.example')
+    type(open('staging').getByLabelText('Where it’s served'), 'https://new.example')
     await waitFor(() => expect(sent).toEqual([{ url: 'https://new.example' }]))
   })
 
   it('goes back to what it was, and shows the hub’s words, when the hub refuses', async () => {
     await settings([staging])
     standInRoute('PUT', '/api/environments/acme%2Fweb%23staging', () => json({ error: 'Where it’s served is an address starting with http:// or https://.' }, 400))
-    const box = within(row('staging')).getByLabelText('Where it’s served') as HTMLInputElement
+    const box = open('staging').getByLabelText('Where it’s served') as HTMLInputElement
     type(box, 'nowhere')
     await toasted('Where it’s served is an address starting with http:// or https://.')
     await waitFor(() => expect(box.value).toBe('https://stage.example'))
   })
 
-  it('keeps the row, and the person’s place in it, when a rename gives it a new id', async () => {
+  it('keeps the dialog, and the person’s place in it, when a rename gives it a new id', async () => {
     await settings([staging, production])
     standInRoute('PUT', '/api/environments/acme%2Fweb%23staging', () => env({ id: 'acme/web#stage', name: 'stage' }))
-    const before = row('staging')
-    type(within(before).getByLabelText('Name'), 'stage')
+    type(open('staging').getByLabelText('Name'), 'stage')
+    const before = screen.getByRole('dialog')
     await screen.findByText('Saved')
     // The hub's word comes back as the same environment under a new id.
     await hear({ type: 'entries', entries: [entry(2, { type: 'env.delete', id: 'acme/web#staging' }), entry(3, { type: 'env.put', environment: { ...staging, id: 'acme/web#stage', name: 'stage' } })] })
-    expect(row('stage')).toBe(before)
+    expect(screen.getByRole('dialog', { name: 'stage' })).toBe(before)
     expect(within(before).getByText('Saved')).toBeTruthy()
   })
 })
 
 describe('putting them in order', () => {
-  it('moves one down and up by asking the hub for its new place', async () => {
+  it('moves one down and up from its dialog’s menu, by asking the hub for its new place', async () => {
     await settings([staging, production])
     const down = standInRoute('PUT', '/api/environments/acme%2Fweb%23staging', () => staging)
     const up = standInRoute('PUT', '/api/environments/acme%2Fweb%23production', () => production)
-    fireEvent.click(screen.getByRole('button', { name: 'Move staging down' }))
+    open('staging')
+    menu()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move staging down' }))
     await waitFor(() => expect(down).toEqual([{ order: 1 }]))
-    fireEvent.click(screen.getByRole('button', { name: 'Move production up' }))
+    close()
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    open('production')
+    menu()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move production up' }))
     await waitFor(() => expect(up).toEqual([{ order: 0 }]))
   })
 
-  it('has no place to go past the first and the last, and says so without leaving the keyboard', async () => {
+  it('has no place to go past the first and the last', async () => {
     await settings([staging, production])
-    const sent = standInRoute('PUT', /^\/api\/environments\//, () => staging)
-    const first = screen.getByRole('button', { name: 'Move staging up' })
-    const last = screen.getByRole('button', { name: 'Move production down' })
-    expect(first.getAttribute('aria-disabled')).toBe('true')
-    expect(last.getAttribute('aria-disabled')).toBe('true')
-    fireEvent.click(first)
-    fireEvent.click(last)
-    await new Promise((done) => setTimeout(done, 50))
-    expect(sent).toEqual([])
+    open('staging')
+    menu()
+    expect(screen.getByRole('menuitem', { name: 'Move staging up' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('menuitem', { name: 'Move staging down' }).hasAttribute('disabled')).toBe(false)
   })
 })
 
 describe('removing one', () => {
-  it('asks first, saying it comes back if GitHub deploys there again, then deletes it', async () => {
+  it('asks first, then deletes it; and says it comes back if GitHub deploys there again', async () => {
     await settings([staging])
+    expect(screen.getByText(/One taken off comes back by itself if GitHub deploys there again\./)).toBeTruthy()
     const sent = standInRoute('DELETE', '/api/environments/acme%2Fweb%23staging', () => ({ ok: true }))
-    const button = screen.getByRole('button', { name: 'Remove staging' })
-    fireEvent.click(button)
+    open('staging')
+    menu()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Remove staging' }))
     expect(sent).toEqual([])
-    expect(button.getAttribute('aria-label')).toBe('Remove staging? Press again')
-    expect(screen.getByText('If GitHub deploys there again, it comes back by itself.')).toBeTruthy()
-    fireEvent.click(button)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Remove staging? Press again' }))
     await waitFor(() => expect(sent.length).toBe(1))
     expect(calledOn()).toContain('DELETE /api/environments/acme%2Fweb%23staging')
   })
@@ -208,48 +224,45 @@ describe('removing one', () => {
 describe('Deploy from the hub', () => {
   const deploying = env({ deploy: { repo: 'acme/web', workflow: 'deploy.yml', ref: 'main' }, needsApproval: true })
 
-  it('is folded away until it’s asked for', async () => {
+  it('is part of an environment’s dialog, with its two boxes', async () => {
     await settings([staging])
-    const toggle = within(row('staging')).getByRole('button', { name: 'Deploy from the hub' })
-    expect(toggle.getAttribute('aria-expanded')).toBe('false')
-    expect(screen.queryByLabelText('Workflow file')).toBeNull()
-    fireEvent.click(toggle)
-    expect(toggle.getAttribute('aria-expanded')).toBe('true')
-    expect(screen.getByLabelText('Workflow file')).toBeTruthy()
-    expect(screen.getByLabelText('Branch or tag to run it on')).toBeTruthy()
+    const dialog = open('staging')
+    expect(dialog.getByRole('group', { name: 'Deploy from the hub' })).toBeTruthy()
+    expect(dialog.getByLabelText('Workflow file')).toBeTruthy()
+    expect(dialog.getByLabelText('Branch or tag to run it on')).toBeTruthy()
   })
 
-  it('says how the hub deploys to one that has a workflow, while it’s folded away', async () => {
+  it('says how the hub deploys to one that has a workflow, in the table and its dialog', async () => {
     await settings([deploying])
-    expect(screen.getByText('The hub deploys to it with deploy.yml on main, once someone presses Promote.')).toBeTruthy()
+    expect(within(document.querySelector('tbody tr') as HTMLElement).getByText('deploy.yml')).toBeTruthy()
+    expect(open('staging').getByText(/The hub deploys to it with deploy\.yml on main when someone presses Promote on Delivery\./)).toBeTruthy()
   })
 
   it('waits for the workflow and the branch both before it asks the hub', async () => {
     await settings([staging])
     const sent = standInRoute('PUT', '/api/environments/acme%2Fweb%23staging', () => deploying)
-    fireEvent.click(within(row('staging')).getByRole('button', { name: 'Deploy from the hub' }))
-    type(screen.getByLabelText('Workflow file'), 'deploy.yml')
+    const dialog = open('staging')
+    type(dialog.getByLabelText('Workflow file'), 'deploy.yml')
     await new Promise((done) => setTimeout(done, 50))
     expect(sent).toEqual([])
-    type(screen.getByLabelText('Branch or tag to run it on'), 'main')
+    type(dialog.getByLabelText('Branch or tag to run it on'), 'main')
     await waitFor(() => expect(sent).toEqual([{ deploy: { workflow: 'deploy.yml', ref: 'main' } }]))
   })
 
   it('stops the hub deploying when both are emptied', async () => {
     await settings([deploying])
     const sent = standInRoute('PUT', '/api/environments/acme%2Fweb%23staging', () => staging)
-    fireEvent.click(within(row('staging')).getByRole('button', { name: 'Deploy from the hub' }))
-    type(screen.getByLabelText('Workflow file'), '')
+    const dialog = open('staging')
+    type(dialog.getByLabelText('Workflow file'), '')
     await new Promise((done) => setTimeout(done, 50))
     expect(sent).toEqual([])
-    type(screen.getByLabelText('Branch or tag to run it on'), '')
+    type(dialog.getByLabelText('Branch or tag to run it on'), '')
     await waitFor(() => expect(sent).toEqual([{ deploy: null }]))
   })
 
   it('says a person presses Promote, with no switch to say otherwise, as nothing deploys by itself', async () => {
     await settings([deploying])
-    fireEvent.click(within(row('staging')).getByRole('button', { name: 'Deploy from the hub' }))
-    expect(screen.getByText(/It deploys when someone presses Promote on Delivery/)).toBeTruthy()
+    expect(open('staging').getByText(/when someone presses Promote on Delivery/)).toBeTruthy()
     expect(screen.queryByLabelText('Wait for someone to press Promote')).toBeNull()
   })
 })
@@ -268,13 +281,14 @@ describe('Look on GitHub now', () => {
 })
 
 describe('for a member', () => {
-  it('shows the environments greyed, with how the hub deploys to them, and nothing to press', async () => {
+  it('shows the environments and how the hub deploys to them, greyed in their dialog, and nothing to press', async () => {
     await settings([env({ version: 'v1', deploy: { repo: 'acme/web', workflow: 'deploy.yml', ref: 'main' }, needsApproval: true })], member)
-    expect(screen.getByText('staging', { selector: '.env-row-head > b' })).toBeTruthy()
-    expect(screen.getByText('The hub deploys to it with deploy.yml on main, once someone presses Promote.')).toBeTruthy()
-    for (const control of [within(row('staging')).getByLabelText('Name'), screen.getByRole('button', { name: 'Look on GitHub now' }), screen.getByRole('button', { name: 'Remove staging' })]) {
-      expect(control.closest('fieldset')!.disabled).toBe(true)
-    }
+    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Look on GitHub now' })).toBeNull()
+    const dialog = open('staging')
+    expect(dialog.getByText(/The hub deploys to it with deploy\.yml on main/)).toBeTruthy()
+    for (const control of [dialog.getByLabelText('Name'), dialog.getByLabelText('Workflow file')]) expect(control.closest('fieldset')!.disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: /Move or remove/ })).toBeNull()
   })
 
   it('doesn’t repeat who can change them: the page above already says', async () => {
@@ -284,10 +298,12 @@ describe('for a member', () => {
 })
 
 describe('for assistive technology', () => {
-  it('finds nothing for axe to object to, with a row’s deploy part open', async () => {
+  it('finds nothing for axe to object to, in the table or with an environment’s dialog open', async () => {
     await settings([env({ version: 'v1', deploy: { repo: 'acme/web', workflow: 'deploy.yml', ref: 'main' }, needsApproval: true }), production])
-    fireEvent.click(within(row('staging')).getByRole('button', { name: 'Deploy from the hub' }))
-    const { violations } = await axe.run(document.body, { rules: { 'color-contrast': { enabled: false }, region: { enabled: false } } })
+    const quiet = { rules: { 'color-contrast': { enabled: false }, region: { enabled: false } } }
+    expect((await axe.run(document.body, quiet)).violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.html).join(' ')}`)).toEqual([])
+    open('staging')
+    const { violations } = await axe.run(document.body, quiet)
     expect(violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.html).join(' ')}`)).toEqual([])
   })
 })

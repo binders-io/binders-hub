@@ -18,7 +18,9 @@ import { demoBrain } from './brain.ts'
 import { Inbox } from '../hub/src/listen/inbox.ts'
 import { FirstAnswers } from '../hub/src/brain/first.ts'
 import { EndpointAgents } from '../hub/src/agent/endpoint.ts'
-import { demoBinder, demoChanges, demoAgents, demoPeople } from './data.ts'
+import { demoBinder, demoChanges, demoAgents, demoPeople, demoRepos } from './data.ts'
+import type { IndexedRepo } from '../hub/src/repoIndex.ts'
+import type { GitHubPoller } from '../hub/src/poller.ts'
 
 // A hub to look at, and nothing else: everything it holds is invented (data.ts) and lives in this process. It reads no
 // settings from the environment, so it can't open a real hub's Redis, notes or keys, it listens on this machine only,
@@ -27,12 +29,71 @@ import { demoBinder, demoChanges, demoAgents, demoPeople } from './data.ts'
 
 const nowhere = 'http://127.0.0.1:9'
 
-/** A GitHub that says it's connected, so the screens read as a set-up hub's, and has no way of reaching anything. */
+/** The GitHub App Harbor's GitHub reads as having: invented, on the invented example organization, and reaching nothing. */
+const demoApp = { name: 'Binders for Harbor', slug: 'binders-for-harbor', owner: 'example', ownerType: 'Organization' as const, htmlUrl: `${nowhere}/apps/binders-for-harbor` }
+
+/**
+ * A GitHub that says it's connected, so the screens read as a set-up hub's, and has no way of reaching anything. Harbor's
+ * reads as having its own app installed on the example organization, reaching the invented repos in data.ts with their
+ * topics and custom properties, so Settings → GitHub shows a binder that's set up.
+ */
 class NoGitHub extends GitHubConnection {
+  private readonly harbor: boolean
+  constructor(...args: ConstructorParameters<typeof GitHubConnection>) {
+    super(...args)
+    this.harbor = args[4] === demoBinder.space
+  }
+
   status() {
-    return { ...super.status(), server: true, webhooks: true }
+    const status = { ...super.status(), server: true, webhooks: true }
+    if (!this.harbor) return status
+    return {
+      ...status,
+      mode: 'app' as const,
+      app: {
+        ...demoApp, installations: ['example'], installUrl: `${demoApp.htmlUrl}/installations/new`, hookUrl: undefined, madeLocally: true,
+        borrowedFrom: undefined, borrowedAccounts: [], shareable: false, lentTo: [], settingsUrl: `${nowhere}/organizations/example/settings/apps/${demoApp.slug}`,
+      },
+    }
+  }
+
+  installedAccounts() {
+    return this.harbor ? ['example'] : []
+  }
+
+  /** Whoever is signed in can push to every repo here, as nothing is asked of GitHub. */
+  async access(...args: Parameters<GitHubConnection['access']>): ReturnType<GitHubConnection['access']> {
+    return this.harbor ? 'push' : super.access(...args)
+  }
+
+  async findRepos(...args: Parameters<GitHubConnection['findRepos']>): ReturnType<GitHubConnection['findRepos']> {
+    if (!this.harbor) return super.findRepos(...args)
+    const keep = args[1]
+    const repos: IndexedRepo[] = demoRepos.map((r) => ({ fullName: r.name, private: r.private, description: r.description, topics: r.topics, properties: { team: [r.team] } }))
+    return { repos: keep ? repos.filter((r) => keep(r.fullName)) : repos }
+  }
+
+  async lists() {
+    if (!this.harbor) return super.lists()
+    const count = demoRepos.length
+    return {
+      installations: [{ account: 'example', kind: 'Organization' as const, indexed: count, total: count, complete: true, at: new Date().toISOString(), reading: false, failed: false, properties: 'listed' as const }],
+      permissionsUrl: `${nowhere}/organizations/example/settings/apps/${demoApp.slug}/permissions`,
+    }
+  }
+
+  async health(): ReturnType<GitHubConnection['health']> {
+    if (!this.harbor) return super.health()
+    return {
+      app: { name: demoApp.name, slug: demoApp.slug, owner: demoApp.owner, ownerType: demoApp.ownerType, url: demoApp.htmlUrl, settingsUrl: `${nowhere}/organizations/example/settings/apps/${demoApp.slug}/permissions` },
+      missing: [],
+      installations: [{ account: 'example', selection: 'selected' as const, repos: demoRepos.length, url: `${nowhere}/organizations/example/settings/installations/1`, suspended: false, pending: [] }],
+    }
   }
 }
+
+/** Asking GitHub every minute, as a hub that webhooks can't reach does: what Settings says of GitHub's news. */
+const asking = { status: () => ({ mode: 'auto' as const, active: true, everySeconds: 60, webhookHeard: false }), heardWebhook: () => {} } as unknown as GitHubPoller
 
 /** Harbor's listeners, and a few things they heard before anyone opened the page: all invented, like the rest. */
 async function heardSoFar(inbox: Inbox, owner: string) {
@@ -72,12 +133,15 @@ export async function startDemoHub(port: number, webDir = resolve(import.meta.di
     const first = new FirstAnswers({ hub, settings: brains, kv: new MemoryKV(), place: () => ({ id, name: info.name, brain, url: () => '' }) })
     // A model can be added as an agent here, and tried against the stand-in. None is started: nothing here does an agent's work.
     const modelAgents = new EndpointAgents({ hub, actions, kv: new MemoryKV(), sealer, brain: brains })
-    return { id, hub, actions, github, webhooks: undefined as never, filesDir: join(files, id), brain, inbox, first, endpoints: modelAgents }
+    return { id, hub, actions, github, webhooks: undefined as never, filesDir: join(files, id), brain, inbox, first, endpoints: modelAgents, ...(info.personal ? {} : { poller: asking }) }
   }
 
   const spaces = new Spaces(kv, start)
   await spaces.load({ id: demoBinder.space, name: demoBinder.name, members: demoPeople.map((login, i) => ({ login, role: i ? 'member' : 'owner' })) })
   const auth = new Auth(kv, sealer, { github: () => undefined, allowed: () => ({ users: demoPeople, orgs: [] }), devLogin: () => true, oauth: () => undefined, endpoints })
+  // Maya has connected her GitHub to Harbor's app, so the screens read as hers would: the word is a stand-in, never sent
+  // anywhere that answers.
+  await auth.githubFor(demoPeople[0], demoBinder.space, 'demo')
   const app = await buildServer(spaces, { auth, brain: brains }, { publicUrl: url, webDir })
   await app.listen({ port, host: '127.0.0.1' })
 

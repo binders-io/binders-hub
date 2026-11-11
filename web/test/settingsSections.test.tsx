@@ -109,6 +109,39 @@ describe('Settings sections', () => {
   })
 })
 
+describe('every section’s header', () => {
+  it('says where you are, its name and one line, with the rest behind How this works', async () => {
+    hub({ spaces: [{ id: 'acme', name: 'Acme', role: 'owner' }], space: 'acme' })
+    window.location.hash = '#/settings/jira'
+    await mount(<Settings />)
+    const header = document.querySelector('.settings-pane .page-header') as HTMLElement
+    expect(within(header).getByText('This binder · Acme')).toBeTruthy()
+    expect(within(header).getByRole('heading', { level: 2, name: 'Jira' })).toBeTruthy()
+    expect(within(header).getByText('Mirrors this binder’s cards into one Jira Cloud project.')).toBeTruthy()
+    const more = screen.getByText('How this works').closest('details')!
+    expect(more.open).toBe(false)
+    expect(more.textContent).toContain('Jira’s copy is written, never read back.')
+    window.location.hash = '#/settings/status'
+    await waitFor(() => expect(open()).toBe('Status'))
+    expect(screen.getByText('This hub · the same for every binder here')).toBeTruthy()
+    // A section with no more to say has no How this works under its line.
+    expect(document.querySelector('.settings-head details')).toBeNull()
+  })
+
+  it('has a place for a section’s one main action, and none for a section without one', async () => {
+    hub({ spaces: [{ id: 'acme', name: 'Acme', role: 'owner' }], space: 'acme' })
+    window.location.hash = '#/settings/hubbinders'
+    const stand = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => (url === '/api/hub/binders' ? json({ binders: [] }) : stand(url, init))))
+    await mount(<Settings />)
+    const header = document.querySelector('.settings-pane .page-header') as HTMLElement
+    expect(await within(header).findByRole('button', { name: 'New binder' })).toBeTruthy()
+    window.location.hash = '#/settings/status'
+    await waitFor(() => expect(open()).toBe('Status'))
+    expect(document.querySelector('.settings-action-place')!.childElementCount).toBe(0)
+  })
+})
+
 describe('links to Settings', () => {
   it('names a section by its new name, and links to it', () => {
     render(<SettingsLink section="status" />)

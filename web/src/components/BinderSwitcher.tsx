@@ -72,7 +72,7 @@ export function BinderSwitcher({ binder, onPick }: { binder: string; onPick: (id
   return (
     <div className="binder-switcher" ref={box}>
       <button type="button" className="brand" onClick={() => setOpen(!open)} aria-haspopup="listbox" aria-expanded={open}>
-        <Logo size={42} inverted />
+        <Logo size={36} inverted />
         <div>
           <b>{here?.name ?? 'Binders'}</b>
           <span className="mono">{several ? (current ? current.name : `All ${binders.length} parts`) : repo ?? (here ? `/${here.id}` : '')}</span>

@@ -13,12 +13,12 @@ export function NoteViews({ view, onChange, waiting, noDistill }: { view: NoteVi
     ...(noDistill ? [] : [{ id: 'distill' as const, label: 'Distill', icon: Sparkles }]),
   ]
   return (
-    <div className="note-views" role="group" aria-label="Show">
+    <div className="segmented note-views" role="group" aria-label="Show">
       {views.map(({ id, label, icon: Icon }) => {
         const count = id === 'distill' ? waiting : 0
         return (
           <button key={id} type="button" aria-pressed={view === id} aria-label={count ? `${label}, ${count} proposed` : label} onClick={() => onChange(id)}>
-            <Icon size={14} /> {label}{count > 0 && <i className="waiting num">{count}</i>}
+            <Icon size={14} aria-hidden="true" /> {label}{count > 0 && <i className="waiting num">{count}</i>}
           </button>
         )
       })}

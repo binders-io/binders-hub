@@ -1,0 +1,7 @@
+/* ---------- Theme switch ---------- */
+.theme-switch { margin-left: auto; display: flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--fill-1); border: 1px solid var(--line); }
+.theme-switch button { display: grid; place-items: center; width: 28px; height: 24px; border-radius: 6px; color: var(--faint); transition: color var(--dur-fast), background var(--dur-fast); }
+.theme-switch button:hover { color: var(--text); }
+.theme-switch button[aria-pressed="true"] { background: var(--selected); color: var(--text); box-shadow: var(--selected-shadow); }
+.theme-switch button:focus-visible { outline-offset: -1px; }
+

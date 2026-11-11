@@ -1,17 +1,18 @@
 import { useState, type FormEvent } from 'react'
-import { LoaderCircle, TriangleAlert } from 'lucide-react'
+import { TriangleAlert } from 'lucide-react'
 import { call } from '../data/api'
 import type { Agent } from '../data/model'
 import type { AgentEndpoint } from '../../../shared/work.ts'
-import { Dialog, Field } from './Dialog'
+import { Dialog } from './Dialog'
 import { SettingsLink } from './SettingsLink'
-import { KeyField, ModelField, TakesField } from './ModelFields'
-import { localMeansTheHub, looksLocal, movedTo, newAddressNeedsKey } from './modelAgent'
+import { AddressField, KeyField, ModelField, ModelSays, TakesField } from './ModelFields'
+import { boxOf, movedTo, newAddressNeedsKey } from './modelAgent'
 
 /**
  * Changing an agent that is a model at an address: its model or deployment, its address where its kind has one, a new
  * key, and what it takes. The hub tries it again as it saves, so the card shows whether it works now. The key is never
- * sent back to the page, so the box starts empty, and empty means keep the one that's there. A refusal shows in the form.
+ * sent back to the page, so the box starts empty, and empty means keep the one that's there. A refusal shows in the form,
+ * beside the box it's about when it names one.
  */
 export function EditModel({ agent, onClose }: { agent: Agent & { endpoint: AgentEndpoint }; onClose: () => void }) {
   const { endpoint } = agent
@@ -55,33 +56,24 @@ export function EditModel({ agent, onClose }: { agent: Agent & { endpoint: Agent
     setProblem(undefined)
   }
   const warning = still ?? (ready && !ready.ok ? ready.why || 'It didn’t answer as it needs to.' : undefined)
+  const box = endpoint.kind === 'brain' ? undefined : boxOf(problem)
+  const keyHint = movedTo(baseUrl, endpoint.baseUrl) ? newAddressNeedsKey : 'Empty keeps the key that’s there. Type one to replace it.'
 
   return (
-    <Dialog title={`Edit ${agent.name}`} onClose={onClose} wide closeOnlyFromButton={saving}>
+    <Dialog title={`Edit ${agent.name}`} onClose={onClose} closeOnlyFromButton={saving}>
       <form className="form model-agent-form" onSubmit={(e) => void save(e)} aria-busy={saving}>
-        {warning && <p className="agent-warning" role="status"><TriangleAlert size={13} aria-hidden="true" /> {still ? `Saved, and it still isn’t ready: ${warning}` : `It isn’t ready: ${warning}`}</p>}
+        {warning && <p className="agent-warning model-agent-warning" role="status"><TriangleAlert size={14} aria-hidden="true" /><span>{still ? `Saved, and it still isn’t ready: ${warning}` : `It isn’t ready: ${warning}`}</span></p>}
         <p className="field-hint model-agent-kind-line">
           {endpoint.kind === 'brain' ? <>It uses the model set up in <SettingsLink section="brain" />.</>
             : endpoint.kind === 'openai' ? 'A server that speaks OpenAI’s chat API.'
               : 'Claude, by Anthropic’s API.'}
         </p>
-        {endpoint.kind === 'openai' && (
-          <Field label="Address" hint={looksLocal(baseUrl) ? localMeansTheHub : 'The address ending in /v1. For Azure and Foundry, your resource’s address followed by /openai/v1.'}>
-            <input className="mono" inputMode="url" value={baseUrl} onChange={(e) => clear(setBaseUrl)(e.target.value)} placeholder="https://your-resource.openai.azure.com/openai/v1" autoComplete="off" autoCapitalize="none" spellCheck={false} />
-          </Field>
-        )}
+        {endpoint.kind === 'openai' && <AddressField kind="openai" value={baseUrl} onChange={clear(setBaseUrl)} error={box === 'baseUrl' ? problem : undefined} />}
         {endpoint.kind !== 'brain' && <ModelField value={model} onChange={clear(setModel)} placeholder={endpoint.kind === 'anthropic' ? 'claude-opus-5-5' : undefined} />}
-        {endpoint.kind !== 'brain' && <KeyField value={key} onChange={clear(setKey)} hint={movedTo(baseUrl, endpoint.baseUrl) ? newAddressNeedsKey : 'Empty keeps the key that’s there. Type one to replace it.'} />}
-        {endpoint.kind === 'anthropic' && (
-          <Field label="Address (optional)" hint={looksLocal(baseUrl) ? localMeansTheHub : 'Only for Microsoft Foundry. Leave empty for Anthropic.'}>
-            <input className="mono" inputMode="url" value={baseUrl} onChange={(e) => clear(setBaseUrl)(e.target.value)} placeholder="https://your-resource.services.ai.azure.com/anthropic" autoComplete="off" autoCapitalize="none" spellCheck={false} />
-          </Field>
-        )}
+        {endpoint.kind !== 'brain' && <KeyField value={key} onChange={clear(setKey)} hint={keyHint} error={box === 'key' ? problem : undefined} />}
+        {endpoint.kind === 'anthropic' && <AddressField kind="anthropic" value={baseUrl} onChange={clear(setBaseUrl)} error={box === 'baseUrl' ? problem : undefined} />}
         <TakesField takes={takes} onChange={clear(setTakes)} />
-        <div className="model-agent-says">
-          {saving && <p className="model-agent-result" role="status"><LoaderCircle size={14} className="spin" aria-hidden="true" /> Saving it, and trying it again…</p>}
-          {!saving && problem && <p className="model-agent-result bad" role="alert"><TriangleAlert size={14} aria-hidden="true" /> {problem}</p>}
-        </div>
+        <ModelSays busy={saving ? 'Saving it, and trying it again…' : undefined} problem={box ? undefined : problem} />
         <footer className="form-actions">
           <button type="button" className="button" onClick={onClose} disabled={saving}>{still ? 'Close' : 'Cancel'}</button>
           <button type="submit" className="button primary" disabled={saving}>Save</button>

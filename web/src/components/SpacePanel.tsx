@@ -1,55 +1,71 @@
 import { useState, type FormEvent } from 'react'
-import { Plus, Trash2, TriangleAlert } from 'lucide-react'
+import { AnimatePresence } from 'motion/react'
+import { LogOut, TriangleAlert, UserMinus, UserPlus } from 'lucide-react'
 import { call } from '../data/api'
 import type { Role } from '../data/model'
 import { spaceHref } from '../data/space'
 import { useStore } from '../data/store'
-import { Changeable, Saved, WhoCan } from '../screens/settings/shared'
+import { Dialog, Field, MenuButton, Row, Rows, Section, type MenuItem } from '../kit'
+import { Changeable, HeaderAction, Saved, WhoCan } from '../screens/settings/shared'
 import { agentsOf, useBinderAccess, useSaved, type SpacesView } from '../screens/settings/access'
+import { sectionHref } from '../screens/settings/sections'
 import { PersonAvatar, PersonName } from './bits'
-import { ConfirmButton } from './ConfirmButton'
 import { PeopleInput } from './PeopleInput'
 import { attempt, toast } from './Toast'
 
-const roles: { id: Role; label: string }[] = [
-  { id: 'owner', label: 'Owner' },
-  { id: 'admin', label: 'Admin' },
-  { id: 'member', label: 'Member' },
-  { id: 'reader', label: 'Reader' },
+const roles: { id: Role; label: string; line: string }[] = [
+  { id: 'owner', label: 'Owner', line: 'Runs it, and names its other owners.' },
+  { id: 'admin', label: 'Admin', line: 'Adds and removes people, and changes its settings.' },
+  { id: 'member', label: 'Member', line: 'Works in it: notes, cards and agents of their own.' },
+  { id: 'reader', label: 'Reader', line: 'Sees everything and can ask about it. Changes nothing, and has no agents.' },
 ]
 
 const addressOf = (name: string) => name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').replace(/^[^a-z]+/, '').slice(0, 40)
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 
+type Revoked = SpacesView & { revoked?: { id: string; name: string }[] }
+
 /**
- * The binder's people, in Settings: who runs it, which everyone in it sees, and who's in it, for its owners and admins to
- * change. Taking someone out takes their agents with them, so it asks first and says how many.
+ * The binder's people, in Settings: everyone in it as a row, their role changed from the row and taking them out in its
+ * menu, for its owners and admins; who runs it, for everyone else. Adding is one button, and a dialog. Taking someone
+ * out takes their agents with them, so it asks first and says which.
  */
 export function People() {
   const { state } = useStore()
   const me = state.me
   const { here, managers, may, change } = useBinderAccess()
   const { saved, shown } = useSaved()
-  const [role, setRole] = useState<Role>('member')
+  const [adding, setAdding] = useState(false)
+  const [removing, setRemoving] = useState<string>()
   if (!here || !me) return null
   const members = here.members
   const path = (who: string) => `/api/spaces/${here.id}/members/${encodeURIComponent(who)}`
   const empty = managers.length === 0 && !members?.length
   const you = (login: string) => login.toLowerCase() === me.user.login.toLowerCase()
-  const put = (who: string, next: Role, key: string) => void change(() => call<SpacesView & { revoked?: { id: string; name: string }[] }>('PUT', path(who), { role: next })).then((done) => {
+  const put = (who: string, next: Role, key: string) => void change(() => call<Revoked>('PUT', path(who), { role: next })).then((done) => {
     if (!done) return
     saved(key)
     // A reader can't have agents, which act with their owner's reach, so the hub says which it stopped.
     const revoked = done.revoked ?? []
     if (revoked.length) toast(`@${who} can only read now, so their ${plural(revoked.length, 'agent was', 'agents were')} revoked: ${revoked.map((a) => a.name).join(', ')}.`)
   })
-  const take = (who: string) => void change(() => call<SpacesView & { revoked?: { id: string; name: string }[] }>('DELETE', path(who))).then((done) => {
-    if (!done) return
+  const take = async (who: string) => {
+    const done = await change(() => call<Revoked>('DELETE', path(who)))
+    if (!done) return false
     const revoked = done.revoked ?? []
     toast(`Removed @${who}.${revoked.length ? ` Their ${plural(revoked.length, 'agent was', 'agents were')} revoked with them: ${revoked.map((a) => a.name).join(', ')}.` : ''}`)
-  })
-  const person = (login: string) => <><PersonAvatar id={login} size={26} /><b><PersonName id={login} />{you(login) && <span className="faint"> (you)</span>}</b></>
+    return true
+  }
+  const name = (login: string) => <><PersonName id={login} />{you(login) && <span className="people-you"> (you)</span>}</>
+  const agentsLine = (login: string) => {
+    const own = agentsOf(state.agents, login)
+    return own.length ? `${plural(own.length, 'agent', 'agents')}: ${own.map((a) => a.name).join(', ')}` : 'No agents'
+  }
+  const menu = (login: string): MenuItem[] => you(login)
+    ? [{ label: 'Leave this binder…', icon: <LogOut size={14} />, onSelect: () => { window.location.hash = sectionHref('general') } }]
+    : [{ label: 'Remove from this binder', icon: <UserMinus size={14} />, danger: true, onSelect: () => setRemoving(login) }]
+  const rolesMore = <p>Owners and admins add and remove people; only owners make or remove owners. Everyone in it sees its notes, cards and agents. A reader sees everything and can ask about it, but can’t change anything or have agents.</p>
 
   return (
     <>
@@ -60,67 +76,121 @@ export function People() {
         </p>
       )}
       {members ? (
-        <Changeable may={may}>
-          <section className="settings-card space-card">
-            <ul className="member-list" aria-label="People in this binder">
-              {members.map((m) => {
-                const own = agentsOf(state.agents, m.login)
-                return (
-                  <li key={m.login}>
-                    {person(m.login)}
-                    <select id={`member-role-${m.login}`} aria-label={`${m.login}’s role`} value={m.role} onChange={(e) => put(m.login, e.target.value as Role, `role-${m.login}`)}>
-                      {roles.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
-                    </select>
-                    <Saved show={shown(`role-${m.login}`)} />
-                    <ConfirmButton className="icon-button" label={`Remove ${m.login}`} title="Remove from this binder" question="Remove them? Press again"
-                      detail={own.length ? `${plural(own.length, 'agent of theirs', 'agents of theirs')} ${own.length === 1 ? 'stops' : 'stop'} with them: ${own.map((a) => a.name).join(', ')}.` : 'None of their agents work here.'}
-                      onConfirm={() => take(m.login)}><Trash2 size={14} /></ConfirmButton>
-                  </li>
-                )
-              })}
-              {!members.length && <li className="faint">Nobody yet.</li>}
-            </ul>
-            <p className="field-hint">A reader sees everything in this binder, and can ask about it. They can’t change anything, and can’t have agents.</p>
-            <div className="field">
-              <div className="field-head"><label className="field-label" htmlFor="member-login">Add someone</label><Saved show={shown('add')} /></div>
-              {/* GitHub logins suggested as you type; picking one, or Return, adds them with the role beside it. */}
-              <div className="member-add">
-                <PeopleInput id="member-login" kind="user" value={[]} implied={[]} impliedWhy="" disabled={false} onChange={(names) => {
-                  const who = names.at(-1)?.trim().replace(/^@/, '')
-                  if (who) put(who, role, 'add')
-                }} />
-                <select id="member-role" aria-label="Their role" value={role} onChange={(e) => setRole(e.target.value as Role)}>
-                  {roles.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
-                </select>
-              </div>
-            </div>
-            <p className="field-hint">Owners and admins add and remove people; only owners make or remove owners. Everyone in it sees its notes, cards and agents.</p>
-          </section>
-        </Changeable>
+        <>
+          {may && <HeaderAction><button type="button" className="button primary" onClick={() => setAdding(true)}><UserPlus size={16} aria-hidden="true" />Add people</button></HeaderAction>}
+          <Section title="In this binder" lead={plural(members.length, 'person', 'people')} more={rolesMore} moreLabel="Who may do what">
+            <Changeable may={may}>
+              <Rows label="People in this binder" className="people-rows">
+                {members.map((m) => (
+                  <Row key={m.login} icon={<PersonAvatar id={m.login} size={32} />} title={name(m.login)} meta={<><span className="mono">@{m.login}</span><span className="people-agents"> · {agentsLine(m.login)}</span></>}
+                    status={<Saved show={shown(`role-${m.login}`)} />}
+                    trailing={(
+                      <>
+                        <select id={`member-role-${m.login}`} className="select people-role" aria-label={`${m.login}’s role`} value={m.role} onChange={(e) => put(m.login, e.target.value as Role, `role-${m.login}`)}>
+                          {roles.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+                        </select>
+                        <MenuButton label={`More for ${m.login}`} items={() => menu(m.login)} />
+                      </>
+                    )} />
+                ))}
+                {!members.length && <li className="rows-item"><div className="rows-main"><span className="rows-meta">Nobody yet.</span></div></li>}
+              </Rows>
+            </Changeable>
+          </Section>
+        </>
       ) : (
         <>
           {!empty && <WhoCan may={false} managers={managers} />}
           {managers.length > 0 && (
-            <section className="settings-card space-card">
-              <h3 className="settings-sub">Who runs it</h3>
-              <ul className="member-list">
-                {managers.map((m) => (
-                  <li key={m.login}>
-                    {person(m.login)}
-                    <span className="faint">{m.role === 'owner' ? 'Owner' : 'Admin'}</span>
-                  </li>
-                ))}
-              </ul>
-            </section>
+            <Section title="Who runs it" lead="Ask one of them to add someone or change a role." more={rolesMore} moreLabel="Who may do what">
+              <Rows label="Who runs it" className="people-rows">
+                {managers.map((m) => <Row key={m.login} icon={<PersonAvatar id={m.login} size={32} />} title={name(m.login)} meta={m.role === 'owner' ? 'Owner' : 'Admin'} />)}
+              </Rows>
+            </Section>
           )}
         </>
       )}
+      <AnimatePresence>
+        {adding && <AddPeople key="add" onClose={() => setAdding(false)} add={async (who, role) => !!(await change(() => call<Revoked>('PUT', path(who), { role })))} />}
+        {removing && <RemovePerson key="remove" login={removing} agents={agentsOf(state.agents, removing).map((a) => a.name)} onClose={() => setRemoving(undefined)} onRemove={() => take(removing)} />}
+      </AnimatePresence>
     </>
   )
 }
 
-/** A new binder: anyone makes one, and owns it (the hub's admins may name another owner). Opened once made. */
-export function NewSpace({ me, forOthers }: { me: string; forOthers: boolean }) {
+/** GitHub logins picked or typed, and the one role they all get. */
+function AddPeople({ onClose, add }: { onClose: () => void; add: (login: string, role: Role) => Promise<boolean> }) {
+  const [names, setNames] = useState<string[]>([])
+  const [role, setRole] = useState<Role>('member')
+  const [busy, setBusy] = useState(false)
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!names.length) return
+    setBusy(true)
+    const added: string[] = []
+    // One at a time, so a refusal stops it where it is, in the hub's own words, with the rest still to add.
+    for (const login of names) {
+      if (!(await add(login, role))) break
+      added.push(login)
+    }
+    setBusy(false)
+    if (!added.length) return
+    const label = roles.find((r) => r.id === role)!.label.toLowerCase()
+    toast(added.length === 1 ? `Added @${added[0]} as ${role === 'admin' || role === 'owner' ? 'an' : 'a'} ${label}.` : `Added ${added.length} people as ${label}s.`)
+    if (added.length === names.length) onClose()
+    else setNames(names.filter((n) => !added.includes(n)))
+  }
+  return (
+    <Dialog title="Add people" onClose={onClose}>
+      <form className="form" onSubmit={(e) => void submit(e)}>
+        <div className="field">
+          <label className="field-label" htmlFor="member-login">GitHub logins</label>
+          <PeopleInput id="member-login" kind="user" value={names} implied={[]} impliedWhy="" disabled={false} onChange={(next) => setNames(next.map((n) => n.trim().replace(/^@/, '')).filter(Boolean))} />
+          <span className="field-hint">Type a login and press Return, or pick one as you type.</span>
+        </div>
+        <fieldset className="field role-choices">
+          <legend className="field-label">Their role</legend>
+          {roles.map((r) => (
+            <label key={r.id} className={`role-choice${role === r.id ? ' on' : ''}`}>
+              <input type="radio" name="member-role" value={r.id} checked={role === r.id} onChange={() => setRole(r.id)} />
+              <span className="role-choice-text"><b>{r.label}</b><span>{r.line}</span></span>
+            </label>
+          ))}
+        </fieldset>
+        <footer className="form-actions">
+          <button type="button" className="button" onClick={onClose}>Cancel</button>
+          <button type="submit" className="button primary" disabled={busy || !names.length}>{names.length > 1 ? `Add ${names.length} people` : names.length ? `Add @${names[0]}` : 'Add'}</button>
+        </footer>
+      </form>
+    </Dialog>
+  )
+}
+
+/** Taking someone out of the binder: what stops with them, said before they go. */
+function RemovePerson({ login, agents, onClose, onRemove }: { login: string; agents: string[]; onClose: () => void; onRemove: () => Promise<boolean> }) {
+  const [busy, setBusy] = useState(false)
+  const remove = async () => {
+    setBusy(true)
+    // A refusal shows as a toast, in the hub's own words, and the dialog stays.
+    if (await onRemove()) onClose()
+    else setBusy(false)
+  }
+  return (
+    <Dialog title={`Remove ${login}?`} onClose={onClose} size="small"
+      footer={<><button type="button" className="button" onClick={onClose}>Cancel</button><button type="button" className="button danger primary" disabled={busy} onClick={() => void remove()}>Remove {login}</button></>}>
+      <div className="dialog-lines">
+        <p>They stop seeing this binder’s notes, cards and agents.</p>
+        <p>{agents.length ? `${plural(agents.length, 'agent of theirs', 'agents of theirs')} ${agents.length === 1 ? 'stops' : 'stop'} with them: ${agents.join(', ')}.` : 'None of their agents work here.'}</p>
+      </div>
+    </Dialog>
+  )
+}
+
+/**
+ * A new binder: anyone makes one, and owns it (the hub's admins may name another owner). Opened once made. A form with
+ * its own buttons, for a dialog: `onCancel` adds a Cancel beside them.
+ */
+export function NewSpace({ me, forOthers, onCancel }: { me: string; forOthers: boolean; onCancel?: () => void }) {
   const [name, setName] = useState('')
   const [id, setId] = useState('')
   const [owner, setOwner] = useState(me)
@@ -133,17 +203,17 @@ export function NewSpace({ me, forOthers }: { me: string; forOthers: boolean }) 
     })
   }
   return (
-    <form className="settings-card binder-add" onSubmit={make}>
-      <h3>New binder</h3>
-      <p className="field-hint">Its own notes, folders, board, GitHub repo and members, at its own address. You own it, and add people to it.</p>
-      <label className="field">
-        <span className="field-label">Name</span>
-        <input id="new-space-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Its name" />
-      </label>
-      <label className="field-label" htmlFor="new-space-id">Address</label>
-      <div className="space-address">
-        <span className="mono faint">{window.location.origin}/</span>
-        <input id="new-space-id" className="mono" value={address} onChange={(e) => { setTouched(true); setId(e.target.value.toLowerCase()) }} placeholder="team-name" />
+    <form className="form binder-add" onSubmit={make}>
+      <p className="dialog-line">Its own notes, folders, board, GitHub repo and members, at its own address. {forOthers ? 'Its owner adds people to it.' : 'You own it, and add people to it.'}</p>
+      <Field label="Name">
+        <input id="new-space-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Its name" autoComplete="off" />
+      </Field>
+      <div className="field">
+        <label className="field-label" htmlFor="new-space-id">Address</label>
+        <div className="space-address">
+          <span className="mono" aria-hidden="true">{window.location.origin}/</span>
+          <input id="new-space-id" className="mono" value={address} onChange={(e) => { setTouched(true); setId(e.target.value.toLowerCase()) }} placeholder="team-name" autoComplete="off" spellCheck={false} />
+        </div>
       </div>
       {forOthers && (
         <div className="field">
@@ -152,7 +222,10 @@ export function NewSpace({ me, forOthers }: { me: string; forOthers: boolean }) 
           <PeopleInput id="new-space-owner" kind="user" value={owner ? [owner] : []} implied={[]} impliedWhy="" disabled={false} onChange={(names) => setOwner(names.at(-1) ?? '')} />
         </div>
       )}
-      <button className="button primary" disabled={!name.trim() || !address || !owner.trim()}><Plus size={14} /> Make the binder</button>
+      <footer className="form-actions">
+        {onCancel && <button type="button" className="button" onClick={onCancel}>Cancel</button>}
+        <button className="button primary" disabled={!name.trim() || !address || !owner.trim()}>Make the binder</button>
+      </footer>
     </form>
   )
 }

@@ -64,7 +64,7 @@ export function RunnerSteps({ agent, token: given }: { agent: Agent; token?: str
         </p>
       </li>
       <li className={listening ? 'done' : ''}>
-        <h3>{listening ? <><Check size={14} strokeWidth={3} /> Listening for work</> : <><LoaderCircle size={14} className="spin" /> Waiting for the runner to connect…</>}</h3>
+        <h3>{listening ? 'Listening for work' : <><LoaderCircle size={14} className="spin" aria-hidden="true" /> Waiting for the runner to connect…</>}</h3>
         <p className="faint">{listening ? `On ${live.runsOn ?? 'its machine'}. Cards meant for ${live.name}, or open to any agent that can, go to it now.` : 'This turns green as soon as it connects.'}</p>
       </li>
     </ol>
