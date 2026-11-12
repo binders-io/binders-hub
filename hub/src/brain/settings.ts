@@ -551,15 +551,16 @@ export class BrainSettingsStore {
   }
 
   /**
-   * A model a gateway on one of your machines lists, made a job's: an admin's choice, never the hub's. It runs in a
-   * cloud, so Local AI only refuses it; and a gateway lists more than it can reach, so the model is asked one short
-   * thing first, and the job stays as it was when nothing comes back.
+   * A model on a gateway on one of your machines, made a job's: an admin's choice, never the hub's. It runs in a
+   * cloud, so Local AI only refuses it. A gateway lists more than it can reach, and may take a name it doesn't list
+   * (a deployment's), so any name is taken and the model is asked one short thing first: the job stays as it was when
+   * nothing comes back.
    */
   async useGateway(job: 'chat' | 'embeddings', machine: string, url: string, model: string) {
     if (jobFields[job].some((name) => name in this.fixed.fields)) throw new Refusal('That job is set on the hub by its environment, so it can’t be changed here.')
     const gateway = this.machines ? gateways(this.machines.list()).find((g) => g.machine === machine && g.url === url) : undefined
     if (!gateway) throw new Refusal('That gateway isn’t on a machine linked to the hub right now.')
-    if (!gateway.models[job].includes(model)) throw new Refusal('That gateway doesn’t list that model for this.')
+    if (/\s/.test(model)) throw new Refusal('A model’s name has no spaces in it.')
     if (this.get().localOnly) throw new Refusal('Local AI only is on, and that model runs in a cloud. Turn it off to use a model through a gateway.')
     const via = this.via(machine, url)
     if (typeof via === 'string') throw new Refusal(via)

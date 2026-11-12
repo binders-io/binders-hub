@@ -2,7 +2,7 @@ import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { detect, diskLines, hfCache, isAudio, listening, lookOnDisk, nearby, newer, onDisk, probe, pull, relay, repoOf, say, voiceNames, whyStopped } from '../src/brain.ts'
+import { detect, diskLines, hfCache, isAudio, listening, lookOnDisk, mostModels, nearby, newer, onDisk, probe, pull, relay, repoOf, say, voiceNames, whyStopped } from '../src/brain.ts'
 import { engines } from '../src/engines.ts'
 import { mkdtemp, mkdir as makeDir, writeFile as write } from 'node:fs/promises'
 import { tmpdir as tempDir } from 'node:os'
@@ -46,6 +46,24 @@ describe('the brain daemon', () => {
     const found = await detect([`${server.url}/`], true)
     assert.ok(found.some((s) => s.url === server.url), 'the one it was told of, without its slash')
     assert.deepEqual(voiceNames('Albert              en_US    # Hello! My name is Albert.\nAmélie              fr_CA    # Bonjour !\nGood News           en_US    # Hello!\nnonsense\n'), ['Albert', 'Amélie', 'Good News'])
+  })
+
+  it('says every model a server lists, though a gateway to a cloud lists hundreds', async () => {
+    const listed = (count: number) => Array.from({ length: count }, (_, n) => ({ id: `model-${n + 1}`, owned_by: 'system' }))
+    let count = 450
+    const gateway: Server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ data: listed(count) }))
+    })
+    await new Promise<void>((done) => gateway.listen(0, '127.0.0.1', done))
+    closers.push(() => new Promise<void>((done) => gateway.close(() => done())))
+    const url = `http://127.0.0.1:${(gateway.address() as AddressInfo).port}/v1`
+    const found = await probe(url, 'openai')
+    assert.equal(found?.models.length, 450)
+    assert.equal(found?.models.at(-1), 'model-450', 'the last one it lists, too')
+    // A list past any real one is cut, so a server can't flood the hub.
+    count = mostModels + 50
+    assert.equal((await probe(url, 'openai'))?.models.length, mostModels)
   })
 
   it('passes on a request to a server it found, as it came, and nothing to anywhere else', async () => {

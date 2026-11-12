@@ -108,7 +108,7 @@ describe('Settings → Brain', () => {
   function gatewayHub(brain: Record<string, unknown> = { provider: 'off', summarize: true }) {
     const address = 'http://127.0.0.1:4000/v1'
     const chat = [...Array.from({ length: 30 }, (_, i) => `gpt-4.${i}`), 'gpt-5.1', 'gpt-5-mini', 'claude-sonnet-5']
-    const server = { id: 'm3', name: 'hub-server', online: true, platform: 'linux x64', version: '0.15.0', seenAt: 'now', servers: [{ url: address, kind: 'openai', models: [...chat, 'text-embedding-3-large'], gateway: true }] }
+    const server = { id: 'm3', name: 'hub-server', online: true, platform: 'linux x64', version: '0.15.0', seenAt: 'now', servers: [{ url: address, kind: 'openai', models: [], lists: 34, gateway: true }] }
     const gateways = [{ machine: 'm3', machineName: 'hub-server', url: address, models: { chat, embeddings: ['text-embedding-3-large'], transcription: [], speech: [] } }]
     const sent: { url: string; body?: { model?: string } }[] = []
     let now = brain
@@ -148,7 +148,11 @@ describe('Settings → Brain', () => {
     expect(dialog.textContent).toContain('33 cloud models, reached through hub-server.')
     expect(dialog.textContent).toContain('25 more: type to find one.')
     fireEvent.change(within(dialog).getByLabelText('Find a cloud model'), { target: { value: 'GPT-5' } })
-    expect(names()).toEqual(['gpt-5.1', 'gpt-5-mini'])
+    // What matches, then what's typed itself, as no model there has exactly that name.
+    expect(names()).toEqual(['gpt-5.1', 'gpt-5-mini', 'GPT-5'])
+    fireEvent.change(within(dialog).getByLabelText('Find a cloud model'), { target: { value: 'gpt-5.1' } })
+    expect(names()).toEqual(['gpt-5.1'])
+    fireEvent.change(within(dialog).getByLabelText('Find a cloud model'), { target: { value: 'gpt-5' } })
 
     // One the gateway lists and can't reach: said, and nothing in use.
     fireEvent.click(within(dialog).getByRole('button', { name: 'Use gpt-5-mini' }))
@@ -164,8 +168,16 @@ describe('Settings → Brain', () => {
       { url: '/api/brain/gateway', body: { job: 'chat', machine: 'm3', url: address, model: 'gpt-5-mini' } },
       { url: '/api/brain/gateway', body: { job: 'chat', machine: 'm3', url: address, model: 'gpt-5.1' } },
     ])
-    fireEvent.change(within(dialog).getByLabelText('Find a cloud model'), { target: { value: 'llama' } })
+    // A name the gateway doesn't list (a deployment's, say) can be tried as it's typed.
+    fireEvent.change(within(dialog).getByLabelText('Find a cloud model'), { target: { value: 'my-deployment' } })
+    expect(dialog.textContent).toContain('None of them has that in its name. If the gateway takes the name anyway, try it as typed.')
+    expect(within(list).getAllByRole('listitem').map((item) => item.textContent)).toEqual(['my-deploymenthub-server · gateway on :4000 · not in its list, tried as typedUse'])
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Use my-deployment on hub-server, as typed' }))
+    await waitFor(() => expect(within(list).getAllByRole('listitem')[0].textContent).toContain('In use'))
+    expect(sent.at(-1)).toEqual({ url: '/api/brain/gateway', body: { job: 'chat', machine: 'm3', url: address, model: 'my-deployment' } })
+    fireEvent.change(within(dialog).getByLabelText('Find a cloud model'), { target: { value: 'two words' } })
     expect(dialog.textContent).toContain('None of them has that in its name.')
+    expect(within(dialog).queryByRole('list', { name: 'Cloud models through a gateway' })).toBeNull()
     const { violations } = await axe.run(dialog, { rules: { 'color-contrast': { enabled: false }, region: { enabled: false } } })
     expect(violations.flatMap((v) => v.nodes.map((n) => `${v.id}: ${n.target.join(' ')}`))).toEqual([])
   })
@@ -177,8 +189,6 @@ describe('Settings → Brain', () => {
     const use = (await within(dialog).findByRole('button', { name: 'Use text-embedding-3-large' })) as HTMLButtonElement
     expect(use.disabled).toBe(true)
     expect(dialog.textContent).toContain('Local AI only is on, so a cloud model can’t be used. Turn it off to choose one.')
-    // One model: nothing to find among.
-    expect(within(dialog).queryByLabelText('Find a cloud model')).toBeNull()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }))
     fireEvent.click(await screen.findByRole('button', { name: /^Reading answers out: nothing yet/ }))
     const speech = (await screen.findByRole('dialog', { name: 'Reading answers out' })) as HTMLElement

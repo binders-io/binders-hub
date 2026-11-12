@@ -35,16 +35,17 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
     return brainMachines
   }
   app.get('/api/brain/machines', act(async (request) => {
-    const machines = admin(request, 'see its machines').list()
-      .map((m) => ({ ...m, servers: (m.servers ?? []).map((s) => (isGateway(s, m.facts?.memoryGb) ? { ...s, gateway: true } : s)) }))
+    const linked = admin(request, 'see its machines').list()
+    // A gateway's models are sent once, below, with the job each is for: on its server, only how many it lists.
+    const machines = linked.map((m) => ({ ...m, servers: (m.servers ?? []).map((s) => (isGateway(s, m.facts?.memoryGb) ? { ...s, gateway: true, models: [], lists: s.models.length } : s)) }))
     // For each job no machine can do, a model to download, on a machine with Ollama: none while one is downloading.
     const downloading = new Set(machines.flatMap((m) => (m.downloads ?? []).filter((d) => !d.done && !d.error).map((d) => `${m.id} ${d.model}`)))
-    const offered = brainSettings ? offers(machines, brainSettings.openJobs()).filter((o) => !downloading.has(`${o.machine} ${o.action === 'serve' ? (o.runtime === 'mlx-audio' ? 'mlx-audio' : 'LM Studio') : o.model}`)) : []
+    const offered = brainSettings ? offers(linked, brainSettings.openJobs()).filter((o) => !downloading.has(`${o.machine} ${o.action === 'serve' ? (o.runtime === 'mlx-audio' ? 'mlx-audio' : 'LM Studio') : o.model}`)) : []
     // For each job, every model your machines can do it with, best first: what Settings lists to choose from.
-    const all = candidates(machines)
+    const all = candidates(linked)
     const choices = Object.fromEntries(jobs.map((job) => [job, all[job].slice(0, 40)]))
     // And the gateways on them, with what each lists: never the hub's choice, an admin's to make.
-    return { machines, offers: offered, candidates: choices, gateways: gateways(machines), latest: runnerVersion }
+    return { machines, offers: offered, candidates: choices, gateways: gateways(linked), latest: runnerVersion }
   }))
   app.post('/api/brain/machines/:id/pull', act(async (request) => {
     const machines = admin(request, 'download models')

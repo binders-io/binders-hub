@@ -419,8 +419,11 @@ describe('machines of yours serving the brain’s models', () => {
 
   it('lists what a gateway on a machine reaches, never chooses from it, and lets an admin choose: tried first, refused under Local AI only', async () => {
     const set = await setUp()
-    // A gateway to a cloud, as a proxy on the machine: it lists more than it can reach.
-    const listed = ['gpt-5.1', 'gpt-5-mini', 'claude-sonnet-5', 'text-embedding-3-large', 'whisper-1', 'gpt-4o-transcribe', 'tts-1', 'dall-e-3', 'gpt-realtime', 'text-search-ada-doc-001']
+    // A gateway to a cloud, as a proxy on the machine: it lists hundreds, more than it can reach, and takes a
+    // deployment's name it doesn't list.
+    const tuned = Array.from({ length: 400 }, (_, n) => `gpt-4.1-tuned-${n + 1}`)
+    const listed = ['gpt-5.1', 'gpt-5-mini', 'claude-sonnet-5', 'text-embedding-3-large', 'whisper-1', 'gpt-4o-transcribe', 'tts-1', 'dall-e-3', 'gpt-realtime', 'text-search-ada-doc-001', ...tuned]
+    const answers = new Set(['gpt-5.1', 'my-deployment', 'text-embedding-3-large', tuned[399]])
     const asked: string[] = []
     const gateway = createServer((request, response) => {
       const chunks: Buffer[] = []
@@ -433,7 +436,7 @@ describe('machines of yours serving the brain’s models', () => {
         if (request.url === '/v1/models') return json(200, { data: listed.map((id) => ({ id, owned_by: 'system' })) })
         const model = (JSON.parse(Buffer.concat(chunks).toString() || '{}') as { model?: string }).model ?? ''
         asked.push(`${request.url} ${model}`)
-        if (model === 'gpt-5-mini') return json(404, { error: { code: 'DeploymentNotFound', message: 'The API deployment for this resource does not exist.' } })
+        if (!answers.has(model)) return json(404, { error: { code: 'DeploymentNotFound', message: 'The API deployment for this resource does not exist.' } })
         if (request.url === '/v1/chat/completions') return json(200, { choices: [{ message: { content: '{"title":"Van tyres","summary":"Tyres before the trip.","points":[],"decisions":[],"followUps":[]}' } }] })
         if (request.url === '/v1/embeddings') return json(200, { data: [{ index: 0, embedding: [0.6, 0.8] }] })
         json(404, {})
@@ -452,15 +455,15 @@ describe('machines of yours serving the brain’s models', () => {
 
       // What the hub says of it: a gateway, with nothing to choose from itself, and what it lists for each job.
       const seen = (await boss('GET', '/api/brain/machines')).body
-      assert.equal(seen.machines[0].servers[0].gateway, true)
+      assert.deepEqual([seen.machines[0].servers[0].gateway, seen.machines[0].servers[0].lists, seen.machines[0].servers[0].models], [true, 410, []], 'every one it lists is counted, the last of them too')
       assert.deepEqual(Object.values(seen.candidates).flat(), [], 'none of them is a model on the machine')
-      assert.deepEqual(seen.gateways, [{ machine: id, machineName: 'Server', url, models: { chat: ['gpt-5.1', 'gpt-5-mini', 'claude-sonnet-5'], embeddings: ['text-embedding-3-large'], transcription: ['whisper-1', 'gpt-4o-transcribe'], speech: ['tts-1'] } }])
+      assert.deepEqual(seen.gateways, [{ machine: id, machineName: 'Server', url, models: { chat: ['gpt-5.1', 'gpt-5-mini', 'claude-sonnet-5', ...tuned], embeddings: ['text-embedding-3-large'], transcription: ['whisper-1', 'gpt-4o-transcribe'], speech: ['tts-1'] } }])
       assert.equal((await boss('GET', '/api/brain')).body.brain.provider, 'off', 'the hub chose nothing from it')
 
       // An admin's to choose, of what it lists for the job.
       assert.equal((await you('POST', '/api/brain/gateway', { job: 'chat', machine: id, url, model: 'gpt-5.1' })).status, 422)
-      const unlisted = await boss('POST', '/api/brain/gateway', { job: 'chat', machine: id, url, model: 'dall-e-3' })
-      assert.deepEqual([unlisted.status, unlisted.body.error], [422, 'That gateway doesn’t list that model for this.'])
+      const spaced = await boss('POST', '/api/brain/gateway', { job: 'chat', machine: id, url, model: 'gpt 5.1' })
+      assert.deepEqual([spaced.status, spaced.body.error], [422, 'A model’s name has no spaces in it.'])
       assert.equal((await boss('POST', '/api/brain/gateway', { job: 'chat', machine: 'm-none', url, model: 'gpt-5.1' })).status, 422)
       assert.equal((await boss('POST', '/api/brain/gateway', { job: 'speech', machine: id, url, model: 'tts-1' })).status, 422, 'only what can be tried first')
 
@@ -468,6 +471,12 @@ describe('machines of yours serving the brain’s models', () => {
       const missing = await boss('POST', '/api/brain/gateway', { job: 'chat', machine: id, url, model: 'gpt-5-mini' })
       assert.deepEqual([missing.status, missing.body.error], [422, 'gpt-5-mini didn’t answer through Server. The server answered 404: The API deployment for this resource does not exist. Nothing was changed.'])
       assert.equal((await boss('GET', '/api/brain')).body.brain.provider, 'off')
+
+      // A name it doesn't list is taken as typed, and tried like any other: a deployment's, or one past the end of a list.
+      const typed = await boss('POST', '/api/brain/gateway', { job: 'chat', machine: id, url, model: 'my-deployment' })
+      assert.deepEqual([typed.status, typed.body.brain.inUse], [200, 'my-deployment, through a gateway on Server'])
+      assert.equal((await boss('POST', '/api/brain/gateway', { job: 'chat', machine: id, url, model: 'no-such-deployment' })).status, 422)
+      assert.equal((await boss('POST', '/api/brain/gateway', { job: 'chat', machine: id, url, model: tuned[399] })).status, 200, 'the last one it lists')
 
       // One that answers: the admin's from then on, reached through the machine.
       const chosen = await boss('POST', '/api/brain/gateway', { job: 'chat', machine: id, url, model: 'gpt-5.1' })

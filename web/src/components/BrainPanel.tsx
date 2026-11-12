@@ -62,7 +62,12 @@ interface MachineServer {
   needsKey?: boolean
   /** It lists cloud models, or ones too big for the machine: a gateway to somewhere else, which the hub never chooses from. */
   gateway?: boolean
+  /** A gateway's models come apart from it, each with its job: here, how many it lists. */
+  lists?: number
 }
+
+/** How many models a server lists. */
+const listed = (server: MachineServer) => server.lists ?? server.models.length
 
 /** A gateway on one of your machines, and the models it lists for each job: an admin's to choose from, never the hub's. */
 interface Gateway {
@@ -175,7 +180,7 @@ function serverLabel(server: MachineServer) {
     port = new URL(server.url).port
   } catch { /* shown without */ }
   if (server.needsKey) return `A server${port ? ` on :${port}` : ''} that wants a key`
-  if (server.gateway) return `A gateway${port ? ` on :${port}` : ''} to ${server.models.length} cloud models. The hub never picks one itself: choose one under Models.`
+  if (server.gateway) return `A gateway${port ? ` on :${port}` : ''} to ${listed(server)} cloud models. The hub never picks one itself: choose one under Models.`
   if (server.kind === 'binders') return `Downloaded models · ${server.models.length}, each loaded when it’s asked for`
   return `${serverNames[server.kind] ?? 'A server'}${port ? ` on :${port}` : ''} · ${server.models.length} model${server.models.length === 1 ? '' : 's'}`
 }
@@ -186,7 +191,7 @@ function modelCount(m: Machine) {
   const models = usable.filter((server) => server.kind !== 'say').reduce((n, server) => n + server.models.length, 0)
   const voices = usable.some((server) => server.kind === 'say')
   // A gateway's models run somewhere else: yours to choose, so said apart from what the hub chooses from.
-  const cloud = (m.servers ?? []).filter((server) => server.gateway && !server.needsKey).reduce((n, server) => n + server.models.length, 0)
+  const cloud = (m.servers ?? []).filter((server) => server.gateway && !server.needsKey).reduce((n, server) => n + listed(server), 0)
   const gateway = cloud ? `a gateway to ${cloud} cloud models` : ''
   if (!models && !voices) return gateway ? `A${gateway.slice(1)}, yours to choose` : 'No models the hub can use yet'
   return [[models ? `${models} model${models === 1 ? '' : 's'}` : '', voices ? 'macOS voices' : ''].filter(Boolean).join(' and '), gateway].filter(Boolean).join(', and ')
@@ -600,15 +605,21 @@ export function BrainPanel() {
     if (job !== 'chat' && job !== 'embeddings') return null
     const all = gatewayList.flatMap((g) => (g.models[job] ?? []).map((model) => ({ machine: g.machine, machineName: g.machineName, url: g.url, model })))
     if (!all.length) return null
-    type Listed = (typeof all)[number]
+    type Listed = (typeof all)[number] & { unlisted?: boolean }
     const inUseNow = (g: Listed) => (job === 'chat'
       ? brain.provider === 'machine' && brain.machine === g.machine && brain.baseUrl === g.url && brain.model === g.model
       : brain.embeddingsMachine === g.machine && brain.embeddingsBaseUrl === g.url && brain.embeddingsModel === g.model)
-    const words = (finding[job] ?? '').toLowerCase().split(/\s+/).filter(Boolean)
-    const matching = all.filter((g) => words.every((word) => g.model.toLowerCase().includes(word)))
+    const typed = (finding[job] ?? '').trim()
+    const words = typed.toLowerCase().split(/\s+/).filter(Boolean)
+    const matching: Listed[] = all.filter((g) => words.every((word) => g.model.toLowerCase().includes(word)))
     // What's in use first, then as the gateway lists them.
     const ordered = [...matching.filter(inUseNow), ...matching.filter((g) => !inUseNow(g))]
-    const shown = ordered.slice(0, 8)
+    // A gateway may take a name it doesn't list (a deployment's): what's typed can be tried as it is, on each gateway
+    // that has no model by exactly that name.
+    const asTyped: Listed[] = words.length === 1 && typed.length >= 3
+      ? gatewayList.filter((g) => !(g.models[job] ?? []).some((model) => model.toLowerCase() === typed.toLowerCase())).map((g) => ({ machine: g.machine, machineName: g.machineName, url: g.url, model: typed, unlisted: true }))
+      : []
+    const shown = [...ordered.slice(0, 8), ...asTyped]
     const keyOf = (g: Listed) => `${job} ${g.machine} ${g.url} ${g.model}`
     const portOf = (url: string) => {
       try { return new URL(url).port } catch { return '' }
@@ -631,15 +642,13 @@ export function BrainPanel() {
     return (
       <div className="choices gateway-choices">
         <span className="field-label">Through a gateway</span>
-        <p className="field-hint">{all.length} cloud model{all.length === 1 ? '' : 's'}, reached through {on.join(' and ')}. What’s asked goes to that cloud, so the hub never picks one itself. The one you choose is asked a short thing first, to see that it answers.</p>
-        {all.length > 8 && (
-          <div className="data-table-filter">
-            <Search size={15} aria-hidden="true" />
-            <label htmlFor={findId} className="sr-only">Find a cloud model</label>
-            <input id={findId} className="input" type="search" placeholder="Find a model: gpt-5, claude, deepseek" value={finding[job] ?? ''} onChange={(e) => setFinding((now) => ({ ...now, [job]: e.target.value }))} autoComplete="off" spellCheck={false} />
-            {finding[job] && <button type="button" className="icon-button" aria-label="Clear what’s typed" onClick={() => setFinding((now) => ({ ...now, [job]: '' }))}><X size={14} /></button>}
-          </div>
-        )}
+        <p className="field-hint">{all.length} cloud model{all.length === 1 ? '' : 's'}, reached through {on.join(' and ')}. What’s asked goes to that cloud, so the hub never picks one itself. The one you choose is asked a short thing first, to see that it answers; a name the gateway doesn’t list can be typed and tried too.</p>
+        <div className="data-table-filter">
+          <Search size={15} aria-hidden="true" />
+          <label htmlFor={findId} className="sr-only">Find a cloud model</label>
+          <input id={findId} className="input" type="search" placeholder="Find a model, or type its name: gpt-5, deepseek" value={finding[job] ?? ''} onChange={(e) => setFinding((now) => ({ ...now, [job]: e.target.value }))} autoComplete="off" spellCheck={false} />
+          {finding[job] && <button type="button" className="icon-button" aria-label="Clear what’s typed" onClick={() => setFinding((now) => ({ ...now, [job]: '' }))}><X size={14} /></button>}
+        </div>
         {brain.localOnly && <p className="option-status">Local AI only is on, so a cloud model can’t be used. Turn it off to choose one.</p>}
         {gatewaySaid[job] && <p className="option-status option-error" role="alert">{gatewaySaid[job]}</p>}
         {shown.length > 0 && (
@@ -652,10 +661,10 @@ export function BrainPanel() {
                 <li key={keyOf(g)} className={current ? 'on' : undefined}>
                   <div className="choice-name">
                     <b>{g.model}</b>
-                    <span>{g.machineName} · gateway{port ? ` on :${port}` : ''} · runs in a cloud</span>
+                    <span>{g.machineName} · gateway{port ? ` on :${port}` : ''} · {g.unlisted ? 'not in its list, tried as typed' : 'runs in a cloud'}</span>
                   </div>
                   {current ? <Status tone="ok">In use</Status> : (
-                    <button type="button" className="button small" disabled={!admin || !!brain.localOnly || !!trying} aria-label={busy ? `Trying ${g.model}` : `Use ${g.model}`} onClick={() => void choose(g)}>
+                    <button type="button" className="button small" disabled={!admin || !!brain.localOnly || !!trying} aria-label={busy ? `Trying ${g.model}` : `Use ${g.model}${g.unlisted ? ` on ${g.machineName}, as typed` : ''}`} onClick={() => void choose(g)}>
                       {busy ? <><LoaderCircle size={13} className="spin" aria-hidden="true" /> Trying it…</> : 'Use'}
                     </button>
                   )}
@@ -664,7 +673,7 @@ export function BrainPanel() {
             })}
           </ul>
         )}
-        <p className="field-hint" role="status">{!matching.length ? 'None of them has that in its name.' : ordered.length > shown.length ? `${ordered.length - shown.length} more: type to find one.` : ''}</p>
+        <p className="field-hint" role="status">{!matching.length ? `None of them has that in its name.${asTyped.length ? ' If the gateway takes the name anyway, try it as typed.' : ''}` : ordered.length > 8 ? `${ordered.length - 8} more: type to find one.` : ''}</p>
       </div>
     )
   }

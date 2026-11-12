@@ -229,6 +229,12 @@ export function nearby(address: string) {
   return !host.includes('.')
 }
 
+/**
+ * How many of a server's models the hub is told of. A gateway to a cloud lists hundreds, and the one wanted may be the
+ * last of them.
+ */
+export const mostModels = 2000
+
 /** One server, if it answers OpenAI's model list: what it is and which models it has, or that it wants a key first. */
 export async function probe(address: string, kind: string, timeoutMs = 4000): Promise<Server | undefined> {
   const base = address.replace(/\/+$/, '')
@@ -239,7 +245,7 @@ export async function probe(address: string, kind: string, timeoutMs = 4000): Pr
     if (!response.ok) return undefined
     const body = (await response.json()) as { data?: { id?: unknown; owned_by?: unknown }[] }
     if (!Array.isArray(body.data)) return undefined
-    const models = body.data.map((m) => String(m.id ?? '')).filter(Boolean).slice(0, 300)
+    const models = body.data.map((m) => String(m.id ?? '')).filter(Boolean).slice(0, mostModels)
     // vLLM says it's vLLM; NIM, NVIDIA's.
     const owner = String(body.data[0]?.owned_by ?? '').toLowerCase()
     const named = owner === 'vllm' ? 'vllm' : owner.includes('nvidia') ? 'nim' : kind

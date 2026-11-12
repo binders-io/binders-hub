@@ -509,8 +509,9 @@ by what they mean as well as by their words.
   - **A gateway to a cloud.** A server on a machine that lists cloud models (a proxy to Azure, OpenAI or Anthropic,
     such as LiteLLM) is a gateway: what's asked of its models leaves your network, so the hub never picks one itself.
     An admin can: under the hub's model or Finding by meaning, the gateway's models are listed to find by name and
-    choose. The one chosen is asked one short thing first, through the machine, and the job stays as it was when
-    nothing comes back, with what the gateway said.
+    choose, every one it lists up to two thousand. A name it doesn't list, such as a deployment's, can be typed and
+    tried the same way. The one chosen is asked one short thing first, through the machine, and the job stays as it
+    was when nothing comes back, with what the gateway said.
   - **Every model downloaded on the machine, served when asked for**, as Ollama serves its own. The daemon offers the
     hub one more server per machine: every downloaded model an engine there can run, and that fits its memory. When a
     request names one, the daemon starts its engine and passes the request on:
