@@ -9,6 +9,7 @@ import { hostName } from '../brain/machines.ts'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { Context } from './context.ts'
 import { whatsWrongWithEndpoint } from '../agent/endpoint.ts'
+import { candidates, gateways } from '../brain/autoPick.ts'
 
 // Agents set up by people, and their terminals.
 
@@ -203,16 +204,21 @@ export async function agentRoutes(app: FastifyInstance, context: Context) {
     const taking = (key: keyof AgentEndpoint['takes']) => (typeof takes[key] === 'boolean' ? takes[key]! : was?.takes[key] ?? true)
     const baseUrl = kind === 'brain' ? undefined : 'baseUrl' in body ? words(body.baseUrl, 500) : was?.baseUrl
     const model = kind === 'brain' ? undefined : words(body.model, 200) ?? was?.model
-    return { kind, ...(baseUrl ? { baseUrl } : {}), ...(model ? { model } : {}), takes: { cards: taking('cards'), chats: taking('chats'), debriefs: taking('debriefs'), challenges: taking('challenges') } }
+    // One of the hub's machines its server is on, and what that machine goes by now: its name is the hub's to say.
+    const machine = kind !== 'openai' ? undefined : 'machine' in body ? words(body.machine, 40) : was?.machine
+    const machineName = machine ? brainMachines?.get(machine)?.name ?? was?.machineName : undefined
+    return { kind, ...(baseUrl ? { baseUrl } : {}), ...(model ? { model } : {}), ...(machine ? { machine, ...(machineName ? { machineName } : {}) } : {}), takes: { cards: taking('cards'), chats: taking('chats'), debriefs: taking('debriefs'), challenges: taking('challenges') } }
   }
   const keyIn = (body: Record<string, unknown>) => (typeof body.key === 'string' && body.key.trim() ? body.key.trim().slice(0, 1000) : undefined)
 
   /** Where an endpoint's requests go: its address's host, or its maker's own when it names none. */
   const goesTo = (endpoint: AgentEndpoint) => {
+    // The same address on another machine is another server.
+    const on = endpoint.machine ? `${endpoint.machine} ` : ''
     try {
-      return endpoint.baseUrl ? new URL(endpoint.baseUrl).host.toLowerCase() : ''
+      return on + (endpoint.baseUrl ? new URL(endpoint.baseUrl).host.toLowerCase() : '')
     } catch {
-      return endpoint.baseUrl ?? ''
+      return on + (endpoint.baseUrl ?? '')
     }
   }
   /**
@@ -220,6 +226,20 @@ export async function agentRoutes(app: FastifyInstance, context: Context) {
    * given for. A key is never sent to an address it wasn't typed for, so changing the address can't be a way to read it.
    */
   const sameServer = (endpoint: AgentEndpoint, was: AgentEndpoint | undefined) => !!was && endpoint.kind === was.kind && goesTo(endpoint) === goesTo(was)
+
+  // The servers on the hub's machines an agent's model can be on, each with the models it has to talk to: for a hub
+  // admin, who runs those machines, and nobody else. A gateway's are the ones it lists for chat.
+  app.get('/api/agents/endpoint/servers', act(async (request) => {
+    if (!brainMachines || !isAdmin(login(request))) return { servers: [] }
+    const linked = brainMachines.list()
+    const servers: { machine: string; machineName: string; url: string; gateway?: boolean; models: string[] }[] = gateways(linked).map((g) => ({ machine: g.machine, machineName: g.machineName, url: g.url, gateway: true, models: g.models.chat }))
+    for (const found of candidates(linked).chat) {
+      const server = servers.find((s) => s.machine === found.machine && s.url === found.url)
+      if (server) server.models.push(found.model)
+      else servers.push({ machine: found.machine, machineName: found.machineName, url: found.url, models: [found.model] })
+    }
+    return { servers }
+  }))
 
   // Whether an endpoint would do, before it's saved: it's reached with the key given, and its model calls a tool. For
   // an agent that has a model, with no key typed, its own key is used, when it's the server that key was given for.

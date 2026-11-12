@@ -1,9 +1,9 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useId, useRef, type ReactNode } from 'react'
 import { LoaderCircle, TriangleAlert } from 'lucide-react'
 import type { AgentEndpoint } from '../../../shared/work.ts'
 import { Field } from './Dialog'
 import { Status } from '../kit'
-import { modelKinds, localMeansTheHub, looksLocal, type ModelBox } from './modelAgent'
+import { machineKind, modelKinds, localMeansTheHub, looksLocal, serversAt, serverWords, type HubServer, type ModelBox } from './modelAgent'
 
 // The boxes adding a model agent and editing one share: what it takes, its model, and its key; and how the forms say
 // what the hub found, as a status under them or beside the box it's about.
@@ -37,11 +37,16 @@ export function TakesField({ takes, onChange, disabled = false }: { takes: Takes
   )
 }
 
-/** The model's name or deployment, as the form has it. */
-export function ModelField({ value, onChange, placeholder }: { value: string; onChange: (value: string) => void; placeholder?: string }) {
+/**
+ * The model's name or deployment, as the form has it. `options`, when a server says which models it has, are offered
+ * as it's typed; a name not among them can still be typed.
+ */
+export function ModelField({ value, onChange, placeholder, options }: { value: string; onChange: (value: string) => void; placeholder?: string; options?: string[] }) {
+  const listId = useId()
   return (
-    <Field label="Model or deployment" hint="On Azure and Foundry, the deployment’s name.">
-      <input className="mono" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} autoComplete="off" autoCapitalize="none" spellCheck={false} />
+    <Field label="Model or deployment" hint={options ? `Type to find one of the ${options.length} it lists, or a deployment’s name as the server takes it.` : 'On Azure and Foundry, the deployment’s name.'}>
+      <input className="mono" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} autoComplete="off" autoCapitalize="none" spellCheck={false} list={options ? listId : undefined} />
+      {options && <datalist id={listId}>{options.map((name) => <option key={name} value={name} />)}</datalist>}
     </Field>
   )
 }
@@ -59,8 +64,16 @@ export function KeyField({ value, onChange, hint, error }: { value: string; onCh
  * A model's address, for one of the two kinds that have one. A local address is said to be the hub's own beside it, and
  * so is what the hub found wrong with it.
  */
-export function AddressField({ kind, value, onChange, error }: { kind: 'openai' | 'anthropic'; value: string; onChange: (value: string) => void; error?: string }) {
-  const hint = error ? wrong(error) : looksLocal(value) ? <span className="field-warn">{localMeansTheHub}</span>
+export function AddressField({ kind, value, onChange, error, served = [], onServed }: { kind: 'openai' | 'anthropic'; value: string; onChange: (value: string) => void; error?: string; served?: HubServer[]; onServed?: (server: HubServer) => void }) {
+  // An address the hub's machines serve: the hub may not reach it from where it runs, and each of those machines does.
+  const names = served.map((s) => s.machineName)
+  const through = served.length > 0 && onServed && (
+    <span className="field-warn">
+      {names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)} serve` : `${names[0]} serves`} that address, and the hub may not reach it from where it runs.{' '}
+      {served.map((s) => <button key={s.machine} type="button" className="text-button" onClick={() => onServed(s)}>Reach it through {s.machineName}</button>)}
+    </span>
+  )
+  const hint = error ? wrong(error) : through ? through : looksLocal(value) ? <span className="field-warn">{localMeansTheHub}</span>
     : kind === 'openai' ? 'The address ending in /v1. For Azure and Foundry, your resource’s address followed by /openai/v1.'
       : 'Only for Microsoft Foundry. Leave empty for Anthropic.'
   return (
@@ -77,6 +90,8 @@ export interface ModelValues {
   model: string
   baseUrl: string
   key: string
+  /** One of the hub's machines its server is on: then `baseUrl` is the server's address there. */
+  machine?: string
 }
 
 /**
@@ -85,28 +100,57 @@ export interface ModelValues {
  * only for Microsoft Foundry. `keyHint` is what the key's box says about the key; `errors`, what the hub found wrong
  * with a box, said beside it.
  */
-export function ModelKindFields({ values, onChange, keyHint, onKind, errors = {} }: { values: ModelValues; onChange: (values: ModelValues) => void; keyHint?: string; onKind?: (kind: ModelValues['kind']) => void; errors?: Partial<Record<ModelBox, string>> }) {
+export function ModelKindFields({ values, onChange, keyHint, onKind, errors = {}, servers = [] }: { values: ModelValues; onChange: (values: ModelValues) => void; keyHint?: string; onKind?: (kind: ModelValues['kind']) => void; errors?: Partial<Record<ModelBox, string>>; servers?: HubServer[] }) {
   const set = (fields: Partial<ModelValues>) => onChange({ ...values, ...fields })
   const { kind } = values
+  // A server on one of the hub's machines: an OpenAI-style one, reached through the machine. Offered when there is one
+  // (to a hub admin, as the hub says none to anyone else), and shown as chosen for a model that already is on one.
+  const onMachine = kind === 'openai' && !!values.machine
+  const server = onMachine ? servers.find((s) => s.machine === values.machine && s.url === values.baseUrl) : undefined
+  const pickServer = (s: HubServer, model = '') => onChange({ kind: 'openai', machine: s.machine, baseUrl: s.url, model, key: '' })
+  const serverId = useId()
   return (
     <>
       <div className="field" role="radiogroup" aria-label="What it is">
         <span className="field-label" aria-hidden="true">What it is</span>
         <div className="model-agent-kinds">
-          {modelKinds.map((k) => (
-            <button key={k.id} type="button" role="radio" aria-checked={kind === k.id} className={`model-agent-kind${kind === k.id ? ' on' : ''}`} onClick={() => (onKind ? onKind(k.id) : set({ kind: k.id }))}>
+          {modelKinds.map((k) => {
+            const on = kind === k.id && !onMachine
+            return (
+              <button key={k.id} type="button" role="radio" aria-checked={on} className={`model-agent-kind${on ? ' on' : ''}`} onClick={() => (onKind ? onKind(k.id) : set({ kind: k.id, machine: undefined, ...(onMachine ? { baseUrl: '', model: '' } : {}) }))}>
+                <i className="model-agent-radio" aria-hidden="true" />
+                <span>
+                  <b>{k.name}</b>
+                  <em>{k.help}</em>
+                </span>
+              </button>
+            )
+          })}
+          {(servers.length > 0 || onMachine) && (
+            <button type="button" role="radio" aria-checked={onMachine} className={`model-agent-kind${onMachine ? ' on' : ''}`} onClick={() => { if (!onMachine && servers[0]) pickServer(servers[0]) }}>
               <i className="model-agent-radio" aria-hidden="true" />
               <span>
-                <b>{k.name}</b>
-                <em>{k.help}</em>
+                <b>{machineKind.name}</b>
+                <em>{machineKind.help}</em>
               </span>
             </button>
-          ))}
+          )}
         </div>
       </div>
-      {kind === 'openai' && (
+      {onMachine && (
         <>
-          <AddressField kind="openai" value={values.baseUrl} onChange={(baseUrl) => set({ baseUrl })} error={errors.baseUrl} />
+          <Field label="Server" hint={errors.baseUrl ? wrong(errors.baseUrl) : 'Reached through that machine’s daemon, so the hub needs no way to it of its own, and no key.'}>
+            <select id={serverId} value={server ? `${server.machine} ${server.url}` : ''} onChange={(e) => { const next = servers.find((s) => `${s.machine} ${s.url}` === e.target.value); if (next) pickServer(next) }} aria-invalid={errors.baseUrl ? true : undefined}>
+              {!server && <option value="">{values.baseUrl} (not served there now)</option>}
+              {servers.map((s) => <option key={`${s.machine} ${s.url}`} value={`${s.machine} ${s.url}`}>{serverWords(s)}</option>)}
+            </select>
+          </Field>
+          <ModelField value={values.model} onChange={(model) => set({ model })} options={server?.models} />
+        </>
+      )}
+      {kind === 'openai' && !onMachine && (
+        <>
+          <AddressField kind="openai" value={values.baseUrl} onChange={(baseUrl) => set({ baseUrl })} error={errors.baseUrl} served={serversAt(servers, values.baseUrl)} onServed={(s) => pickServer(s, values.model)} />
           <ModelField value={values.model} onChange={(model) => set({ model })} />
           <KeyField value={values.key} onChange={(key) => set({ key })} hint={keyHint} error={errors.key} />
         </>

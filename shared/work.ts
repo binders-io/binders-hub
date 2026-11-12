@@ -26,6 +26,13 @@ export interface AgentEndpoint {
   baseUrl?: string
   /** The model, or the deployment's name. */
   model?: string
+  /**
+   * One of the hub's machines its server is on (Settings → Brain): the hub reaches `baseUrl`, which is the address as
+   * that machine sees it, through the machine's daemon. For a proxy or a model server on the hub's own host, which
+   * the hub can't call from where it runs. A hub admin's to set. `machineName` is what the machine goes by, for words.
+   */
+  machine?: string
+  machineName?: string
   /** What it takes: cards given to it by name (Distill among them), chats about a note, debriefs, Challenges. */
   takes: { cards: boolean; chats: boolean; debriefs: boolean; challenges: boolean }
   /** Whether its model called a tool when last asked to: one that can't does no work, and says why. */

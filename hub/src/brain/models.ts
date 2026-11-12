@@ -450,6 +450,9 @@ function serverName(base: string, via?: Via) {
   return via ? `${hostOf(base)} on ${via.name}` : hostOf(base)
 }
 
+/** A name that starts a sentence elsewhere, as it reads inside one: "the model server at …". */
+const lower = (words: string) => `${words.charAt(0).toLowerCase()}${words.slice(1)}`
+
 /** Joins a base address and a path, whether or not the base ends in a slash. */
 function at(base: string, path: string) {
   return `${base.replace(/\/+$/, '')}/${path}`
@@ -467,7 +470,7 @@ async function post(url: string, apiKey: string | undefined, body: unknown, time
   } catch (err) {
     // A machine that's away says so itself.
     if (err instanceof BrainUnavailable) throw err
-    throw new BrainUnavailable(`The hub couldn’t reach ${what}.`)
+    throw new BrainUnavailable(`The hub couldn’t reach ${lower(what)}.`)
   }
   if (response.status === 401 || response.status === 403) throw new BrainUnavailable(`${what} refused the hub’s key.`)
   if (response.status === 404) throw new BrainUnavailable(`${what} has no such model, or no such address.`)
@@ -715,7 +718,7 @@ export class OpenAICompatibleTranscriber implements Transcriber {
       response = await (this.via?.fetch ?? fetch)(at(this.base, 'audio/transcriptions'), { method: 'POST', headers: this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}, body: form, signal: AbortSignal.timeout(15 * 60_000) })
     } catch (err) {
       if (err instanceof BrainUnavailable) throw err
-      throw new BrainUnavailable(`The hub couldn’t reach ${what}.`)
+      throw new BrainUnavailable(`The hub couldn’t reach ${lower(what)}.`)
     }
     if (response.status === 401 || response.status === 403) throw new BrainUnavailable(`${what} refused the hub’s key.`)
     if (!response.ok) throw new BrainUnavailable(`${what} answered ${response.status}.`)
@@ -756,7 +759,7 @@ export class OpenAICompatibleSpeaker implements Speaker {
       })
     } catch (err) {
       if (err instanceof BrainUnavailable) throw err
-      throw new BrainUnavailable(`The hub couldn’t reach ${what}.`)
+      throw new BrainUnavailable(`The hub couldn’t reach ${lower(what)}.`)
     }
     if (response.status === 401 || response.status === 403) throw new BrainUnavailable(`${what} refused the hub’s key.`)
     if (!response.ok) throw new BrainUnavailable(`${what} answered ${response.status}.`)

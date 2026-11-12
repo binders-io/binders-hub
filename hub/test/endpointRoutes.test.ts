@@ -14,6 +14,8 @@ import { Spaces, type Member, type Space } from '../src/spaces.ts'
 import { Webhooks } from '../src/webhooks.ts'
 import { BrainSettingsStore } from '../src/brain/settings.ts'
 import { EndpointAgents } from '../src/agent/endpoint.ts'
+import { BrainMachines } from '../src/brain/machines.ts'
+import { serve } from '../../runner/src/brain.ts'
 import { seed } from './helpers.ts'
 
 // root runs the hub (one of its admins) and is one of the Binder's admins as well; ana runs the Binder and no more than that.
@@ -41,6 +43,9 @@ async function setUp() {
   const auth = new Auth(kv, sealer, { github: () => undefined, allowed: () => ({ users: [], orgs: [] }), devLogin: () => true })
   await kv.set('spaces', JSON.stringify([{ id: 'acme', name: 'Acme', createdAt: '2026-11-01T00:00:00.000Z', createdBy: 'hub', members: people }]))
   const settings = await new BrainSettingsStore(new MemoryKV(), sealer, {}).load()
+  // The hub's machines, which a model's server can be on.
+  const machines = await new BrainMachines(new MemoryKV()).load()
+  settings.useMachines(machines)
   const made: Record<string, Space & { own: MemoryKV }> = {}
   const make = async (id: string): Promise<Space> => {
     const github = new GitHubConnection(new MemoryKV(), sealer, { webUrl: 'http://unused', apiUrl: 'http://unused' }, { webhookSecret: `shh-${id}` }, id)
@@ -54,7 +59,7 @@ async function setUp() {
     return made[id]
   }
   const spaces = await new Spaces(kv, make).load({ id: 'acme', name: 'Acme', members: people })
-  const app = await buildServer(spaces, { auth, brain: settings }, { publicUrl: 'http://hub.test', admins: ['root'] })
+  const app = await buildServer(spaces, { auth, brain: settings, machines }, { publicUrl: 'http://hub.test', admins: ['root'] })
   await app.listen({ port: 0, host: '127.0.0.1' })
   const url = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
   const as = async (login: string) => {
@@ -66,7 +71,7 @@ async function setUp() {
       return { status: response.status, body: text ? JSON.parse(text) : undefined, raw: text }
     }
   }
-  return { as, url, space: () => made.acme, close: () => app.close() }
+  return { as, url, space: () => made.acme, close: async () => { machines.closeAll(); await app.close() } }
 }
 
 describe('an agent that is a model, over the hub’s API', () => {
@@ -432,6 +437,74 @@ describe('where Binders’ own agent finds its model on its own machine', () => 
       assert.equal(set.space().hub.state.agents.find((a) => a.id === made.agent.id)!.runner!.modelUrl, 'http://127.0.0.1:8000')
     } finally {
       await set.close()
+    }
+  })
+
+  it('reaches a server on one of the hub’s machines through that machine, for a hub admin: a proxy on the hub’s own host', async () => {
+    const set = await setUp()
+    // A proxy to a cloud on the machine: it says which models it has, and its models call tools.
+    const seen: { path: string; model?: string }[] = []
+    const proxy = createServer((request, response) => {
+      let raw = ''
+      request.on('data', (chunk) => { raw += chunk })
+      request.on('end', () => {
+        const json = (value: unknown) => {
+          response.writeHead(200, { 'content-type': 'application/json' })
+          response.end(JSON.stringify(value))
+        }
+        if (request.url === '/v1/models') return json({ data: ['kimi-pro', 'gpt-5.1', 'gpt-5-mini', 'text-embedding-3-large'].map((id) => ({ id, owned_by: 'system' })) })
+        // What the daemon asks to tell what kind of server it is isn't a request for a model.
+        if (request.method !== 'POST') {
+          response.writeHead(404)
+          return response.end()
+        }
+        seen.push({ path: request.url ?? '', model: (JSON.parse(raw || '{}') as { model?: string }).model })
+        json({ choices: [{ message: { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'ready', arguments: '{}' } }] }, finish_reason: 'tool_calls' }] })
+      })
+    })
+    await new Promise<void>((done) => proxy.listen(0, '127.0.0.1', done))
+    const address = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}/v1`
+    const stop = new AbortController()
+    try {
+      const root = await set.as('root')
+      const ana = await set.as('ana')
+      const added = await root('POST', '/api/brain/machines', { name: 'Server' })
+      const machine = added.body.machine.id as string
+      void serve({ hub: set.url, token: added.body.token, extra: [address], only: true, signal: stop.signal, log: () => {} })
+      for (let i = 0; i < 400 && !((await root('GET', '/api/agents/endpoint/servers')).body.servers.length > 0); i++) await new Promise((done) => setTimeout(done, 25))
+
+      // What a form offers: to the hub's admins, the servers on its machines with the models to talk to; to nobody else.
+      assert.deepEqual((await root('GET', '/api/agents/endpoint/servers')).body, { servers: [{ machine, machineName: 'Server', url: address, gateway: true, models: ['kimi-pro', 'gpt-5.1', 'gpt-5-mini'] }] })
+      assert.deepEqual((await ana('GET', '/api/agents/endpoint/servers')).body, { servers: [] })
+
+      // The machines are the hub's: someone who runs a Binder and no more can't have a model reached through one.
+      const model = { kind: 'openai', baseUrl: address, model: 'kimi-pro', machine }
+      assert.deepEqual((await ana('POST', '/api/agents/endpoint/test', model)).body, { ok: false, why: 'Only a hub admin can have an agent’s model reached through one of the hub’s machines.' })
+      assert.equal((await ana('POST', '/api/agents/endpoint', { name: 'Kimi', ...model })).status, 422)
+      assert.equal(seen.length, 0)
+
+      // A hub admin's: tried through the machine, by the address as the machine sees it.
+      assert.deepEqual((await root('POST', '/api/agents/endpoint/test', model)).body, { ok: true })
+      assert.deepEqual(seen.at(-1), { path: '/v1/chat/completions', model: 'kimi-pro' })
+      const made = await root('POST', '/api/agents/endpoint', { name: 'Kimi', ...model })
+      assert.equal(made.status, 200)
+      const { ready, ...endpoint } = made.body.agent.endpoint
+      assert.deepEqual(endpoint, { kind: 'openai', baseUrl: address, model: 'kimi-pro', machine, machineName: 'Server', takes: { cards: true, chats: true, debriefs: true, challenges: true } })
+      assert.equal(ready.ok, true)
+      // Another model on the same server: the machine stays, as nothing said otherwise.
+      const changed = await root('PATCH', `/api/agents/${made.body.agent.id}/endpoint`, { model: 'gpt-5.1' })
+      assert.deepEqual([changed.body.agent.endpoint.model, changed.body.agent.endpoint.machine, changed.body.agent.endpoint.ready.ok], ['gpt-5.1', machine, true])
+      assert.equal(seen.at(-1)?.model, 'gpt-5.1')
+
+      // A machine that isn't the hub's, and an address that machine doesn't serve, are said in words.
+      assert.deepEqual((await root('POST', '/api/agents/endpoint/test', { ...model, machine: 'm-none' })).body, { ok: false, why: 'That machine was removed from the hub.' })
+      const elsewhere = (await root('POST', '/api/agents/endpoint/test', { ...model, baseUrl: 'http://127.0.0.1:9/v1' })).body
+      assert.deepEqual(elsewhere, { ok: false, why: `Server has no server at that address. It serves ${address}.` })
+      assert.match((await root('POST', '/api/agents/endpoint/test', { kind: 'anthropic', model: 'claude', baseUrl: address, machine })).body.why ?? 'none', /none|key|Anthropic/i, 'only an OpenAI-style server is reached through a machine: the machine is dropped for any other kind')
+    } finally {
+      stop.abort()
+      await set.close()
+      await new Promise<void>((done) => proxy.close(() => done()))
     }
   })
 })

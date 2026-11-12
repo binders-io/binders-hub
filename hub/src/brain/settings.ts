@@ -589,6 +589,17 @@ export class BrainSettingsStore {
     this.changed()
   }
 
+  /** How an agent's model on one of the hub's machines is reached, or why it can't be, in words. */
+  machineVia(id: string, url: string): Via | string {
+    const via = this.via(id, url)
+    if (typeof via === 'string') return via
+    const machine = this.machines?.get(id)
+    // Said here, by name, rather than by the machine when it's asked: a server that went away, or an address mistyped.
+    const serves = (machine?.servers ?? []).some((s) => url === s.url || url.startsWith(`${s.url}/`))
+    if (machine?.servers?.length && !serves) return `${via.name} has no server at that address. It serves ${machine.servers.map((s) => s.url).slice(0, 6).join(', ')}.`
+    return via
+  }
+
   /** How a job reaches one of your machines, or why it can't. */
   private via(id: string, url = ''): Via | string {
     if (!id) return 'Choose one of your machines.'

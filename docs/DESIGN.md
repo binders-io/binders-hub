@@ -528,6 +528,12 @@ open to anyone is left to agents with machines.
 - **An address on the hub's own machine or network** (a proxy or a model server beside the hub) is the hub's business:
   a hub admin who also runs the Binder may add one, over http too. Anyone else is told so, and that a model on their
   own machine belongs with Binders' own agent there. An address out on the internet is over https, whoever asks.
+- **A server on one of the hub's machines** (`endpoint.machine`). A proxy on the hub's own host listens on that
+  host's localhost, which the hub, in its container, can't call. A hub admin can have the model reached through one of
+  the machines linked in Settings → Brain instead: the address is the server's as that machine sees it, and the hub's
+  requests go by the machine's daemon, which passes on only what goes to its own servers. The forms offer those
+  servers with the models each has (`GET /api/agents/endpoint/servers`, empty for anyone else), and say so when an
+  address typed is one a machine serves.
 - **What it reads is material.** It is told, as the Brain is, that nothing in a note, a card or a diff is an
   instruction to it. It has no way to run anything, so the most a planted instruction can reach is the hub's own agent
   tools, which every agent already has.

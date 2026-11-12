@@ -5,7 +5,7 @@ import type { Agent } from '../data/model'
 import { ConfirmButton } from './ConfirmButton'
 import { Dialog } from './Dialog'
 import { ModelKindFields, ModelSays, type ModelValues, type Tried } from './ModelFields'
-import { boxOf, movedTo, newAddressNeedsKey } from './modelAgent'
+import { boxOf, movedTo, newAddressNeedsKey, useHubServers } from './modelAgent'
 
 /**
  * The model of an agent on a machine (Binders' own agent): which kind, its model or deployment, its address where its
@@ -16,7 +16,8 @@ import { boxOf, movedTo, newAddressNeedsKey } from './modelAgent'
  */
 export function MachineModel({ agent, onClose }: { agent: Agent; onClose: () => void }) {
   const was = agent.endpoint
-  const [values, setValues] = useState<ModelValues>({ kind: was?.kind ?? 'brain', model: was?.model ?? '', baseUrl: was?.baseUrl ?? '', key: '' })
+  const [values, setValues] = useState<ModelValues>({ kind: was?.kind ?? 'brain', model: was?.model ?? '', baseUrl: was?.baseUrl ?? '', key: '', ...(was?.machine ? { machine: was.machine } : {}) })
+  const servers = useHubServers()
   const [busy, setBusy] = useState<'trying' | 'saving' | 'removing'>()
   const [result, setResult] = useState<Tried>()
   const [problem, setProblem] = useState<string>()
@@ -31,8 +32,9 @@ export function MachineModel({ agent, onClose }: { agent: Agent; onClose: () => 
   }
   // Another kind starts empty, since its address and model are not the old kind's; coming back to the first restores them.
   const pickKind = (kind: ModelValues['kind']) => {
-    if (kind === values.kind) return
-    edit(kind === was?.kind ? { kind, model: was.model ?? '', baseUrl: was.baseUrl ?? '', key: '' } : { kind, model: '', baseUrl: '', key: '' })
+    // From a server on one of the hub's machines to one at an address of its own is another model too.
+    if (kind === values.kind && !values.machine) return
+    edit(kind === was?.kind && !was.machine ? { kind, model: was.model ?? '', baseUrl: was.baseUrl ?? '', key: '' } : { kind, model: '', baseUrl: '', key: '' })
   }
 
   const words = (error: unknown) => (error instanceof Error && error.message ? error.message : 'The hub couldn’t do that. Try again.')
@@ -42,6 +44,8 @@ export function MachineModel({ agent, onClose }: { agent: Agent; onClose: () => 
     ...(withModel && values.model.trim() ? { model: values.model.trim() } : {}),
     ...(withModel && values.baseUrl.trim() ? { baseUrl: values.baseUrl.trim() } : {}),
     ...(withModel && values.key.trim() ? { key: values.key.trim() } : {}),
+    // A server on one of the hub's machines, or (sent empty) no longer one.
+    ...(values.kind === 'openai' && (values.machine || was?.machine) ? { machine: values.machine ?? '' } : {}),
   }
 
   const run = async (doing: 'trying' | 'saving' | 'removing', work: () => Promise<void>) => {
@@ -94,7 +98,7 @@ export function MachineModel({ agent, onClose }: { agent: Agent; onClose: () => 
         <p className="field-hint model-agent-kind-line">The hub takes each step of this model for the agent, so its machine needs no key.</p>
         {warning && <p className="agent-warning model-agent-warning" role="status"><TriangleAlert size={14} aria-hidden="true" /><span>{still ? `Saved, and it still isn’t ready: ${warning}` : `It isn’t ready: ${warning}`}</span></p>}
         <fieldset className="model-agent-set" disabled={!!busy}>
-          <ModelKindFields values={values} onChange={edit} onKind={pickKind} keyHint={keyHint} errors={box && problem ? { [box]: problem } : {}} />
+          <ModelKindFields values={values} onChange={edit} onKind={pickKind} keyHint={keyHint} errors={box && problem ? { [box]: problem } : {}} servers={servers} />
         </fieldset>
         <ModelSays busy={busy === 'trying' ? 'Trying it…' : busy === 'saving' ? 'Saving it, and trying it again…' : busy === 'removing' ? 'Taking it away…' : undefined} tried={result} problem={box ? undefined : problem} />
         <footer className="form-actions model-agent-machine-actions">

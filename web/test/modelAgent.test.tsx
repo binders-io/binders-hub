@@ -193,6 +193,86 @@ describe('adding a model with no machine', () => {
   })
 })
 
+describe('adding a model on one of the hub’s machines', () => {
+  const proxy = { machine: 'm3', machineName: 'hub-server', url: 'http://127.0.0.1:4000/v1', gateway: true, models: ['kimi-pro', 'gpt-5.1', 'gpt-5-mini'] }
+  const spark = { machine: 'm1', machineName: 'spark-01', url: 'http://127.0.0.1:8000/v1', models: ['glm-5'] }
+
+  /** The step that adds a model, with the hub saying which servers its machines have (as it does to its admins). */
+  async function openedWith(servers: unknown[]) {
+    standInHub(() => hubState({ agents: [] }), owner)
+    standInRoute('GET', '/api/agents/endpoint/servers', () => ({ servers }))
+    await mount(<Agents />)
+    const dialog = await choosing()
+    fireEvent.click(within(dialog).getByRole('button', { name: /A model, with no machine/ }))
+    await within(dialog).findByRole('heading', { name: 'Which model?' })
+    return dialog
+  }
+
+  it('isn’t offered when the hub says no machine serves anything', async () => {
+    const dialog = await openedWith([])
+    expect(within(dialog).getAllByRole('radio')).toHaveLength(3)
+  })
+
+  it('offers the servers to choose from, with their models as one is typed, and sends the machine with the model', async () => {
+    const dialog = await openedWith([proxy, spark])
+    await within(dialog).findByRole('radio', { name: /A server on one of the hub’s machines/ })
+    pick(dialog, /A server on one of the hub’s machines/)
+    // The first of them, to start with: no address or key to type.
+    const server = within(dialog).getByLabelText(/^Server/) as HTMLSelectElement
+    expect([...server.options].map((o) => o.textContent)).toEqual(['hub-server · gateway on :4000 · 3 models', 'spark-01 · server on :8000 · 1 model'])
+    expect([!!within(dialog).queryByLabelText(/^Address/), !!within(dialog).queryByLabelText(/^Key/)]).toEqual([false, false])
+    const model = within(dialog).getByLabelText(/^Model or deployment/) as HTMLInputElement
+    expect([...dialog.querySelectorAll(`datalist#${CSS.escape(model.getAttribute('list')!)} option`)].map((o) => (o as HTMLOptionElement).value)).toEqual(['kimi-pro', 'gpt-5.1', 'gpt-5-mini'])
+    expect(dialog.textContent).toContain('Type to find one of the 3 it lists, or a deployment’s name as the server takes it.')
+
+    const tried = standInRoute('POST', '/api/agents/endpoint/test', () => ({ ok: true }))
+    type(dialog, /^Model or deployment/, 'kimi-pro')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Try it' }))
+    expect(await within(dialog).findByText('It answers and calls tools.')).toBeTruthy()
+    expect(tried).toEqual([{ kind: 'openai', baseUrl: 'http://127.0.0.1:4000/v1', model: 'kimi-pro', machine: 'm3' }])
+
+    // Another server: its own models, and the model typed for the last one is gone.
+    fireEvent.change(server, { target: { value: 'm1 http://127.0.0.1:8000/v1' } })
+    expect((within(dialog).getByLabelText(/^Model or deployment/) as HTMLInputElement).value).toBe('')
+    const added = standInRoute('POST', '/api/agents/endpoint', () => ({ agent: { ...azure, endpoint: { kind: 'openai', baseUrl: spark.url, model: 'glm-5', machine: 'm1', machineName: 'spark-01', takes: takesAll, ready: { ok: true, at: 'now' } } } }))
+    type(dialog, /^Name/, 'Spark')
+    type(dialog, /^Model or deployment/, 'glm-5')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add it' }))
+    await waitFor(() => expect(added).toEqual([{ name: 'Spark', kind: 'openai', baseUrl: 'http://127.0.0.1:8000/v1', model: 'glm-5', machine: 'm1', takes: takesAll }]))
+
+  })
+
+  it('says an address typed is one a machine serves, and switches to reaching it through that machine', async () => {
+    // Two machines with the same proxy at the same address: each is offered.
+    const dialog = await openedWith([{ ...proxy, machine: 'm2', machineName: 'studio-mac' }, proxy])
+    await within(dialog).findByRole('radio', { name: /A server on one of the hub’s machines/ })
+    pick(dialog, /OpenAI’s chat API/)
+    type(dialog, /^Address/, 'http://127.0.0.1:4000/v1/')
+    type(dialog, /^Model or deployment/, 'kimi-pro')
+    expect(dialog.textContent).toContain('studio-mac and hub-server serve that address, and the hub may not reach it from where it runs.')
+    expect(within(dialog).getByRole('button', { name: 'Reach it through studio-mac' })).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Reach it through hub-server' }))
+    expect(within(dialog).getByRole('radio', { name: /A server on one of the hub’s machines/ }).getAttribute('aria-checked')).toBe('true')
+    expect((within(dialog).getByLabelText(/^Server/) as HTMLSelectElement).value).toBe('m3 http://127.0.0.1:4000/v1')
+    expect((within(dialog).getByLabelText(/^Model or deployment/) as HTMLInputElement).value).toBe('kimi-pro')
+    // And back: an address of its own again, with the machine gone from what's sent.
+    const tried = standInRoute('POST', '/api/agents/endpoint/test', () => ({ ok: true }))
+    pick(dialog, /OpenAI’s chat API/)
+    expect((within(dialog).getByLabelText(/^Address/) as HTMLInputElement).value).toBe('')
+    type(dialog, /^Address/, 'https://r.openai.azure.com/openai/v1')
+    type(dialog, /^Model or deployment/, 'gpt-deploy')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Try it' }))
+    await waitFor(() => expect(tried).toEqual([{ kind: 'openai', baseUrl: 'https://r.openai.azure.com/openai/v1', model: 'gpt-deploy' }]))
+  })
+
+  it('reads on its card as its model on that machine', async () => {
+    const onServer: Agent = { ...azure, id: 'm9', name: 'Kimi', endpoint: { kind: 'openai', baseUrl: proxy.url, model: 'kimi-pro', machine: 'm3', machineName: 'hub-server', takes: takesAll, ready: { ok: true, at: 'now' } } }
+    standInHub(() => hubState({ agents: [onServer] }), owner)
+    await mount(<Agents />)
+    expect((await screen.findByText(/kimi-pro on hub-server/)).textContent).toContain('kimi-pro on hub-server')
+  })
+})
+
 describe('an agent that is a model', () => {
   const boardWith = async (agents: Agent[], you: unknown = owner) => {
     standInHub(() => hubState({ agents }), you)

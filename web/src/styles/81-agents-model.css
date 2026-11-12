@@ -37,6 +37,8 @@
 /* What's wrong with a box, said under it; and a word of warning about it. */
 .field-error { color: var(--red); }
 .field-warn { color: var(--amber); }
+/* An address one of the hub's machines serves: the way to reach it through each, as links after what's said. */
+.field-warn .text-button { display: inline; margin-right: var(--space-12); text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
 @media (prefers-reduced-motion: reduce) {
   .model-agent-kind { transition: none; }
   .model-agent-result .spin { animation: none; }
