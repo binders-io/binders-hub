@@ -1,9 +1,9 @@
 import type { KV } from '../kv.ts'
 import type { Sealer } from '../secrets.ts'
 import { Refusal } from '../auth.ts'
-import { ClaudeModel, OpenAICompatibleEmbedder, OpenAICompatibleModel, OpenAICompatibleSpeaker, OpenAICompatibleTranscriber, type BrainModel, type Embedder, type Speaker, type Transcriber, type Via } from './models.ts'
+import { BrainUnavailable, ClaudeModel, OpenAICompatibleEmbedder, OpenAICompatibleModel, OpenAICompatibleSpeaker, OpenAICompatibleTranscriber, tryModel, type BrainModel, type Embedder, type Speaker, type Transcriber, type Via } from './models.ts'
 import { sayServer, type BrainMachines, type MachineView } from './machines.ts'
-import { bestPicks, candidates, defaultVoice, scoreOf, type Job } from './autoPick.ts'
+import { bestPicks, candidates, defaultVoice, gateways, isGateway, scoreOf, type Job } from './autoPick.ts'
 
 // Which models the hub's brain uses, set by an admin in Settings, under Brain, and kept in the hub's store with its
 // keys sealed. An environment variable set for one fixes it, as with the hub's other options:
@@ -208,6 +208,9 @@ function checked(fields: Partial<BrainSettings>): Partial<BrainSettings> {
 }
 
 /** Each job's settings: a change to any of them, by an admin, makes the job theirs. */
+/** What a job needs when it's set to a gateway's model and Local AI only is on. */
+const cloudGateway = 'Local AI only is on, and that model runs in a cloud, through a gateway: choose one on your machines.'
+
 const jobFields: Record<Job, string[]> = {
   chat: ['provider', 'machine', 'baseUrl', 'model', 'apiKey'],
   embeddings: ['embeddingsBaseUrl', 'embeddingsModel', 'embeddingsMachine', 'embeddingsKey'],
@@ -476,10 +479,11 @@ export class BrainSettingsStore {
       else if (!key.key) made.needs = 'Its Anthropic key.'
       else made.model = new ClaudeModel({ model: now.model || defaultModel, apiKey: key.key, baseURL })
     } else if (now.provider === 'machine') {
-      const via = this.via(now.machine)
+      const via = this.via(now.machine, now.baseUrl)
       if (typeof via === 'string') made.needs = via
       else if (!now.baseUrl) made.needs = 'A server on that machine.'
       else if (!now.model) made.needs = 'The name of the model on it.'
+      else if (now.localOnly && via.gateway) made.needs = cloudGateway
       else made.model = new OpenAICompatibleModel({ baseURL: now.baseUrl, model: now.model, apiKey: key.key, via })
     } else if (now.provider === 'openai') {
       if (!now.baseUrl) made.needs = 'The address of the server.'
@@ -495,9 +499,10 @@ export class BrainSettingsStore {
       const machine = now[`${name}Machine`]
       if (machine) {
         // On one of your machines: on its own network by being there.
-        const via = this.via(machine)
+        const via = this.via(machine, base)
         if (typeof via === 'string') return via
         if (!base) return `A ${what} server on that machine.`
+        if (now.localOnly && via.gateway) return cloudGateway
         if (base === sayServer) return name === 'speech' ? { base, model, via, machine, key: undefined } : `macOS’s voices don’t do ${what}.`
         if (!model) return `The name of the ${what} model.`
         return { base, model, via, machine, key: this.serverKey(`${name}Key`).key }
@@ -523,9 +528,49 @@ export class BrainSettingsStore {
     // One voice, always: a model that has several (Qwen's CustomVoice) picks another for each request without one.
     else if (speech) made.speaker = new OpenAICompatibleSpeaker({ baseURL: speech.base, model: speech.model, voice: now.speechVoice || defaultVoice(speech.model) || undefined, apiKey: speech.key, via: speech.via })
     this.made = made
+    this.gatewaysSeen = this.gatewaysInUse()
   }
 
   private machines?: BrainMachines
+  private gatewaysSeen = ''
+
+  /** Whether a server on one of your machines is a gateway to a cloud, as far as the machine has said what it serves. */
+  private gatewayAt(machine: string, url: string) {
+    const found = this.machines?.get(machine)
+    const server = found?.servers?.find((s) => s.url === url)
+    return !!server && isGateway(server, found?.facts?.memoryGb)
+  }
+
+  /** Which jobs use a gateway now: a machine says what it serves after it links, so this can change under a setting. */
+  private gatewaysInUse() {
+    const now = this.get()
+    return [
+      now.provider === 'machine' && this.gatewayAt(now.machine, now.baseUrl) ? 'chat' : '',
+      ...(['embeddings', 'transcription', 'speech'] as const).map((job) => (now[`${job}Machine`] && this.gatewayAt(now[`${job}Machine`], now[`${job}BaseUrl`]) ? job : '')),
+    ].join(' ')
+  }
+
+  /**
+   * A model a gateway on one of your machines lists, made a job's: an admin's choice, never the hub's. It runs in a
+   * cloud, so Local AI only refuses it; and a gateway lists more than it can reach, so the model is asked one short
+   * thing first, and the job stays as it was when nothing comes back.
+   */
+  async useGateway(job: 'chat' | 'embeddings', machine: string, url: string, model: string) {
+    if (jobFields[job].some((name) => name in this.fixed.fields)) throw new Refusal('That job is set on the hub by its environment, so it can’t be changed here.')
+    const gateway = this.machines ? gateways(this.machines.list()).find((g) => g.machine === machine && g.url === url) : undefined
+    if (!gateway) throw new Refusal('That gateway isn’t on a machine linked to the hub right now.')
+    if (!gateway.models[job].includes(model)) throw new Refusal('That gateway doesn’t list that model for this.')
+    if (this.get().localOnly) throw new Refusal('Local AI only is on, and that model runs in a cloud. Turn it off to use a model through a gateway.')
+    const via = this.via(machine, url)
+    if (typeof via === 'string') throw new Refusal(via)
+    try {
+      await tryModel(job, { baseURL: url, model, via })
+    } catch (err) {
+      if (!(err instanceof BrainUnavailable)) throw err
+      throw new Refusal(`${model} didn’t answer through ${gateway.machineName}. ${err.message}${/[.!?]$/.test(err.message) ? '' : '.'} Nothing was changed.`)
+    }
+    return this.set(job === 'chat' ? { provider: 'machine', machine, baseUrl: url, model } : { embeddingsMachine: machine, embeddingsBaseUrl: url, embeddingsModel: model })
+  }
 
   /** What each job needs, said again: a machine was added or removed. */
   refresh() {
@@ -535,16 +580,20 @@ export class BrainSettingsStore {
   /** The hub's machines, for the jobs served by one of them: and, as they come and go, what each job uses. */
   useMachines(machines: BrainMachines) {
     this.machines = machines
-    machines.onChange(() => void this.autoPick(machines.list()))
+    machines.onChange(() => {
+      void this.autoPick(machines.list())
+      // A server that turned out a gateway (or stopped being one): what each job needs is said again.
+      if (this.gatewaysInUse() !== this.gatewaysSeen) this.changed()
+    })
     this.changed()
   }
 
   /** How a job reaches one of your machines, or why it can't. */
-  private via(id: string): Via | string {
+  private via(id: string, url = ''): Via | string {
     if (!id) return 'Choose one of your machines.'
     if (!this.machines) return 'This hub has no machines.'
     if (!this.machines.get(id)) return 'That machine was removed from the hub.'
-    return { name: this.machines.name(id), fetch: this.machines.fetchVia(id) }
+    return { name: this.machines.name(id), fetch: this.machines.fetchVia(id), ...(this.gatewayAt(id, url) ? { gateway: true } : {}) }
   }
 
   /** The model to sum up and answer with, when there is one. */

@@ -416,5 +416,86 @@ describe('machines of yours serving the brain’s models', () => {
     await store.autoPick([{ ...mac, servers: [mac.servers[0]] }])
     assert.deepEqual([store.get().provider, store.get().model, store.get().autoJobs], ['off', '', []])
   })
-})
 
+  it('lists what a gateway on a machine reaches, never chooses from it, and lets an admin choose: tried first, refused under Local AI only', async () => {
+    const set = await setUp()
+    // A gateway to a cloud, as a proxy on the machine: it lists more than it can reach.
+    const listed = ['gpt-5.1', 'gpt-5-mini', 'claude-sonnet-5', 'text-embedding-3-large', 'whisper-1', 'gpt-4o-transcribe', 'tts-1', 'dall-e-3', 'gpt-realtime', 'text-search-ada-doc-001']
+    const asked: string[] = []
+    const gateway = createServer((request, response) => {
+      const chunks: Buffer[] = []
+      request.on('data', (chunk: Buffer) => chunks.push(chunk))
+      request.on('end', () => {
+        const json = (status: number, value: unknown) => {
+          response.writeHead(status, { 'content-type': 'application/json' })
+          response.end(JSON.stringify(value))
+        }
+        if (request.url === '/v1/models') return json(200, { data: listed.map((id) => ({ id, owned_by: 'system' })) })
+        const model = (JSON.parse(Buffer.concat(chunks).toString() || '{}') as { model?: string }).model ?? ''
+        asked.push(`${request.url} ${model}`)
+        if (model === 'gpt-5-mini') return json(404, { error: { code: 'DeploymentNotFound', message: 'The API deployment for this resource does not exist.' } })
+        if (request.url === '/v1/chat/completions') return json(200, { choices: [{ message: { content: '{"title":"Van tyres","summary":"Tyres before the trip.","points":[],"decisions":[],"followUps":[]}' } }] })
+        if (request.url === '/v1/embeddings') return json(200, { data: [{ index: 0, embedding: [0.6, 0.8] }] })
+        json(404, {})
+      })
+    })
+    await new Promise<void>((done) => gateway.listen(0, '127.0.0.1', done))
+    const url = `http://127.0.0.1:${(gateway.address() as AddressInfo).port}/v1`
+    const stop = new AbortController()
+    try {
+      const boss = api(set.url, await signIn(set.url, 'boss'))
+      const you = api(set.url, await signIn(set.url, 'you'))
+      const added = await boss('POST', '/api/brain/machines', { name: 'Server' })
+      const id = added.body.machine.id as string
+      void serve({ hub: set.url, token: added.body.token, extra: [url], only: true, signal: stop.signal, log: () => {} })
+      await until(async () => (await boss('GET', '/api/brain/machines')).body.machines[0]?.servers?.length > 0)
+
+      // What the hub says of it: a gateway, with nothing to choose from itself, and what it lists for each job.
+      const seen = (await boss('GET', '/api/brain/machines')).body
+      assert.equal(seen.machines[0].servers[0].gateway, true)
+      assert.deepEqual(Object.values(seen.candidates).flat(), [], 'none of them is a model on the machine')
+      assert.deepEqual(seen.gateways, [{ machine: id, machineName: 'Server', url, models: { chat: ['gpt-5.1', 'gpt-5-mini', 'claude-sonnet-5'], embeddings: ['text-embedding-3-large'], transcription: ['whisper-1', 'gpt-4o-transcribe'], speech: ['tts-1'] } }])
+      assert.equal((await boss('GET', '/api/brain')).body.brain.provider, 'off', 'the hub chose nothing from it')
+
+      // An admin's to choose, of what it lists for the job.
+      assert.equal((await you('POST', '/api/brain/gateway', { job: 'chat', machine: id, url, model: 'gpt-5.1' })).status, 422)
+      const unlisted = await boss('POST', '/api/brain/gateway', { job: 'chat', machine: id, url, model: 'dall-e-3' })
+      assert.deepEqual([unlisted.status, unlisted.body.error], [422, 'That gateway doesn’t list that model for this.'])
+      assert.equal((await boss('POST', '/api/brain/gateway', { job: 'chat', machine: 'm-none', url, model: 'gpt-5.1' })).status, 422)
+      assert.equal((await boss('POST', '/api/brain/gateway', { job: 'speech', machine: id, url, model: 'tts-1' })).status, 422, 'only what can be tried first')
+
+      // One it lists and can't reach: said as the gateway said it, and nothing changes.
+      const missing = await boss('POST', '/api/brain/gateway', { job: 'chat', machine: id, url, model: 'gpt-5-mini' })
+      assert.deepEqual([missing.status, missing.body.error], [422, 'gpt-5-mini didn’t answer through Server. The server answered 404: The API deployment for this resource does not exist. Nothing was changed.'])
+      assert.equal((await boss('GET', '/api/brain')).body.brain.provider, 'off')
+
+      // One that answers: the admin's from then on, reached through the machine.
+      const chosen = await boss('POST', '/api/brain/gateway', { job: 'chat', machine: id, url, model: 'gpt-5.1' })
+      assert.equal(chosen.status, 200)
+      assert.deepEqual([chosen.body.brain.inUse, chosen.body.brain.ownJobs, chosen.body.brain.autoJobs], ['gpt-5.1, through a gateway on Server', ['chat'], []])
+      assert.deepEqual(asked.slice(-1), ['/v1/chat/completions gpt-5.1'], 'asked once before it was set')
+      assert.equal((await set.settings.model()!.summarize({ kind: 'conversation', text: 'we need new tyres before the trip' })).title, 'Van tyres')
+      await set.settings.autoPick(set.machines.list())
+      assert.equal(set.settings.get().model, 'gpt-5.1', 'the hub leaves an admin’s choice where it is')
+
+      // Local AI only: a gateway's model runs somewhere else, so it's refused, in use or newly chosen.
+      const local = (await boss('PATCH', '/api/brain', { localOnly: true })).body.brain
+      assert.deepEqual([local.inUse, local.needs], [undefined, 'Local AI only is on, and that model runs in a cloud, through a gateway: choose one on your machines.'])
+      const refused = await boss('POST', '/api/brain/gateway', { job: 'embeddings', machine: id, url, model: 'text-embedding-3-large' })
+      assert.deepEqual([refused.status, refused.body.error], [422, 'Local AI only is on, and that model runs in a cloud. Turn it off to use a model through a gateway.'])
+      assert.equal((await boss('PATCH', '/api/brain', { localOnly: false })).body.brain.inUse, 'gpt-5.1, through a gateway on Server')
+
+      // Embeddings through it too, tried the same way.
+      const embeds = await boss('POST', '/api/brain/gateway', { job: 'embeddings', machine: id, url, model: 'text-embedding-3-large' })
+      assert.equal(embeds.body.brain.embeddingsInUse, 'text-embedding-3-large, through a gateway on Server')
+
+      // Handed back to the hub, chat is off again: it doesn't choose from a gateway.
+      const back = await boss('POST', '/api/brain/choose', { jobs: ['chat'] })
+      assert.deepEqual([back.body.brain.provider, back.body.brain.inUse], ['off', undefined])
+    } finally {
+      stop.abort()
+      await set.close()
+      await new Promise<void>((done) => gateway.close(() => done()))
+    }
+  })
+})

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { AnimatePresence } from 'motion/react'
-import { AudioLines, Copy, Download as DownloadIcon, Laptop, LoaderCircle, Plus, Search, Server, ShieldCheck, Sparkles, TriangleAlert, Volume2, Check } from 'lucide-react'
+import { AudioLines, Copy, Download as DownloadIcon, Laptop, LoaderCircle, Plus, Search, Server, ShieldCheck, Sparkles, TriangleAlert, Volume2, Check, X } from 'lucide-react'
 import { call } from '../data/api'
 import { attempt, failure, toast } from './Toast'
 import { href } from '../route'
@@ -60,8 +60,16 @@ interface MachineServer {
   kind: string
   models: string[]
   needsKey?: boolean
-  /** It lists cloud models, or ones too big for the machine: a gateway to somewhere else, never chosen from. */
+  /** It lists cloud models, or ones too big for the machine: a gateway to somewhere else, which the hub never chooses from. */
   gateway?: boolean
+}
+
+/** A gateway on one of your machines, and the models it lists for each job: an admin's to choose from, never the hub's. */
+interface Gateway {
+  machine: string
+  machineName: string
+  url: string
+  models: Partial<Record<Job, string[]>>
 }
 
 interface Download {
@@ -167,7 +175,7 @@ function serverLabel(server: MachineServer) {
     port = new URL(server.url).port
   } catch { /* shown without */ }
   if (server.needsKey) return `A server${port ? ` on :${port}` : ''} that wants a key`
-  if (server.gateway) return `A gateway${port ? ` on :${port}` : ''} to cloud models (${server.models.length}), not used`
+  if (server.gateway) return `A gateway${port ? ` on :${port}` : ''} to ${server.models.length} cloud models. The hub never picks one itself: choose one under Models.`
   if (server.kind === 'binders') return `Downloaded models · ${server.models.length}, each loaded when it’s asked for`
   return `${serverNames[server.kind] ?? 'A server'}${port ? ` on :${port}` : ''} · ${server.models.length} model${server.models.length === 1 ? '' : 's'}`
 }
@@ -177,8 +185,11 @@ function modelCount(m: Machine) {
   const usable = (m.servers ?? []).filter((server) => !server.needsKey && !server.gateway)
   const models = usable.filter((server) => server.kind !== 'say').reduce((n, server) => n + server.models.length, 0)
   const voices = usable.some((server) => server.kind === 'say')
-  if (!models && !voices) return 'No models the hub can use yet'
-  return [models ? `${models} model${models === 1 ? '' : 's'}` : '', voices ? 'macOS voices' : ''].filter(Boolean).join(' and ')
+  // A gateway's models run somewhere else: yours to choose, so said apart from what the hub chooses from.
+  const cloud = (m.servers ?? []).filter((server) => server.gateway && !server.needsKey).reduce((n, server) => n + server.models.length, 0)
+  const gateway = cloud ? `a gateway to ${cloud} cloud models` : ''
+  if (!models && !voices) return gateway ? `A${gateway.slice(1)}, yours to choose` : 'No models the hub can use yet'
+  return [[models ? `${models} model${models === 1 ? '' : 's'}` : '', voices ? 'macOS voices' : ''].filter(Boolean).join(' and '), gateway].filter(Boolean).join(', and ')
 }
 
 /** Whether version a is older than b: 0.13.2 against 0.14.1. */
@@ -369,6 +380,11 @@ export function BrainPanel() {
   const [offered, setOffered] = useState<Offer[]>([])
   const [latest, setLatest] = useState<string>()
   const [choices, setChoices] = useState<Partial<Record<Job, Candidate[]>>>({})
+  /** The gateways on your machines; what's typed to find a model on one, for each job; the one being tried; what it said. */
+  const [gatewayList, setGatewayList] = useState<Gateway[]>([])
+  const [finding, setFinding] = useState<Partial<Record<Job, string>>>({})
+  const [trying, setTrying] = useState<string>()
+  const [gatewaySaid, setGatewaySaid] = useState<Partial<Record<Job, string>>>({})
   /** A job's list opened past its first few. */
   const [showAll, setShowAll] = useState<Partial<Record<Job, boolean>>>({})
   /** What's open: a job's choices, a machine, or adding one. */
@@ -387,9 +403,10 @@ export function BrainPanel() {
 
   // Your machines, an admin's: looked at again now and then, so one just set up shows as linked, and often while a model
   // downloads. A finished download changes what the brain uses, so the brain is read again then too.
-  const loadMachines = () => void call<{ machines: Machine[]; offers?: Offer[]; latest?: string; candidates?: Partial<Record<Job, Candidate[]>> }>('GET', '/api/brain/machines').then((r) => {
+  const loadMachines = () => void call<{ machines: Machine[]; offers?: Offer[]; latest?: string; candidates?: Partial<Record<Job, Candidate[]>>; gateways?: Gateway[] }>('GET', '/api/brain/machines').then((r) => {
     setLatest(r.latest)
     setChoices(r.candidates ?? {})
+    setGatewayList(r.gateways ?? [])
     setMachines((before) => {
       const finished = r.machines.some((m) => (m.downloads ?? []).some((d) => d.done && !before.find((b) => b.id === m.id)?.downloads?.find((x) => x.model === d.model)?.done))
       if (finished) void call<{ brain: BrainView }>('GET', '/api/brain').then((b) => setBrain(b.brain)).catch(() => {})
@@ -575,6 +592,83 @@ export function BrainPanel() {
     )
   }
 
+  /**
+   * Cloud models a gateway on one of your machines reaches: found by typing, and yours to choose, never the hub's. The
+   * hub asks the one chosen a short thing first, and says what the gateway said when nothing comes back.
+   */
+  const throughGateway = (job: Job) => {
+    if (job !== 'chat' && job !== 'embeddings') return null
+    const all = gatewayList.flatMap((g) => (g.models[job] ?? []).map((model) => ({ machine: g.machine, machineName: g.machineName, url: g.url, model })))
+    if (!all.length) return null
+    type Listed = (typeof all)[number]
+    const inUseNow = (g: Listed) => (job === 'chat'
+      ? brain.provider === 'machine' && brain.machine === g.machine && brain.baseUrl === g.url && brain.model === g.model
+      : brain.embeddingsMachine === g.machine && brain.embeddingsBaseUrl === g.url && brain.embeddingsModel === g.model)
+    const words = (finding[job] ?? '').toLowerCase().split(/\s+/).filter(Boolean)
+    const matching = all.filter((g) => words.every((word) => g.model.toLowerCase().includes(word)))
+    // What's in use first, then as the gateway lists them.
+    const ordered = [...matching.filter(inUseNow), ...matching.filter((g) => !inUseNow(g))]
+    const shown = ordered.slice(0, 8)
+    const keyOf = (g: Listed) => `${job} ${g.machine} ${g.url} ${g.model}`
+    const portOf = (url: string) => {
+      try { return new URL(url).port } catch { return '' }
+    }
+    const on = [...new Set(gatewayList.filter((g) => g.models[job]?.length).map((g) => g.machineName))]
+    const choose = async (g: Listed) => {
+      setTrying(keyOf(g))
+      setGatewaySaid((now) => ({ ...now, [job]: undefined }))
+      try {
+        const result = await call<{ brain: BrainView }>('POST', '/api/brain/gateway', { job, machine: g.machine, url: g.url, model: g.model })
+        setBrain(result.brain)
+        toast(`${g.model} answered. The hub uses it now.`)
+      } catch (error) {
+        setGatewaySaid((now) => ({ ...now, [job]: (error as Error).message }))
+      } finally {
+        setTrying(undefined)
+      }
+    }
+    const findId = `brain-gateway-find-${job}`
+    return (
+      <div className="choices gateway-choices">
+        <span className="field-label">Through a gateway</span>
+        <p className="field-hint">{all.length} cloud model{all.length === 1 ? '' : 's'}, reached through {on.join(' and ')}. What’s asked goes to that cloud, so the hub never picks one itself. The one you choose is asked a short thing first, to see that it answers.</p>
+        {all.length > 8 && (
+          <div className="data-table-filter">
+            <Search size={15} aria-hidden="true" />
+            <label htmlFor={findId} className="sr-only">Find a cloud model</label>
+            <input id={findId} className="input" type="search" placeholder="Find a model: gpt-5, claude, deepseek" value={finding[job] ?? ''} onChange={(e) => setFinding((now) => ({ ...now, [job]: e.target.value }))} autoComplete="off" spellCheck={false} />
+            {finding[job] && <button type="button" className="icon-button" aria-label="Clear what’s typed" onClick={() => setFinding((now) => ({ ...now, [job]: '' }))}><X size={14} /></button>}
+          </div>
+        )}
+        {brain.localOnly && <p className="option-status">Local AI only is on, so a cloud model can’t be used. Turn it off to choose one.</p>}
+        {gatewaySaid[job] && <p className="option-status option-error" role="alert">{gatewaySaid[job]}</p>}
+        {shown.length > 0 && (
+          <ul className="choice-list" aria-label="Cloud models through a gateway">
+            {shown.map((g) => {
+              const current = inUseNow(g)
+              const busy = trying === keyOf(g)
+              const port = portOf(g.url)
+              return (
+                <li key={keyOf(g)} className={current ? 'on' : undefined}>
+                  <div className="choice-name">
+                    <b>{g.model}</b>
+                    <span>{g.machineName} · gateway{port ? ` on :${port}` : ''} · runs in a cloud</span>
+                  </div>
+                  {current ? <Status tone="ok">In use</Status> : (
+                    <button type="button" className="button small" disabled={!admin || !!brain.localOnly || !!trying} aria-label={busy ? `Trying ${g.model}` : `Use ${g.model}`} onClick={() => void choose(g)}>
+                      {busy ? <><LoaderCircle size={13} className="spin" aria-hidden="true" /> Trying it…</> : 'Use'}
+                    </button>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        )}
+        <p className="field-hint" role="status">{!matching.length ? 'None of them has that in its name.' : ordered.length > shown.length ? `${ordered.length - shown.length} more: type to find one.` : ''}</p>
+      </div>
+    )
+  }
+
   /** A server the hub reaches by its address instead: tucked away, as most people use their machines. */
   const byAddress = (job: Exclude<Job, 'chat'>) => {
     const keys = { embeddings: [embeddingsKey, setEmbeddingsKey, brain.embeddingsKeySet] as const, transcription: [transcriptionKey, setTranscriptionKey, brain.transcriptionKeySet] as const, speech: [speechKey, setSpeechKey, brain.speechKeySet] as const }[job]
@@ -634,7 +728,7 @@ export function BrainPanel() {
       )}
 
       <Section title="Models" lead="What the hub uses for each job."
-        more={<><p>The hub chooses from your machines, the best of what they serve for each job, until you choose one yourself.</p><p>Local AI only refuses Claude and any address outside the hub’s own network, so nothing said or written leaves your machines.</p></>}>
+        more={<><p>The hub chooses from your machines, the best of what they serve for each job, until you choose one yourself.</p><p>A gateway to cloud models on one of them is yours to choose from: the hub never picks one itself.</p><p>Local AI only refuses Claude, a gateway’s cloud models and any address outside the hub’s own network, so nothing said or written leaves your machines.</p></>}>
         <Rows label="Models">
           {jobs.map(({ job: j, title, icon, none }) => (
             <Row key={j} icon={icon} title={title} meta={shownInUse(j) ?? none} status={jobStatus(j)}
@@ -664,6 +758,7 @@ export function BrainPanel() {
               {inUse(job.job)}
               {download(job.job)}
               {list(job.job)}
+              {throughGateway(job.job)}
               {job.job === 'speech' && voicePicker()}
               {job.job === 'chat' ? claudeOrAddress : byAddress(job.job)}
             </div>

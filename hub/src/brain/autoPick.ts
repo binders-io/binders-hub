@@ -88,6 +88,41 @@ export function isGateway(server: { kind: MachineServer['kind']; models: Machine
   return (cloud + impossible) / server.models.length >= 0.3
 }
 
+/** What a cloud lists beside models to talk to: images, video, live audio, and its old search and completion ones. */
+const cloudOther = /dall-e|sora|gpt-image|realtime|code-search|text-(search|similarity)|moderation|davinci|babbage|curie|(^|-)ada(-|$)/i
+
+/** The jobs a model a gateway lists could do, by its name. */
+function gatewayJobs(model: string): Job[] {
+  if (/transcribe/i.test(model)) return ['transcription']
+  return jobsOf(model, 'openai').filter((job) => job !== 'chat' || !cloudOther.test(model))
+}
+
+/** A gateway on one of your machines, and the models it lists for each job, as it lists them. */
+export interface Gateway {
+  machine: string
+  machineName: string
+  url: string
+  models: Record<Job, string[]>
+}
+
+/**
+ * The gateways on your linked machines. The hub never chooses from one: its models run somewhere else, so using one
+ * sends what's asked there. An admin may choose one (settings.ts, useGateway).
+ */
+export function gateways(machines: MachineView[]): Gateway[] {
+  const out: Gateway[] = []
+  for (const machine of machines) {
+    if (!machine.online) continue
+    for (const server of machine.servers ?? []) {
+      if (server.needsKey || !isGateway(server, machine.facts?.memoryGb)) continue
+      const models: Record<Job, string[]> = { chat: [], embeddings: [], transcription: [], speech: [] }
+      for (const model of server.models) for (const job of gatewayJobs(model)) models[job].push(model)
+      out.push({ machine: machine.id, machineName: machine.name, url: server.url, models })
+    }
+  }
+  return out
+}
+
 /** Billions of parameters, from a model's name: qwen3:32b, Llama-3.3-70B-Instruct, gpt-oss-120b, mixtral-8x7b. */
 export function sizeOf(model: string) {
   const experts = /(\d+)x(\d+(?:\.\d+)?)b(?![a-z])/i.exec(model)

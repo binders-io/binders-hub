@@ -489,7 +489,8 @@ by what they mean as well as by their words.
 - **Speech.** With a speech model (OpenAI's speech API: Kokoro, a Piper gateway, OpenAI), `POST /api/brain/speak` and the
   iPhone's `binders/speak` read answers out.
 - **Local AI only.** A switch that keeps every model on the hub's own network (this machine, private ranges, VPN ranges
-  such as 100.64/10, `.local` and one-word names): Claude and any outside address are refused.
+  such as 100.64/10, `.local` and one-word names): Claude, a gateway's cloud models and any outside address are
+  refused.
 - **Your machines.** Any of those jobs can be served by a machine of yours: a Mac, or a GPU box such as a DGX Spark.
   - **Adding them.** In Settings → Brain, an admin clicks Add your machines and gets one line:
     `curl -fsSL <hub>/install | sh -s -- add --token bnj_…`. It works on any number of machines for 24 hours.
@@ -505,6 +506,11 @@ by what they mean as well as by their words.
     model, an embeddings model, Parakeet, Canary or the largest whisper, and a speech server's voice, else a Mac's
     own. When a better one appears later, it takes over. A job an admin set, even to off, stays theirs until they hand
     it back.
+  - **A gateway to a cloud.** A server on a machine that lists cloud models (a proxy to Azure, OpenAI or Anthropic,
+    such as LiteLLM) is a gateway: what's asked of its models leaves your network, so the hub never picks one itself.
+    An admin can: under the hub's model or Finding by meaning, the gateway's models are listed to find by name and
+    choose. The one chosen is asked one short thing first, through the machine, and the job stays as it was when
+    nothing comes back, with what the gateway said.
   - **Every model downloaded on the machine, served when asked for**, as Ollama serves its own. The daemon offers the
     hub one more server per machine: every downloaded model an engine there can run, and that fits its memory. When a
     request names one, the daemon starts its engine and passes the request on:

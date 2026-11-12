@@ -749,6 +749,10 @@ An iPhone chooses its brain: its Mac, or the hub. With the hub, it sends the ver
   - Each job no admin set is chosen by the hub from the machines linked now (`hub/src/brain/autoPick.ts`), by model
     name: `autoJobs` are the hub's choices, chosen again when a better model appears or their machine is removed;
     `ownJobs` are an admin's, never chosen for them until handed back.
+  - A server that lists cloud models is a gateway (`isGateway`): never a candidate, so never the hub's choice. Its
+    models are an admin's to choose (`POST /api/brain/gateway`, `useGateway` in `hub/src/brain/settings.ts`), for chat
+    and embeddings, the two jobs one short request can try first. Local AI only refuses a gateway's model, in use or
+    newly chosen, though its server is on one of your machines.
   - Downloaded models are served on demand (`runner/src/engines.ts`). The daemon lists them as one server at
     `http://models.binders/v1` (kind `binders`). It routes each request by the `model` its JSON or multipart form
     names, starting the engine that runs it (TensorFold, mlx-lm, mlx-audio, vLLM) on a free port from 8941. Engines it
