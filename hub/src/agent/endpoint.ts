@@ -259,8 +259,12 @@ export class EndpointAgents {
     try {
       const listed = await client.listTools()
       const tools: Tool[] = listed.tools.filter((tool) => given.has(tool.name)).map((tool) => ({ spec: { name: tool.name, description: tool.description ?? '', input: tool.inputSchema as Record<string, unknown> }, run: (input) => call(tool.name, (input ?? {}) as Record<string, unknown>) }))
-      /** Work it was offered and isn't its to take, or that it couldn't finish: not offered to it again while it runs. */
-      const left: string[] = []
+      /**
+       * Work it couldn't finish, each with when a person last gave it the card, as that stood then: not taken again by
+       * this run, until a person gives it to it again.
+       */
+      const left = new Map<string, string>()
+      const givenAt = (id: string) => [...(this.hub.state.cards.find((c) => c.id === id)?.activity ?? [])].reverse().find((a) => a.kind === 'moved' && a.by !== agentId)?.at ?? ''
       while (!this.stopped) {
         const agent = this.agent(agentId)
         if (!agent) break
@@ -272,7 +276,10 @@ export class EndpointAgents {
         const takes = agent.endpoint!.takes
         let waited: string
         try {
-          waited = await call('wait_for_work', { timeout_seconds: this.waitSeconds, chats: takes.chats, debriefs: takes.debriefs, challenges: takes.challenges, replies: false, briefs: false, cards: takes.cards, busy: left.slice(-200) })
+          // Only cards given to it by name: one open to anyone is usually code, and it has no machine. Such a card is
+          // never shown to it, so it has nothing to remember about one that's given to it later.
+          const busy = [...left].filter(([id, given]) => givenAt(id) === given).map(([id]) => id).slice(-50)
+          waited = await call('wait_for_work', { timeout_seconds: this.waitSeconds, chats: takes.chats, debriefs: takes.debriefs, challenges: takes.challenges, replies: false, briefs: false, cards: takes.cards, named: true, busy })
         } catch (err) {
           // Revoked while it waited, or the hub is stopping.
           if (!this.agent(agentId) || this.stopped) break
@@ -289,17 +296,16 @@ export class EndpointAgents {
           continue
         }
         if (!job?.id || !['card', 'chat', 'debrief', 'challenge'].includes(job.kind)) continue
-        // A card open to anyone is usually code, and it has no machine: it takes a card only when it was given by name.
-        if (job.kind === 'card' && this.hub.state.cards.find((c) => c.id === job.id)?.meantFor !== agentId) {
-          left.push(job.id)
-          continue
-        }
+        // Given to another agent in the moment since it was offered: no longer its to take, and nothing to remember.
+        const offered = job.kind === 'card' ? this.hub.state.cards.find((c) => c.id === job.id) : undefined
+        if (job.kind === 'card' && offered?.meantFor !== agentId && offered?.agentId !== agentId) continue
         const finished = await this.job(agent, model, tools, job, waited, call).catch((err: unknown) => {
           log.warn({ agent: agentId, job: job.id, why: err instanceof Error ? err.message : String(err) }, 'An endpoint agent’s work failed')
           return false
         })
-        // What it couldn't finish isn't taken again by this run: a person, or another agent, has it from here.
-        if (!finished) left.push(job.id)
+        // What it couldn't finish isn't taken again by this run: a person, or another agent, has it from here. A
+        // person who gives it the card again has it tried again.
+        if (!finished) left.set(job.id, givenAt(job.id))
       }
     } finally {
       await client.close().catch(() => undefined)
@@ -330,6 +336,9 @@ export class EndpointAgents {
         await call('release_task', { id: job.id, reason: why }).catch(() => undefined)
         return false
       }
+      // Back where it was, still meant for it and held by nobody: its model gave it back (it needs a machine, say), or
+      // never took it. It isn't finished, and taking it again would only go the same way: a person has it from here.
+      if (card && !card.agentId && card.stage === 'ready' && card.meantFor === agent.id) return false
       return true
     }
     if (job.kind === 'chat') {

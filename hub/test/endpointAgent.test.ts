@@ -123,6 +123,45 @@ describe('an agent that is a model, run by the hub', () => {
     }
   })
 
+  it('takes a card that was open to anyone when it was made, once a person gives it to it by name', async () => {
+    const set = await setUp()
+    try {
+      const card = await set.actions.createCard({ kind: 'user', login: 'ana' }, { binderId: 'b1', title: 'Sum up the week', stage: 'ready' })
+      set.plays((turns, n) => {
+        const id = /"id":\s*"([^"]+)"/.exec((turns[0] as Extract<LoopTurn, { role: 'user' }>).text)?.[1] ?? ''
+        return [wants(call('c1', 'claim_task', { id })), wants(call('c2', 'complete_task', { id, summary: 'Summed up.' })), says('Done.')][n] ?? says('Done.')
+      })
+      // Open to anyone: it waits past it, more than once, and its model is never shown it.
+      await new Promise((done) => setTimeout(done, 1300))
+      assert.equal(set.asked.length, 0)
+      // Given to it by name, as the board does it: what it passed over before is its to take now.
+      await set.hub.record({ kind: 'user', login: 'ana' }, { type: 'card.update', id: card.id, fields: { meantFor: set.agent.id, stage: 'ready', agentId: undefined }, activity: { at: new Date().toISOString(), by: 'ana', kind: 'moved', text: 'Gave it to Foundry' } })
+      await until(() => set.cardNow(card.id).stage === 'live')
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('doesn’t take a card again that its model left where it was, until a person gives it to it again', async () => {
+    const set = await setUp()
+    try {
+      const card = await set.actions.createCard({ kind: 'user', login: 'ana' }, { binderId: 'b1', title: 'Fix the login page', stage: 'ready', meantFor: set.agent.id })
+      // A model that only talks: the card stays ready, meant for it, and held by nobody.
+      set.plays(() => says('That needs an agent with a machine.'))
+      await until(() => set.asked.length === 1)
+      await new Promise((done) => setTimeout(done, 1500))
+      assert.equal(set.asked.length, 1, 'asked once, not over and over')
+      assert.deepEqual([set.cardNow(card.id).stage, set.cardNow(card.id).agentId], ['ready', undefined])
+      // A person gives it the card again: tried again, once.
+      await set.hub.record({ kind: 'user', login: 'ana' }, { type: 'card.update', id: card.id, fields: { meantFor: set.agent.id, stage: 'ready', agentId: undefined }, activity: { at: new Date(Date.now() + 1000).toISOString(), by: 'ana', kind: 'moved', text: 'Gave it to Foundry' } })
+      await until(() => set.asked.length === 2)
+      await new Promise((done) => setTimeout(done, 1500))
+      assert.equal(set.asked.length, 2)
+    } finally {
+      await set.close()
+    }
+  })
+
   it('puts a card back, saying why, when it runs out of room or stops half way', async () => {
     const set = await setUp(foundry, { steps: 2 })
     try {

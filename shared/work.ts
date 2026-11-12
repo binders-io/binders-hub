@@ -1009,10 +1009,11 @@ export function handMove(card: Pick<Card, 'stage' | 'agentId'>, stage: Stage): P
 export const asksOf = (card: Pick<Card, 'needsYou' | 'permission'>) =>
   card.needsYou ?? (card.permission && !card.permission.answer ? `Allow ${card.permission.tool}: ${card.permission.what}` : undefined)
 
-export function nextFor(state: WorkState & { binders: { id: string; repo?: string }[] }, agent: Agent, busy: string[] = []): Card | undefined {
+export function nextFor(state: WorkState & { binders: { id: string; repo?: string }[] }, agent: Agent, busy: string[] = [], named = false): Card | undefined {
   // The cards it could take, found first and on their own: on a board of thousands few are ready, and everything else
   // the board has to say is looked up only for these.
-  const open = state.cards.filter((c) => c.stage === 'ready' && !c.agentId && !busy.includes(c.id) && mayTake(state, agent, c))
+  // `named`: only cards given to this agent by name, for one that takes no others (a model with no machine).
+  const open = state.cards.filter((c) => c.stage === 'ready' && !c.agentId && !busy.includes(c.id) && (!named || c.meantFor === agent.id) && mayTake(state, agent, c))
   if (!open.length) return undefined
   const names = new Set(open.map((c) => c.id))
   const waitedOn = new Set(open.flatMap((c) => c.waitsFor))
