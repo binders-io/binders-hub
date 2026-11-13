@@ -207,7 +207,7 @@ function AgentCard({ agent, onEdit, onModel, onToken, onRevoke, onStart }: { age
   const restart = () => void attempt(() => call('POST', `/api/agents/${agent.id}/restart`))
   const restartQuestion = `Restart and stop ${holding.length === 1 ? 'a card' : `${holding.length} cards`}? Press again`
   const old = runnerState(agent)
-  const terminal = !hosted && mine && run.tool !== 'custom' && !toolInfo(run.tool).noTerminal
+  const terminal = !hosted && !agent.sandbox && mine && run.tool !== 'custom' && !toolInfo(run.tool).noTerminal
   // Its repos, the first two by name and the rest counted; all of them under Details when there are more.
   const repos = agent.repos.length > 2 ? `${agent.repos.slice(0, 2).join(', ')} and ${agent.repos.length - 2} more` : inWords(agent.repos)
   const takes = hosted ? takesNames(agent.endpoint.takes) : []
@@ -216,8 +216,12 @@ function AgentCard({ agent, onEdit, onModel, onToken, onRevoke, onStart }: { age
     ...(!hosted && (restartable || restarting) ? [restarting
       ? { label: 'Restarting its runner…', icon: <RotateCw size={14} />, disabled: true, onSelect: () => {} }
       : { label: 'Restart its runner', icon: <RotateCw size={14} />, confirm: holding.length ? restartQuestion : undefined, onSelect: restart }] : []),
-    ...(!hosted ? [{ label: 'New token', icon: <KeyRound size={14} />, confirm: 'Cut off its runner? Press again', onSelect: onToken }] : []),
+    ...(!hosted && !agent.sandbox ? [{ label: 'New token', icon: <KeyRound size={14} />, confirm: 'Cut off its runner? Press again', onSelect: onToken }] : []),
     ...(ownModel && manager && agent.endpoint && !onItsMachine ? [{ label: 'Change its model', icon: <Bot size={14} />, onSelect: onModel }] : []),
+    // A machine this hub keeps for it: the Binder's repo cloned in a sandbox, with the Binders runner in it. A model
+    // agent with none yet may be given one; one with a machine here has it taken away again the same way.
+    ...(isModelAgent(agent) && manager ? [{ label: 'Give it a machine on this hub', icon: <Server size={14} />, onSelect: () => void attempt(() => call('POST', `/api/agents/${agent.id}/sandbox`, { enabled: true })) }] : []),
+    ...(agent.sandbox && manager ? [{ label: 'Take its machine on this hub away', icon: <Server size={14} />, onSelect: () => void attempt(() => call('POST', `/api/agents/${agent.id}/sandbox`, { enabled: false })) }] : []),
     ...(hosted ? [] : [{ separator: true as const }]),
     { label: 'Revoke', icon: <Trash2 size={14} />, danger: true, confirm: 'Revoke it? Press again', onSelect: onRevoke },
   ]

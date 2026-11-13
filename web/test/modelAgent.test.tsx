@@ -317,9 +317,9 @@ describe('an agent that is a model', () => {
     expect(screen.queryByRole('button', { name: /Start the runner|Update it now|Restart/ })).toBeNull()
     expect(screen.queryByRole('link', { name: /Terminal/ })).toBeNull()
     expect(screen.queryByText('Details')).toBeNull()
-    // It can still be changed and revoked, and its menu has nothing else.
+    // It can still be changed and revoked, and given a machine on this hub: its menu has nothing else.
     expect(screen.getByRole('button', { name: 'Edit' })).toBeTruthy()
-    expect(await menuOf('Azure assistant')).toEqual(['Revoke'])
+    expect(await menuOf('Azure assistant')).toEqual(['Give it a machine on this hub', 'Revoke'])
   })
 
   it('saves its edit with the PATCH address, and sends no key when the box is empty', async () => {

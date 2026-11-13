@@ -112,6 +112,7 @@ export const bodies = {
   lookNow: z.looseObject({ repo: maybe }),
   newAgent: z.looseObject({ name: text, provider: maybe, repos: texts, binders: texts, skills: texts, runsOn: maybe, runner: z.looseObject({}).optional() }),
   changeAgent: z.looseObject({ name: maybe, provider: maybe, repos: texts, binders: texts, skills: texts, runsOn: maybe, runner: z.looseObject({}).optional() }),
+  sandbox: z.looseObject({ enabled: flag }),
   options: z.looseObject({}),
   newRepo: z.looseObject({ owner: maybe, name: maybe, private: flag, description: maybe }),
   oauth: z.looseObject({ clientId: maybe, clientSecret: maybe }),

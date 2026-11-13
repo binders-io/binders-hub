@@ -17,11 +17,11 @@ import { candidates, gateways } from '../brain/autoPick.ts'
 const providerFor = (tool: AgentTool): Provider => (tool === 'codex' ? 'openai' : tool === 'custom' || tool === 'binders' ? 'other' : tool)
 
 export async function agentRoutes(app: FastifyInstance, context: Context) {
-  const { spaces, auth, options, terminals, sp, login, param, isAdmin, namedAdmin, act, bodyOf, mayLinkAll, brainMachines, brainSettings } = context
+  const { spaces, auth, options, terminals, sp, login, param, isAdmin, namedAdmin, act, bodyOf, mayLinkAll, brainMachines, brainSettings, sandboxes } = context
   // Agents: set up by people, each with a token shown once.
   app.post('/api/agents', act(async (request) => {
     // A model of its own isn't set here: that has its own routes, for the Binder's owners and admins, which check its address.
-    const { endpoint: _notHere, ...body } = bodyOf(bodies.newAgent, request)
+    const { endpoint: _notHere, sandbox: _notThis, ...body } = bodyOf(bodies.newAgent, request)
     await mayLinkAll(request, body.repos)
     const agent = await sp(request).actions.putAgent(login(request), body as Partial<Agent> & { name: string })
     const token = await auth.issueAgentToken(agent.id, sp(request).id)
@@ -142,14 +142,24 @@ export async function agentRoutes(app: FastifyInstance, context: Context) {
     if (!existing) throw new Refused('No such agent.')
     if (!mayManageAgent(request, existing)) throw new Refused(`Only ${existing.name}’s owner, @${existing.owner}, or this Binder’s owners and admins can change it.`)
     // Its model, when it has one, is changed by its own route alone.
-    const { runner, endpoint: _notHere, ...fields } = bodyOf(bodies.changeAgent, request)
+    // Nor is a machine the hub keeps for it, which its own route starts and stops.
+    const { runner, endpoint: _notHere, sandbox: _notThis, ...fields } = bodyOf(bodies.changeAgent, request)
     // What it runs runs on its owner's machine, as them: that's theirs alone, whoever else may manage the agent. What's
     // left out of a runner goes back to its default, and the Agents page sends one with every edit, so it's what it would
     // come to that counts. Someone else's is never kept, so saving an edit can't change it either.
     const own = isOwner(request, existing)
     if (!own && runner && comesTo(runner) !== comesTo(runnerShown(existing))) throw new Refused(`Only ${existing.name}’s owner, @${existing.owner}, can change what it runs on their machine.`)
     await mayLinkAll(request, fields.repos, existing.repos)
-    return sp(request).actions.putAgent(login(request), { ...existing, ...fields, ...(own && runner ? { runner } : {}) } as Partial<Agent> & { name: string }, existing.id)
+    // A machine the hub keeps runs Binders' own agent and nothing else: what it runs isn't changed here.
+    const keepRunner = !!existing.sandbox
+    const agent = await sp(request).actions.putAgent(login(request), { ...existing, ...fields, ...(own && runner && !keepRunner ? { runner } : {}) } as Partial<Agent> & { name: string }, existing.id)
+    // Its machine holds its repos: changed, it's started again with them, as a runner on someone's machine is pointed
+    // at a new folder. One that doesn't start keeps the agent's edit and says why in the hub's log.
+    const reposMoved = agent.repos.length !== existing.repos.length || agent.repos.some((r, i) => !sameRepo(r, existing.repos[i] ?? ''))
+    if (agent.sandbox && !agent.revoked && reposMoved && sandboxes?.configured) {
+      await sandboxes.ensure(sp(request), agent).catch((error: unknown) => console.warn(`The machine this hub keeps for ${agent.name} didn’t start again with its repos: ${(error as Error).message}`))
+    }
+    return agent
   }))
   app.post('/api/agents/:id/token', act(async (request) => {
     const agent = sp(request).hub.state.agents.find((a) => a.id === param(request, 'id') && !a.revoked)
@@ -166,10 +176,39 @@ export async function agentRoutes(app: FastifyInstance, context: Context) {
     if (!mayManageAgent(request, agent)) throw new Refused(`Only ${agent.name}’s owner, @${agent.owner}, or this Binder’s owners and admins can restart its runner.`)
     return sp(request).actions.restartRunner(login(request), agent.id)
   }))
+  // A machine this hub keeps for an agent that has none: the Binder's repo, cloned in a sandbox, with the Binders runner
+  // started there as it. It spends the hub's own room and runs its code, so it's the Binder's owners and admins who say.
+  app.post('/api/agents/:id/sandbox', act(async (request) => {
+    const existing = sp(request).hub.state.agents.find((a) => a.id === param(request, 'id') && !a.revoked)
+    if (!existing) throw new Refused('No such agent.')
+    if (!mayManageAgent(request, existing)) throw new Refused(`Only ${existing.name}’s owner, @${existing.owner}, or this Binder’s owners and admins can give it a machine here.`)
+    const { enabled } = bodyOf(bodies.sandbox, request)
+    if (enabled === undefined) throw new Refused('Say whether it has a machine here.')
+    if (enabled && !sandboxes?.configured) throw new Refused('This hub keeps no machines of its own: set BINDERS_SANDBOX_URL and BINDERS_SANDBOX_SECRET on it, or run a runner on a machine of yours.')
+    if (enabled && !existing.endpoint) throw new Refused('A machine here is for an agent the hub runs a model for. Give it a model first, or run a runner on a machine of yours.')
+    if (enabled && existing.runner) throw new Refused('This agent already has a machine: its runner takes its cards. An agent the hub keeps a machine for is one with none.')
+    // Binders' own agent is what runs in the sandbox: its steps are the hub's to take, so no model key is kept there.
+    if (!enabled && !existing.sandbox) throw new Refused('This hub keeps no machine for it.')
+    // Taken away, it is the model it was, with no runner: null says so, as left out would keep the one it has.
+    const fields = enabled ? { sandbox: true, runner: { ...runnerShown(existing), tool: 'binders' as const, access: 'full' as const } } : { sandbox: false, runner: null }
+    const agent = await sp(request).actions.putAgent(login(request), { ...existing, ...fields } as unknown as Partial<Agent> & { name: string }, existing.id)
+    try {
+      if (enabled) await sandboxes!.ensure(sp(request), agent)
+      else await sandboxes?.stop(agent.id)
+    } catch (error) {
+      // A machine that didn't start isn't one: the agent goes back to as it was, its runner and flag named outright.
+      const before = { ...existing, sandbox: existing.sandbox ?? false, runner: existing.runner ?? null }
+      await sp(request).actions.putAgent(login(request), before as unknown as Partial<Agent> & { name: string }, existing.id).catch(() => undefined)
+      throw error
+    }
+    await noted(sp(request).hub, { kind: 'user', login: login(request) }, enabled ? `Gave the agent “${agent.name}” a machine on this hub.` : `Took the agent “${agent.name}”’s machine on this hub away.`)
+    return { agent }
+  }))
   app.delete('/api/agents/:id', act(async (request) => {
     const agent = sp(request).hub.state.agents.find((a) => a.id === param(request, 'id'))
     if (!agent) throw new Refused('No such agent.')
     if (!mayManageAgent(request, agent)) throw new Refused(`Only ${agent.name}’s owner, @${agent.owner}, or this Binder’s owners and admins can revoke it.`)
+    if (agent.sandbox) await sandboxes?.stop(agent.id)
     await auth.revokeAgent(agent.id)
     await sp(request).hub.record({ kind: 'user', login: login(request) }, { type: 'agent.revoke', id: agent.id })
     // The key of one that is a model at an address goes with it.
@@ -301,6 +340,8 @@ export async function agentRoutes(app: FastifyInstance, context: Context) {
     const existing = sp(request).hub.state.agents.find((a) => a.id === param(request, 'id') && !a.revoked)
     if (!existing?.endpoint) throw new Refused('No such agent.')
     if (!existing.runner) throw new Refused('This agent is its model. To be rid of it, revoke the agent.')
+    // The runner in a machine the hub keeps takes each step from this model: without it, that runner has nothing to ask.
+    if (existing.sandbox) throw new Refused('Its machine on this hub runs on this model: take the machine away first.')
     await endpointsOf(request).setKey(existing.id, undefined)
     return { agent: await sp(request).actions.putAgent(login(request), { ...existing, endpoint: undefined }, existing.id) }
   }))

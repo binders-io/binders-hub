@@ -23,6 +23,7 @@ import { Webhooks } from './webhooks.ts'
 import { GitHubPoller } from './poller.ts'
 import { Teller } from './tell.ts'
 import { OptionsStore, optionsFromEnv } from './options.ts'
+import { Sandboxes } from './sandbox.ts'
 import { log as hubLog } from './logger.ts'
 import { BrainSettingsStore } from './brain/settings.ts'
 import { BrainMachines } from './brain/machines.ts'
@@ -328,10 +329,13 @@ async function startSpace(id: string, info: SpaceInfo): Promise<Space> {
 const spaces = new Spaces(kv, startSpace)
 spaces.dirOf = binderDir
 
+// A machine this hub keeps for an agent that has none: a sandbox service, when one is set, with the Binders runner in it.
+const sandboxes = new Sandboxes({ url: env.BINDERS_SANDBOX_URL, secret: env.BINDERS_SANDBOX_SECRET, publicUrl, hubUrl: env.BINDERS_SANDBOX_HUB_URL, auth })
+
 // Listening comes first and the Binders start after: with thousands of them that takes a while, and a server that
 // watches /health must see a hub that's busy rather than one that's gone. Until they're up, /ready and every other
 // request say so (see server.ts).
-const app = await buildServer(spaces, { auth, options, brain: brainSettings, machines: brainMachines }, { publicUrl, logger: hubLog, logRequests: env.LOG === '1', webDir: env.WEB_DIR, enforceCsp: env.CSP_ENFORCE === '1' })
+const app = await buildServer(spaces, { auth, options, brain: brainSettings, machines: brainMachines, sandboxes }, { publicUrl, logger: hubLog, logRequests: env.LOG === '1', webDir: env.WEB_DIR, enforceCsp: env.CSP_ENFORCE === '1' })
 await app.listen({ port, host })
 console.log(`Binders hub listening on http://${host}:${port}; starting its Binders.`)
 
@@ -364,6 +368,29 @@ try {
 } catch (error) {
   console.error(error)
   await stop(1)
+}
+
+// A machine this hub keeps starts again with it, as a runner on a machine of someone's reconnects: its agent has one,
+// so it is started again here, with a token of its own, before the hub says it is ready.
+if (sandboxes.configured) {
+  for (const there of spaces.all()) {
+    for (const agent of there.hub.state.agents) {
+      if (!agent.sandbox || agent.revoked) continue
+      await sandboxes.ensure(there, agent).catch((error: unknown) => console.warn(`The machine this hub keeps for ${agent.name} didn’t start: ${(error as Error).message}`))
+    }
+  }
+}
+// Their clones' GitHub tokens last an hour: renewed well before, so the runner's own fetches, before a card's worktree is
+// made and for a brief, reach GitHub however long the machine has been up.
+if (sandboxes.configured) {
+  setInterval(() => {
+    for (const there of spaces.all()) {
+      for (const agent of there.hub.state.agents) {
+        if (!agent.sandbox || agent.revoked) continue
+        void sandboxes.renew(there, agent).catch((error: unknown) => console.warn(`The GitHub tokens of the machine this hub keeps for ${agent.name} weren’t renewed: ${(error as Error).message}`))
+      }
+    }
+  }, 40 * 60_000).unref()
 }
 
 const githubOf = (s: Space) => {

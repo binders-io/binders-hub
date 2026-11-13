@@ -26,9 +26,9 @@ export BINDERS_COMMIT_SUBJECT
 BINDERS_REPO_URL=$(git remote get-url origin 2>/dev/null | sed -E 's#^git@github\.com:#https://github.com/#; s#\.git$##; s#^https://[^@/]*@#https://#')
 case $BINDERS_REPO_URL in https://*) ;; *) BINDERS_REPO_URL= ;; esac
 export BINDERS_REPO_URL
-mkdir -p "$data/hub" "$data/redis"
-# The hub runs as the image's node user.
-chown 1000:1000 "$data/hub"
+mkdir -p "$data/hub" "$data/redis" "$data/sandboxes"
+# The hub runs as the image's node user, and so do the machines it keeps in the sandbox.
+chown 1000:1000 "$data/hub" "$data/sandboxes"
 
 if ! docker build --target test -t binders-hub:test . >"$data/test.log" 2>&1; then
   echo "$next" >"$data/failed"
@@ -43,6 +43,14 @@ fi
 # With a tunnel's settings, the tunnel; without, the hub on a port of this machine for Caddy or nginx.
 compose=(-f deploy/compose.yml)
 if [ -f "$etc/tunnel.env" ]; then compose+=(--profile tunnel); else compose+=(-f deploy/compose.port.yml); fi
+# A machine the hub keeps for agents that have none: the sandbox service, when the hub's settings hold the secret both
+# ends need. The hub reads its address and secret from hub.env; compose reads the secret here, for the sandbox itself.
+# Quoted or not, as compose's env_file reads it for the hub, so both ends have the same secret.
+sandbox_secret=$(sed -n 's/^BINDERS_SANDBOX_SECRET=//p' "$etc/hub.env" 2>/dev/null | tail -n 1 | sed -E 's/^"(.*)"$/\1/; s/^'"'"'(.*)'"'"'$/\1/')
+if [ -n "${sandbox_secret:-}" ]; then
+  export BINDERS_SANDBOX_SECRET=$sandbox_secret
+  compose+=(--profile sandbox)
+fi
 # --wait ends when the hub says it's ready, once every Binder has started: up to ten minutes, as compose.yml allows.
 docker compose "${compose[@]}" up -d --build --remove-orphans --wait --wait-timeout 660
 echo "$next" >"$data/deployed"

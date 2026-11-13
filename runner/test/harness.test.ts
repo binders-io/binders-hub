@@ -21,8 +21,8 @@ import { Webhooks } from '../../hub/src/webhooks.ts'
 import { BrainSettingsStore } from '../../hub/src/brain/settings.ts'
 import { EndpointAgents } from '../../hub/src/agent/endpoint.ts'
 import { Runner } from '../src/runner.ts'
-import { command, eventLine, fitted, hubModel, inside, machineModel, repoTools, work, workRules } from '../src/harness.ts'
-import { StreamReader } from '../src/stream.ts'
+import { command, eventLine, fitted, hubModel, inside, machineModel, reminder, repoTools, work, workRules } from '../src/harness.ts'
+import { hideSecrets, StreamReader } from '../src/stream.ts'
 import type { LoopTurn, Step, StepModel, Tool } from '../../shared/agent.ts'
 
 // The runner's own files (its sessions, its held runs) go in a home of the tests' own.
@@ -480,5 +480,31 @@ describe('Binders’ own agent on a machine, with a real hub and a real runner',
     } finally {
       await close()
     }
+  })
+})
+
+describe('a run of Binders’ own agent that answers without a tool', () => {
+  const getTask = (card: { stage: string; needs_you?: unknown }): Tool => ({ spec: { name: 'get_task', description: '', input: {} }, run: async () => JSON.stringify(card) })
+  it('is reminded once while its card is still working, and not when it’s done or waiting on a person', async () => {
+    const working = reminder([getTask({ stage: 'working' })], 'card-1')!
+    assert.match(await working('Let me look.') ?? '', /isn’t finished/)
+    assert.equal(await working('Let me look again.'), undefined, 'once')
+    assert.equal(await reminder([getTask({ stage: 'review' })], 'card-1')!('Done.'), undefined)
+    assert.equal(await reminder([getTask({ stage: 'working', needs_you: { question: 'Which?' } })], 'card-1')!('Asked.'), undefined)
+    assert.equal(reminder([getTask({ stage: 'working' })], undefined), undefined, 'no card, no reminder')
+  })
+})
+
+describe('what goes on a card', () => {
+  it('has the secrets an agent wrote hidden, and still says what was done', () => {
+    const app = 'ghs_5552670_eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9'
+    assert.equal(hideSecrets(`git ls-remote https://x-access-token:${app}@github.com/acme/web.git`), 'git ls-remote https://…@github.com/acme/web.git')
+    assert.equal(hideSecrets(`TLS="x-access-token:${app}"`), 'TLS="x-access-token:ghs_…"')
+    assert.equal(hideSecrets('curl -H "Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345"'), 'curl -H "Authorization: Bearer …"')
+    assert.equal(hideSecrets('export GITHUB_TOKEN=github_pat_11ABCDEFG0123456789_abcdef'), 'export GITHUB_TOKEN=github_pat_…')
+    assert.equal(hideSecrets('curl -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com'), 'curl -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com')
+    const reader = new StreamReader()
+    reader.line(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `The token is ${app}.` }] } }))
+    assert.deepEqual(reader.take(true).said.map((s) => s.includes(app)), [false])
   })
 })

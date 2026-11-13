@@ -27,6 +27,7 @@ import { brainRoutes } from './routes/brain.ts'
 import { appLinkRoutes } from './routes/appLink.ts'
 import type { BrainSettingsStore } from './brain/settings.ts'
 import type { BrainMachines } from './brain/machines.ts'
+import type { Sandboxes } from './sandbox.ts'
 import { readerMaySend } from './reader.ts'
 import { readerWords, type Role, type Space, type Spaces } from './spaces.ts'
 
@@ -73,7 +74,7 @@ declare module 'fastify' {
  * the one a request names with x-binders-space, or the first the person may open. Who may open which is the
  * Binder's members; the hub's admins make Binders and look after those that have no owner.
  */
-export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: OptionsStore; brain?: BrainSettingsStore; machines?: BrainMachines }, options: ServerOptions) {
+export async function buildServer(spaces: Spaces, deps: { auth: Auth; options?: OptionsStore; brain?: BrainSettingsStore; machines?: BrainMachines; sandboxes?: Sandboxes }, options: ServerOptions) {
   const context = makeContext(spaces, deps, options)
   const { auth, isAdmin, secure, signInSpace } = context
   // A Binder with no owner is looked after by the hub's admins: the Binders' roles ask who they are.

@@ -275,4 +275,34 @@ describe('an agent on a machine that has a model', () => {
       await set.close()
     }
   })
+
+  it('is the model it was again when its machine on this hub is taken away: its runner goes with it', async () => {
+    const set = await setUp()
+    try {
+      const on = await set.actions.putAgent('ana', { ...set.agent, sandbox: true, runner: { tool: 'binders', access: 'full', timeoutMinutes: 60, worktrees: true } }, set.agent.id)
+      assert.equal(on.runner?.tool, 'binders')
+      // Left out, a runner is kept, as any other edit keeps it.
+      assert.equal((await set.actions.putAgent('ana', { name: on.name, skills: ['go'] }, on.id)).runner?.tool, 'binders')
+      const off = await set.actions.putAgent('ana', { ...on, sandbox: false, runner: null } as never, on.id)
+      assert.equal(off.runner, undefined)
+      assert.equal(off.sandbox, undefined)
+      assert.ok(off.endpoint, 'its model stays')
+    } finally {
+      await set.close()
+    }
+  })
+
+  it('leaves the work to the machine this hub keeps for it', async () => {
+    const set = await setUp()
+    try {
+      const onHub = await set.actions.putAgent('ana', { name: 'On the hub', provider: 'other', repos: [], binders: [], skills: [], runner: { tool: 'binders', access: 'full', timeoutMinutes: 60, worktrees: true }, endpoint: foundry, sandbox: true })
+      const card = await set.actions.createCard({ kind: 'user', login: 'ana' }, { binderId: 'b1', title: 'Fix the header', stage: 'ready', meantFor: onHub.id })
+      set.plays(() => says('Nothing to do.'))
+      await new Promise((done) => setTimeout(done, 400))
+      assert.equal(set.cardNow(card.id).stage, 'ready', 'still waiting for its machine’s runner')
+      assert.equal(set.asked.length, 0, 'its model was asked nothing by the hub itself')
+    } finally {
+      await set.close()
+    }
+  })
 })

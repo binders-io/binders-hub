@@ -37,6 +37,8 @@ export function MachineLine() {
   const [problem, setProblem] = useState<string>()
   const [windows, setWindows] = useState(() => /Windows/.test(navigator.userAgent))
   const [copied, setCopied] = useState(false)
+  // How long "Copied" stays: cleared when this goes, so no timer outlives the page it was set on.
+  const copiedFor = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   // What was already there, so only a machine that joins from now on is listed.
   const [before] = useState(() => new Set(state.agents.map((a) => a.id)))
   const asked = useRef(false)
@@ -52,6 +54,7 @@ export function MachineLine() {
       setProblem(isNetworkFailure(error) ? unreachable : (error as Error).message)
     }
   }
+  useEffect(() => () => { if (copiedFor.current) clearTimeout(copiedFor.current) }, [])
   // Asked once as it opens, though a development build runs effects twice: each ask makes a line.
   useEffect(() => {
     if (asked.current) return
@@ -75,7 +78,8 @@ export function MachineLine() {
       return
     }
     setCopied(true)
-    window.setTimeout(() => setCopied(false), 1600)
+    if (copiedFor.current) clearTimeout(copiedFor.current)
+    copiedFor.current = setTimeout(() => setCopied(false), 1600)
   }
 
   return (

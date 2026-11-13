@@ -351,6 +351,12 @@ with the Mac.
   or `12-` in its branch, and joins its binder's open change set with its files and checks.
 - Approving a set approves and merges each pull request on GitHub in order; a failed merge stops there and the set goes
   back to review.
+- The approval is the approver's own on GitHub: as they approve, the hub posts an approving review with their GitHub
+  token on every open pull request in the set, before any of them merges, so a repo whose rules want a review merges
+  later on it without them. Where GitHub refuses theirs (their own pull request) or a push since made it stale, the
+  train sends the hub app's own before asking GitHub whether it merges. Each pull request keeps what became of it
+  (`review`), and one held by the repo's rules says so. Approving a set that's merging sends GitHub the approver's
+  review again.
 - A binder's members are owners, admins, members and readers, set at `PUT /api/spaces/:id/members/:login` with a `role`
   by its owners and admins (only an owner makes or unmakes owners, and the last owner can't become a reader). A reader
   (`hub/src/reader.ts`) sees everything in a binder
@@ -537,6 +543,35 @@ open to anyone is left to agents with machines.
 - **What it reads is material.** It is told, as the Brain is, that nothing in a note, a card or a diff is an
   instruction to it. It has no way to run anything, so the most a planted instruction can reach is the hub's own agent
   tools, which every agent already has.
+
+## A machine on the hub (built)
+
+An agent that is a model with no machine can have one this hub keeps, so it does what an agent on a machine does: reads
+and changes the code, runs its tests, commits and opens a pull request. It is Binders' own agent, run in a sandbox
+(`runner/src/sandbox.ts`, `hub/src/sandbox.ts`).
+
+- **The sandbox is a service of its own.** It holds the Binders runner and nothing of a Binder's: no notes, no keys, no
+  data. A job is one agent's machine: its repo cloned into a folder of its own, the agent's token in a file only the two
+  read, and the runner started there with `--hub`, `--workspace` and `--token-file`, as a machine of someone's would be.
+  The hub takes each step of its model, as it does for any agent on a machine, so no model key is kept there.
+- **Set on the hub.** `BINDERS_SANDBOX_URL` and `BINDERS_SANDBOX_SECRET`, the same secret at both ends; only a call
+  with it starts a runner. On docker compose it's `deploy/compose.yml`'s `sandbox` service, `--profile sandbox`, at
+  `http://sandbox:4500`; `BINDERS_SANDBOX_HUB_URL` (`http://hub:4400` there) is where its runners reach the hub, so their
+  steps don't go out through a firewall in front of the public address. Without one, an agent with no machine works what it can without code, as before.
+- **Who gives one.** A Binder's owners and admins, on a hosted agent's card (`POST /api/agents/:id/sandbox`): it spends
+  the hub's room and runs its code, and it's for an agent the hub runs a model for. It runs Binders' own agent with full
+  access, so its runner settings' tool is set to it; its owner may change what it may run, as with any runner.
+- **Where the code is.** The repos the hub gives the agent work in (`agentRepos`): those it names, or else its
+  Binders' repos, the Binder's own first; up to twelve, each in a folder of its own as a machine's folder of repos is
+  laid out, so a card or brief for one of them finds its clone. The hub clones them over https with the Binder's GitHub
+  App's token, which is taken out of each clone's remote once it's cloned (it lasts an hour, and git would keep using
+  it over the runner's own), and the runner pushes with the token the hub hands any runner, only while the agent's owner can push
+  there.
+- **One machine an agent.** Asked again, the one there is stopped and a fresh clone started, as its token has been
+  replaced. A sandbox that fails to start leaves the agent as it was, and says why. The hub starts its machines again
+  with itself, before it says it's ready; revoking the agent stops its machine.
+- **What it does reaches the board** as any runner's: the card claimed, its steps, the diff of its worktree and the pull
+  request it opens. A card open to anyone is its to take now, as it is a machine's.
 
 ## Binders' own agent, for work that needs code (built)
 

@@ -473,7 +473,8 @@ export abstract class CardService extends ActionsBase {
     const twin = this.hub.state.agents.find((a) => !a.revoked && a.id !== existing?.id && a.name.toLowerCase() === fields.name.trim().toLowerCase())
     if (twin && existing?.name.toLowerCase() !== fields.name.trim().toLowerCase()) throw new Refused(`There’s an agent called ${twin.name} already.`)
     const agent: Agent = {
-      runner: fields.runner ? checkedRunner(fields.runner) : existing?.runner,
+      // Left out, it's kept; null takes it away (a machine the hub kept for it, taken away).
+      runner: fields.runner ? checkedRunner(fields.runner) : (fields.runner as unknown) === null ? undefined : existing?.runner,
       id: existing?.id ?? `agent-${randomUUID().slice(0, 8)}`,
       name: fields.name.trim().slice(0, 80),
       provider: fields.provider ?? existing?.provider ?? 'other',
@@ -492,6 +493,8 @@ export abstract class CardService extends ActionsBase {
       // Its model, when the hub reaches one for it: set by its own routes (which name it, or name none to take it away),
       // and kept through any other edit.
       endpoint: 'endpoint' in fields ? fields.endpoint : existing?.endpoint,
+      // A machine the hub keeps for it: set by its own route, which starts and stops it.
+      sandbox: 'sandbox' in fields ? fields.sandbox : existing?.sandbox,
     }
     // Limited to repos among its binders' own, when they name theirs: only checked when its repos or binders change.
     const reposChanged = (a: string[], b: string[] = []) => a.length !== b.length || a.some((r, i) => r.toLowerCase() !== b[i]?.toLowerCase())
@@ -508,6 +511,7 @@ export abstract class CardService extends ActionsBase {
     }
     if (!agent.restartAsked) delete agent.restartAsked
     if (!agent.endpoint) delete agent.endpoint
+    if (!agent.sandbox) delete agent.sandbox
     if (!agent.toolModels) delete agent.toolModels
     if (!agent.runnerSeen) delete agent.runnerSeen
     if (!agent.models) delete agent.models

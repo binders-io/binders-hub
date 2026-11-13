@@ -9,6 +9,7 @@ import { brainCommand, machineIdentity } from './brain.ts'
 import { agentCommand } from './desk.ts'
 import { nodeNetwork, reasonOf, settleNetwork, workerCommand } from './network.ts'
 import { workCommand } from './harness.ts'
+import { sandboxCommand } from './sandbox.ts'
 
 // binders-runner: keeps one agent working on what Binders gives it.
 //
@@ -23,6 +24,9 @@ settleNetwork()
 if (process.argv[2] === 'agent') process.exit(await agentCommand(process.argv.slice(3)))
 // Binders' own agent for a card that needs code, started by the runner as it starts any tool: `binders-runner work`.
 if (process.argv[2] === 'work') process.exit(await workCommand(process.argv.slice(3)))
+
+// A sandbox of the hub's own: the machines it keeps for agents that have none, each a clone and a runner (`sandbox.ts`).
+if (process.argv[2] === 'sandbox') await sandboxCommand(process.argv.slice(3))
 
 // The daemon that serves this machine's model servers to the hub's brain (brain.ts), as binders add runs it.
 if (process.argv[2] === 'brain') process.exit(await brainCommand(process.argv.slice(3)))

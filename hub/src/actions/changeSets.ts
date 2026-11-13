@@ -301,14 +301,58 @@ export abstract class ChangeSetService extends EnvironmentService {
   async approveSet(login: string, setId: string, token?: string) {
     const set = this.hub.state.changeSets.find((s) => s.id === setId)
     if (!set) throw new Refused(`No change set ${setId}.`)
-    if (set.state !== 'review' && set.state !== 'assembling') throw new Refused('That change set was already approved.')
+    // Approved and merging already: approving again sends the person's approval to GitHub again, for what's still open.
+    const again = set.state === 'merging'
+    if (!again && set.state !== 'review' && set.state !== 'assembling') throw new Refused('That change set was already approved.')
+    if (again && !token) throw new Refused('It’s approved and merging already. Connect your GitHub (Your account, from your picture at the top → Connect) and the hub sends GitHub your approval.')
     const pulls = set.prIds.map((id) => this.hub.state.pulls.find((p) => p.id === id)).filter((p): p is PullRequest => !!p)
-    const failing = pulls.filter((p) => p.state !== 'merged' && p.state !== 'closed').flatMap((p) => p.checks.filter((c) => c.state === 'failed').map((c) => `${p.repo.split('/')[1]}#${p.number} ${c.name}`))
-    if (failing.length) throw new Refused(`Some checks failed: ${failing.join(', ')}.`)
-    await this.hub.record({ kind: 'user', login }, { type: 'set.update', id: set.id, fields: { state: 'merging', approvedBy: login, waiting: undefined } })
-    await noted(this.hub, { kind: 'user', login }, `Approved change set #${set.number} “${set.title}”.`)
+    const open = pulls.filter((p) => p.state !== 'merged' && p.state !== 'closed')
+    const failing = open.flatMap((p) => p.checks.filter((c) => c.state === 'failed').map((c) => `${p.repo.split('/')[1]}#${p.number} ${c.name}`))
+    if (failing.length && !again) throw new Refused(`Some checks failed: ${failing.join(', ')}.`)
+    if (!again) {
+      await this.hub.record({ kind: 'user', login }, { type: 'set.update', id: set.id, fields: { state: 'merging', approvedBy: login, waiting: undefined } })
+      await noted(this.hub, { kind: 'user', login }, `Approved change set #${set.number} “${set.title}”.`)
+    }
+    // The person's approval goes to GitHub as theirs, on every pull request at once, whatever it still waits for: a repo
+    // whose rules want a review won't merge without one, and the train merges each later, without the person's token.
+    if (token) {
+      const github = this.github.asUser(token)
+      for (const pull of open) await this.sendApproval(set, pull, login, github)
+      if (again) await noted(this.hub, { kind: 'user', login }, `Sent GitHub ${login}’s approval of change set #${set.number} “${set.title}” again.`)
+    }
     await this.runTrain(set.id, login, token)
     return this.hub.state.changeSets.find((s) => s.id === set.id)!
+  }
+
+  /** Posts an approving review on GitHub, as whoever `github` is, and keeps whether GitHub took it. */
+  protected async sendApproval(set: ChangeSet, pull: PullRequest, by: string, github: { approve(repo: string, number: number, body?: string): Promise<unknown> }, earlier?: PullRequest['review']) {
+    const head = this.hub.state.pulls.find((p) => p.id === pull.id)?.head
+    try {
+      await github.approve(pull.repo, pull.number, `Approved in Binders with change set #${set.number}.`)
+      await this.hub.record({ kind: 'hub' }, { type: 'pr.update', id: pull.id, fields: { review: { by, ...(head ? { head } : {}) } } })
+      return true
+    } catch (error) {
+      // What GitHub said to the one refused before stays with it: that's usually what the person needs to know.
+      const said = (error as Error).message.split('\n')[0].slice(0, 300)
+      const refused = earlier?.refused ? `${said}; ${earlier.by}’s before it: ${earlier.refused}` : said
+      await this.hub.record({ kind: 'hub' }, { type: 'pr.update', id: pull.id, fields: { review: { by, ...(head ? { head } : {}), refused } } })
+      return false
+    }
+  }
+
+  /** Whether a pull request has an approving review on GitHub from the hub, at the commit it's at now. */
+  protected reviewed(pull: PullRequest) {
+    const review = pull.review
+    return !!review && !review.refused && (!review.head || !pull.head || review.head === pull.head)
+  }
+
+  /** Why a pull request the repo's rules hold waits: what became of the approval the hub sent. */
+  protected heldBecause(pullId: string, short: string) {
+    const review = this.hub.state.pulls.find((p) => p.id === pullId)?.review
+    const whose = review ? (review.by === 'hub' ? 'the hub’s' : `${review.by}’s`) : undefined
+    if (review?.refused) return `${short}: GitHub didn’t take ${whose} approval (${review.refused})`
+    if (review) return `${short}: the repo’s rules don’t allow merging yet, even with ${whose} approval`
+    return `${short}: the repo’s rules don’t allow merging yet`
   }
 
   /** Runs a set's train once, one run at a time per set: merges what's ready, and says what the rest wait for. */
@@ -375,7 +419,25 @@ export abstract class ChangeSetService extends EnvironmentService {
         await github.retarget(pull.repo, pull.number, main)
         if (pull.cardId) await this.hub.record({ kind: 'hub' }, { type: 'card.activity', id: pull.cardId, activity: { at: this.now(), by: 'hub', kind: 'said', text: `Pointed ${short} at ${main}: it was opened against ${info.base}.` } })
       }
+      // Its approving review goes before asking whether it merges: a repo whose rules want one says "blocked" until it
+      // has it. The person's was sent when they approved; one a push since made stale is sent again, as them while
+      // they're here and as the hub after. One GitHub refused them (their own pull request) the hub sends as itself.
+      const current = this.hub.state.pulls.find((p) => p.id === id) ?? pull
+      let sent = false
+      if (!this.reviewed(current)) {
+        const earlier = current.review?.refused && current.review.head === current.head ? current.review : undefined
+        if (earlier?.by !== 'hub') {
+          const asHub = !token || !!earlier
+          const client = asHub ? await this.github.forRepo(pull.repo).catch(() => undefined) : github
+          if (client) sent = await this.sendApproval(set, current, asHub ? 'hub' : login, client, earlier)
+        }
+      }
       let mergeable = await this.checkMergeable(id, token).catch(() => 'unknown' as const)
+      // GitHub takes a moment to count a review it was just sent.
+      if (mergeable === 'blocked' && sent) {
+        await new Promise((done) => setTimeout(done, this.mergeWaitMs))
+        mergeable = await this.checkMergeable(id, token).catch(() => 'unknown' as const)
+      }
       if (mergeable === 'conflicts') {
         const settled = await this.settleConflicts(pull, token)
         if (settled === 'pushed') {
@@ -386,15 +448,11 @@ export abstract class ChangeSetService extends EnvironmentService {
         continue
       }
       if (mergeable === 'blocked') {
-        waiting.push({ prId: id, why: `${short}: the repo’s rules don’t allow merging yet` })
+        waiting.push({ prId: id, why: this.heldBecause(id, short) })
         continue
       }
       try {
         await this.hub.record(actor, { type: 'pr.update', id, fields: { state: 'approved' } })
-        await github.approve(pull.repo, pull.number).catch((error: GitHubError) => {
-          // Approving your own pull request isn't allowed on GitHub; the merge still goes ahead.
-          if (error.status !== 422) throw error
-        })
         await this.hub.record(actor, { type: 'pr.update', id, fields: { state: 'queued' } })
         const merged = await github.merge(pull.repo, pull.number, this.mergeMethod())
         await this.recordMerged(actor, set, pull, by, merged?.sha)

@@ -137,6 +137,12 @@ export interface Agent {
   /** The model it is, when it has no machine and the hub runs it. */
   endpoint?: AgentEndpoint
   /**
+   * Whether this hub keeps a machine for it: a runner of its own in a sandbox, with the Binder's repo cloned, for an
+   * agent the hub runs a model for and that has no machine of its own. It is a runner like any other, so its cards are
+   * worked as any machine's are; the sandbox holds no Binder's data and no model key.
+   */
+  sandbox?: boolean
+  /**
    * A person asked its runners to restart, on the newest runner the hub has: what they're running stops (cards go back
    * on the board), and they start again. A runner acts on one asked after it started.
    */
@@ -344,6 +350,11 @@ export interface PullRequest {
    * without help), with conflicts someone has to resolve, blocked by the repo's rules, or not known yet.
    */
   mergeable?: 'clean' | 'behind' | 'conflicts' | 'blocked' | 'unknown'
+  /**
+   * The approving review the hub sent GitHub for its change set: whose it is (the person who approved, or `hub` for the
+   * hub's own), at which commit, or why GitHub refused it. A repo whose rules want a review merges on it.
+   */
+  review?: { by: string; head?: string; refused?: string }
   /** The commit it made on its base when it merged, as GitHub says: what an environment's deployed commit is compared with. Missing from before it was kept. */
   mergeSha?: string
   /** When the hub first saw it merged or closed, if its card didn't say: what the weeks its diff is kept for are counted from. */
