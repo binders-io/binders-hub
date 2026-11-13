@@ -256,6 +256,36 @@ and pull requests changed in its repos, the checks on the pull requests it follo
 What it hears is handled exactly as a webhook would be; requests carry GitHub's ETags, so a quiet repo costs nothing
 against the rate limit. When webhooks start arriving, it stops asking.
 
+## A machine on the hub
+
+An agent can be a model the hub runs, with no machine: it distils notes, writes them, answers chats, debriefs, challenges
+and takes cards given to it by name, and nothing that needs code. Give it a machine this hub keeps and it does the rest:
+reads and changes the code, runs the tests, commits and opens a pull request, and takes cards open to anyone.
+
+The hub's owners set it up once: `docker compose --profile sandbox up -d` on a hub on compose (it's `deploy/compose.yml`'s
+`sandbox` service), and in `hub.env`:
+
+```
+BINDERS_SANDBOX_URL=http://sandbox:4500
+BINDERS_SANDBOX_SECRET=<openssl rand -hex 32>
+BINDERS_SANDBOX_HUB_URL=http://hub:4400
+```
+
+The last is where its runners reach the hub: beside it on compose's network, not out through the public address. A hub
+behind Cloudflare has its firewall in front, and that reads an agent's conversation as an attack once it quotes a path
+like `/etc/hosts`, answering every step after with a 403.
+
+The same secret in the sandbox's environment. Then, on a hosted agent's card on the Agents page, **Give it a machine on
+this hub**. The sandbox clones the repos the hub gives the agent work in (up to twelve, as a machine's folder of
+repos): those it names, or else its Binders' repos, the Binder's own first; a repo the Binder's GitHub doesn't reach is
+left out, and starts the Binders runner there as the agent, with full access: it's a runner like any other, so its cards are worked and reported as a machine's are. It holds
+no notes, no keys and none of the hub's data, and the model's steps are still taken by the hub, so no key is kept there.
+Its card's menu takes the machine away again; revoking the agent stops it too, and a hub restart starts it again.
+
+A machine on the hub spends the hub's own room and runs the agent's code, so it's this Binder's owners and admins who
+give one, and it's for agents the hub runs a model for. Without a sandbox service set, an agent with no machine works
+what it can without code, as before.
+
 ## The runner: agents that take work on their own
 
 An agent like Claude Code only calls Binders while it's working on something you asked, so on its own it can't be given
@@ -489,7 +519,8 @@ by what they mean as well as by their words.
 - **Speech.** With a speech model (OpenAI's speech API: Kokoro, a Piper gateway, OpenAI), `POST /api/brain/speak` and the
   iPhone's `binders/speak` read answers out.
 - **Local AI only.** A switch that keeps every model on the hub's own network (this machine, private ranges, VPN ranges
-  such as 100.64/10, `.local` and one-word names): Claude and any outside address are refused.
+  such as 100.64/10, `.local` and one-word names): Claude, a gateway's cloud models and any outside address are
+  refused.
 - **Your machines.** Any of those jobs can be served by a machine of yours: a Mac, or a GPU box such as a DGX Spark.
   - **Adding them.** In Settings → Brain, an admin clicks Add your machines and gets one line:
     `curl -fsSL <hub>/install | sh -s -- add --token bnj_…`. It works on any number of machines for 24 hours.
@@ -505,6 +536,12 @@ by what they mean as well as by their words.
     model, an embeddings model, Parakeet, Canary or the largest whisper, and a speech server's voice, else a Mac's
     own. When a better one appears later, it takes over. A job an admin set, even to off, stays theirs until they hand
     it back.
+  - **A gateway to a cloud.** A server on a machine that lists cloud models (a proxy to Azure, OpenAI or Anthropic,
+    such as LiteLLM) is a gateway: what's asked of its models leaves your network, so the hub never picks one itself.
+    An admin can: under the hub's model or Finding by meaning, the gateway's models are listed to find by name and
+    choose, every one it lists up to two thousand. A name it doesn't list, such as a deployment's, can be typed and
+    tried the same way. The one chosen is asked one short thing first, through the machine, and the job stays as it
+    was when nothing comes back, with what the gateway said.
   - **Every model downloaded on the machine, served when asked for**, as Ollama serves its own. The daemon offers the
     hub one more server per machine: every downloaded model an engine there can run, and that fits its memory. When a
     request names one, the daemon starts its engine and passes the request on:

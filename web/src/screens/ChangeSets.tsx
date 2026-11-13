@@ -208,6 +208,13 @@ export function ChangeSets({ id }: { id: string }) {
                 <b>Approved: merging as each is ready</b>
                 <p>{set.waiting?.length ? 'The hub merges each pull request as soon as it can, brings the base into ones that conflict, and keeps both sides where both only added lines. What’s left:' : 'Merging now.'}</p>
                 {set.waiting?.length ? <ul>{set.waiting.map((w) => <li key={w.prId}>{w.why}</li>)}</ul> : null}
+                {/* Approving again sends GitHub the person's approval again, for a push that dismissed it or one sent before. */}
+                {may && state.me?.github.token && set.waiting?.length ? (
+                  <button type="button" className="text-button" disabled={merging === set.id} onClick={() => {
+                    setMerging(set.id)
+                    void attempt(() => store.approveSet(set.id)).finally(() => setMerging(undefined))
+                  }}>{merging === set.id ? 'Sending…' : 'Send GitHub my approval again'}</button>
+                ) : null}
               </div>
             </div>
           )}

@@ -99,13 +99,16 @@ interface Reply {
   error?: string
 }
 
+/** How many of a server's models are kept: as many as a daemon says (runner/src/brain.ts, mostModels). */
+const mostModels = 2000
+
 function clean(servers: unknown): MachineServer[] {
   if (!Array.isArray(servers)) return []
   return servers.slice(0, 40).flatMap((s) => {
     const server = s as Partial<MachineServer>
     const url = String(server.url ?? '').slice(0, 300)
     if (!url) return []
-    return [{ url, kind: String(server.kind ?? 'openai').slice(0, 20), models: Array.isArray(server.models) ? server.models.slice(0, 300).map((m) => String(m).slice(0, 200)) : [], ...(typeof server.version === 'string' && server.version ? { version: server.version.slice(0, 40) } : {}), ...(server.needsKey === true ? { needsKey: true } : {}) }]
+    return [{ url, kind: String(server.kind ?? 'openai').slice(0, 20), models: Array.isArray(server.models) ? server.models.slice(0, mostModels).map((m) => String(m).slice(0, 200)) : [], ...(typeof server.version === 'string' && server.version ? { version: server.version.slice(0, 40) } : {}), ...(server.needsKey === true ? { needsKey: true } : {}) }]
   })
 }
 

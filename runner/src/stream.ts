@@ -219,12 +219,26 @@ export class StreamReader {
       said.push(this.text.join('\n').slice(-2000))
       this.text = []
     }
-    return { steps, said }
+    // What goes on the card is read by everyone on the board: a token an agent wrote into a command isn't.
+    return { steps: steps.map((s) => ({ ...s, text: hideSecrets(s.text), ...(s.result !== undefined ? { result: hideSecrets(s.result) } : {}) })), said: said.map(hideSecrets) }
   }
 
   get summary() {
-    return { sessionId: this.reading.sessionId, cost: this.reading.cost, minutes: this.reading.minutes, tokens: this.reading.tokens, last: this.reading.last, reply: this.reading.reply, failed: this.reading.failed, error: this.reading.error, denied: this.reading.denied, permissionMode: this.reading.permissionMode }
+    const hidden = (text: string | undefined) => (text === undefined ? undefined : hideSecrets(text))
+    return { sessionId: this.reading.sessionId, cost: this.reading.cost, minutes: this.reading.minutes, tokens: this.reading.tokens, last: hidden(this.reading.last), reply: hidden(this.reading.reply), failed: this.reading.failed, error: hidden(this.reading.error), denied: this.reading.denied, permissionMode: this.reading.permissionMode }
   }
+}
+
+/**
+ * Text with the secrets an agent may have written into it hidden: GitHub's tokens (an app's ghs_, a person's ghp_ and
+ * github_pat_, and the rest of gh*_), Binders' own, OpenAI's and Anthropic's keys, a password in an address
+ * (https://x-access-token:…@), and what follows a Bearer. What's left still says what was done.
+ */
+export function hideSecrets(text: string): string {
+  return text
+    .replace(/(https?:\/\/)[^\s/@'"`]+@/g, '$1…@')
+    .replace(/\b(Bearer|token)(\s+)[A-Za-z0-9._~+/=-]{16,}/gi, '$1$2…')
+    .replace(/\b(gh[opusr]_|github_pat_|bn[dw]_|sk-ant-|sk-)[A-Za-z0-9._-]{12,}/g, '$1…')
 }
 
 /** A refused tool use, as a person reads it: the command, the address, the file, or else the tool. */

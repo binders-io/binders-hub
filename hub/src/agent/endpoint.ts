@@ -61,7 +61,7 @@ export interface ModelReach extends Reach {
  * or a model server beside the hub) is the hub's business: its admins may add one, over http too, and nobody else can
  * point the hub at its own network.
  */
-export function whatsWrongWithEndpoint(endpoint: Pick<AgentEndpoint, 'kind' | 'baseUrl' | 'model'>, reach: ModelReach = {}): string | undefined {
+export function whatsWrongWithEndpoint(endpoint: Pick<AgentEndpoint, 'kind' | 'baseUrl' | 'model' | 'machine'>, reach: ModelReach = {}): string | undefined {
   if (!['brain', 'openai', 'anthropic'].includes(endpoint.kind)) return 'Say what it is: the hub’s own model, a server that speaks OpenAI’s chat API, or Claude by Anthropic’s API.'
   if (endpoint.kind === 'brain') return undefined
   if (!endpoint.model?.trim()) return 'Say which model, or which deployment.'
@@ -73,6 +73,15 @@ export function whatsWrongWithEndpoint(endpoint: Pick<AgentEndpoint, 'kind' | 'b
     url = new URL(address)
   } catch {
     url = undefined
+  }
+  if (endpoint.machine) {
+    // A server on one of the hub's machines, by its address there: reached through that machine, which passes on
+    // only what goes to its own servers. The machines are the hub's, so it's a hub admin's to set.
+    if (endpoint.kind !== 'openai') return 'Only a server that speaks OpenAI’s chat API is reached through one of the hub’s machines.'
+    if (!reach.ownNetwork) return 'Only a hub admin can have an agent’s model reached through one of the hub’s machines.'
+    if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:')) return 'Say which server on that machine, by its address there.'
+    if (url.username || url.password) return 'The address can’t have a name or password in it.'
+    return undefined
   }
   if (url && (url.protocol === 'http:' || url.protocol === 'https:') && onThisNetwork(url.hostname)) {
     if (url.username || url.password) return 'The address can’t have a name or password in it.'
@@ -169,10 +178,17 @@ export class EndpointAgents {
 
   // Its model --------------------------------------------------------------------------------------------------------
 
-  /** The model at an endpoint, with a key: nothing when the hub has no model of its own to lend. */
-  private modelAt(endpoint: AgentEndpoint, key?: string): BrainModel | undefined {
+  /**
+   * The model at an endpoint, with a key: nothing when the hub has no model of its own to lend, and words for why a
+   * server on one of the hub's machines can't be reached (the machine was removed, or serves nothing there).
+   */
+  private modelAt(endpoint: AgentEndpoint, key?: string): BrainModel | string | undefined {
     if (endpoint.kind === 'brain') return this.brain.model()
     if (endpoint.kind === 'anthropic') return new ClaudeModel({ model: endpoint.model!, apiKey: key, ...(endpoint.baseUrl ? { baseURL: endpoint.baseUrl, fallbacks: false } : {}) })
+    if (endpoint.machine) {
+      const via = this.brain.machineVia(endpoint.machine, endpoint.baseUrl!)
+      return typeof via === 'string' ? via : new OpenAICompatibleModel({ baseURL: endpoint.baseUrl!, model: endpoint.model!, apiKey: key, via })
+    }
     return new OpenAICompatibleModel({ baseURL: endpoint.baseUrl!, model: endpoint.model!, apiKey: key })
   }
 
@@ -181,6 +197,7 @@ export class EndpointAgents {
     const wrong = whatsWrongWithEndpoint(endpoint, reach)
     if (wrong) return { ok: false, why: wrong }
     const model = this.modelAt(endpoint, key)
+    if (typeof model === 'string') return { ok: false, why: model }
     if (!model) return { ok: false, why: 'The hub has no model of its own yet: set one up in Settings → Brain, or give this agent its own.' }
     if (!model.step || !model.steps) return { ok: false, why: `${model.label} can’t call tools, so it can’t do an agent’s work.` }
     try {
@@ -195,7 +212,7 @@ export class EndpointAgents {
   private async modelFor(agent: Agent): Promise<StepModel | undefined> {
     if (this.stand) return this.stand(agent)
     const model = this.modelAt(agent.endpoint!, await this.key(agent.id))
-    if (!model?.step || !(await model.steps?.().catch(() => false))) return undefined
+    if (!model || typeof model === 'string' || !model.step || !(await model.steps?.().catch(() => false))) return undefined
     return { label: model.label, step: (input) => model.step!(input) }
   }
 
@@ -207,7 +224,7 @@ export class EndpointAgents {
     if (!agent.endpoint) throw new Error('This agent has no model of its own. Give it one on the Agents page.')
     // A run asks for a step many times over: a model found to call tools isn't asked again whether it does for a
     // while, unless its address, its name or its key was changed since (each of which is tried again, at a new time).
-    const mark = JSON.stringify([agent.endpoint.kind, agent.endpoint.baseUrl, agent.endpoint.model, agent.endpoint.ready?.at])
+    const mark = JSON.stringify([agent.endpoint.kind, agent.endpoint.baseUrl, agent.endpoint.model, agent.endpoint.machine, agent.endpoint.ready?.at])
     const held = this.proven.get(agent.id)
     let model = held && held.mark === mark && Date.now() - held.at < provenMs ? held.model : undefined
     if (!model) {
@@ -242,8 +259,12 @@ export class EndpointAgents {
     try {
       const listed = await client.listTools()
       const tools: Tool[] = listed.tools.filter((tool) => given.has(tool.name)).map((tool) => ({ spec: { name: tool.name, description: tool.description ?? '', input: tool.inputSchema as Record<string, unknown> }, run: (input) => call(tool.name, (input ?? {}) as Record<string, unknown>) }))
-      /** Work it was offered and isn't its to take, or that it couldn't finish: not offered to it again while it runs. */
-      const left: string[] = []
+      /**
+       * Work it couldn't finish, each with when a person last gave it the card, as that stood then: not taken again by
+       * this run, until a person gives it to it again.
+       */
+      const left = new Map<string, string>()
+      const givenAt = (id: string) => [...(this.hub.state.cards.find((c) => c.id === id)?.activity ?? [])].reverse().find((a) => a.kind === 'moved' && a.by !== agentId)?.at ?? ''
       while (!this.stopped) {
         const agent = this.agent(agentId)
         if (!agent) break
@@ -255,7 +276,10 @@ export class EndpointAgents {
         const takes = agent.endpoint!.takes
         let waited: string
         try {
-          waited = await call('wait_for_work', { timeout_seconds: this.waitSeconds, chats: takes.chats, debriefs: takes.debriefs, challenges: takes.challenges, replies: false, briefs: false, cards: takes.cards, busy: left.slice(-200) })
+          // Only cards given to it by name: one open to anyone is usually code, and it has no machine. Such a card is
+          // never shown to it, so it has nothing to remember about one that's given to it later.
+          const busy = [...left].filter(([id, given]) => givenAt(id) === given).map(([id]) => id).slice(-50)
+          waited = await call('wait_for_work', { timeout_seconds: this.waitSeconds, chats: takes.chats, debriefs: takes.debriefs, challenges: takes.challenges, replies: false, briefs: false, cards: takes.cards, named: true, busy })
         } catch (err) {
           // Revoked while it waited, or the hub is stopping.
           if (!this.agent(agentId) || this.stopped) break
@@ -272,17 +296,16 @@ export class EndpointAgents {
           continue
         }
         if (!job?.id || !['card', 'chat', 'debrief', 'challenge'].includes(job.kind)) continue
-        // A card open to anyone is usually code, and it has no machine: it takes a card only when it was given by name.
-        if (job.kind === 'card' && this.hub.state.cards.find((c) => c.id === job.id)?.meantFor !== agentId) {
-          left.push(job.id)
-          continue
-        }
+        // Given to another agent in the moment since it was offered: no longer its to take, and nothing to remember.
+        const offered = job.kind === 'card' ? this.hub.state.cards.find((c) => c.id === job.id) : undefined
+        if (job.kind === 'card' && offered?.meantFor !== agentId && offered?.agentId !== agentId) continue
         const finished = await this.job(agent, model, tools, job, waited, call).catch((err: unknown) => {
           log.warn({ agent: agentId, job: job.id, why: err instanceof Error ? err.message : String(err) }, 'An endpoint agent’s work failed')
           return false
         })
-        // What it couldn't finish isn't taken again by this run: a person, or another agent, has it from here.
-        if (!finished) left.push(job.id)
+        // What it couldn't finish isn't taken again by this run: a person, or another agent, has it from here. A
+        // person who gives it the card again has it tried again.
+        if (!finished) left.set(job.id, givenAt(job.id))
       }
     } finally {
       await client.close().catch(() => undefined)
@@ -313,6 +336,9 @@ export class EndpointAgents {
         await call('release_task', { id: job.id, reason: why }).catch(() => undefined)
         return false
       }
+      // Back where it was, still meant for it and held by nobody: its model gave it back (it needs a machine, say), or
+      // never took it. It isn't finished, and taking it again would only go the same way: a person has it from here.
+      if (card && !card.agentId && card.stage === 'ready' && card.meantFor === agent.id) return false
       return true
     }
     if (job.kind === 'chat') {

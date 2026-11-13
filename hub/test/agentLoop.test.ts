@@ -109,6 +109,17 @@ describe('a model working in steps', () => {
     assert.equal((await runLoop({ model: scripted({ text: 'Half an ans', calls: [], stop: 'length' }).model, system: '', ask: 'Go', tools: [] })).stopped, 'length')
   })
 
+  it('goes on when it answers with words while its work isn’t done, as often as it’s told to', async () => {
+    const { model, asked } = scripted(says('Let me look at the file.'), wants(call('c1', 'look')), says('Done.'))
+    let told = 0
+    const outcome = await runLoop({ model, system: '', ask: 'Fix it.', tools: [tool('look', () => 'x')], keepGoing: async () => (told++ ? undefined : 'Carry on with your tools.') })
+    assert.equal(outcome.text, 'Done.')
+    assert.equal(outcome.stopped, 'done')
+    assert.equal(outcome.steps, 3)
+    assert.deepEqual(asked[1].turns.slice(1), [{ role: 'assistant', text: 'Let me look at the file.', calls: [] }, { role: 'user', text: 'Carry on with your tools.' }])
+    assert.equal(told, 2, 'asked again when it ended the second time, and let it end')
+  })
+
   it('has limits of its own when none are given', () => {
     assert.deepEqual(loopLimits, { steps: 8, ms: 120_000, resultChars: 8000, callsPerStep: 8 })
   })

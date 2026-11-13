@@ -395,12 +395,63 @@ export class ClaudeModel implements BrainModel {
 export interface Via {
   name: string
   fetch: typeof fetch
+  /** The server there is a gateway to a cloud: said wherever the model is named. */
+  gateway?: boolean
+}
+
+/** Where a model is, after its name: on one of your machines, through a gateway on one, or at a host. */
+function where(base: string, via?: Via) {
+  return via ? (via.gateway ? `, through a gateway on ${via.name}` : ` on ${via.name}`) : ` (${hostOf(base)})`
+}
+
+/** What a server said went wrong, when it said so in JSON: a line of it. */
+function saidWrong(body: string) {
+  let words = ''
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: unknown } | string; message?: unknown; detail?: unknown }
+    const found = typeof parsed.error === 'string' ? parsed.error : parsed.error?.message ?? parsed.message ?? parsed.detail
+    if (typeof found === 'string') words = found
+  } catch { /* not JSON: its status says enough */ }
+  return words.replace(/\s+/g, ' ').trim().slice(0, 200)
+}
+
+/**
+ * Asks a model on a server one short thing, to tell whether it answers at all: a gateway lists models it can't reach.
+ * Throws what went wrong, as a sentence.
+ */
+export async function tryModel(job: 'chat' | 'embeddings', options: { baseURL: string; model: string; apiKey?: string; via?: Via }, timeoutMs = 60_000) {
+  const body = job === 'chat' ? { model: options.model, stream: false, messages: [{ role: 'user', content: 'Say OK.' }] } : { model: options.model, input: ['ok'] }
+  let response: Response
+  try {
+    response = await (options.via?.fetch ?? fetch)(at(options.baseURL, job === 'chat' ? 'chat/completions' : 'embeddings'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(options.apiKey ? { authorization: `Bearer ${options.apiKey}` } : {}) },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+  } catch (err) {
+    // A machine that's away says so itself.
+    if (err instanceof BrainUnavailable) throw err
+    throw new BrainUnavailable(`Nothing came back in ${Math.round(timeoutMs / 1000)} seconds.`)
+  }
+  const text = await response.text().catch(() => '')
+  if (!response.ok) {
+    const said = saidWrong(text)
+    throw new BrainUnavailable(`The server answered ${response.status}${said ? `: ${said.replace(/[.!?]+$/, '')}` : ''}.`)
+  }
+  let answer: { choices?: unknown[]; data?: unknown[] } = {}
+  try { answer = JSON.parse(text) as typeof answer } catch { /* said below */ }
+  const got = job === 'chat' ? answer.choices : answer.data
+  if (!Array.isArray(got) || !got.length) throw new BrainUnavailable(job === 'chat' ? 'The server answered without a reply.' : 'The server answered without a vector.')
 }
 
 /** How a server is named in words: by its host, and the machine it's on when it's reached through one. */
 function serverName(base: string, via?: Via) {
   return via ? `${hostOf(base)} on ${via.name}` : hostOf(base)
 }
+
+/** A name that starts a sentence elsewhere, as it reads inside one: "the model server at …". */
+const lower = (words: string) => `${words.charAt(0).toLowerCase()}${words.slice(1)}`
 
 /** Joins a base address and a path, whether or not the base ends in a slash. */
 function at(base: string, path: string) {
@@ -419,7 +470,7 @@ async function post(url: string, apiKey: string | undefined, body: unknown, time
   } catch (err) {
     // A machine that's away says so itself.
     if (err instanceof BrainUnavailable) throw err
-    throw new BrainUnavailable(`The hub couldn’t reach ${what}.`)
+    throw new BrainUnavailable(`The hub couldn’t reach ${lower(what)}.`)
   }
   if (response.status === 401 || response.status === 403) throw new BrainUnavailable(`${what} refused the hub’s key.`)
   if (response.status === 404) throw new BrainUnavailable(`${what} has no such model, or no such address.`)
@@ -456,7 +507,7 @@ export class OpenAICompatibleModel implements BrainModel {
     this.model = options.model
     this.apiKey = options.apiKey
     this.via = options.via
-    this.label = options.via ? `${options.model} on ${options.via.name}` : `${options.model} (${hostOf(options.baseURL)})`
+    this.label = `${options.model}${where(options.baseURL, options.via)}`
   }
 
   private async complete(messages: { role: string; content: string }[], extra: Record<string, unknown> = {}) {
@@ -595,7 +646,7 @@ export class OpenAICompatibleEmbedder implements Embedder {
     this.model = options.model
     this.apiKey = options.apiKey
     this.via = options.via
-    this.label = options.via ? `${options.model} on ${options.via.name}` : `${options.model} (${hostOf(options.baseURL)})`
+    this.label = `${options.model}${where(options.baseURL, options.via)}`
     this.key = `${hostOf(options.baseURL)}|${options.model}`
   }
 
@@ -648,7 +699,7 @@ export class OpenAICompatibleTranscriber implements Transcriber {
     this.model = options.model
     this.apiKey = options.apiKey
     this.via = options.via
-    this.label = options.via ? `${options.model} on ${options.via.name}` : `${options.model} (${hostOf(options.baseURL)})`
+    this.label = `${options.model}${where(options.baseURL, options.via)}`
   }
 
   async transcribe(audio: Uint8Array, mime: string, language?: string) {
@@ -667,7 +718,7 @@ export class OpenAICompatibleTranscriber implements Transcriber {
       response = await (this.via?.fetch ?? fetch)(at(this.base, 'audio/transcriptions'), { method: 'POST', headers: this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}, body: form, signal: AbortSignal.timeout(15 * 60_000) })
     } catch (err) {
       if (err instanceof BrainUnavailable) throw err
-      throw new BrainUnavailable(`The hub couldn’t reach ${what}.`)
+      throw new BrainUnavailable(`The hub couldn’t reach ${lower(what)}.`)
     }
     if (response.status === 401 || response.status === 403) throw new BrainUnavailable(`${what} refused the hub’s key.`)
     if (!response.ok) throw new BrainUnavailable(`${what} answered ${response.status}.`)
@@ -693,7 +744,7 @@ export class OpenAICompatibleSpeaker implements Speaker {
     this.voice = options.voice || (hostOf(options.baseURL) === 'api.openai.com' ? 'alloy' : '')
     this.apiKey = options.apiKey
     this.via = options.via
-    this.label = `${options.model}${options.voice ? `, ${options.voice}` : ''} ${options.via ? `on ${options.via.name}` : `(${hostOf(options.baseURL)})`}`
+    this.label = `${options.model}${options.voice ? `, ${options.voice}` : ''}${where(options.baseURL, options.via)}`
   }
 
   async speak(text: string) {
@@ -708,7 +759,7 @@ export class OpenAICompatibleSpeaker implements Speaker {
       })
     } catch (err) {
       if (err instanceof BrainUnavailable) throw err
-      throw new BrainUnavailable(`The hub couldn’t reach ${what}.`)
+      throw new BrainUnavailable(`The hub couldn’t reach ${lower(what)}.`)
     }
     if (response.status === 401 || response.status === 403) throw new BrainUnavailable(`${what} refused the hub’s key.`)
     if (!response.ok) throw new BrainUnavailable(`${what} answered ${response.status}.`)

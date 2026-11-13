@@ -5,7 +5,7 @@ import type { AgentEndpoint } from '../../../shared/work.ts'
 import { Field } from './Dialog'
 import { Status } from '../kit'
 import { ModelKindFields, ModelSays, TakesField, type ModelValues, type Tried } from './ModelFields'
-import { boxOf } from './modelAgent'
+import { boxOf, useHubServers } from './modelAgent'
 
 /**
  * Adding an agent that is a model at an address, with no machine: the hub runs it. A step of adding an agent, so it's a
@@ -23,7 +23,8 @@ export function AddModelForm({ onClose }: { onClose: () => void }) {
   const [problem, setProblem] = useState<string>()
   // Once it's made, the form stays to say how it went, with its key gone, and can't be sent again.
   const [made, setMade] = useState<Agent>()
-  const { kind, model, baseUrl, key } = values
+  const { kind, model, baseUrl, key, machine } = values
+  const servers = useHubServers()
 
   // Changing anything makes what Try it said about the old values stale.
   const edit = <T,>(set: (value: T) => void) => (value: T) => {
@@ -38,6 +39,8 @@ export function AddModelForm({ onClose }: { onClose: () => void }) {
     ...(kind !== 'brain' && model.trim() ? { model: model.trim() } : {}),
     ...(kind !== 'brain' && baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
     ...(kind !== 'brain' && key.trim() ? { key: key.trim() } : {}),
+    // A server on one of the hub's machines: the hub reaches it through that machine.
+    ...(kind === 'openai' && machine ? { machine } : {}),
   })
 
   const words = (error: unknown) => (error instanceof Error && error.message ? error.message : 'The hub couldn’t do that. Try again.')
@@ -84,7 +87,7 @@ export function AddModelForm({ onClose }: { onClose: () => void }) {
         <Field label="Name">
           <input id="model-agent-name" autoFocus required value={name} onChange={(e) => edit(setName)(e.target.value)} placeholder="Azure assistant" autoComplete="off" />
         </Field>
-        <ModelKindFields values={values} onChange={edit(setValues)} errors={box && problem ? { [box]: problem } : {}} />
+        <ModelKindFields values={values} onChange={edit(setValues)} errors={box && problem ? { [box]: problem } : {}} servers={servers} />
         <TakesField takes={takes} onChange={edit(setTakes)} />
       </fieldset>
 

@@ -97,7 +97,21 @@ const cut = (text: string, most: number) => (text.length > most ? `${text.slice(
  * Asks a model, runs the tools it calls, and goes on until it answers. When it runs out of steps or time it's asked once
  * more, with no tools, to answer from what it found, so the person is never left with nothing.
  */
-export async function runLoop(options: { model: StepModel; system: string; ask: string; tools: Tool[]; limits?: Partial<LoopLimits>; on?: (event: LoopEvent) => void; signal?: AbortSignal; now?: () => number }): Promise<LoopOutcome> {
+export async function runLoop(options: {
+  model: StepModel
+  system: string
+  ask: string
+  tools: Tool[]
+  limits?: Partial<LoopLimits>
+  on?: (event: LoopEvent) => void
+  signal?: AbortSignal
+  now?: () => number
+  /**
+   * Asked when the model answers with no tool to call: words to go on with, when its work isn't done (a card it still
+   * holds), or nothing to let it end. Asked again each time, so it says how often it reminds.
+   */
+  keepGoing?: (text: string) => Promise<string | undefined>
+}): Promise<LoopOutcome> {
   const limits = { ...loopLimits, ...options.limits }
   const now = options.now ?? (() => Date.now())
   const started = now()
@@ -123,7 +137,13 @@ export async function runLoop(options: { model: StepModel; system: string; ask: 
   for (;;) {
     const step = await ask(specs)
     if (step.stop === 'refused') return outcome(step.text, 'refused')
-    if (!step.calls.length || step.stop === 'end') return outcome(step.text, step.stop === 'length' ? 'length' : 'done')
+    if (!step.calls.length || step.stop === 'end') {
+      const more = step.stop !== 'length' && !step.calls.length ? await options.keepGoing?.(step.text).catch(() => undefined) : undefined
+      if (!more) return outcome(step.text, step.stop === 'length' ? 'length' : 'done')
+      turns.push({ role: 'assistant', text: step.text, calls: [], ...(step.raw !== undefined ? { raw: step.raw } : {}) })
+      turns.push({ role: 'user', text: more })
+      continue
+    }
     turns.push({ role: 'assistant', text: step.text, calls: step.calls, ...(step.raw !== undefined ? { raw: step.raw } : {}) })
 
     const results: ToolResult[] = []

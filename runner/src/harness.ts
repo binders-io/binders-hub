@@ -369,6 +369,23 @@ async function hubTools(hubUrl: string, token: string): Promise<{ instructions: 
   return { instructions: client.getInstructions() ?? '', tools, close: () => client.close().catch(() => undefined) }
 }
 
+/**
+ * The one reminder a run gets, as the runner gives Claude Code one when it stops: a model that answers with words and no
+ * tool ("Let me look at…") while its card is still working and waits on no one hasn't finished, it has only paused.
+ */
+export function reminder(tools: Tool[], card: string | undefined): ((text: string) => Promise<string | undefined>) | undefined {
+  const getTask = tools.find((tool) => tool.spec.name === 'get_task')
+  if (!card || !getTask) return undefined
+  let reminded = false
+  return async () => {
+    if (reminded) return undefined
+    const now = JSON.parse(await getTask.run({ id: card })) as { stage?: string; needs_you?: unknown }
+    if (now.stage !== 'working' || now.needs_you) return undefined
+    reminded = true
+    return 'Your Binders card isn’t finished, and you answered without calling a tool. If there’s more to do, carry on with your tools now. If it’s done, call complete_task; if you need a person, ask_on_task; if you can’t do it, release_task.'
+  }
+}
+
 /** One run: the prompt the runner gave, worked on in the repo until the model says it's done. 0 when it ended well. */
 export async function work(options: WorkOptions): Promise<number> {
   const print = options.print ?? ((line: string) => { process.stdout.write(`${line}\n`) })
@@ -386,6 +403,7 @@ export async function work(options: WorkOptions): Promise<number> {
       ask: options.prompt,
       tools: [...repo, ...hub.tools],
       limits: { ...workLimits, ...options.limits },
+      keepGoing: reminder(hub.tools, (options.env ?? process.env).BINDERS_CARD),
       on: (event) => {
         const line = eventLine(event, hubNames)
         if (line) print(line)

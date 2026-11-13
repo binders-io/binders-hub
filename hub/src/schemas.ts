@@ -112,6 +112,7 @@ export const bodies = {
   lookNow: z.looseObject({ repo: maybe }),
   newAgent: z.looseObject({ name: text, provider: maybe, repos: texts, binders: texts, skills: texts, runsOn: maybe, runner: z.looseObject({}).optional() }),
   changeAgent: z.looseObject({ name: maybe, provider: maybe, repos: texts, binders: texts, skills: texts, runsOn: maybe, runner: z.looseObject({}).optional() }),
+  sandbox: z.looseObject({ enabled: flag }),
   options: z.looseObject({}),
   newRepo: z.looseObject({ owner: maybe, name: maybe, private: flag, description: maybe }),
   oauth: z.looseObject({ clientId: maybe, clientSecret: maybe }),
@@ -133,6 +134,7 @@ export const bodies = {
   pull: z.looseObject({ model: z.string().min(1).max(200), job: z.enum(['chat', 'embeddings', 'transcription', 'speech']), source: z.enum(['ollama', 'hf']).optional() }),
   serve: z.looseObject({ runtime: z.enum(['mlx-audio', 'lmstudio']), job: z.enum(['chat', 'embeddings', 'transcription', 'speech']) }),
   chooseJobs: z.looseObject({ jobs: z.array(z.enum(['chat', 'embeddings', 'transcription', 'speech'])).min(1).max(4) }),
+  useGateway: z.looseObject({ job: z.enum(['chat', 'embeddings']), machine: z.string().min(1).max(40), url: z.string().min(1).max(300), model: z.string().min(1).max(200) }),
   speak: z.looseObject({ text: text.max(4000) }),
   audioCapture: z.looseObject({
     id: z.string().min(1).max(100).regex(/^[A-Za-z0-9-]+$/), started: maybe, ended: maybe, device: z.string().max(120).nullish().transform((v) => v ?? undefined),

@@ -99,6 +99,12 @@ export async function fakeGitHub(options: {
     bases: {} as Record<number, string>,
     /** Whether each pull request merges, by number: GitHub's mergeable_state (clean unless set). */
     mergeable: {} as Record<number, 'clean' | 'behind' | 'dirty'>,
+    /** Pull requests whose repo's rules want an approving review: GitHub says "blocked", and won't merge, until one comes. */
+    needsReview: {} as Record<number, boolean>,
+    /** Who opened each pull request, by the authorization header of their token (the hub's app and a person, say): GitHub won't take their own approval. */
+    openedBy: {} as Record<number, string[]>,
+    /** The approving reviews GitHub took, by pull request: each one's authorization header. */
+    approvals: {} as Record<number, string[]>,
     /** How many repos the app's installation reaches (acme/repo-0 onward), and how many of them it lists before the rest. */
     installationRepos: 0,
     listedRepos: undefined as number | undefined,
@@ -204,7 +210,7 @@ export async function fakeGitHub(options: {
   })
   app.get('/repos/:owner/:repo/pulls/:n', async (request) => {
     const { owner, repo, n } = request.params as { owner: string; repo: string; n: string }
-    const merging = world.mergeable[Number(n)] ?? 'clean'
+    const merging = world.needsReview[Number(n)] && !world.approvals[Number(n)]?.length ? 'blocked' : world.mergeable[Number(n)] ?? 'clean'
     return { number: Number(n), title: `Pull ${n}`, body: '', head: { ref: `agent/${n}-work`, sha: world.heads[Number(n)] ?? `sha${n}` }, html_url: `https://github.test/${owner}/${repo}/pull/${n}`, state: world.mergedPulls[Number(n)] ? 'closed' : 'open', merged: !!world.mergedPulls[Number(n)], merge_commit_sha: world.mergedPulls[Number(n)] ?? null, additions: 12, deletions: 3, mergeable: merging !== 'dirty', mergeable_state: merging, base: { ref: world.bases[Number(n)] ?? 'main' } }
   })
   app.get('/repos/:owner/:repo/compare/:range', async (request, reply) => {
@@ -257,12 +263,17 @@ export async function fakeGitHub(options: {
     const { owner, repo, n } = request.params as { owner: string; repo: string; n: string }
     // As GitHub does when a comment's line isn't in the pull request's diff any more.
     if (world.linesGone && ((request.body as { comments?: unknown[] })?.comments?.length ?? 0) > 0) return reply.code(422).send({ message: 'Unprocessable Entity: Line could not be resolved' })
+    if ((request.body as { event?: string })?.event === 'APPROVE') {
+      if (world.openedBy[Number(n)]?.includes(String(request.headers.authorization))) return reply.code(422).send({ message: 'Unprocessable Entity', errors: ['Can not approve your own pull request'] })
+      ;(world.approvals[Number(n)] ??= []).push(String(request.headers.authorization))
+    }
     reviews++
     return { id: reviews, html_url: `https://github.test/${owner}/${repo}/pull/${n}#pullrequestreview-${reviews}` }
   })
   app.put('/repos/:owner/:repo/pulls/:n/merge', async (request, reply) => {
     const n = Number((request.params as { n: string }).n)
     if (options.mergeFails?.includes(n)) return reply.code(405).send({ message: 'Pull Request is not mergeable' })
+    if (world.needsReview[n] && !world.approvals[n]?.length) return reply.code(405).send({ message: 'At least 1 approving review is required by reviewers with write access.' })
     return { merged: true, sha: `merged${n}` }
   })
   app.post('/repos/:owner/:repo/actions/workflows/:workflow/dispatches', async (_request, reply) => reply.code(204).send())

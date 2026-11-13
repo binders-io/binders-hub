@@ -2140,6 +2140,83 @@ describe('GitHub’s webhooks', () => {
     await github.close()
   })
 
+  it('sends GitHub the approver’s own approval as they approve, so repos whose rules want a review merge', async () => {
+    const github = await fakeGitHub()
+    const { url, hub, actions, close } = await setUp({ github })
+    const you = api(url, await signIn(url))
+    await you('POST', '/api/changes', { client: 'tab-1234', changes: [{ id: 'r', change: { type: 'binder.put', binder: { id: 'b1', name: 'Server', repo: 'acme/web' } } }] })
+    const made = await you('POST', '/api/agents', { name: 'Builder' })
+    const builder = await agentClient(url, made.body.token)
+    const finish = async (title: string, pr: string) => {
+      const card = await you('POST', '/api/cards', { binderId: 'b1', title, meantFor: made.body.agent.id })
+      await builder.call('claim_task', { id: card.body.id })
+      await builder.call('complete_task', { id: card.body.id, summary: 'Done.', pull_request: pr })
+    }
+    await finish('Reviewed', 'acme/web#7')
+    await finish('Yours', 'acme/web#8')
+    await finish('Nobody’s to approve', 'acme/web#9')
+    const set = hub.state.changeSets.find((s) => s.prIds.includes('acme/web#9'))!
+    const pull = (n: number) => hub.state.pulls.find((p) => p.id === `acme/web#${n}`)!
+    // Every repo wants a review. You opened #8, so GitHub won't take yours there; the hub's app opened #9.
+    github.world.needsReview = { 7: true, 8: true, 9: true }
+    github.world.openedBy = { 8: ['Bearer gho_you'], 9: ['Bearer ghs_server'] }
+    // #9's checks are still running: your approval goes now all the same, as the train merges it later without you.
+    await hub.record({ kind: 'hub' }, { type: 'pr.update', id: 'acme/web#9', fields: { checks: pull(9).checks.map((c) => ({ ...c, state: 'running' as const })) } })
+
+    await actions.approveSet('you', set.id, 'gho_you')
+    const approvals = github.calls.filter((c) => c.path.endsWith('/reviews') && c.body?.event === 'APPROVE')
+    assert.deepEqual(approvals.slice(0, 3).map((c) => [c.path, c.auth]), [7, 8, 9].map((n) => [`/repos/acme/web/pulls/${n}/reviews`, 'Bearer gho_you']), 'yours, on each, before anything merges')
+    assert.equal(pull(7).state, 'merged', 'your review is what its rules wanted')
+    assert.deepEqual(pull(7).review, { by: 'you', head: 'sha7' })
+    // #8: GitHub refused yours; the hub's own review stands in, and it merges.
+    assert.deepEqual(github.world.approvals[8], ['Bearer ghs_server'])
+    assert.equal(pull(8).state, 'merged')
+    assert.equal(pull(8).review?.by, 'hub')
+    assert.deepEqual(github.world.approvals[9], ['Bearer gho_you'])
+
+    // #9's checks pass with nobody here: it merges on the approval you sent.
+    await hub.record({ kind: 'hub' }, { type: 'pr.update', id: 'acme/web#9', fields: { checks: pull(9).checks.map((c) => ({ ...c, state: 'passed' as const })) } })
+    await until(() => pull(9).state === 'merged', 3000)
+    assert.equal(hub.state.changeSets.find((s) => s.id === set.id)!.state, 'merged')
+    assert.equal(github.calls.filter((c) => c.path === '/repos/acme/web/pulls/9/reviews').length, 1, 'not approved twice')
+
+    await builder.client.close()
+    await close()
+    await github.close()
+  })
+
+  it('says why a pull request the repo’s rules hold waits, and sends the approval again when asked', async () => {
+    const github = await fakeGitHub()
+    const { url, hub, actions, close } = await setUp({ github })
+    const you = api(url, await signIn(url))
+    await you('POST', '/api/changes', { client: 'tab-1234', changes: [{ id: 'r', change: { type: 'binder.put', binder: { id: 'b1', name: 'Server', repo: 'acme/web' } } }] })
+    const made = await you('POST', '/api/agents', { name: 'Builder' })
+    const builder = await agentClient(url, made.body.token)
+    const card = await you('POST', '/api/cards', { binderId: 'b1', title: 'Yours and the hub’s', meantFor: made.body.agent.id })
+    await builder.call('claim_task', { id: card.body.id })
+    await builder.call('complete_task', { id: card.body.id, summary: 'Done.', pull_request: 'acme/web#7' })
+    const set = hub.state.changeSets.find((s) => s.prIds.includes('acme/web#7'))!
+    // Both you and the hub's app are refused (say you both opened it): it waits, and says what GitHub said.
+    github.world.needsReview = { 7: true }
+    github.world.openedBy = { 7: ['Bearer gho_you', 'Bearer ghs_server'] }
+    await actions.approveSet('you', set.id, 'gho_you')
+    const waiting = () => hub.state.changeSets.find((s) => s.id === set.id)!
+    assert.equal(waiting().state, 'merging')
+    assert.deepEqual(waiting().waiting, [{ prId: 'acme/web#7', why: 'web#7: GitHub didn’t take the hub’s approval (Unprocessable Entity: Can not approve your own pull request; you’s before it: Unprocessable Entity: Can not approve your own pull request)' }])
+
+    // Without your GitHub the hub can't send yours again: it says so.
+    await assert.rejects(actions.approveSet('you', set.id), /Connect your GitHub/)
+    // Someone else approves again: theirs goes, and it merges.
+    await actions.approveSet('ana', set.id, 'gho_ana')
+    assert.deepEqual(github.world.approvals[7], ['Bearer gho_ana'])
+    assert.equal(hub.state.pulls.find((p) => p.id === 'acme/web#7')!.state, 'merged')
+    assert.equal(waiting().state, 'merged')
+
+    await builder.client.close()
+    await close()
+    await github.close()
+  })
+
 
 describe('settling conflicts', () => {
   const conflict = (ours: string[], ancestor: string[], theirs: string[]) => ['top', '<<<<<<< HEAD', ...ours, '||||||| base', ...ancestor, '=======', ...theirs, '>>>>>>> origin/main', 'end'].join('\n')

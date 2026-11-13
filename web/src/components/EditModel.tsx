@@ -6,7 +6,7 @@ import type { AgentEndpoint } from '../../../shared/work.ts'
 import { Dialog } from './Dialog'
 import { SettingsLink } from './SettingsLink'
 import { AddressField, KeyField, ModelField, ModelSays, TakesField } from './ModelFields'
-import { boxOf, movedTo, newAddressNeedsKey } from './modelAgent'
+import { boxOf, movedTo, newAddressNeedsKey, useHubServers } from './modelAgent'
 
 /**
  * Changing an agent that is a model at an address: its model or deployment, its address where its kind has one, a new
@@ -25,6 +25,11 @@ export function EditModel({ agent, onClose }: { agent: Agent & { endpoint: Agent
   // What the hub found when it tried the saved model again, when that still isn't working.
   const [still, setStill] = useState<string>()
   const ready = endpoint.ready
+  // A server on one of the hub's machines: its address is the machine's, and it has no key, so only its model changes
+  // here. The models that server has are offered as one is typed.
+  const servers = useHubServers()
+  const onMachine = endpoint.kind === 'openai' && !!endpoint.machine
+  const served = onMachine ? servers.find((s) => s.machine === endpoint.machine && s.url === endpoint.baseUrl) : undefined
 
   const save = async (event: FormEvent) => {
     event.preventDefault()
@@ -65,15 +70,16 @@ export function EditModel({ agent, onClose }: { agent: Agent & { endpoint: Agent
         {warning && <p className="agent-warning model-agent-warning" role="status"><TriangleAlert size={14} aria-hidden="true" /><span>{still ? `Saved, and it still isn’t ready: ${warning}` : `It isn’t ready: ${warning}`}</span></p>}
         <p className="field-hint model-agent-kind-line">
           {endpoint.kind === 'brain' ? <>It uses the model set up in <SettingsLink section="brain" />.</>
-            : endpoint.kind === 'openai' ? 'A server that speaks OpenAI’s chat API.'
+            : onMachine ? `A server on ${endpoint.machineName ?? 'one of the hub’s machines'}, which the hub reaches through that machine.`
+              : endpoint.kind === 'openai' ? 'A server that speaks OpenAI’s chat API.'
               : 'Claude, by Anthropic’s API.'}
         </p>
-        {endpoint.kind === 'openai' && <AddressField kind="openai" value={baseUrl} onChange={clear(setBaseUrl)} error={box === 'baseUrl' ? problem : undefined} />}
-        {endpoint.kind !== 'brain' && <ModelField value={model} onChange={clear(setModel)} placeholder={endpoint.kind === 'anthropic' ? 'claude-opus-5-5' : undefined} />}
-        {endpoint.kind !== 'brain' && <KeyField value={key} onChange={clear(setKey)} hint={keyHint} error={box === 'key' ? problem : undefined} />}
+        {endpoint.kind === 'openai' && !onMachine && <AddressField kind="openai" value={baseUrl} onChange={clear(setBaseUrl)} error={box === 'baseUrl' ? problem : undefined} />}
+        {endpoint.kind !== 'brain' && <ModelField value={model} onChange={clear(setModel)} placeholder={endpoint.kind === 'anthropic' ? 'claude-opus-5-5' : undefined} options={served?.models} />}
+        {endpoint.kind !== 'brain' && !onMachine && <KeyField value={key} onChange={clear(setKey)} hint={keyHint} error={box === 'key' ? problem : undefined} />}
         {endpoint.kind === 'anthropic' && <AddressField kind="anthropic" value={baseUrl} onChange={clear(setBaseUrl)} error={box === 'baseUrl' ? problem : undefined} />}
         <TakesField takes={takes} onChange={clear(setTakes)} />
-        <ModelSays busy={saving ? 'Saving it, and trying it again…' : undefined} problem={box ? undefined : problem} />
+        <ModelSays busy={saving ? 'Saving it, and trying it again…' : undefined} problem={box && !onMachine ? undefined : problem} />
         <footer className="form-actions">
           <button type="button" className="button" onClick={onClose} disabled={saving}>{still ? 'Close' : 'Cancel'}</button>
           <button type="submit" className="button primary" disabled={saving}>Save</button>

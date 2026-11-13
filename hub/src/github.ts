@@ -5,6 +5,17 @@ import { patchLines, type Commit } from '../../shared/changeSet.ts'
 // merges for change sets, and workflow runs for deploying. `apiUrl` is api.github.com, a GitHub Enterprise server's,
 // or a stand-in in tests.
 
+/**
+ * What GitHub said when it refused: its message, and the reasons it lists ("Can not approve your own pull request"
+ * comes only in errors, under a message of "Unprocessable Entity").
+ */
+export function failure(json: unknown, status: number) {
+  const body = json as { message?: string; errors?: (string | { message?: string })[] } | undefined
+  const reasons = (body?.errors ?? []).map((e) => (typeof e === 'string' ? e : e?.message)).filter((e): e is string => !!e)
+  const message = body?.message ?? `GitHub answered ${status}`
+  return reasons.length ? `${message}: ${reasons.join('; ')}` : message
+}
+
 export class GitHubError extends Error {
   status: number
   constructor(status: number, message: string) {
@@ -90,7 +101,7 @@ export class GitHub {
     if (response.status === 204) return undefined as T
     const text = await response.text()
     const json = text ? JSON.parse(text) : undefined
-    if (!response.ok) throw new GitHubError(response.status, (json as { message?: string })?.message ?? `GitHub answered ${response.status}`)
+    if (!response.ok) throw new GitHubError(response.status, failure(json, response.status))
     return json as T
   }
 

@@ -33,6 +33,8 @@ services:
     env_file: ${BINDERS_ETC:-/etc/binders}/hub.env
     environment:
       REDIS_URL: redis://redis:6379
+      # Where the machines it keeps in the sandbox reach it: here, on compose's network, not out through the tunnel.
+      BINDERS_SANDBOX_HUB_URL: ${BINDERS_SANDBOX_HUB_URL:-http://hub:4400}
     volumes:
       - ${BINDERS_DATA:-/var/lib/binders}/hub:/app/hub/.data
     depends_on:
@@ -55,3 +57,23 @@ services:
       - hub
     restart: unless-stopped
     profiles: [tunnel]
+
+  # A machine the hub keeps for an agent that has none: the Binders runner in a sandbox of its own, one per agent, with
+  # a clone of the Binder's repo. It holds no Binder's data and no model key, and only the hub starts a runner here.
+  # Turn it on with the sandbox profile, and give the hub its address and secret (BINDERS_SANDBOX_URL, in hub.env):
+  #   docker compose --profile sandbox up -d
+  sandbox:
+    image: binders-sandbox
+    build:
+      context: ..
+      target: sandbox
+    environment:
+      BINDERS_SANDBOX_SECRET: ${BINDERS_SANDBOX_SECRET:-}
+    volumes:
+      - ${BINDERS_DATA:-/var/lib/binders}/sandboxes:/var/lib/binders/sandboxes
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4500/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+    restart: unless-stopped
+    profiles: [sandbox]

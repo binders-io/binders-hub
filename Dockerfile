@@ -41,3 +41,14 @@ WORKDIR /app/hub
 EXPOSE 4400
 HEALTHCHECK --interval=15s --timeout=5s --start-period=60s CMD ["node", "-e", "fetch('http://127.0.0.1:4400/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
 CMD ["node", "src/main.ts"]
+
+# A machine the hub keeps for an agent that has none: the Binders runner in a sandbox of its own, with a clone of the
+# Binder's repo. It holds no model key and none of the hub's data. deploy/compose.yml runs it with the sandbox profile.
+FROM base AS sandbox
+ENV NODE_ENV=production
+COPY --from=build /app/runner/dist runner/dist
+RUN mkdir -p /var/lib/binders/sandboxes && chown node:node /var/lib/binders/sandboxes
+USER node
+WORKDIR /app
+EXPOSE 4500
+CMD ["node", "runner/dist/binders-runner.mjs", "sandbox", "--port", "4500", "--root", "/var/lib/binders/sandboxes"]

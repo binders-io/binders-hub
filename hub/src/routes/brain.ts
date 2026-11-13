@@ -8,7 +8,7 @@ import { personalId, readerWords } from '../spaces.ts'
 import { ask, search, type AskPlace, type AskResult } from '../brain/brain.ts'
 import { carryOut, takeProposal } from '../brain/board.ts'
 import type { BrainSettings } from '../brain/settings.ts'
-import { candidates, isGateway, jobs, offers } from '../brain/autoPick.ts'
+import { candidates, gateways, isGateway, jobs, offers } from '../brain/autoPick.ts'
 import { runnerVersion } from '../../../shared/agents.ts'
 import { viewBinders } from '../../../shared/view.ts'
 import { chosenHome, type Capture } from '../brain/captures.ts'
@@ -35,15 +35,17 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
     return brainMachines
   }
   app.get('/api/brain/machines', act(async (request) => {
-    const machines = admin(request, 'see its machines').list()
-      .map((m) => ({ ...m, servers: (m.servers ?? []).map((s) => (isGateway(s, m.facts?.memoryGb) ? { ...s, gateway: true } : s)) }))
+    const linked = admin(request, 'see its machines').list()
+    // A gateway's models are sent once, below, with the job each is for: on its server, only how many it lists.
+    const machines = linked.map((m) => ({ ...m, servers: (m.servers ?? []).map((s) => (isGateway(s, m.facts?.memoryGb) ? { ...s, gateway: true, models: [], lists: s.models.length } : s)) }))
     // For each job no machine can do, a model to download, on a machine with Ollama: none while one is downloading.
     const downloading = new Set(machines.flatMap((m) => (m.downloads ?? []).filter((d) => !d.done && !d.error).map((d) => `${m.id} ${d.model}`)))
-    const offered = brainSettings ? offers(machines, brainSettings.openJobs()).filter((o) => !downloading.has(`${o.machine} ${o.action === 'serve' ? (o.runtime === 'mlx-audio' ? 'mlx-audio' : 'LM Studio') : o.model}`)) : []
+    const offered = brainSettings ? offers(linked, brainSettings.openJobs()).filter((o) => !downloading.has(`${o.machine} ${o.action === 'serve' ? (o.runtime === 'mlx-audio' ? 'mlx-audio' : 'LM Studio') : o.model}`)) : []
     // For each job, every model your machines can do it with, best first: what Settings lists to choose from.
-    const all = candidates(machines)
+    const all = candidates(linked)
     const choices = Object.fromEntries(jobs.map((job) => [job, all[job].slice(0, 40)]))
-    return { machines, offers: offered, candidates: choices, latest: runnerVersion }
+    // And the gateways on them, with what each lists: never the hub's choice, an admin's to make.
+    return { machines, offers: offered, candidates: choices, gateways: gateways(linked), latest: runnerVersion }
   }))
   app.post('/api/brain/machines/:id/pull', act(async (request) => {
     const machines = admin(request, 'download models')
@@ -88,6 +90,13 @@ export async function brainRoutes(app: FastifyInstance, context: Context) {
     if (!isAdmin(login(request))) throw new Refused('Only the hub’s admins can set up its brain.')
     const { jobs } = bodyOf<{ jobs: ('chat' | 'embeddings' | 'transcription' | 'speech')[] }>(bodies.chooseJobs, request)
     return { brain: await brainSettings.letHubChoose(jobs), admin: true }
+  }))
+  // A model a gateway on one of your machines lists, made a job's: tried first, and refused under Local AI only.
+  app.post('/api/brain/gateway', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, act(async (request) => {
+    if (!brainSettings) throw new Refused('This hub has no brain to set up.')
+    if (!isAdmin(login(request))) throw new Refused('Only the hub’s admins can set up its brain.')
+    const { job, machine, url, model } = bodyOf<{ job: 'chat' | 'embeddings'; machine: string; url: string; model: string }>(bodies.useGateway, request)
+    return { brain: await brainSettings.useGateway(job, machine, url, model), admin: true }
   }))
   app.delete('/api/brain/machines/:id', act(async (request) => {
     await admin(request, 'remove a machine').remove(param(request, 'id'))

@@ -5,6 +5,7 @@ import { Refused } from '../hub.ts'
 import type { OptionsStore } from '../options.ts'
 import type { BrainSettingsStore } from '../brain/settings.ts'
 import type { BrainMachines } from '../brain/machines.ts'
+import type { Sandboxes } from '../sandbox.ts'
 import { readBody } from '../schemas.ts'
 import type { ServerOptions } from '../server.ts'
 import type { Spaces } from '../spaces.ts'
@@ -15,7 +16,7 @@ import { Terminals } from '../terminals.ts'
 
 export type Context = ReturnType<typeof makeContext>
 
-export function makeContext(spaces: Spaces, deps: { auth: Auth; options?: OptionsStore; brain?: BrainSettingsStore; machines?: BrainMachines }, options: ServerOptions) {
+export function makeContext(spaces: Spaces, deps: { auth: Auth; options?: OptionsStore; brain?: BrainSettingsStore; machines?: BrainMachines; sandboxes?: Sandboxes }, options: ServerOptions) {
   const { auth } = deps
   const hubOptions = deps.options
   const brainSettings = deps.brain
@@ -119,5 +120,5 @@ export function makeContext(spaces: Spaces, deps: { auth: Auth; options?: Option
   /** A note's or card's address in the web app: the first Binder's at the hub's own, as its links have always been. */
   const webUrl = (space: string, kind: 'note' | 'card', id: string) => `${options.publicUrl}${space === spaces.list()[0]?.id ? '' : `/${space}`}/#/${kind === 'note' ? 'notes' : 'work'}/${encodeURIComponent(id)}`
 
-  return { spaces, auth, hubOptions, brainSettings, brainMachines, webUrl, options, secure, callback, isLocal, terminals, backFor, sp, login, param, firstGitHub, isAdmin, namedAdmin, mayManageGitHub, signInSpace, fail, act, bodyOf, mayLink, mayLinkAll }
+  return { spaces, auth, hubOptions, brainSettings, brainMachines, sandboxes: deps.sandboxes, webUrl, options, secure, callback, isLocal, terminals, backFor, sp, login, param, firstGitHub, isAdmin, namedAdmin, mayManageGitHub, signInSpace, fail, act, bodyOf, mayLink, mayLinkAll }
 }

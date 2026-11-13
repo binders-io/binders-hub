@@ -26,6 +26,13 @@ export interface AgentEndpoint {
   baseUrl?: string
   /** The model, or the deployment's name. */
   model?: string
+  /**
+   * One of the hub's machines its server is on (Settings → Brain): the hub reaches `baseUrl`, which is the address as
+   * that machine sees it, through the machine's daemon. For a proxy or a model server on the hub's own host, which
+   * the hub can't call from where it runs. A hub admin's to set. `machineName` is what the machine goes by, for words.
+   */
+  machine?: string
+  machineName?: string
   /** What it takes: cards given to it by name (Distill among them), chats about a note, debriefs, Challenges. */
   takes: { cards: boolean; chats: boolean; debriefs: boolean; challenges: boolean }
   /** Whether its model called a tool when last asked to: one that can't does no work, and says why. */
@@ -129,6 +136,12 @@ export interface Agent {
   runner?: RunnerSettings
   /** The model it is, when it has no machine and the hub runs it. */
   endpoint?: AgentEndpoint
+  /**
+   * Whether this hub keeps a machine for it: a runner of its own in a sandbox, with the Binder's repo cloned, for an
+   * agent the hub runs a model for and that has no machine of its own. It is a runner like any other, so its cards are
+   * worked as any machine's are; the sandbox holds no Binder's data and no model key.
+   */
+  sandbox?: boolean
   /**
    * A person asked its runners to restart, on the newest runner the hub has: what they're running stops (cards go back
    * on the board), and they start again. A runner acts on one asked after it started.
@@ -337,6 +350,11 @@ export interface PullRequest {
    * without help), with conflicts someone has to resolve, blocked by the repo's rules, or not known yet.
    */
   mergeable?: 'clean' | 'behind' | 'conflicts' | 'blocked' | 'unknown'
+  /**
+   * The approving review the hub sent GitHub for its change set: whose it is (the person who approved, or `hub` for the
+   * hub's own), at which commit, or why GitHub refused it. A repo whose rules want a review merges on it.
+   */
+  review?: { by: string; head?: string; refused?: string }
   /** The commit it made on its base when it merged, as GitHub says: what an environment's deployed commit is compared with. Missing from before it was kept. */
   mergeSha?: string
   /** When the hub first saw it merged or closed, if its card didn't say: what the weeks its diff is kept for are counted from. */
@@ -1002,10 +1020,11 @@ export function handMove(card: Pick<Card, 'stage' | 'agentId'>, stage: Stage): P
 export const asksOf = (card: Pick<Card, 'needsYou' | 'permission'>) =>
   card.needsYou ?? (card.permission && !card.permission.answer ? `Allow ${card.permission.tool}: ${card.permission.what}` : undefined)
 
-export function nextFor(state: WorkState & { binders: { id: string; repo?: string }[] }, agent: Agent, busy: string[] = []): Card | undefined {
+export function nextFor(state: WorkState & { binders: { id: string; repo?: string }[] }, agent: Agent, busy: string[] = [], named = false): Card | undefined {
   // The cards it could take, found first and on their own: on a board of thousands few are ready, and everything else
   // the board has to say is looked up only for these.
-  const open = state.cards.filter((c) => c.stage === 'ready' && !c.agentId && !busy.includes(c.id) && mayTake(state, agent, c))
+  // `named`: only cards given to this agent by name, for one that takes no others (a model with no machine).
+  const open = state.cards.filter((c) => c.stage === 'ready' && !c.agentId && !busy.includes(c.id) && (!named || c.meantFor === agent.id) && mayTake(state, agent, c))
   if (!open.length) return undefined
   const names = new Set(open.map((c) => c.id))
   const waitedOn = new Set(open.flatMap((c) => c.waitsFor))

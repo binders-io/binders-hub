@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react'
+import { call } from '../data/api'
 import type { Agent } from '../data/model'
 import type { AgentEndpoint } from '../../../shared/work.ts'
 
@@ -25,6 +27,52 @@ export const modelKinds: { id: AgentEndpoint['kind']; name: string; help: string
   { id: 'anthropic', name: 'Claude, by Anthropic’s API', help: 'At Anthropic, or a Claude deployment in Microsoft Foundry.' },
 ]
 
+/**
+ * A server on one of the hub's machines (Settings → Brain) that an agent's model can be on, with the models it has to
+ * talk to: a proxy or a model server on the hub's own host among them, which the hub reaches through that machine.
+ */
+export interface HubServer {
+  machine: string
+  machineName: string
+  url: string
+  /** It lists cloud models: a gateway to somewhere else. */
+  gateway?: boolean
+  models: string[]
+}
+
+/** The fourth kind a form offers, to a hub admin whose machines serve something: an OpenAI-style server reached through one. */
+export const machineKind = { name: 'A server on one of the hub’s machines', help: 'A proxy or a model server on the hub’s own host, or on a machine linked in Settings → Brain. The hub reaches it through that machine.' }
+
+/** A server as a choice in a list: "hub-server · gateway on :4000 · 300 models". */
+export function serverWords(server: HubServer) {
+  let port = ''
+  try {
+    port = new URL(server.url).port
+  } catch { /* said without */ }
+  const what = server.gateway ? 'gateway' : server.url.startsWith('http://models.binders') ? 'downloaded models' : 'server'
+  return `${server.machineName} · ${what}${port ? ` on :${port}` : ''} · ${server.models.length} model${server.models.length === 1 ? '' : 's'}`
+}
+
+/** An address as typed, to tell it from a server's: without the slashes at its end, in lower case. */
+const tidy = (address: string) => address.trim().replace(/\/+$/, '').toLowerCase()
+
+/** The servers on the hub's machines at an address as typed: one a machine, as two machines may serve the same address. */
+export const serversAt = (servers: HubServer[], address: string) => (address.trim() ? servers.filter((s) => tidy(s.url) === tidy(address)) : [])
+
+/**
+ * The servers on the hub's machines, for the forms that give an agent a model: asked for once as a form opens. The hub
+ * says none to anyone but its admins, who run those machines.
+ */
+export function useHubServers() {
+  const [servers, setServers] = useState<HubServer[]>([])
+  useEffect(() => {
+    let gone = false
+    call<{ servers?: HubServer[] } | undefined>('GET', '/api/agents/endpoint/servers').then((r) => { if (!gone) setServers(r?.servers ?? []) }).catch(() => {})
+    return () => { gone = true }
+  }, [])
+  return servers
+}
+
 /** Whether a model agent can do work: its model called a tool when last tried. One not tried yet counts as able. */
 export const modelReady = (agent: Agent) => agent.endpoint?.ready?.ok !== false
 
@@ -40,6 +88,7 @@ function hostOf(address: string) {
 /** What a model agent is, in words: "The hub’s own model", "gpt-deploy at your-resource.openai.azure.com", "claude-opus-5-5 at Anthropic". */
 export function modelWords(endpoint: AgentEndpoint) {
   if (endpoint.kind === 'brain') return 'The hub’s own model'
+  if (endpoint.machine) return `${endpoint.model || 'A model'} on ${endpoint.machineName ?? 'one of the hub’s machines'}`
   const where = endpoint.baseUrl ? hostOf(endpoint.baseUrl) : endpoint.kind === 'anthropic' ? 'Anthropic' : ''
   const model = endpoint.model || (endpoint.kind === 'anthropic' ? 'Claude' : 'A model')
   return where ? `${model} at ${where}` : model
