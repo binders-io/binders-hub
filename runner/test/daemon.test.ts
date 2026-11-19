@@ -4,7 +4,8 @@ import { execFileSync } from 'node:child_process'
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { bootstrap, folderWarning, keepRunningAfterLogout, plistFor, refusedAsRoot, refusedDomain, unitFor } from '../src/daemon.ts'
+import { readFile } from 'node:fs/promises'
+import { bootstrap, daemonCommand, folderWarning, keepRunningAfterLogout, plistFor, refusedAsRoot, refusedDomain, unitFor, type Saved } from '../src/daemon.ts'
 
 // The `binders` command's parts that install nothing: what it lists, how it finds an agent, and what it says without
 // one. (add, start, stop and restart reach launchd or systemd, so they're tried by hand on a machine.)
@@ -41,6 +42,45 @@ describe('as a service', () => {
     assert.ok(plistFor(set).includes('<key>HTTPS_PROXY</key><string>http://me:p%40ss"1@proxy.test:8080</string>'))
     assert.ok(plistFor(set).includes('<key>NODE_EXTRA_CA_CERTS</key><string>/certs/a&amp;b.pem</string>'))
     assert.doesNotMatch(unitFor({ ...set, network: undefined }), /HTTPS_PROXY/)
+  })
+
+  it('kept to the Binders app, has its service run the runner through while-app-open', () => {
+    const agent: Saved = { name: 'a', agent: 'A', hub: 'https://hub.test', workspace: '/w', addedAt: '' }
+    assert.doesNotMatch(plistFor(agent), /while-app-open/)
+    assert.match(plistFor({ ...agent, whileAppOpen: true }), /binders-runner\.mjs<\/string>\n\s*<string>while-app-open<\/string>\n\s*<string>--hub<\/string>/)
+    assert.match(plistFor({ ...agent, kind: 'brain', whileAppOpen: true }), /<string>while-app-open<\/string>\n\s*<string>brain<\/string>/)
+  })
+})
+
+describe('binders set --while-app-open', () => {
+  it('keeps an agent to the Binders app on a Mac, and lets it go again', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'binders-home-'))
+    await mkdir(join(home, 'agents'))
+    const file = join(home, 'agents', 'codex-binders.json')
+    await writeFile(file, JSON.stringify({ name: 'codex-binders', agent: 'Codex - Binders', hub: 'https://hub.test', workspace: '/tmp/code', addedAt: '2026-10-31T00:00:00Z' }))
+    const before = process.env.BINDERS_HOME
+    process.env.BINDERS_HOME = home
+    const installed: Saved[] = []
+    const ports = { install: async (s: Saved) => { installed.push(s) }, platform: 'mac' as const }
+    const whoami = async () => ({ name: 'nobody' })
+    const log = console.log
+    console.log = () => {}
+    try {
+      assert.equal(await daemonCommand(['set', 'codex-binders', '--while-app-open', 'on'], whoami, undefined, ports), 0)
+      assert.equal(JSON.parse(await readFile(file, 'utf8')).whileAppOpen, true)
+      assert.equal(installed.at(-1)?.whileAppOpen, true, 'its service put in place again, to run through while-app-open')
+      assert.equal(await daemonCommand(['set', 'codex-binders', '--while-app-open', 'off'], whoami, undefined, ports), 0)
+      assert.equal(JSON.parse(await readFile(file, 'utf8')).whileAppOpen, undefined)
+      assert.equal(installed.at(-1)?.whileAppOpen, undefined)
+      await assert.rejects(daemonCommand(['set', 'codex-binders'], whoami, undefined, ports), /--while-app-open on\|off/)
+      await assert.rejects(daemonCommand(['set', 'codex-binders', '--while-app-open', 'maybe'], whoami, undefined, ports), /is on or off/)
+      await assert.rejects(daemonCommand(['set', 'codex-binders', '--while-app-open', 'on'], whoami, undefined, { ...ports, platform: 'linux' }), /works on a Mac/)
+      assert.equal(installed.length, 2)
+    } finally {
+      console.log = log
+      if (before === undefined) delete process.env.BINDERS_HOME
+      else process.env.BINDERS_HOME = before
+    }
   })
 })
 

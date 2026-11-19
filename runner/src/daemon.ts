@@ -3,6 +3,7 @@ import { chmod, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from '
 import { homedir, hostname, userInfo } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
+import { appOpen } from './app.ts'
 import { detect, diskLines, foundLines, joinAgent, joinMachine, lookOnDisk, type Server } from './brain.ts'
 import { toolsHere } from './engines.ts'
 import { findable, toolInfo, type AgentTool } from '../../shared/agents.ts'
@@ -20,7 +21,7 @@ import { launcherFor, stopTreeArgs, taskName, taskXml } from './windows.ts'
 
 const run = promisify(execFile)
 
-export const subcommands = new Set(['add', 'join', 'list', 'ls', 'logs', 'start', 'stop', 'restart', 'remove', 'rm'])
+export const subcommands = new Set(['add', 'join', 'list', 'ls', 'logs', 'start', 'stop', 'restart', 'remove', 'rm', 'set'])
 
 const base = () => process.env.BINDERS_HOME ?? join(homedir(), '.binders')
 const agentsDir = () => join(base(), 'agents')
@@ -50,6 +51,8 @@ export interface Saved {
   kind?: 'brain'
   /** The model servers it was told of, besides the usual places it looks. */
   serve?: string[]
+  /** On a Mac, it runs only while the Binders app is open (app.ts), not from login on. */
+  whileAppOpen?: boolean
 }
 
 /**
@@ -122,10 +125,14 @@ async function loadedIn(name: string) {
 /** Takes an agent's service out of launchd, whichever domain it's in. */
 const bootout = (name: string) => Promise.all(domains().map((d) => run('launchctl', ['bootout', `${d}/${label(name)}`]).catch(() => undefined)))
 
-/** What the service runs: this Node, the runner file, and where to find the agent's token. */
+/**
+ * What the service runs: this Node, the runner file, and where to find the agent's token. Kept to the Binders app,
+ * the runner file runs it only while the app is open.
+ */
 function command(s: Saved) {
-  if (s.kind === 'brain') return [process.execPath, runnerFile(), 'brain', '--hub', s.hub, '--token-file', tokenOf(s.name), '--name', s.name, ...(s.serve?.length ? ['--serve', s.serve.join(',')] : [])]
-  return [process.execPath, runnerFile(), '--hub', s.hub, '--workspace', s.workspace, '--token-file', tokenOf(s.name), '--name', s.name]
+  const runner = [process.execPath, runnerFile(), ...(s.whileAppOpen ? ['while-app-open'] : [])]
+  if (s.kind === 'brain') return [...runner, 'brain', '--hub', s.hub, '--token-file', tokenOf(s.name), '--name', s.name, ...(s.serve?.length ? ['--serve', s.serve.join(',')] : [])]
+  return [...runner, '--hub', s.hub, '--workspace', s.workspace, '--token-file', tokenOf(s.name), '--name', s.name]
 }
 
 /** The PATH the agent's tools are found on: this shell's, which has them, and the usual places. */
@@ -453,6 +460,8 @@ export interface Ports {
   /** The models downloaded here and where they were looked for: what binders add says of them. */
   disk: () => ReturnType<typeof lookOnDisk>
   host: () => string
+  /** The system it's on: binders set --while-app-open is a Mac's alone. */
+  platform: Platform
 }
 
 const here: Ports = {
@@ -462,26 +471,41 @@ const here: Ports = {
   detect: (serve) => detect(serve),
   disk: () => lookOnDisk(),
   host: () => hostname(),
+  platform,
 }
 
 /**
  * Saves an agent (or a machine that serves models) as it is on this machine and starts its service: what `binders add`
  * and `binders join` both do with a token. The same agent again is the same service, with the new token.
  */
-async function setUp(input: { hub: string; token: string; workspace: string; me: { name: string; id?: string }; named?: string; brain?: boolean; serve?: string[] }, put: Ports['install']) {
+async function setUp(input: { hub: string; token: string; workspace: string; me: { name: string; id?: string }; named?: string; brain?: boolean; serve?: string[]; whileAppOpen?: boolean }, put: Ports['install']) {
   const { hub, token, workspace, me, brain, serve = [] } = input
   const existing = (await saved()).find((s) => (me.id && s.agentId === me.id) || (s.agent === me.name && s.hub === hub))
   let name = existing?.name ?? (input.named !== undefined ? slug(input.named) : slug(me.name))
   if (!existing) for (let n = 2; (await saved()).some((s) => s.name === name); n++) name = `${slug(me.name)}-${n}`
   const network = serviceEnv()
   const carried = Object.keys(network)
-  const s: Saved = { name, agent: me.name, ...(me.id ? { agentId: me.id } : {}), hub, workspace, addedAt: existing?.addedAt ?? new Date().toISOString(), ...(carried.length ? { network } : {}), ...(brain ? { kind: 'brain' as const, ...(serve.length ? { serve } : {}) } : {}) }
+  // Set up again, it stays kept to the app if it was.
+  const whileAppOpen = input.whileAppOpen || existing?.whileAppOpen
+  const s: Saved = { name, agent: me.name, ...(me.id ? { agentId: me.id } : {}), hub, workspace, addedAt: existing?.addedAt ?? new Date().toISOString(), ...(carried.length ? { network } : {}), ...(brain ? { kind: 'brain' as const, ...(serve.length ? { serve } : {}) } : {}), ...(whileAppOpen ? { whileAppOpen: true } : {}) }
   await mkdir(agentsDir(), { recursive: true, mode: 0o700 })
   await writeFile(tokenOf(name), token, { mode: 0o600 })
   await chmod(tokenOf(name), 0o600)
-  await writeFile(join(agentsDir(), `${name}.json`), JSON.stringify(s, null, 2))
+  await save(s)
   await put(s)
   return { s, existing, carried }
+}
+
+/** What an agent is, kept in ~/.binders/agents/<name>.json. */
+const save = (s: Saved) => writeFile(join(agentsDir(), `${s.name}.json`), JSON.stringify(s, null, 2))
+
+/** --while-app-open, for binders add, join and set: on or off, or nothing said. */
+function appFlag(value: string | boolean | undefined, os: Platform) {
+  if (value === undefined) return undefined
+  const on = value === true || ['on', 'yes', 'true'].includes(String(value))
+  if (!on && !['off', 'no', 'false'].includes(String(value))) throw new Error('--while-app-open is on or off.')
+  if (on && os !== 'mac') throw new Error('Running only while the Binders app is open works on a Mac, where the app is.')
+  return on
 }
 
 // The commands --------------------------------------------------------------------------------------------------------
@@ -532,8 +556,9 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
       const serve = typeof f.serve === 'string' ? f.serve.split(',').map((u) => u.trim()).filter(Boolean) : []
       const workspace = brain ? homedir() : home(String(f.workspace ?? process.cwd()))
       if (!(await stat(workspace).then((x) => x.isDirectory(), () => false))) throw new Error(`${workspace} isn’t a folder.`)
+      const whileAppOpen = appFlag(f['while-app-open'], ports.platform)
       const me = joined ? { name: joined.name, ...(joined.id ? { id: joined.id } : {}) } : await whoami(hub, token)
-      const { s, existing, carried } = await setUp({ hub, token, workspace, me, named: typeof f.name === 'string' ? f.name : undefined, brain, serve }, ports.install)
+      const { s, existing, carried } = await setUp({ hub, token, workspace, me, named: typeof f.name === 'string' ? f.name : undefined, brain, serve, whileAppOpen }, ports.install)
       const name = s.name
       const logout = await ports.keepRunning()
       const wrongFolder = brain ? undefined : await folderWarning(workspace).catch(() => undefined)
@@ -544,6 +569,7 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
         console.log('  Your hub uses the best of them for each job you haven’t set yourself: see Settings → Brain.')
       }
       else console.log(`✓ ${me.name} ${existing ? 'restarted' : 'is running'} in the background, in ${workspace}.`)
+      if (s.whileAppOpen) console.log('  It runs only while the Binders app is open.')
       console.log(`  binders list · binders logs ${name} -f · binders restart ${name} · binders remove ${name}`)
       if (wrongFolder) console.log(`  Warning: ${wrongFolder}`)
       if (logout) console.log(`  ${logout}`)
@@ -561,6 +587,7 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
       if (!/^https?:\/\//.test(hub)) throw new Error('binders join needs the hub: --hub https://…')
       const workspace = home(String(f.workspace ?? process.cwd()))
       if (!(await stat(workspace).then((x) => x.isDirectory(), () => false))) throw new Error(`${workspace} isn’t a folder.`)
+      const whileAppOpen = appFlag(f['while-app-open'], ports.platform)
       const found = await ports.look(workspace)
       const names = (ids: AgentTool[]) => ids.map((id) => toolInfo(id).name).join(', ')
       if (!found.tools.length) {
@@ -575,14 +602,14 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
       const joined = await joinAgent(hub, line, { host: ports.host(), tools: found.tools, folder: workspace, repos: found.repos })
       const tool = toolInfo(joined.agent.tool as AgentTool).name
       console.log(found.tools.length === 1 ? `Binders chose ${tool}, as it’s installed here.` : `Binders chose ${tool}, the one it prefers of those installed here.`)
-      const { s, existing, carried } = await setUp({ hub, token: joined.agent.token, workspace, me: { name: joined.agent.name, id: joined.agent.id }, named: typeof f.name === 'string' ? f.name : undefined }, ports.install)
+      const { s, existing, carried } = await setUp({ hub, token: joined.agent.token, workspace, me: { name: joined.agent.name, id: joined.agent.id }, named: typeof f.name === 'string' ? f.name : undefined, whileAppOpen }, ports.install)
       console.log(`✓ ${joined.agent.name}${joined.binder ? `, in ${joined.binder.name},` : ''} is running in the background${existing ? ' again' : ''}.`)
       console.log(`  binders list shows it · binders logs ${s.name} -f follows it · binders stop ${s.name} stops it`)
       if (joined.machine) {
         const serve = typeof f.serve === 'string' ? f.serve.split(',').map((u) => u.trim()).filter(Boolean) : []
         if (typeof WebSocket === 'undefined') console.log(`  This machine’s models aren’t lent to the hub: that needs Node 22 or newer, and this is ${process.version}.`)
         else {
-          await setUp({ hub, token: joined.machine.token, workspace: homedir(), me: { name: joined.machine.name, ...(joined.machine.id ? { id: joined.machine.id } : {}) }, brain: true, serve }, ports.install)
+          await setUp({ hub, token: joined.machine.token, workspace: homedir(), me: { name: joined.machine.name, ...(joined.machine.id ? { id: joined.machine.id } : {}) }, brain: true, serve, whileAppOpen }, ports.install)
           // Voices aren't models the hub chooses among; the rest are.
           const count = (await ports.detect(serve)).filter((x) => x.kind !== 'say').reduce((sum, x) => sum + x.models.length, 0)
           console.log(count ? `  Also lending this machine’s models to the hub: ${count} found.` : '  Also lending this machine’s models to the hub: none found yet. Any you start are offered within five minutes.')
@@ -604,11 +631,14 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
         console.log('No agents on this machine yet. binders add --token … --workspace … sets one up.')
         return 0
       }
+      const open = list.some((s) => s.whileAppOpen) ? await appOpen() : true
       const rows = await Promise.all(list.map(async (s) => {
         const st = await status(s)
+        // Kept to the app, with the app closed: its service runs, but only to wait for the app.
+        const state = st.running ? (s.whileAppOpen && !open ? 'waiting (app closed)' : 'running') : st.loaded ? 'stopped' : 'off'
         const since = st.pid ? await run('ps', ['-o', 'etime=', '-p', String(st.pid)]).then((r) => r.stdout.trim(), () => '') : ''
         const log = await stat(logOf(s.name)).then((x) => ago(Date.now() - x.mtimeMs), () => '')
-        return [s.name, st.running ? 'running' : st.loaded ? 'stopped' : 'off', st.pid ? String(st.pid) : '-', since || '-', log ? `${log} ago` : '-', s.kind === 'brain' ? '(serves models)' : s.workspace.replace(homedir(), '~'), s.agent]
+        return [s.name, state, st.pid ? String(st.pid) : '-', since || '-', log ? `${log} ago` : '-', s.kind === 'brain' ? '(serves models)' : s.workspace.replace(homedir(), '~'), s.agent]
       }))
       const head = ['NAME', 'STATE', 'PID', 'UP', 'LAST LOG', 'WORKSPACE', 'AGENT']
       const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)))
@@ -620,6 +650,21 @@ export async function daemonCommand(argv: string[], whoami: WhoAmI, handBack: Ha
       const follow = f.follow === true || f.f === true || args.includes('-f')
       if (platform === 'windows') await tailLog(logOf(s.name), Number(f.lines ?? 80), follow)
       else await new Promise<void>((done) => spawn('tail', ['-n', String(f.lines ?? 80), ...(follow ? ['-f'] : []), logOf(s.name)], { stdio: 'inherit' }).on('exit', () => done()))
+      return 0
+    }
+    case 'set': {
+      // On a Mac: whether it runs only while the Binders app is open, or in the background from login on.
+      const on = appFlag(f['while-app-open'], ports.platform)
+      if (on === undefined) throw new Error('binders set NAME --while-app-open on|off (--all: every one)')
+      const targets = all ? await saved() : [await one(rest[0])]
+      for (const s of targets) {
+        const next: Saved = { ...s }
+        if (on) next.whileAppOpen = true
+        else delete next.whileAppOpen
+        await save(next)
+        await ports.install(next)
+        console.log(`✓ ${s.name}: ${on ? 'runs only while the Binders app is open' : 'runs in the background from login on, app open or not'}`)
+      }
       return 0
     }
     case 'start':
@@ -660,5 +705,8 @@ export const usage = `binders: Binders agents on this machine. Cards kept runnin
   binders stop NAME      stop it until binders start (--all)
   binders start NAME     start it again (--all)
   binders remove NAME    stop it and forget it here (the agent stays on the hub)
+  binders set NAME --while-app-open on|off
+                         on a Mac: run it only while the Binders app is open, or (off) from login on (--all).
+                         binders add and join take --while-app-open too
 
   binders [--hub URL] [--workspace DIR]   run one in this terminal instead (BINDERS_TOKEN=…)`

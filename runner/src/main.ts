@@ -4,6 +4,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { Runner } from './runner.ts'
+import { whileAppOpen } from './app.ts'
 import { daemonCommand, pidFileOf, stopFileOf, subcommands, usage } from './daemon.ts'
 import { brainCommand, machineIdentity } from './brain.ts'
 import { agentCommand } from './desk.ts'
@@ -19,6 +20,9 @@ import { sandboxCommand } from './sandbox.ts'
 // Which tool runs, how much access it has, its model and time limit are the agent's runner settings, on the Agents page.
 
 settleNetwork()
+
+// An agent kept to the Binders app, on a Mac: the runner, only while the app is open (app.ts), as its service runs it.
+if (process.argv[2] === 'while-app-open') process.exit(await whileAppOpen(process.argv.slice(3)))
 
 // An agent's own binders command, from the small script its run has on its PATH (desk.ts).
 if (process.argv[2] === 'agent') process.exit(await agentCommand(process.argv.slice(3)))
