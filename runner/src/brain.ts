@@ -105,24 +105,51 @@ export async function lookOnDisk(env: Record<string, string | undefined> = proce
     looked.push({ where: shown(folder), count: dirs.length })
   }
   const lms = own && place.lmStudio !== false ? which('lms') : undefined
-  if (lms) {
-    const { code, out } = await run(lms, ['ls', '--json'], 15_000)
-    if (code === 0) {
-      try {
-        const listed = JSON.parse(out) as { modelKey?: string; path?: string; id?: string }[]
-        let count = 0
-        for (const m of Array.isArray(listed) ? listed : []) {
-          const name = String(m.modelKey ?? m.id ?? m.path ?? '')
-          if (name) {
-            models.push({ name, source: 'lmstudio' })
-            count++
-          }
-        }
-        looked.push({ where: 'LM Studio', count })
-      } catch { /* an LM Studio that says it otherwise: none from it */ }
-    }
+  const fromLmStudio = lms ? await lmStudioModels(lms, lmStudioRunning(home)) : undefined
+  if (fromLmStudio) {
+    for (const name of fromLmStudio) models.push({ name, source: 'lmstudio' })
+    looked.push({ where: 'LM Studio', count: fromLmStudio.length })
   }
   return { models: models.slice(0, 300), looked }
+}
+
+/** LM Studio's models as it last listed them: what's said while it's closed. */
+let lmStudioLast: string[] | undefined
+
+/**
+ * Whether LM Studio runs, without asking it: the process it names in the file `lms` finds it by is alive. Asking `lms`
+ * instead would start it.
+ */
+export function lmStudioRunning(home: string = homedir()) {
+  try {
+    const { pid } = JSON.parse(readFileSync(join(home, '.lmstudio', '.internal', 'http-server.json'), 'utf8')) as { pid?: unknown }
+    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    // Alive, but another user's: running all the same. No file, or no such process: not running.
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/**
+ * LM Studio's models, by the names its server knows them by. Asked of `lms` only while LM Studio runs: `lms` starts
+ * LM Studio when it isn't running, so asking each time the daemon looks kept starting it again after people quit it.
+ * While it's closed, the list it gave last.
+ */
+export async function lmStudioModels(lms: string, running: boolean, list: (lms: string) => Promise<{ code: number; out: string }> = (lms) => run(lms, ['ls', '--json'], 15_000)): Promise<string[] | undefined> {
+  if (!running) return lmStudioLast
+  const { code, out } = await list(lms)
+  if (code !== 0) return undefined
+  try {
+    const listed = JSON.parse(out) as { modelKey?: string; path?: string; id?: string }[]
+    const names = (Array.isArray(listed) ? listed : []).map((m) => String(m.modelKey ?? m.id ?? m.path ?? '')).filter(Boolean)
+    lmStudioLast = names
+    return names
+  } catch {
+    // An LM Studio that says it otherwise: none from it.
+    return undefined
+  }
 }
 
 /** The models downloaded here (lookOnDisk's, without where it looked). */

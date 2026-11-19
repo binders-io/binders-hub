@@ -2,7 +2,7 @@ import { describe, it, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { detect, diskLines, hfCache, isAudio, listening, lookOnDisk, mostModels, nearby, newer, onDisk, probe, pull, relay, repoOf, say, voiceNames, whyStopped } from '../src/brain.ts'
+import { detect, diskLines, hfCache, isAudio, listening, lmStudioModels, lmStudioRunning, lookOnDisk, mostModels, nearby, newer, onDisk, probe, pull, relay, repoOf, say, voiceNames, whyStopped } from '../src/brain.ts'
 import { engines } from '../src/engines.ts'
 import { mkdtemp, mkdir as makeDir, writeFile as write } from 'node:fs/promises'
 import { tmpdir as tempDir } from 'node:os'
@@ -195,6 +195,29 @@ describe('the brain daemon', () => {
     assert.deepEqual(disk.models.map((m) => [m.name.replace(home, '~'), m.source]).sort(), [['Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice', 'hf'], ['hexgrad/Kokoro-82M', 'hf'], ['mlx-community/whisper-large-v3-turbo', 'hf'], [joinPath('~', 'models', 'my-voice'), 'dir']].sort())
     const said = diskLines({ models: [{ name: 'hexgrad/Kokoro-82M', source: 'hf' }, { name: 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice', source: 'hf' }], looked: [{ where: '~/.cache/huggingface/hub', count: 2 }] })
     assert.deepEqual(said, ['  Downloaded here for speech and transcription: Kokoro-82M, Qwen3-TTS-12Hz-1.7B-CustomVoice. Settings → Brain offers to use them.', '  Looked for downloaded models in ~/.cache/huggingface/hub (2).'])
+  })
+
+  it('asks LM Studio for its models only while it runs, since asking starts it', async () => {
+    const home = await mkdtemp(joinPath(tempDir(), 'home-'))
+    const internal = joinPath(home, '.lmstudio', '.internal')
+    await makeDir(internal, { recursive: true })
+    assert.equal(lmStudioRunning(home), false, 'never started')
+    // Above the highest process ID Linux or macOS gives: a process that's gone.
+    await write(joinPath(internal, 'http-server.json'), JSON.stringify({ host: '127.0.0.1', pid: 2 ** 22 + 1, port: 41343 }))
+    assert.equal(lmStudioRunning(home), false, 'quit: its process is gone')
+    await write(joinPath(internal, 'http-server.json'), JSON.stringify({ host: '127.0.0.1', pid: process.pid, port: 41343 }))
+    assert.equal(lmStudioRunning(home), true)
+
+    let asked = 0
+    const lms = async () => {
+      asked++
+      return { code: 0, out: JSON.stringify([{ modelKey: 'example/model-7b', path: 'example/model-7b' }, { path: 'example/embed.gguf' }, {}]) }
+    }
+    assert.deepEqual(await lmStudioModels('/x/lms', true, lms), ['example/model-7b', 'example/embed.gguf'])
+    // Closed: lms isn't run, and the list it gave last is still said.
+    assert.deepEqual(await lmStudioModels('/x/lms', false, lms), ['example/model-7b', 'example/embed.gguf'])
+    assert.equal(asked, 1)
+    assert.equal(await lmStudioModels('/x/lms', true, async () => ({ code: 1, out: '' })), undefined)
   })
 })
 
